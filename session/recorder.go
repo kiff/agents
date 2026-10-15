@@ -90,9 +90,9 @@ type Recording struct {
 // Session is the session this recording records.
 func (rec *Recording) Session() Session { return rec.s }
 
-// Record queues one event as its kind's rule says. It fails only after End,
-// when body can't be encoded, or when it is over MaxBody (ErrTooLarge); write
-// errors come from Flush and End.
+// Record queues one event as its kind's rule says. A body over MaxBody is
+// recorded as an OmittedBody. Record fails only after End, or when body can't
+// be encoded; write errors come from Flush and End.
 func (rec *Recording) Record(kind EventKind, body any) error {
 	rule := rec.r.policy[kind]
 	raw, err := json.Marshal(body)
@@ -100,7 +100,7 @@ func (rec *Recording) Record(kind EventKind, body any) error {
 		return err
 	}
 	if len(raw) > MaxBody {
-		return ErrTooLarge
+		raw, _ = json.Marshal(OmittedBody{Omitted: "over MaxBody", Bytes: len(raw)})
 	}
 	now := rec.r.now().UTC()
 	e := Event{Session: rec.s.ID, Time: now, Kind: kind, Body: raw, UntilEnd: rule.Keep == UntilEnd}

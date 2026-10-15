@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -53,14 +54,28 @@ func TestSessionRetention(t *testing.T) {
 	}
 }
 
-func TestRecordRefusesABodyOverMaxBody(t *testing.T) {
-	rec := start(t, newFlaky())
-	big := make([]byte, session.MaxBody) // encodes larger than MaxBody, as a JSON string
-	if err := rec.Record(session.ToolResult, big); !errors.Is(err, session.ErrTooLarge) {
-		t.Fatalf("err = %v, want ErrTooLarge", err)
+// A body over MaxBody is recorded as a placeholder that says how big it was:
+// the run goes on, and the store never sees an event it can't keep.
+func TestABodyOverMaxBodyIsOmitted(t *testing.T) {
+	f := newFlaky()
+	rec := start(t, f)
+	big := strings.Repeat("a", session.MaxBody)
+	if err := rec.Record(session.ToolResult, big); err != nil {
+		t.Fatalf("record: %v", err)
 	}
-	if err := rec.Record(session.ToolResult, "small"); err != nil {
-		t.Fatalf("a small event after the refusal: %v", err)
+	if err := rec.Record(session.Report, "small"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, events := stored(t, f, rec)
+	var got session.OmittedBody
+	if len(events) != 2 || events[0].Kind != session.ToolResult || json.Unmarshal(events[0].Body, &got) != nil {
+		t.Fatalf("events = %+v", events)
+	}
+	if got.Omitted != "over MaxBody" || got.Bytes != session.MaxBody+2 { // the JSON string's quotes
+		t.Fatalf("placeholder = %+v", got)
 	}
 	if err := rec.End(ctx, session.Ended); err != nil {
 		t.Fatal(err)

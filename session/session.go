@@ -30,7 +30,8 @@ const (
 
 // Session is one run or chat of one agent. Expires is when the whole session,
 // with its events, may be removed (zero: kept until deleted). It comes from
-// the keep rules and moves on with each event recorded.
+// the keep rules, and moves on to the Expires of each kept event recorded;
+// events kept only until the end, which have no Expires, don't move it.
 type Session struct {
 	ID      string    `json:"id"`
 	Tenant  string    `json:"tenant"`
@@ -85,19 +86,25 @@ type UsageBody struct {
 	CostMicroUSD int64  `json:"cost_micro_usd"`
 }
 
-// MaxBody is the largest event body, encoded. A bigger one is refused when it
-// is recorded (ErrTooLarge), so every Store can keep any event: whatever
-// produced it, a tool result most likely, must be cut down first.
+// MaxBody is the largest event body, encoded. A bigger one is recorded as an
+// OmittedBody instead, so every Store can keep any event and a large tool
+// result never ends a run. Whatever produced it should still be cut down
+// before a model reads it: that is what keeps it in the record.
 const MaxBody = 256 << 10
 
+// OmittedBody stands in for a body over MaxBody: the event is recorded, with
+// its kind and time, and says how big the body was.
+type OmittedBody struct {
+	Omitted string `json:"omitted"` // why: "over MaxBody"
+	Bytes   int    `json:"bytes"`   // the encoded size of the body left out
+}
+
 // ErrNotFound means no such session for this tenant; ErrEnded, that it takes no
-// more events; ErrGap, that an Append skipped a Seq; ErrTooLarge, that a body
-// is over MaxBody.
+// more events; ErrGap, that an Append skipped a Seq.
 var (
 	ErrNotFound = errors.New("session: not found")
 	ErrEnded    = errors.New("session: ended")
 	ErrGap      = errors.New("session: events out of sequence")
-	ErrTooLarge = errors.New("session: event body over MaxBody")
 )
 
 // Store keeps sessions and their events. Every read and delete names the
