@@ -80,6 +80,13 @@ func (s Schedule) Location() (*time.Location, error) {
 	return loc, nil
 }
 
+// names reports whether the schedule, as stored, fires at due.
+func (s Schedule) names(due time.Time) bool {
+	c, err1 := ParseCron(s.Cron)
+	loc, err2 := s.Location()
+	return s.Enabled && err1 == nil && err2 == nil && c.Matches(due.In(loc))
+}
+
 // Next is the schedule's first firing after t, or the zero time when it is
 // off or never fires. It is for showing; the Scheduler decides the firings.
 func (s Schedule) Next(t time.Time) time.Time {
@@ -124,7 +131,9 @@ type Schedules interface {
 
 // Scheduler fires schedules: EventBridge Scheduler in production. Each
 // firing calls Service.Fire with the schedule's tenant and ID and the time
-// it was due.
+// it was due. A tenant and an ID can be longer than a name the Scheduler
+// takes (EventBridge: 64 characters), so an implementation derives its names
+// from both and carries them in what each firing sends.
 type Scheduler interface {
 	// Set makes s fire as it says, or stop firing when it is off, replacing
 	// what was set for it before. s has passed Check.
@@ -210,23 +219,35 @@ func (sv *Service) DeleteAgent(ctx context.Context, tenant, agent string) error 
 }
 
 // Fire starts the run for one firing of the tenant's schedule, due at due.
-// It reads the schedule as it is now: a schedule removed or switched off
-// since, or whose agent is gone, starts nothing, and that is not an error, so
-// the Scheduler doesn't retry it.
+// It reads the schedule as it is now, and what is stored is the truth: when
+// the Scheduler disagrees with it (a Set that failed, two Puts that raced),
+// the firing starts nothing and the Scheduler is put back in line.
+//
+//   - A schedule no longer stored is removed from the Scheduler.
+//   - A schedule whose agent is gone is deleted.
+//   - A firing the stored schedule doesn't name (it is off, or its cron
+//     doesn't fire then) sets the stored schedule again.
+//
+// Starting nothing is not an error, so the Scheduler doesn't retry it; a
+// failure to put the Scheduler back in line is, so the next delivery tries
+// again.
 func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) error {
 	s, err := sv.Store.Get(ctx, tenant, id)
 	if errors.Is(err, ErrNotFound) {
-		return nil
+		return sv.Scheduler.Remove(ctx, tenant, id)
 	}
 	if err != nil {
 		return err
 	}
-	if !s.Enabled {
-		return nil
-	}
 	live, err := sv.Live(ctx, tenant, s.Agent)
-	if err != nil || !live {
+	if err != nil {
 		return err
+	}
+	if !live {
+		return sv.Delete(ctx, tenant, id)
+	}
+	if !s.names(due) {
+		return sv.Scheduler.Set(ctx, s)
 	}
 	return sv.Start(ctx, Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: due})
 }

@@ -235,7 +235,6 @@ func TestFireStartsTheScheduleAsItIsNow(t *testing.T) {
 	_ = f.sv.Put(ctx, s)
 	s.Input = "Changed after it was set."
 	_ = f.sv.Put(ctx, s)
-	due := time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)
 	if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil {
 		t.Fatal(err)
 	}
@@ -245,43 +244,101 @@ func TestFireStartsTheScheduleAsItIsNow(t *testing.T) {
 	}
 }
 
-// A firing that comes after its schedule changed starts nothing, and isn't
-// an error the Scheduler would retry.
-func TestFireStartsNothingWhenGone(t *testing.T) {
-	due := time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)
-	for name, change := range map[string]func(*fixture){
-		"removed": func(f *fixture) { _ = f.store.Delete(ctx, "t1", "morning") },
-		"off": func(f *fixture) {
+// due is a Monday at 09:00 in Paris: a time scheduletest.Schedule fires.
+var due = time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)
+
+// A firing the stored schedule doesn't name starts nothing, isn't an error
+// the Scheduler would retry, and puts the Scheduler back in line with what is
+// stored.
+func TestFireHealsWhatTheSchedulerGotWrong(t *testing.T) {
+	type check func(t *testing.T, f *fixture)
+	setAgain := func(t *testing.T, f *fixture) {
+		stored, _ := f.store.Get(ctx, "t1", "morning")
+		if f.sched.set[[2]string{"t1", "morning"}] != stored {
+			t.Fatal("the Scheduler wasn't set back to what is stored")
+		}
+	}
+	removed := func(t *testing.T, f *fixture) {
+		if _, ok := f.sched.set[[2]string{"t1", "morning"}]; ok {
+			t.Fatal("still set in the Scheduler")
+		}
+	}
+	for name, c := range map[string]struct {
+		change func(f *fixture)
+		then   check
+	}{
+		// A Put stored a new cron, and its Set failed: the old one fires.
+		"moved to Fridays": {func(f *fixture) {
+			s := scheduletest.Schedule("t1", "morning")
+			s.Cron = "0 9 * * 5"
+			_ = f.store.Put(ctx, s)
+		}, setAgain},
+		"moved to another zone": {func(f *fixture) {
+			s := scheduletest.Schedule("t1", "morning")
+			s.TimeZone = "America/New_York"
+			_ = f.store.Put(ctx, s)
+		}, setAgain},
+		"switched off": {func(f *fixture) {
 			s := scheduletest.Schedule("t1", "morning")
 			s.Enabled = false
 			_ = f.store.Put(ctx, s)
-		},
-		"its agent removed": func(f *fixture) { delete(f.agents, [2]string{"t1", "payouts"}) },
-		"another tenant's":  func(f *fixture) {},
+		}, setAgain},
+		"no longer stored": {func(f *fixture) { _ = f.store.Delete(ctx, "t1", "morning") }, removed},
+		"its agent removed": {func(f *fixture) { delete(f.agents, [2]string{"t1", "payouts"}) }, func(t *testing.T, f *fixture) {
+			removed(t, f)
+			if _, err := f.store.Get(ctx, "t1", "morning"); !errors.Is(err, schedule.ErrNotFound) {
+				t.Fatal("a schedule whose agent is gone is still stored")
+			}
+		}},
 	} {
-		f := newFixture()
-		_ = f.sv.Put(ctx, scheduletest.Schedule("t1", "morning"))
-		change(f)
-		tenant := "t1"
-		if name == "another tenant's" {
-			tenant = "t3"
-		}
-		if err := f.sv.Fire(ctx, tenant, "morning", due); err != nil || len(f.started) != 0 {
-			t.Errorf("%s: started %d (err %v)", name, len(f.started), err)
-		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture()
+			_ = f.sv.Put(ctx, scheduletest.Schedule("t1", "morning"))
+			c.change(f)
+			if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil || len(f.started) != 0 {
+				t.Fatalf("started %d (err %v)", len(f.started), err)
+			}
+			c.then(t, f)
+		})
+	}
+}
+
+func TestFireLeavesOtherTenantsAlone(t *testing.T) {
+	f := newFixture()
+	_ = f.sv.Put(ctx, scheduletest.Schedule("t1", "morning"))
+	if err := f.sv.Fire(ctx, "t3", "morning", due); err != nil || len(f.started) != 0 {
+		t.Fatalf("started %d (err %v)", len(f.started), err)
+	}
+	if _, ok := f.sched.set[[2]string{"t1", "morning"}]; !ok {
+		t.Fatal("a firing for t3 removed t1's schedule")
 	}
 }
 
 func TestFireReportsWhatShouldBeRetried(t *testing.T) {
-	f := newFixture()
-	_ = f.sv.Put(ctx, scheduletest.Schedule("t1", "morning"))
-	f.sv.Live = func(context.Context, string, string) (bool, error) { return false, errors.New("store down") }
-	if err := f.sv.Fire(ctx, "t1", "morning", time.Now()); err == nil {
-		t.Fatal("a firing that couldn't check its agent reported success")
+	cases := map[string]func(f *fixture){
+		"checking the agent": func(f *fixture) {
+			f.sv.Live = func(context.Context, string, string) (bool, error) { return false, errors.New("store down") }
+		},
+		"starting the run": func(f *fixture) {
+			f.sv.Start = func(context.Context, schedule.Firing) error { return errors.New("store down") }
+		},
+		"setting the Scheduler back": func(f *fixture) {
+			s := scheduletest.Schedule("t1", "morning")
+			s.Cron = "0 9 * * 5"
+			_ = f.store.Put(ctx, s)
+			f.sched.fail = errors.New("throttled")
+		},
+		"removing an orphan": func(f *fixture) {
+			_ = f.store.Delete(ctx, "t1", "morning")
+			f.sched.fail = errors.New("throttled")
+		},
 	}
-	f.sv.Live = func(context.Context, string, string) (bool, error) { return true, nil }
-	f.sv.Start = func(context.Context, schedule.Firing) error { return errors.New("store down") }
-	if err := f.sv.Fire(ctx, "t1", "morning", time.Now()); err == nil {
-		t.Fatal("a firing whose run didn't start reported success")
+	for name, change := range cases {
+		f := newFixture()
+		_ = f.sv.Put(ctx, scheduletest.Schedule("t1", "morning"))
+		change(f)
+		if err := f.sv.Fire(ctx, "t1", "morning", due); err == nil {
+			t.Errorf("%s failed, and the firing reported success", name)
+		}
 	}
 }
