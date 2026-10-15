@@ -690,3 +690,74 @@ func (f *runFixture) restart() {
 	f.srv = httptest.NewServer(f.server.Handler())
 	f.t.Cleanup(f.srv.Close)
 }
+
+// A path the API has, asked with a method it doesn't take, is 405 with
+// Allow; a path it doesn't have is 404. Both in JSON, like every error.
+func TestWrongMethodAndUnknownPath(t *testing.T) {
+	f := newRunFixture(t)
+	for _, c := range []struct {
+		method, path, allow string
+		status              int
+	}{
+		{"PUT", "/health", "GET, HEAD", 405},
+		{"DELETE", "/schedules/x/runs", "GET, HEAD", 405},
+		{"PATCH", "/agents/payouts", "DELETE, GET, HEAD, PUT", 405},
+		{"GET", "/nowhere", "", 404},
+		{"GET", "/agents/payouts/runs/r1/nothing", "", 404},
+	} {
+		req, _ := http.NewRequest(c.method, f.srv.URL+c.path, nil)
+		req.Header.Set("X-Test-Tenant", "t1")
+		resp, err := f.srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		err = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if resp.StatusCode != c.status || err != nil || body["error"] == nil || resp.Header.Get("Allow") != c.allow {
+			t.Errorf("%s %s: got %d Allow %q body %v (%v); want %d Allow %q and a JSON error",
+				c.method, c.path, resp.StatusCode, resp.Header.Get("Allow"), body, err, c.status, c.allow)
+		}
+	}
+}
+
+// A client that goes away mid-run leaves the run going and the log quiet:
+// nothing is left to follow for it.
+func TestADroppedClientIsNotFollowed(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.runner.hold = make(chan struct{})
+	release := sync.OnceFunc(func() { close(f.runner.hold) })
+	t.Cleanup(release)
+
+	sctx, cancel := context.WithCancel(ctx)
+	req, _ := http.NewRequestWithContext(sctx, "POST", f.srv.URL+"/agents/payouts/runs", strings.NewReader(`{"input":"x"}`))
+	req.Header.Set("X-Test-Tenant", "t1")
+	resp, err := f.srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = bufio.NewReader(resp.Body).ReadString('\n') // the stream has begun
+	cancel()
+	resp.Body.Close()
+
+	time.Sleep(4 * followEvery) // the follower would have looked, and failed, a few times
+	release()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if l := f.list("t1", "payouts"); len(l) == 1 && l[0].Status == run.Completed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run didn't complete without its client")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(2 * followEvery)
+	if strings.Contains(f.logs.String(), "following a run") {
+		t.Fatalf("the log filled after the client went away:\n%s", f.logs.String())
+	}
+}
+
+// followEvery mirrors the server's: how often a stream looks for more of a run.
+const followEvery = 500 * time.Millisecond

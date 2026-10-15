@@ -259,6 +259,10 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-done:
 				return
+			case <-ctx.Done():
+				// The client went away: nothing more to send it. The run
+				// carries on, and the client can resume from its cursor.
+				return
 			case <-tick.C:
 				if err := f.catchUp(ctx); err != nil {
 					s.logError(r, "following a run", err)
@@ -276,6 +280,9 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		} else {
 			end.Status = "" // unknown: the client reads the run
 		}
+	}
+	if ctx.Err() != nil {
+		return // nobody is left to read the rest
 	}
 	if err := f.catchUp(ctx); err != nil { // what was recorded since the last look
 		s.logError(r, "following a run", err)
