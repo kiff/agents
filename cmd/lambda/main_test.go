@@ -56,7 +56,7 @@ func newFunction(t *testing.T) (*function, *scheduler, *memory.Agents) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc,
+	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: memory.NewRuns(),
 		Gateways: []string{"https://gateway.test/mcp"}}
 	return &function{http: s.Handler(), schedules: svc, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, sched, agents
 }
