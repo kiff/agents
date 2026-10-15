@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
@@ -138,9 +139,7 @@ func newRunFixture(t *testing.T) *runFixture {
 // noBackground serves the API with no background dispatcher.
 func (f *runFixture) noBackground() {
 	f.server.Background = nil
-	f.srv.Close()
-	f.srv = httptest.NewServer(f.server.Handler())
-	f.t.Cleanup(f.srv.Close)
+	f.restart()
 }
 
 // sse is one server-sent event.
@@ -599,4 +598,95 @@ func TestNoRunnerNoStart(t *testing.T) {
 	f.putAgent("t1", "payouts")
 	code, body := f.do("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
 	f.want(404, code, body, "starting a run with no Runner")
+}
+
+// keepFor is how long registrytest's agent keeps a session after its last
+// event: its longest kept retention.
+var keepFor = registrytest.Definition("t1", "x").Keep.SessionRetention()
+
+// Every run the server ends itself expires by its agent's keep rules.
+func TestRunsTheServerEndsExpire(t *testing.T) {
+	if keepFor <= 0 {
+		t.Fatal("the test agent keeps everything for good; this test needs a retention")
+	}
+	want := now.Add(keepFor)
+
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.stored(run.Pending)
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel a pending run")
+	if got, _ := f.runs.Get(ctx, "t1", r.ID); !got.Expires.Equal(want) {
+		t.Fatalf("a cancelled pending run expires at %v, want %v", got.Expires, want)
+	}
+
+	f.bgFail = errors.New("throttled")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "background": true})
+	f.want(500, code, body, "a background start that can't be dispatched")
+	for _, got := range f.list("t1", "payouts") {
+		if got.Status == run.Error && !got.Expires.Equal(want) {
+			t.Fatalf("an undispatched run expires at %v, want %v", got.Expires, want)
+		}
+	}
+}
+
+func (f *runFixture) list(tenant, agent string) []run.Run {
+	f.t.Helper()
+	l, err := f.runs.List(ctx, tenant, agent, 100)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return l
+}
+
+// racing is a run store where the run's claimant saves it just before each
+// of the cancel's first `races` writes, as at a checkpoint.
+type racing struct {
+	*memory.Runs
+	races int
+}
+
+func (r *racing) Put(ctx context.Context, prev, next run.Run) error {
+	if r.races > 0 {
+		r.races--
+		cur, err := r.Runs.Get(ctx, prev.Tenant, prev.ID)
+		if err != nil {
+			return err
+		}
+		if _, err := run.Change(ctx, r.Runs, cur, now, func(n *run.Run) error { n.Turns++; return nil }); err != nil {
+			return err
+		}
+	}
+	return r.Runs.Put(ctx, prev, next)
+}
+
+func TestCancelReadsARunSavedMeanwhileAgain(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.stored(run.Running)
+	race := &racing{Runs: f.runs, races: 1}
+	f.server.Runs = race
+	f.restart()
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "a cancel that met a checkpoint")
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if !got.Cancel || got.Turns != 1 {
+		t.Fatalf("got %+v; want Cancel set, and the claimant's save kept", got)
+	}
+
+	// A run that changes under every try is a conflict, in the end.
+	r2 := f.stored(run.Running)
+	race.races = cancelTries
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r2.ID+"/cancel", nil)
+	f.want(409, code, body, "a cancel that always meets a save")
+}
+
+// cancelTries mirrors the server's: how often a cancel reads a run again.
+const cancelTries = 3
+
+// restart serves the API again with the fixture's server as changed.
+func (f *runFixture) restart() {
+	f.srv.Close()
+	f.srv = httptest.NewServer(f.server.Handler())
+	f.t.Cleanup(f.srv.Close)
 }

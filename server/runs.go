@@ -18,8 +18,18 @@ import (
 // MaxInput bounds what a run is asked, in bytes.
 const MaxInput = 32_000
 
-// followEvery is how often a resumed stream looks for more of a run.
+// followEvery is how often a stream looks for more of a run.
 const followEvery = 500 * time.Millisecond
+
+// Run listing limits.
+const (
+	defaultRuns = 20
+	maxRuns     = 100
+)
+
+// cancelTries bounds how often a cancel re-reads a run that changed under it:
+// a running run is saved at every checkpoint, so a cancel can meet one.
+const cancelTries = 3
 
 // Runner starts and executes runs. The server owns HTTP, SSE and who the
 // caller is; the Runner owns how a run is created, claimed, run and stored.
@@ -32,6 +42,12 @@ type Runner interface {
 	// Execute claims the run and runs it to its next stop (answered, a cap,
 	// paused on a hold, cancelled, failed), passing each event to emit, nil
 	// in the background. It returns the run as stored at that stop.
+	//
+	// A cancel can change the run between two of its saves: the server sets
+	// Cancel with a compare-and-set, so the claimant's next save meets
+	// run.ErrConflict. It must re-read the run then, not give up its claim:
+	// if it still holds the claim and Cancel is set, it ends the run
+	// CANCELLED at that checkpoint; if only Cancel changed, it saves again.
 	Execute(ctx context.Context, tenant, id string, emit func(agent.Event)) (run.Run, error)
 }
 
@@ -94,29 +110,55 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 // cancelRun asks a run to stop. A PENDING run is cancelled now; a RUNNING
 // one stops at its next checkpoint. A PAUSED run waits on calls KIFF holds,
 // and those must be withdrawn first: until that is built (#15), it is a
-// conflict.
+// conflict. A run saved meanwhile (a running run's checkpoint) is read again,
+// so the caller doesn't get a conflict it didn't cause.
 func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
-	rn, err := s.agentRun(ctx, c, r)
-	if err != nil {
-		return 0, nil, err
-	}
-	switch rn.Status {
-	case run.Paused:
-		return 0, nil, conflict("a paused run can't be cancelled yet: KIFF still holds its calls")
-	case run.Completed, run.Error, run.Cancelled:
-		return 0, nil, conflict("the run has ended")
-	}
-	next, err := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
-		if n.Status == run.Pending {
-			n.Status = run.Cancelled
+	for try := 1; ; try++ {
+		rn, err := s.agentRun(ctx, c, r)
+		if err != nil {
+			return 0, nil, err
 		}
-		n.Cancel = true
-		return nil
-	})
-	if err != nil {
-		return 0, nil, err
+		switch rn.Status {
+		case run.Paused:
+			return 0, nil, conflict("a paused run can't be cancelled yet: KIFF still holds its calls")
+		case run.Completed, run.Error, run.Cancelled:
+			return 0, nil, conflict("the run has ended")
+		}
+		var expires time.Time
+		if rn.Status == run.Pending {
+			if expires, err = s.endedExpires(ctx, rn); err != nil {
+				return 0, nil, err
+			}
+		}
+		next, err := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
+			if n.Status == run.Pending {
+				n.Status, n.Expires = run.Cancelled, expires
+			}
+			n.Cancel = true
+			return nil
+		})
+		if errors.Is(err, run.ErrConflict) && try < cancelTries {
+			continue
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, viewRun(next), nil
 	}
-	return http.StatusOK, viewRun(next), nil
+}
+
+// endedExpires is when a run the server ends may go: its agent's keep rules,
+// as the Recorder applies them to its session (zero: kept until deleted).
+// Every run the server ends gets it, so none outlives what the rules keep.
+func (s *Server) endedExpires(ctx context.Context, r run.Run) (time.Time, error) {
+	d, err := s.Agents.Get(ctx, r.Tenant, r.Agent)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if keep := d.Keep.SessionRetention(); keep > 0 {
+		return s.now().Add(keep), nil
+	}
+	return time.Time{}, nil
 }
 
 // startBody is what POST /agents/{id}/runs takes.
@@ -135,7 +177,8 @@ type startBody struct {
 //	              it is written, tool calls as they are made. No id: it is for
 //	              showing, and the recorded events carry what is kept. Start
 //	              only, in the foreground
-//	event: end    the run as stored at its stop
+//	event: end    the run as stored at its stop; its status is empty when
+//	              the run couldn't be read back, and the client reads it
 //
 // A client that loses the stream resumes after the last id it saw: the run's
 // recorded events come again from there, none twice.
@@ -186,10 +229,12 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		if err := s.Background(ctx, c.Tenant, rn.ID); err != nil {
 			// Nothing will claim it: end it now rather than leave it to the
 			// sweep, and say so.
+			expires, eerr := s.endedExpires(ctx, rn)
 			if _, cerr := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
-				n.Status, n.Error = run.Error, "it could not be started in the background"
+				n.Status, n.Error, n.Expires = run.Error, "it could not be started in the background", expires
 				return nil
-			}); cerr != nil {
+			}); cerr != nil || eerr != nil {
+				cerr = errors.Join(eerr, cerr)
 				err = errors.Join(err, cerr)
 			}
 			s.fail(w, r, err)
@@ -381,11 +426,11 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 	if _, err := s.Schedules.Store.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
-	limit := defaultSessions
+	limit := defaultRuns
 	if v := r.URL.Query().Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxSessions {
-			return 0, nil, bad("limit is 1 to %d", maxSessions)
+		if err != nil || n < 1 || n > maxRuns {
+			return 0, nil, bad("limit is 1 to %d", maxRuns)
 		}
 		limit = n
 	}
