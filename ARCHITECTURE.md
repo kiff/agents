@@ -7,13 +7,14 @@ doesn't fit is a change to this page first.
 ## In one picture
 
 ```
- tafs app ──► tafs cloud ──► server (cmd/lambda) ──► run loop ──► model (Anthropic first)
+ console ─────────────────┐  (operators: runs, evals, cost)
+ tafs app ──► tafs cloud ─┴─► server (cmd/lambda) ──► run loop ──► model (Anthropic first)
    phone       auth, push      agents, runs,           │  │
    signs                       sessions, memory,       │  └──► tools ──► KIFF gateway ──► the company's tools
    answers                     schedules               │                 (Cards checked at api.kiff.dev)
      │                              ▲                   ▼
      └──► KIFF (holds, answers) ────┘ hold answered   stores: sessions, runs, events,
-                                      → continue      memory, agents, schedules (DynamoDB)
+                                      → continue      memory, agents, schedules, evals (DynamoDB)
 ```
 
 KIFF Cloud decides; kiff/agents runs. Cards, decisions, held calls and the
@@ -31,6 +32,7 @@ did, under keep rules the operator sets, and never decides on KIFF's behalf.
 | **Requirement** | What a paused run waits for. Here, one call KIFF holds for the owner. | A held call on the "Needs you" screen |
 | **Memory** | Notes an agent keeps across sessions, by name; the owner can read and forget each. | What a taf remembers |
 | **Schedule** | When an agent runs by itself: cron, time zone, the input, on or off. Each firing is an ordinary run. | A taf's schedule |
+| **Eval run** | One run of a suite: its cases, each one an ordinary run in an eval session, with the judge, tool-call and scorer results, the score and the cost per item. | How good a taf is, over time |
 
 The tenant is the KIFF account. It is never taken from a request body: the
 server gets it from the verified caller, and every store call is scoped by it.
@@ -85,7 +87,8 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `registry` | Stored agent definitions; port `Agents` | To build |
 | `schedule` | Schedules; port `Scheduler`, EventBridge Scheduler as the adapter | To build |
 | `server` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud | To build |
-| `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3). Reads runs once they exist |
+| `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3). Reads runs once they exist; stores eval runs through a port |
+| `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
 | `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
 | `cmd/lambda` | The server on Lambda | To build |
@@ -108,11 +111,33 @@ verified; the phone never calls it directly.
 | `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |
 | `POST /kiff/alerts` | KIFF's signed hold-answered alert: resolve the requirement, continue the run in the background |
+| `GET /evals`, `GET /evals/{id}` | Eval runs and their cases, each linked to the run it produced |
+| `GET /usage?agent_id=&from=&to=` | Runs, tokens and cost per agent and per day: what a price is set from |
 | `GET /health` | Liveness |
 
 Errors say what to do: 404 for anything outside the caller's tenant, 409 for a
 transition in progress or a run that can't take the action, 429 when the
 tenant's concurrency is used up.
+
+## The console
+
+Where we see what the agents do, as the owner sees it on the phone, and more.
+It is served by the same server at `/console` and reads the same API.
+
+| Page | Shows |
+|---|---|
+| Runs | Every run: status, stop reason, cost, trigger; paused runs first, with what KIFF holds |
+| A run | Its timeline: messages, tool calls and results while kept, KIFF's decisions linked to app.kiff.dev, usage; live while it runs |
+| Evals | Eval runs: cases with their results, score and cost per item over time, each case linked to its run |
+| Sessions and memory | Threads with their runs; an agent's notes |
+| Agents and schedules | Definitions; schedules with their next firing and history; on, off, trigger now |
+| Cost | Per agent, per run and per item over time |
+
+It is for operators (the people building and running tafs), not for a business
+owner: the owner's surface is the phone, where answers are signed. Signing in
+is KIFF's sign-in, limited to operators; the console never uses the phone's
+routes, and never shows what the keep rules dropped. KIFF's own decisions stay
+in app.kiff.dev, linked from here, not copied.
 
 ## What is kept, and for how long
 
@@ -153,8 +178,10 @@ Each step is useful to tafs on its own:
 1. **Runs:** the `run` package, runs in the session store, events carry their
    run, the loop pauses and resumes. Evals read runs.
 2. **The server:** runs, sessions and memory routes; `cmd/lambda`.
-3. **Continue on a hold:** `/kiff/alerts`, requirements resolved from KIFF,
+3. **The console, first pages:** runs, one run's timeline, evals (eval runs are
+   stored from here on).
+4. **Continue on a hold:** `/kiff/alerts`, requirements resolved from KIFF,
    continue in the background.
-4. **The registry:** agents stored, built per request for their tenant.
-5. **Schedules:** EventBridge Scheduler; then triggers.
-6. **tafs switches over:** tafs cloud calls the server; Managed Agents retired.
+5. **The registry:** agents stored, built per request for their tenant.
+6. **Schedules:** EventBridge Scheduler; then triggers.
+7. **tafs switches over:** tafs cloud calls the server; Managed Agents retired.
