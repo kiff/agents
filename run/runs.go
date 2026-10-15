@@ -202,18 +202,40 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 	})
 }
 
+// SaveTries bounds how many times Save writes a run that keeps changing
+// under it while its claim still holds.
+const SaveTries = 5
+
 // Save is Change for the invocation that claimed r: it writes only while it
 // holds the lease. A change it makes after its lease ran out, or after the run
-// moved on without it, writes nothing.
+// moved on without it, writes nothing (ErrLeaseLost).
+//
+// A run that changed since r was read but is still this invocation's (the
+// server set Cancel, or recorded an answer) is read again and change applied
+// to it as stored, so change may run more than once, each time on the run as
+// stored. The run Save returns shows what changed meanwhile: a claimant that
+// finds Cancel set stops at its next checkpoint. A run that still changes
+// after SaveTries writes is ErrConflict.
 func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run) error) (Run, error) {
-	if r.Status != Running || r.Claim == "" || !now.Before(r.Lease) {
-		return r, ErrLeaseLost
+	for try := 1; ; try++ {
+		if r.Status != Running || r.Claim == "" || !now.Before(r.Lease) {
+			return r, ErrLeaseLost
+		}
+		next, err := Change(ctx, runs, r, now, change)
+		if !errors.Is(err, ErrConflict) || try == SaveTries {
+			return next, err
+		}
+		stored, gerr := runs.Get(ctx, r.Tenant, r.ID)
+		switch {
+		case errors.Is(gerr, ErrNotFound):
+			return r, fmt.Errorf("%w: the run is gone", ErrLeaseLost)
+		case gerr != nil:
+			return r, gerr
+		case stored.Claim != r.Claim:
+			return r, fmt.Errorf("%w: %w", ErrLeaseLost, err)
+		}
+		r = stored
 	}
-	next, err := Change(ctx, runs, r, now, change)
-	if errors.Is(err, ErrConflict) {
-		return r, fmt.Errorf("%w: %w", ErrLeaseLost, err)
-	}
-	return next, err
 }
 
 // Sweeper marks ended the runs nobody is left to end: a RUNNING run whose
