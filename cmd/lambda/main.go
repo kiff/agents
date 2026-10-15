@@ -9,6 +9,23 @@
 //	SCHEDULE_GROUP    EventBridge Scheduler's schedule group
 //	SCHEDULE_TARGET   the function each firing invokes: this one
 //	SCHEDULE_ROLE     the role EventBridge Scheduler invokes it with
+//
+// Who may invoke the function is the only guard on who the caller is: the
+// function reads the signer Lambda verified from the event, and a direct
+// invoke can send any event, a made-up function URL request naming tafs
+// cloud's role and any tenant included. The code can't tell the two apart, so
+// the function's resource policy and IAM must hold this:
+//
+//   - Only SCHEDULE_ROLE may call lambda:InvokeFunction directly.
+//   - tafs cloud's role gets lambda:InvokeFunctionUrl, plus
+//     lambda:InvokeFunction only under the lambda:InvokedViaFunctionUrl
+//     condition, if the account's function URL authorization needs both.
+//   - iam:PassRole on SCHEDULE_ROLE is limited to the operators who deploy,
+//     so nobody else can make a schedule that invokes the function with an
+//     event of their own.
+//
+// AGENTS_CALLERS ARNs are in the aws partition (arn:aws:sts::), as in every
+// region tafs uses.
 package main
 
 import (
