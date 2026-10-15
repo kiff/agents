@@ -75,7 +75,7 @@ func newFixture(t *testing.T) *fixture {
 			}
 			return server.Caller{}, errors.New("no tenant header")
 		},
-		Agents: f.agents, Sessions: f.store, Notes: f.store, Schedules: f.schedSvc,
+		Agents: f.agents, Sessions: f.store, Notes: f.store, Schedules: f.schedSvc, Runs: memory.NewRuns(),
 		Gateways: []string{"https://gateway.test/mcp"},
 		Now:      func() time.Time { return now },
 		Log:      slog.New(slog.NewTextHandler(f.logs, nil)),

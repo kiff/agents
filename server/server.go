@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/registry"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/session"
 )
@@ -50,6 +51,13 @@ type Server struct {
 	Sessions  session.Store
 	Notes     session.Notes
 	Schedules *schedule.Service
+	Runs      run.Runs
+	// Runner starts and executes runs. Without one, runs can be read,
+	// cancelled and followed, but not started.
+	Runner Runner
+	// Background has the run executed by another invocation, and returns
+	// once that invocation is on its way.
+	Background func(ctx context.Context, tenant, id string) error
 	// Gateways are the gateways a stored agent may name, as in
 	// registry.Builder.
 	Gateways []string
@@ -64,6 +72,10 @@ type Server struct {
 // Handler returns the API's routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// A route the API doesn't have answers as every other error does.
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	})
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -93,6 +105,14 @@ func (s *Server) Handler() http.Handler {
 	route("POST /schedules/{id}/disable", func(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 		return s.switchSchedule(ctx, c, r, false)
 	})
+	route("GET /schedules/{id}/runs", s.scheduleRuns)
+
+	if s.Runner != nil { // until runs can be executed, there is no starting one
+		mux.HandleFunc("POST /agents/{id}/runs", s.startRun)
+	}
+	route("GET /agents/{id}/runs/{run_id}", s.getRun)
+	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
+	mux.HandleFunc("POST /agents/{id}/runs/{run_id}/resume", s.resumeRun)
 	return mux
 }
 
@@ -149,8 +169,11 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrUnauthorized):
 		status, msg = http.StatusUnauthorized, "the caller is not verified"
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound):
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
+		errors.Is(err, run.ErrNotFound):
 		status, msg = http.StatusNotFound, "not found"
+	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):
+		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
 	case errors.As(err, &tooBig):
 		status, msg = http.StatusRequestEntityTooLarge, "the body is too large"
 	case errors.As(err, &cf):
@@ -250,14 +273,17 @@ func (s *Server) putAgent(ctx context.Context, c Caller, r *http.Request) (int, 
 }
 
 // deleteAgent removes an agent and everything kept for it: its schedules,
-// then its sessions and notes, then its definition, last, so a retry after a
-// failure still finds the agent and carries on.
+// then its runs, then its sessions and notes, then its definition, last, so a
+// retry after a failure still finds the agent and carries on.
 func (s *Server) deleteAgent(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
 	if err := s.Schedules.DeleteAgent(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	if err := s.Runs.DeleteAgent(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
 	if err := session.Remove(ctx, s.Sessions, s.Notes, c.Tenant, id); err != nil {
