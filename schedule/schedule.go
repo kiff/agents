@@ -166,7 +166,9 @@ func (f Firing) Key() string {
 type Service struct {
 	Store     Schedules
 	Scheduler Scheduler
-	// Live reports whether the tenant has the agent.
+	// Live reports whether the tenant has the agent. Fire deletes the
+	// schedules of an agent Live says is gone, so Live is a consistent read
+	// of "the agent exists": never "is enabled", never a stale read.
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
 	// Start starts a background run for the firing, once per Key.
 	Start func(ctx context.Context, f Firing) error
@@ -228,9 +230,9 @@ func (sv *Service) DeleteAgent(ctx context.Context, tenant, agent string) error 
 //   - A firing the stored schedule doesn't name (it is off, or its cron
 //     doesn't fire then) sets the stored schedule again.
 //
-// Starting nothing is not an error, so the Scheduler doesn't retry it; a
-// failure to put the Scheduler back in line is, so the next delivery tries
-// again.
+// Starting nothing is not an error. A failure to put the Scheduler back in
+// line is, so whatever retries the invocation tries again; failing that, the
+// next mismatched firing does.
 func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) error {
 	s, err := sv.Store.Get(ctx, tenant, id)
 	if errors.Is(err, ErrNotFound) {
