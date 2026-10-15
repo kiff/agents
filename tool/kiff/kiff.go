@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/tool"
@@ -124,10 +125,8 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		IsError bool `json:"isError"`
-		Meta    map[string]struct {
-			State string `json:"state"`
-		} `json:"_meta"`
+		IsError bool            `json:"isError"`
+		Meta    map[string]meta `json:"_meta"`
 	}
 	if err := t.c.call(ctx, "tools/call", map[string]any{"name": t.spec.Name, "arguments": input}, &res); err != nil {
 		return tool.Result{}, err
@@ -138,7 +137,27 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			text = append(text, c.Text)
 		}
 	}
-	return tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: res.Meta["dev.kiff/call"].State}, nil
+	m := res.Meta[MetaKey]
+	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
+	if m.State == tool.StateHeld {
+		out.Hold = &tool.Hold{Operation: m.OperationID, Exception: m.ExceptionID}
+		if m.HoldExpiresAt != nil {
+			out.Hold.Expires = m.HoldExpiresAt.UTC()
+		}
+	}
+	return out, nil
+}
+
+// MetaKey is the result _meta key where the gateway says what happened to a
+// call it wrote the result of.
+const MetaKey = "dev.kiff/call"
+
+// meta is what this client reads at MetaKey.
+type meta struct {
+	State         string     `json:"state"`
+	OperationID   string     `json:"operation_id"`
+	ExceptionID   string     `json:"exception_id"`
+	HoldExpiresAt *time.Time `json:"hold_expires_at"`
 }
 
 // init opens the MCP session once.
