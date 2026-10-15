@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func serve(t *testing.T, h http.Handler, e events.LambdaFunctionURLRequest) *eve
 	}
 	got := make(chan result, 1)
 	go func() {
-		out, err := lambdaurl.Serve(ctx, h, e)
+		out, err := lambdaurl.Serve(ctx, h, e, nil)
 		got <- result{out, err}
 	}()
 	select {
@@ -82,7 +83,7 @@ func TestServeReturnsTheResponse(t *testing.T) {
 		w.Header().Set("X-Late", "too late") // after the header is sent: not sent
 		_, _ = w.Write([]byte(`{"path":"` + r.URL.Path + `"}`))
 	})
-	out, err := lambdaurl.Serve(ctx, h, event("POST", "/schedules", "", nil, ""))
+	out, err := lambdaurl.Serve(ctx, h, event("POST", "/schedules", "", nil, ""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +107,7 @@ func TestServeReturnsTheResponse(t *testing.T) {
 
 	bad := event("GET", "/", "", nil, "")
 	bad.Body, bad.IsBase64Encoded = "%%%", true
-	out, err = lambdaurl.Serve(ctx, h, bad)
+	out, err = lambdaurl.Serve(ctx, h, bad, nil)
 	if err != nil || out.StatusCode != 400 {
 		t.Fatalf("an unreadable request: %+v, %v", out, err)
 	}
@@ -123,7 +124,7 @@ func TestServeStreams(t *testing.T) {
 		<-more // the handler is still running while the client reads
 		_, _ = w.Write([]byte("event: end\n\n"))
 	})
-	out, err := lambdaurl.Serve(ctx, h, event("POST", "/agents/a/runs", "", nil, ""))
+	out, err := lambdaurl.Serve(ctx, h, event("POST", "/agents/a/runs", "", nil, ""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestServeEndsTheHandlerWhenClosed(t *testing.T) {
 			}
 		}
 	})
-	out, err := lambdaurl.Serve(ctx, h, event("GET", "/", "", nil, ""))
+	out, err := lambdaurl.Serve(ctx, h, event("GET", "/", "", nil, ""), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,9 +178,50 @@ func TestServeEndsTheHandlerWhenClosed(t *testing.T) {
 	}
 }
 
+// Flush commits the status and header, as on any connection: a handler that
+// sets its stream's header and flushes before its first event has a response
+// right away, and changes after the flush aren't sent.
+func TestServeFlushCommits(t *testing.T) {
+	more := make(chan struct{})
+	defer close(more)
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Before", "before")
+		w.(http.Flusher).Flush()
+		w.Header().Set("X-Before", "after")
+		w.WriteHeader(http.StatusTeapot)
+		<-more // no event yet
+	})
+	out := serve(t, h, event("GET", "/", "", nil, ""))
+	if out.StatusCode != 200 || out.Headers["X-Before"] != "before" || out.Headers["Content-Type"] != "text/event-stream" {
+		t.Fatalf("got %d %v; want 200 and the header as flushed", out.StatusCode, out.Headers)
+	}
+}
+
+// What a panic says stays in the log: the runtime sends a body's error to the
+// client.
+func TestServeKeepsAPanicPrivate(t *testing.T) {
+	var logs bytes.Buffer
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("part"))
+		panic("dial tcp 10.0.0.7: secret detail")
+	})
+	out, err := lambdaurl.Serve(ctx, h, event("GET", "/x", "", nil, ""), slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(out.Body)
+	if err == nil || strings.Contains(err.Error(), "secret") || err.Error() != "the response failed" {
+		t.Fatalf("the body's error is %v; want only \"the response failed\"", err)
+	}
+	if !strings.Contains(logs.String(), "secret detail") || !strings.Contains(logs.String(), "/x") {
+		t.Fatalf("the panic wasn't logged: %q", logs.String())
+	}
+}
+
 func TestServeAHandlerThatPanics(t *testing.T) {
 	early := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
-	out, err := lambdaurl.Serve(ctx, early, event("GET", "/", "", nil, ""))
+	out, err := lambdaurl.Serve(ctx, early, event("GET", "/", "", nil, ""), nil)
 	if err != nil || out.StatusCode != 500 {
 		t.Fatalf("a panic before any header: %d, %v", out.StatusCode, err)
 	}

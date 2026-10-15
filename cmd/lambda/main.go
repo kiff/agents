@@ -161,7 +161,7 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return nil, err
 		}
-		return lambdaurl.Serve(ctx, f.http, e)
+		return lambdaurl.Serve(ctx, f.http, e, f.log)
 	case shape.Schedule != "" && shape.Due != "":
 		tenant, id, due, err := eventbridge.ParseEvent(raw)
 		if err != nil {

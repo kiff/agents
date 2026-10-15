@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -73,9 +74,13 @@ func Request(ctx context.Context, e events.LambdaFunctionURLRequest) (*http.Requ
 //
 // h runs in its own goroutine, which Serve hands over to the returned
 // response: it ends when h returns, or when the runtime closes the response
-// (h's next write then fails). Serve returns once h has written its header,
-// or has returned without one.
-func Serve(ctx context.Context, h http.Handler, e events.LambdaFunctionURLRequest) (*events.LambdaFunctionURLStreamingResponse, error) {
+// (h's next write then fails). Serve returns once h has written or flushed
+// its header, or has returned without one.
+//
+// A panic in h is logged to log (nil logs nothing) and ends the body with
+// errFailed: the runtime sends a body's error to the client as the stream's
+// error, so what the panic said stays here.
+func Serve(ctx context.Context, h http.Handler, e events.LambdaFunctionURLRequest, log *slog.Logger) (*events.LambdaFunctionURLStreamingResponse, error) {
 	r, err := Request(ctx, e)
 	if err != nil {
 		return &events.LambdaFunctionURLStreamingResponse{StatusCode: http.StatusBadRequest,
@@ -87,8 +92,11 @@ func Serve(ctx context.Context, h http.Handler, e events.LambdaFunctionURLReques
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
+				if log != nil {
+					log.ErrorContext(ctx, "handler panicked", "path", r.URL.Path, "panic", fmt.Sprint(p))
+				}
 				w.WriteHeader(http.StatusInternalServerError) // if nothing was sent yet
-				_ = pw.CloseWithError(fmt.Errorf("lambdaurl: the handler panicked: %v", p))
+				_ = pw.CloseWithError(errFailed)
 				return
 			}
 			w.WriteHeader(http.StatusOK) // a handler that wrote nothing
@@ -107,6 +115,10 @@ func Serve(ctx context.Context, h http.Handler, e events.LambdaFunctionURLReques
 	}
 	return out, nil
 }
+
+// errFailed ends a body whose handler failed. It is all the client learns:
+// the runtime forwards a body's error to it.
+var errFailed = errors.New("the response failed")
 
 // streamWriter is an http.ResponseWriter whose body goes down a pipe. Its
 // status and header are fixed when first written, as on any connection.
@@ -134,8 +146,9 @@ func (w *streamWriter) Write(b []byte) (int, error) {
 	return w.pipe.Write(b)
 }
 
-// Flush does nothing: every Write already goes down the pipe as it is made.
-func (w *streamWriter) Flush() {}
+// Flush commits the status and header, as on any connection; the body needs
+// nothing more, since every Write already goes down the pipe as it is made.
+func (w *streamWriter) Flush() { w.WriteHeader(http.StatusOK) }
 
 // Auth returns a server's Auth that accepts a request signed by one of
 // roles, for the tenant in its TenantHeader. Each role is an assumed-role ARN
