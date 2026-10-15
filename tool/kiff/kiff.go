@@ -147,12 +147,27 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
 	if m.State == tool.StateHeld {
-		out.Hold = &tool.Hold{Operation: m.OperationID, Exception: m.ExceptionID}
-		if m.HoldExpiresAt != nil {
-			out.Hold.Expires = m.HoldExpiresAt.UTC()
+		// Only state says whether the call is held. The hold's fields are
+		// read best effort: one KIFF writes in another shape is left empty,
+		// and an empty expiry fails closed, so the run still pauses.
+		out.Hold = &tool.Hold{Operation: str(m.OperationID), Exception: str(m.ExceptionID)}
+		var at string
+		if json.Unmarshal(m.HoldExpiresAt, &at) == nil {
+			if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
+				out.Hold.Expires = t.UTC()
+			}
 		}
 	}
 	return out, nil
+}
+
+// str is raw as a JSON string, or "" when it isn't one.
+func str(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
 }
 
 // MetaKey is the result _meta key where the gateway says what happened to a
@@ -161,10 +176,10 @@ const MetaKey = "dev.kiff/call"
 
 // meta is what this client reads at MetaKey.
 type meta struct {
-	State         string     `json:"state"`
-	OperationID   string     `json:"operation_id"`
-	ExceptionID   string     `json:"exception_id"`
-	HoldExpiresAt *time.Time `json:"hold_expires_at"`
+	State         string          `json:"state"`
+	OperationID   json.RawMessage `json:"operation_id"`
+	ExceptionID   json.RawMessage `json:"exception_id"`
+	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`
 }
 
 // init opens the MCP session once.
