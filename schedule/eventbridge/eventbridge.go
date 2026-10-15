@@ -32,9 +32,11 @@ type API interface {
 	DeleteSchedule(context.Context, *sch.DeleteScheduleInput, ...func(*sch.Options)) (*sch.DeleteScheduleOutput, error)
 }
 
-// Retries: a firing whose invocation fails is tried again for up to an hour.
-// Service.Fire is safe to repeat (Firing.Key), so a retry never starts a
-// second run.
+// Retries: EventBridge tries again, for up to an hour, to deliver a firing it
+// couldn't hand to the target. That covers delivery only: an error the
+// target's Service.Fire returns is retried, or not, by the target's own
+// asynchronous invocation settings, set with the function. Service.Fire is
+// safe to repeat (Firing.Key), so no retry starts a second run.
 const (
 	maxAttempts = 3
 	maxAge      = time.Hour
