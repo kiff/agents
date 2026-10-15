@@ -22,6 +22,8 @@ import (
 //	run   pk=R|tenant|id     sk=M          the Run as JSON, but its paused turn
 //	turn  pk=R|tenant|id     sk=T|n        part n of the paused turn, as JSON
 //	list  pk=L|tenant|agent  sk=created|id lists an agent's runs, newest last
+//	from  pk=O|tenant|trigger|source  sk=created|id  lists the runs one source
+//	                                       started (a run with a Source only)
 //	due   pk=W               sk=due|key    a run the sweep must look at, by when
 //
 // The paused turn is cut into parts because what tools returned can be bigger
@@ -63,8 +65,11 @@ const duePK = "W"
 
 func runPK(tenant, id string) string        { return key("R", tenant, id) }
 func runListPK(tenant, agent string) string { return key("L", tenant, agent) }
-func turnSK(n int) string                   { return fmt.Sprintf("T|%04d", n) }
-func runListSK(r run.Run) string            { return fmt.Sprintf("%020d|%s", r.Created.UnixNano(), r.ID) }
+func sourcePK(tenant string, trigger run.Trigger, source string) string {
+	return key("O", tenant, string(trigger), source)
+}
+func turnSK(n int) string        { return fmt.Sprintf("T|%04d", n) }
+func runListSK(r run.Run) string { return fmt.Sprintf("%020d|%s", r.Created.UnixNano(), r.ID) }
 func dueSK(r run.Run) string {
 	return fmt.Sprintf("%020d|%s", r.Due().UnixNano(), key("", r.Tenant, r.ID))
 }
@@ -143,10 +148,24 @@ func (rs *Runs) partItem(r run.Run, i int, part []byte, t types.AttributeValue) 
 	return withTTL(item, t)
 }
 
-func (rs *Runs) listItem(r run.Run, t types.AttributeValue) map[string]types.AttributeValue {
-	item := pkey(runListPK(r.Tenant, r.Agent), runListSK(r))
-	item["id"] = s(r.ID)
-	return withTTL(item, t)
+// lists returns the keys of the lists r is in: its agent's, and its
+// source's if it has one.
+func lists(r run.Run) []map[string]types.AttributeValue {
+	out := []map[string]types.AttributeValue{pkey(runListPK(r.Tenant, r.Agent), runListSK(r))}
+	if r.Source != "" {
+		out = append(out, pkey(sourcePK(r.Tenant, r.Trigger, r.Source), runListSK(r)))
+	}
+	return out
+}
+
+// listItems puts r in its lists.
+func (rs *Runs) listItems(r run.Run, t types.AttributeValue) []types.TransactWriteItem {
+	var out []types.TransactWriteItem
+	for _, item := range lists(r) {
+		item["id"] = s(r.ID)
+		out = append(out, rs.put(withTTL(item, t), ""))
+	}
+	return out
 }
 
 func (rs *Runs) dueItem(r run.Run) map[string]types.AttributeValue {
@@ -160,10 +179,7 @@ func (rs *Runs) Create(ctx context.Context, r run.Run) error {
 	if err != nil {
 		return err
 	}
-	items := []types.TransactWriteItem{
-		rs.put(rs.runItem(r, st), "attribute_not_exists(pk)"),
-		rs.put(rs.listItem(r, st.ttl), ""),
-	}
+	items := append([]types.TransactWriteItem{rs.put(rs.runItem(r, st), "attribute_not_exists(pk)")}, rs.listItems(r, st.ttl)...)
 	for i, part := range st.parts {
 		items = append(items, rs.put(rs.partItem(r, i, part, st.ttl), ""))
 	}
@@ -265,7 +281,10 @@ func (rs *Runs) Get(ctx context.Context, tenant, id string) (run.Run, error) {
 }
 
 func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
-	if next.Version != prev.Version+1 || next.Tenant != prev.Tenant || next.ID != prev.ID {
+	if !run.Same(prev, next) {
+		return run.ErrFixed
+	}
+	if next.Version != prev.Version+1 {
 		return run.ErrConflict
 	}
 	was, err := storedOf(prev)
@@ -296,7 +315,7 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 		}
 	}
 	if !sameTTL(was.ttl, now.ttl) {
-		items = append(items, rs.put(rs.listItem(next, now.ttl), ""))
+		items = append(items, rs.listItems(next, now.ttl)...)
 	}
 	if !prev.Due().Equal(next.Due()) {
 		if !prev.Due().IsZero() {
@@ -380,10 +399,23 @@ func (rs *Runs) query(ctx context.Context, in *ddb.QueryInput, each func([]map[s
 
 // List leaves out the runs' paused turns: Get has them.
 func (rs *Runs) List(ctx context.Context, tenant, agent string, limit int) ([]run.Run, error) {
+	return rs.list(ctx, tenant, runListPK(tenant, agent), limit)
+}
+
+// ListSource leaves out the runs' paused turns: Get has them.
+func (rs *Runs) ListSource(ctx context.Context, tenant string, trigger run.Trigger, source string, limit int) ([]run.Run, error) {
+	if source == "" {
+		return nil, nil
+	}
+	return rs.list(ctx, tenant, sourcePK(tenant, trigger, source), limit)
+}
+
+// list reads the tenant's runs in a list partition, newest first.
+func (rs *Runs) list(ctx context.Context, tenant, pk string, limit int) ([]run.Run, error) {
 	var out []run.Run
 	in := &ddb.QueryInput{
 		KeyConditionExpression:    aws.String("pk = :pk"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(runListPK(tenant, agent))},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(pk)},
 		ScanIndexForward:          aws.Bool(false),
 	}
 	if limit > 0 {
@@ -485,7 +517,9 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 			ConditionExpression:       aws.String("version = :version"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{":version": n(r.Version)},
 		}},
-		rs.del(pkey(runListPK(r.Tenant, r.Agent), runListSK(r))),
+	}
+	for _, k := range lists(r) {
+		items = append(items, rs.del(k))
 	}
 	for i := range st.parts {
 		items = append(items, rs.del(pkey(runPK(r.Tenant, r.ID), turnSK(i))))

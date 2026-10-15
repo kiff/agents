@@ -51,12 +51,13 @@ func TestRunItems(t *testing.T) {
 	name := table(t, db)
 	at := now()
 	rs := dynamodb.NewRunsAt(db, name, func() time.Time { return at })
-	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	r := run.New("t1", "refunds", "s1", run.BySchedule, "go", at)
+	r.Source = "sch1"
 	if err := rs.Create(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if by := scan(t, db, name); len(by["W"]) != 1 || len(by["L"]) != 1 || len(by["RM"]) != 1 {
-		t.Fatalf("a pending run: %d due, %d list, %d run items", len(by["W"]), len(by["L"]), len(by["RM"]))
+	if by := scan(t, db, name); len(by["W"]) != 1 || len(by["L"]) != 1 || len(by["O"]) != 1 || len(by["RM"]) != 1 {
+		t.Fatalf("a pending run: %d due, %d list, %d source list, %d run items", len(by["W"]), len(by["L"]), len(by["O"]), len(by["RM"]))
 	}
 	r, err := run.Claim(ctx, rs, "t1", r.ID, "i1", at.Add(15*time.Minute), at)
 	if err != nil {
@@ -88,7 +89,7 @@ func TestRunItems(t *testing.T) {
 		t.Fatalf("a completed run: %d parts, %d due items left", len(by["RT"]), len(by["W"]))
 	}
 	want := itoa(expires.Unix())
-	for _, kind := range []string{"RM", "L"} {
+	for _, kind := range []string{"RM", "L", "O"} {
 		for _, item := range by[kind] {
 			if got, ok := item["ttl"].(*types.AttributeValueMemberN); !ok || got.Value != want {
 				t.Fatalf("%s item: ttl %v, want %s", kind, item["ttl"], want)
@@ -97,16 +98,16 @@ func TestRunItems(t *testing.T) {
 	}
 
 	// Removing the agent removes every item of a paused run, its turn too.
-	paused := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
-	paused.Status, paused.Paused = run.Paused, turn
+	paused := run.New("t1", "refunds", "s1", run.BySchedule, "go", at)
+	paused.Source, paused.Status, paused.Paused = "sch1", run.Paused, turn
 	if err := rs.Create(ctx, paused); err != nil {
 		t.Fatal(err)
 	}
 	if err := rs.DeleteAgent(ctx, "t1", "refunds"); err != nil {
 		t.Fatal(err)
 	}
-	if by := scan(t, db, name); len(by["RM"])+len(by["RT"])+len(by["L"])+len(by["W"]) != 0 {
-		t.Fatalf("left after removing the agent: %d run, %d part, %d list, %d due items", len(by["RM"]), len(by["RT"]), len(by["L"]), len(by["W"]))
+	if by := scan(t, db, name); len(by["RM"])+len(by["RT"])+len(by["L"])+len(by["O"])+len(by["W"]) != 0 {
+		t.Fatalf("left after removing the agent: %d run, %d part, %d list, %d source list, %d due items", len(by["RM"]), len(by["RT"]), len(by["L"]), len(by["O"]), len(by["W"]))
 	}
 
 	huge := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
