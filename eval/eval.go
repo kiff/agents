@@ -176,6 +176,22 @@ func (r Run) Calls() ([]ToolCallBody, error) {
 	return calls, nil
 }
 
+// Results returns the run's tool results, by the id of the call they answer.
+func (r Run) Results() (map[string]ToolResultBody, error) {
+	results := map[string]ToolResultBody{}
+	for _, e := range r.Events {
+		if e.Kind != session.ToolResult {
+			continue
+		}
+		var b ToolResultBody
+		if err := json.Unmarshal(e.Body, &b); err != nil {
+			return nil, fmt.Errorf("eval: event %d: %w", e.Seq, err)
+		}
+		results[b.CallID] = b
+	}
+	return results, nil
+}
+
 // Report returns the agent's report at the end of the run, or "" if it made
 // none.
 func (r Run) Report() (string, error) {
