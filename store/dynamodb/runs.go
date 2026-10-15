@@ -139,7 +139,15 @@ func (rs *Runs) runItem(r run.Run, st stored) map[string]types.AttributeValue {
 	item["run"] = &types.AttributeValueMemberB{Value: st.head}
 	item["version"] = n(r.Version)
 	item["parts"] = n(int64(len(st.parts)))
+	item["who"] = s(who(r))
 	return withTTL(item, st.ttl)
+}
+
+// who is what a run is, past its key (tenant and ID): the rest of what
+// run.Same compares. Put's condition checks it against the stored run, so a
+// prev that wasn't read from the store can't move a run between lists.
+func who(r run.Run) string {
+	return key("", r.Agent, r.Session, string(r.Trigger), r.Source, fmt.Sprint(r.Created.UnixNano()))
 }
 
 func (rs *Runs) partItem(r run.Run, i int, part []byte, t types.AttributeValue) map[string]types.AttributeValue {
@@ -298,8 +306,10 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 	runItem := rs.runItem(next, now)
 	cond := &types.Put{
 		TableName: &rs.table, Item: runItem,
-		ConditionExpression:       aws.String("version = :version AND parts = :parts"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":version": n(prev.Version), ":parts": n(int64(len(was.parts)))},
+		ConditionExpression: aws.String("version = :version AND parts = :parts AND who = :who"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":version": n(prev.Version), ":parts": n(int64(len(was.parts))), ":who": s(who(prev)),
+		},
 	}
 	items := []types.TransactWriteItem{{Put: cond}}
 	rewrite := !sameTTL(was.ttl, now.ttl) || len(was.parts) != len(now.parts)
@@ -328,8 +338,12 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
 	if errors.As(err, &cancelled) {
-		if _, gerr := rs.Get(ctx, prev.Tenant, prev.ID); errors.Is(gerr, run.ErrNotFound) {
+		stored, gerr := rs.Get(ctx, prev.Tenant, prev.ID)
+		switch {
+		case errors.Is(gerr, run.ErrNotFound):
 			return run.ErrNotFound
+		case gerr == nil && !run.Same(stored, next):
+			return run.ErrFixed
 		}
 		return run.ErrConflict
 	}
