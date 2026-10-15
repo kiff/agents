@@ -125,8 +125,10 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		IsError bool            `json:"isError"`
-		Meta    map[string]meta `json:"_meta"`
+		IsError bool `json:"isError"`
+		// Meta is kept opaque: the gateway passes other namespaces through
+		// from the tool, and only MetaKey is KIFF's to read.
+		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := t.c.call(ctx, "tools/call", map[string]any{"name": t.spec.Name, "arguments": input}, &res); err != nil {
 		return tool.Result{}, err
@@ -137,7 +139,12 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			text = append(text, c.Text)
 		}
 	}
-	m := res.Meta[MetaKey]
+	var m meta
+	if raw, ok := res.Meta[MetaKey]; ok {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return tool.Result{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
+		}
+	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
 	if m.State == tool.StateHeld {
 		out.Hold = &tool.Hold{Operation: m.OperationID, Exception: m.ExceptionID}

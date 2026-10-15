@@ -68,12 +68,17 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			_ = json.Unmarshal(msg.Params, &p)
 			if p.Name == "stripe_refund" {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held: the owner answers on their phone."}},
-					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
-						"state": "held", "invocation": "tc-01", "operation_id": "op-refund-42", "sent": "no",
-						"exception_id": "exc_123", "review_url": "https://app.kiff.dev/review/exc_123",
-						"hold_expires_at": "2026-10-16T09:10:00Z", "retry": "same_call", "retry_after_s": 30}}}
+					"isError": true, "_meta": map[string]any{
+						// A tool's own namespace, passed through by the gateway, with
+						// a field of the same name and another type.
+						"example.com/audit": map[string]any{"hold_expires_at": 1720000000},
+						"dev.kiff/call": map[string]any{
+							"state": "held", "invocation": "tc-01", "operation_id": "op-refund-42", "sent": "no",
+							"exception_id": "exc_123", "review_url": "https://app.kiff.dev/review/exc_123",
+							"hold_expires_at": "2026-10-16T09:10:00Z", "retry": "same_call", "retry_after_s": 30}}}
 			} else {
-				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"id":"ch_1"}`}}}
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"id":"ch_1"}`}},
+					"_meta": map[string]any{"example.com/audit": map[string]any{"hold_expires_at": 1720000000}}}
 			}
 		default:
 			result = nil
