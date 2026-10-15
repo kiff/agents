@@ -166,7 +166,9 @@ func (f Firing) Key() string {
 type Service struct {
 	Store     Schedules
 	Scheduler Scheduler
-	// Live reports whether the tenant has the agent.
+	// Live reports whether the tenant has the agent. Fire deletes the
+	// schedules of an agent Live says is gone, so Live is a consistent read
+	// of "the agent exists": never "is enabled", never a stale read.
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
 	// Start starts a background run for the firing, once per Key.
 	Start func(ctx context.Context, f Firing) error
