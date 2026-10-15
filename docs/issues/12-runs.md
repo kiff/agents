@@ -194,8 +194,8 @@ compares them with `main` on every PR.
   carry KIFF's IDs and the hold's expiry. Both are
   [#15](15-continue-on-hold.md). Until then a paused run waits, visibly, and
   never continues.
-- **The sweep on a schedule** is wired in `cmd/lambda`
-  ([#13](13-server.md)).
+- **The sweep on a schedule** still needs wiring in `cmd/lambda`
+  ([#13](13-server.md)): nothing runs it yet.
 
 ## Known limits, accepted
 

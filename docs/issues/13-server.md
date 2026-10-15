@@ -29,10 +29,26 @@ only tafs cloud may call it.
 | `GET /sessions?agent_id=&limit=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their events |
 | `POST /schedules`, `GET /schedules?agent_id=`, `GET`/`PUT`/`DELETE /schedules/{id}`, `POST /schedules/{id}/enable`, `/disable` | Schedules, each with its `next` firing in UTC |
 | `GET /schedules/{id}/runs` | The runs one schedule started, newest first |
-| `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams SSE: `run`, each agent event by its kind, then `end` with the run as stored. With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
+| `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams the run as SSE (below). With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
 | `GET /agents/{id}/runs/{run_id}` | The run: status, stop, output, error, cost, turns, requirements. Never its paused turn, claim, lease or version |
 | `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED is 409 until [#15](15-continue-on-hold.md) can withdraw its held calls |
-| `POST /agents/{id}/runs/{run_id}/resume?after=N` | Replays the events after index N (SSE `id:` is the event's `Seq`), then follows the run until it's final or paused |
+| `POST /agents/{id}/runs/{run_id}/resume?after=N` | Replays the run's recorded events after `Seq` N, then follows the run until it's final or paused, then `end` (below) |
+
+### The stream
+
+Start and resume share one stream. The SSE event name says what the data is;
+it is not the kind of the agent event inside it.
+
+| SSE event | `id:` | Data | Sent |
+|---|---|---|---|
+| `run` | none | The run as stored | Once, first; start only |
+| `delta` | none | An `agent.Event`: text as it's written, tool calls as they're made. For showing only; what's kept is in the recorded events | Start in the foreground only |
+| `event` | the event's `Seq` | One recorded session event of the run | As it's recorded; resume replays them |
+| `end` | none | The run as stored at its stop. Its status is empty when the run couldn't be read back, and the client reads it | Once, last |
+
+A client that loses the stream calls `resume?after=` with the last `id` it
+saw: the recorded events come again from there, none twice. `delta` events
+are never replayed.
 
 ### The caller and the tenant
 
@@ -111,7 +127,7 @@ function is the only guard on who the caller is:
 | Only a configured role's tenant header is trusted, and no role entry can match others | `TestAuthTrustsTheTenantOnlyFromACallerRole`, `TestAuthRefusesARoleThatCouldMatchOthers` |
 | Internal errors and private causes stay inside | `TestInternalErrorsStayInside`, `TestServeKeepsAPanicPrivate` |
 | Removing an agent removes what's kept for it, runs included | `TestDeleteAgentRemovesWhatIsKeptForIt`, `TestDeleteAgentDeletesItsRuns` |
-| A run streams, and resumes from the last cursor | `TestStartStreamsTheRun`, `TestStartThenResumeFromTheLastCursor`, `TestResumeReplaysThenFollows` |
+| A run streams `run`, `delta`, `event` (with its `Seq` as `id`) and `end`, and resumes from the last cursor | `TestStartStreamsTheRun`, `TestStartThenResumeFromTheLastCursor`, `TestResumeReplaysThenFollows` |
 | A run in another agent's session is refused | `TestStartRefusesAnotherAgentsSession`, `TestRunnerContractRefusesAnotherAgentsSession` |
 | A background run that can't be dispatched is ERROR at once | `TestStartThatCantGoToTheBackground` |
 | A cancel that races a save reads the run again | `TestCancelReadsARunSavedMeanwhileAgain` |

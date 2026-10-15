@@ -22,7 +22,7 @@ definition.
 
 | Field | What |
 |---|---|
-| `Instructions` | The system prompt, KIFF's skill included (at most 200 KB) |
+| `Instructions` | The system prompt, KIFF's skill included |
 | `Model`, `Price`, `MaxTokens` | The provider's model id and what it charges |
 | `Gateway` | KIFF's gateway URL, https, on the server's list |
 | `KeyRef` | A **reference** to the agent's KIFF key in the tenant's secrets. Never the key |
@@ -31,8 +31,11 @@ definition.
 | `History` | How many of the session's finished runs the model gets |
 
 `Check` refuses a definition that can't be stored or run safely: a bad ID,
-instructions too long, no cost cap, a gateway that isn't https, a keep policy
-missing a kind.
+no cost cap, a gateway that isn't https, a keep policy missing a kind, or a
+definition over `MaxSize` (300,000 bytes) **as stored**. The bound is on the
+whole encoded definition (`Encode`: every field, JSON escaping included), not
+on the instructions alone, so it always fits one DynamoDB item. Long
+instructions are what usually reach it.
 
 ### Building an agent
 
