@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	_ "time/tzdata" // zones load the same on any host, a bare Lambda image included
 )
 
 // MinGap is how often a schedule may fire at most, as in tafs.
