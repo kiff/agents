@@ -30,6 +30,14 @@ session/            sessions, events, keep rules, Recorder; ports Store, Notes
 session/sessiontest the checks every Store must pass
 store/memory        adapter: in memory, for tests and local runs
 store/<name>        one package per store (sqlite, dynamodb)
+model/              the model port: one streamed turn, Price
+model/anthropic     adapter: Claude API, through the official Go SDK
+tool/               the tool port; Check refuses a write tool outside KIFF's gateway
+tool/kiff           adapter: MCP client to KIFF's gateway, with the agent's own key
+tool/memory         adapter: the agent's notes, on session.Notes
+agent/              the run loop: model → tools → model, recorded and streamed
+chat/               the owner talking to an agent: one session per message
+cmd/chat            a terminal chat against KIFF, for test mode
 ```
 
 Model, tools, the run loop and evals follow the same shape: a core package
