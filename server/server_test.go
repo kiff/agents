@@ -516,3 +516,48 @@ func TestInternalErrorsStayInside(t *testing.T) {
 		t.Fatal("the error wasn't logged")
 	}
 }
+
+// cutShort is a session store holding a session whose deletion was cut
+// short: Read no longer finds it, and Delete finishes the job.
+type cutShort struct {
+	*memory.Store
+	deleted bool
+}
+
+func (c *cutShort) Read(context.Context, string, string) (session.Session, []session.Event, error) {
+	return session.Session{}, nil, session.ErrNotFound
+}
+
+func (c *cutShort) Delete(_ context.Context, tenant, id string) error {
+	if tenant != "t1" || id != "s1" {
+		return session.ErrNotFound
+	}
+	c.deleted = true
+	return nil
+}
+
+// A delete that was cut short can be finished through the API.
+func TestDeleteSessionFinishesACutShortDelete(t *testing.T) {
+	store := &cutShort{Store: memory.New()}
+	s := &server.Server{Auth: func(r *http.Request) (server.Caller, error) {
+		return server.Caller{Tenant: r.Header.Get("X-Test-Tenant")}, nil
+	}, Sessions: store}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	del := func(tenant string) int {
+		req, _ := http.NewRequest("DELETE", srv.URL+"/sessions/s1", nil)
+		req.Header.Set("X-Test-Tenant", tenant)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := del("t2"); code != 404 {
+		t.Fatalf("another tenant got %d, want 404", code)
+	}
+	if code := del("t1"); code != 204 || !store.deleted {
+		t.Fatalf("got %d (deleted %v), want 204 and the delete finished", code, store.deleted)
+	}
+}
