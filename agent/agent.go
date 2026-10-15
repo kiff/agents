@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
 )
@@ -103,45 +104,144 @@ type Event struct {
 	Result *tool.Result    `json:"result,omitempty"`
 }
 
-// Stop is why a run ended.
+// Stop is why a run stopped.
 type Stop string
 
 const (
 	Answered Stop = "answered"  // the agent answered and called nothing more
-	Held     Stop = "held"      // KIFF holds a call for the owner; the agent said what it waits for
+	Paused   Stop = "paused"    // KIFF holds at least one call for the owner; the run waits for it
 	CostCap  Stop = "cost_cap"  // the run reached its cost cap
 	TurnCap  Stop = "turn_cap"  // the run reached its turn limit
 	TooLong  Stop = "max_token" // the model ran out of room mid-answer
 )
 
-// Outcome is how a run ended.
+// Outcome is how a run stopped. Cost and Turns count the whole run, across
+// its pauses.
 type Outcome struct {
 	Stop Stop `json:"stop"`
-	// Text is the agent's last answer.
+	// Text is the agent's last answer; for a paused run, what it waits for.
 	Text string `json:"text"`
 	// Cost is what the run's model turns cost, in millionths of a US dollar.
 	Cost int64 `json:"cost_micro_usd"`
-	// Held are the calls KIFF holds for the owner.
-	Held []ToolResultBody `json:"held,omitempty"`
+	// Turns counts the run's model turns.
+	Turns int `json:"turns"`
+	// Requirements are what a paused run waits for: one per call KIFF holds,
+	// in the order of the calls. Each names the call; KIFF's operation ID
+	// and the hold's expiry are left for the caller to fill in from KIFF.
+	Requirements []run.Requirement `json:"requirements,omitempty"`
+	// Turn is the turn a paused run paused in, to continue from: the model's
+	// message, and the results of the calls KIFF didn't hold.
+	Turn *run.Turn `json:"turn,omitempty"`
 }
 
+// ErrResults means Continue was given results that don't match what the run
+// waits for: one result for each requirement, and nothing else.
+var ErrResults = errors.New("agent: the results don't match the run's requirements")
+
 // Run runs the agent on input, after history, recording into rec. It returns
-// how the run ended and the conversation with this run's turns added, for a
-// chat to continue. It doesn't end rec: the caller does, with the status the
-// run deserves.
+// how the run stopped and the conversation with this run's turns added, for a
+// chat to continue. It doesn't end or pause rec, or store the run: the
+// caller does, as the outcome says.
 //
-// When KIFF holds a call, the agent gets one more turn with no tools, to say
-// what it waits for; it can't retry around the hold.
+// A run pauses when KIFF holds any of a turn's calls: the calls in that turn
+// all run, and the run stops after it, whatever its caps, so a held call
+// always has a run to continue. Before it stops, the agent gets one more
+// turn with no tools, if its caps allow, to say what it waits for: the owner
+// reads that, and the agent can't retry around the hold. That turn isn't
+// part of what a continued run sees.
 func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.Message, input string, emit func(Event)) (Outcome, []model.Message, error) {
 	if err := a.Check(); err != nil {
+		return Outcome{}, history, err
+	}
+	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: input}}})
+	if err := rec.Record(session.OwnerMessage, TextBody{Text: input}); err != nil {
+		return Outcome{}, msgs, err
+	}
+	return a.loop(ctx, rec, msgs, Outcome{}, emit)
+}
+
+// Continue carries on a paused run, r, as stored, from the turn it paused
+// in, with held: the outcome of each call it waits for, as KIFF reports it,
+// one per requirement and none still held (ErrResults otherwise). rec is the run's recording,
+// resumed; Continue records the held calls' results in it. It reads nothing
+// from the run's events, so what the keep rules dropped doesn't matter.
+//
+// The continued run sees history, its input and the turn it paused in, not
+// any earlier turns of its own. Its cost and turns carry on from r's, so the
+// caps hold across pauses.
+func Continue(ctx context.Context, a Agent, rec *session.Recording, history []model.Message, r run.Run, held []ToolResultBody, emit func(Event)) (Outcome, []model.Message, error) {
+	if err := a.Check(); err != nil {
+		return Outcome{}, history, err
+	}
+	if r.Paused == nil || len(r.Requirements) == 0 {
+		return Outcome{}, history, fmt.Errorf("%w: run %s has no paused turn", ErrResults, r.ID)
+	}
+	results, err := merge(r, held)
+	if err != nil {
 		return Outcome{}, history, err
 	}
 	if emit == nil {
 		emit = func(Event) {}
 	}
-	maxTurns := a.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = DefaultMaxTurns
+	for _, h := range held {
+		if err := rec.Record(session.ToolResult, h); err != nil {
+			return Outcome{}, history, err
+		}
+		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
+	}
+	msgs := append(append([]model.Message(nil), history...),
+		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: r.Input}}},
+		r.Paused.Reply,
+		model.Message{Role: model.User, Blocks: results})
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost, Turns: r.Turns}, emit)
+}
+
+// merge is the paused turn's results with held's, in the order of the
+// calls, if held answers exactly the run's requirements.
+func merge(r run.Run, held []ToolResultBody) ([]model.Block, error) {
+	want := map[string]bool{}
+	for _, q := range r.Requirements {
+		want[q.CallID] = true
+	}
+	byCall := map[string]model.Block{}
+	for _, b := range r.Paused.Results {
+		byCall[b.CallID] = b
+	}
+	for _, h := range held {
+		if h.Held() {
+			return nil, fmt.Errorf("%w: KIFF still holds %q", ErrResults, h.CallID)
+		}
+		if !want[h.CallID] {
+			return nil, fmt.Errorf("%w: %q isn't a call the run waits for", ErrResults, h.CallID)
+		}
+		delete(want, h.CallID)
+		byCall[h.CallID] = resultBlock(h)
+	}
+	for id := range want {
+		return nil, fmt.Errorf("%w: no result for %q", ErrResults, id)
+	}
+	var out []model.Block
+	for _, b := range r.Paused.Reply.Blocks {
+		if b.Kind != model.ToolUse {
+			continue
+		}
+		res, ok := byCall[b.CallID]
+		if !ok {
+			return nil, fmt.Errorf("%w: run %s: call %q has no result", ErrResults, r.ID, b.CallID)
+		}
+		out = append(out, res)
+	}
+	return out, nil
+}
+
+func resultBlock(r ToolResultBody) model.Block {
+	return model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: r.Text, IsError: r.IsError}
+}
+
+// loop runs model turns on msgs until the run stops, counting on from out.
+func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, emit func(Event)) (Outcome, []model.Message, error) {
+	if emit == nil {
+		emit = func(Event) {}
 	}
 	byName := make(map[string]tool.Tool, len(a.Tools))
 	specs := make([]model.ToolSpec, 0, len(a.Tools))
@@ -149,69 +249,29 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 		byName[t.Spec().Name] = t
 		specs = append(specs, t.Spec())
 	}
-	report := rec.Session().Kind == session.KindRun
-
-	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: input}}})
-	if err := rec.Record(session.OwnerMessage, TextBody{Text: input}); err != nil {
-		return Outcome{}, msgs, err
-	}
-	var out Outcome
-	final := false // a call is held: one last turn, without tools
-	for turn := 0; ; turn++ {
-		if out.Cost >= a.MaxCost {
-			out.Stop = CostCap
+	for {
+		if stop := a.capped(out); stop != "" {
+			out.Stop = stop
 			return out, msgs, nil
 		}
-		if turn >= maxTurns {
-			out.Stop = TurnCap
-			return out, msgs, nil
-		}
-		req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens}
-		if !final {
-			req.Tools = specs
-		}
-		reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
+		reply, err := a.turn(ctx, rec, msgs, specs, &out, emit)
 		if err != nil {
-			_ = rec.Record(session.Error, ErrorBody{Message: err.Error()})
-			return out, msgs, err
-		}
-		cost := a.Price.Cost(reply.Usage)
-		out.Cost += cost
-		if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
-			OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CostMicroUSD: cost}); err != nil {
 			return out, msgs, err
 		}
 		msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
-
-		var text []string
 		var calls []model.Block
 		for _, b := range reply.Blocks {
-			switch b.Kind {
-			case model.Text:
-				text = append(text, b.Text)
-			case model.ToolUse:
+			if b.Kind == model.ToolUse {
 				calls = append(calls, b)
 			}
 		}
-		out.Text = strings.TrimSpace(strings.Join(text, "\n"))
-		done := final || len(calls) == 0
-		if out.Text != "" {
-			kind := session.AgentMessage
-			if done && report {
-				kind = session.Report
-			}
-			if err := rec.Record(kind, TextBody{Text: out.Text}); err != nil {
-				return out, msgs, err
-			}
+		if err := a.say(rec, out.Text, len(calls) == 0); err != nil {
+			return out, msgs, err
 		}
-		if done {
-			switch {
-			case final:
-				out.Stop = Held
-			case reply.Stop == model.MaxTokens:
+		if len(calls) == 0 {
+			out.Stop = Answered
+			if reply.Stop == model.MaxTokens {
 				out.Stop = TooLong
-			default:
-				out.Stop = Answered
 			}
 			return out, msgs, nil
 		}
@@ -221,15 +281,103 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 			return out, msgs, err
 		}
 		blocks := make([]model.Block, len(results))
+		var held bool
 		for i, r := range results {
-			blocks[i] = model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: r.Text, IsError: r.IsError}
-			if r.Held() {
-				out.Held = append(out.Held, r)
-				final = true
-			}
+			blocks[i] = resultBlock(r)
+			held = held || r.Held()
+		}
+		if held {
+			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, emit)
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 	}
+}
+
+// pause stops the run in turn, whose calls returned results: a requirement
+// for each held one, the others' results kept with the turn. If the caps
+// allow, the agent first gets one turn with no tools to say what it waits
+// for.
+func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, emit func(Event)) (Outcome, []model.Message, error) {
+	turn.Results = nil
+	blocks := make([]model.Block, len(results))
+	for i, r := range results {
+		blocks[i] = resultBlock(r)
+		if !r.Held() {
+			turn.Results = append(turn.Results, blocks[i])
+			continue
+		}
+		var input json.RawMessage
+		for _, b := range turn.Reply.Blocks {
+			if b.Kind == model.ToolUse && b.CallID == r.CallID {
+				input = b.Input
+			}
+		}
+		out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: input})
+	}
+	out.Stop, out.Turn = Paused, &turn
+	msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
+	if a.capped(out) != "" {
+		return out, msgs, nil
+	}
+	reply, err := a.turn(ctx, rec, msgs, nil, &out, emit)
+	if err != nil {
+		return out, msgs, err
+	}
+	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
+	return out, msgs, a.say(rec, out.Text, true)
+}
+
+// capped is the cap a run has reached, if any.
+func (a Agent) capped(out Outcome) Stop {
+	maxTurns := a.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = DefaultMaxTurns
+	}
+	switch {
+	case out.Cost >= a.MaxCost:
+		return CostCap
+	case out.Turns >= maxTurns:
+		return TurnCap
+	}
+	return ""
+}
+
+// turn is one model turn, offered tools, recorded and costed into out, whose
+// Text becomes the turn's text.
+func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, out *Outcome, emit func(Event)) (model.Reply, error) {
+	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools}
+	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
+	if err != nil {
+		_ = rec.Record(session.Error, ErrorBody{Message: err.Error()})
+		return reply, err
+	}
+	cost := a.Price.Cost(reply.Usage)
+	out.Cost += cost
+	out.Turns++
+	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
+		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CostMicroUSD: cost}); err != nil {
+		return reply, err
+	}
+	var text []string
+	for _, b := range reply.Blocks {
+		if b.Kind == model.Text {
+			text = append(text, b.Text)
+		}
+	}
+	out.Text = strings.TrimSpace(strings.Join(text, "\n"))
+	return reply, nil
+}
+
+// say records the turn's text: a run's last answer is its Report.
+func (a Agent) say(rec *session.Recording, text string, last bool) error {
+	if text == "" {
+		return nil
+	}
+	kind := session.AgentMessage
+	if last && rec.Session().Kind == session.KindRun {
+		kind = session.Report
+	}
+	return rec.Record(kind, TextBody{Text: text})
 }
 
 // callTools records the calls in order, runs them in parallel, and records

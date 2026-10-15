@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
@@ -157,29 +159,237 @@ func TestAFullTurnIsRecordedAndStreamed(t *testing.T) {
 	}
 }
 
-// When KIFF holds a call, the agent gets one last turn without tools to say
-// what it waits for, and the run stops: no retry around the hold.
-func TestAHeldCallStopsTheRun(t *testing.T) {
-	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true,
+// both is one turn calling a lookup and a refund.
+func both() model.Reply {
+	return model.Reply{Blocks: []model.Block{
+		{Kind: model.Text, Text: "Checking, then refunding."},
+		{Kind: model.ToolUse, CallID: "c1", Tool: "stripe_get", Input: json.RawMessage(`{"charge":"ch_big"}`)},
+		{Kind: model.ToolUse, CallID: "c2", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_big"}`)},
+	}, Stop: model.CallTools, Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}}
+}
+
+func heldRefund() *fakeTool {
+	return &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true,
 		result: tool.Result{Text: "Held for the owner.", IsError: true, State: tool.StateHeld}}
+}
+
+func lookupTool() *fakeTool {
+	return &fakeTool{name: "stripe_get", access: tool.Read, gateway: true, result: tool.Result{Text: `{"amount":90000}`}}
+}
+
+// When KIFF holds a call, the run pauses: one requirement per held call, and
+// the turn it paused in, with the results of the calls KIFF didn't hold. The
+// agent first gets one turn without tools to say what it waits for; it can't
+// retry around the hold.
+func TestAHeldCallPausesTheRun(t *testing.T) {
+	refund, lookup := heldRefund(), lookupTool()
 	m := &script{replies: []model.Reply{
-		use("c1", "stripe_refund", `{"charge":"ch_big"}`),
+		both(),
 		say("The refund of ch_big waits for your answer."),
-		use("c2", "stripe_refund", `{"charge":"ch_big"}`), // never reached
+		use("c3", "stripe_refund", `{"charge":"ch_big"}`), // never reached
 	}}
 	_, r := start(t, session.KindRun)
-	out, _, err := agent.Run(context.Background(), newAgent(m, refund), r, nil, "Work the refund queue.", nil)
+	out, _, err := agent.Run(context.Background(), newAgent(m, lookup, refund), r, nil, "Work the refund queue.", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Stop != agent.Held || len(out.Held) != 1 || out.Held[0].CallID != "c1" || out.Text != "The refund of ch_big waits for your answer." {
+	if out.Stop != agent.Paused || out.Text != "The refund of ch_big waits for your answer." || out.Turns != 2 || out.Cost != 2000 {
 		t.Fatalf("outcome = %+v", out)
 	}
-	if refund.calls != 1 || len(m.reqs) != 2 {
-		t.Fatalf("calls %d, model turns %d", refund.calls, len(m.reqs))
+	if len(out.Requirements) != 1 {
+		t.Fatalf("requirements = %+v", out.Requirements)
+	}
+	if q := out.Requirements[0]; q.CallID != "c2" || q.Tool != "stripe_refund" || string(q.Input) != `{"charge":"ch_big"}` {
+		t.Fatalf("requirement = %+v", q)
+	}
+	if out.Turn == nil || !reflect.DeepEqual(out.Turn.Reply, model.Message{Role: model.Assistant, Blocks: both().Blocks}) {
+		t.Fatalf("paused turn = %+v", out.Turn)
+	}
+	if want := []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`}}; !reflect.DeepEqual(out.Turn.Results, want) {
+		t.Fatalf("kept results = %+v", out.Turn.Results)
+	}
+	if refund.calls != 1 || lookup.calls != 1 || len(m.reqs) != 2 {
+		t.Fatalf("calls %d and %d, model turns %d", refund.calls, lookup.calls, len(m.reqs))
 	}
 	if len(m.reqs[1].Tools) != 0 {
 		t.Fatal("the turn after a hold offered tools")
+	}
+}
+
+// A run whose caps are reached in the turn KIFF holds a call still pauses,
+// so the held call has a run to continue; it skips the turn that says what
+// it waits for.
+func TestACapNeverSkipsAPause(t *testing.T) {
+	for name, limit := range map[string]func(*agent.Agent){
+		"cost":  func(a *agent.Agent) { a.MaxCost = 1000 },
+		"turns": func(a *agent.Agent) { a.MaxTurns = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := &script{replies: []model.Reply{both(), say("never")}}
+			a := newAgent(m, lookupTool(), heldRefund())
+			limit(&a)
+			_, r := start(t, session.KindRun)
+			out, _, err := agent.Run(context.Background(), a, r, nil, "Go.", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Stop != agent.Paused || len(out.Requirements) != 1 || out.Turn == nil || len(m.reqs) != 1 {
+				t.Fatalf("outcome %+v after %d turns", out, len(m.reqs))
+			}
+		})
+	}
+}
+
+// paused runs the agent until it pauses, pauses the recording, and returns
+// the run as it would be stored, and its session.
+func paused(t *testing.T, store *memory.Store, rec *session.Recorder, a agent.Agent) (run.Run, session.Session) {
+	t.Helper()
+	ctx := context.Background()
+	s, err := rec.Open(ctx, "t1", "rae", session.KindRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := rec.Start(ctx, s, "r1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := agent.Run(ctx, a, r, nil, "Work the refund queue.", nil)
+	if err != nil || out.Stop != agent.Paused {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+	if err := r.Pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return run.Run{ID: "r1", Tenant: "t1", Agent: "rae", Session: s.ID, Status: run.Running, Input: "Work the refund queue.",
+		Cost: out.Cost, Turns: out.Turns, Requirements: out.Requirements, Paused: out.Turn}, s
+}
+
+func approved() []agent.ToolResultBody {
+	return []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "refunded re_1", State: "allowed"}}}
+}
+
+// A paused run continues from its stored turn with the held calls' outcomes:
+// the model sees the input, the turn it paused in and every call's result in
+// the order of the calls, not the turn that said what it waited for. Cost
+// and turns carry on, and the held call's result is recorded.
+func TestAPausedRunContinues(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("Refunded ch_big.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamed []agent.EventKind
+	out, _, err := agent.Continue(ctx, a, r, nil, stored, approved(), func(e agent.Event) { streamed = append(streamed, e.Kind) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Answered || out.Text != "Refunded ch_big." || out.Turns != 3 || out.Cost != 3000 || out.Requirements != nil || out.Turn != nil {
+		t.Fatalf("outcome = %+v", out)
+	}
+	want := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Work the refund queue."}}},
+		{Role: model.Assistant, Blocks: both().Blocks},
+		{Role: model.User, Blocks: []model.Block{
+			{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`},
+			{Kind: model.ToolResult, CallID: "c2", Result: "refunded re_1"},
+		}},
+	}
+	if got := m.reqs[2]; !reflect.DeepEqual(got.Messages, want) || len(got.Tools) != 2 {
+		t.Fatalf("continued with %+v", got)
+	}
+	if !equal(streamed, []agent.EventKind{agent.CallResult, agent.TextDelta}) {
+		t.Fatalf("streamed %v", streamed)
+	}
+	if err := r.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.ReadRun(ctx, "t1", s.ID, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-3:]
+	if got := kinds(last); !equal(got, []session.EventKind{session.ToolResult, session.Usage, session.Report}) {
+		t.Fatalf("recorded on continuing: %v", got)
+	}
+}
+
+// Continue takes one outcome per requirement and nothing else: a missing
+// one, an extra one, one KIFF still holds, or a run with no paused turn is
+// refused before anything is recorded or the model is called.
+func TestContinueTakesExactlyTheHeldCalls(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := append(approved(), agent.ToolResultBody{CallID: "c1", Tool: "stripe_get", Result: tool.Result{Text: "{}"}})
+	still := []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "Held.", State: tool.StateHeld}}}
+	twice := append(approved(), approved()...)
+	noTurn := stored
+	noTurn.Paused = nil
+	cases := map[string]struct {
+		r    run.Run
+		held []agent.ToolResultBody
+	}{
+		"missing":   {stored, nil},
+		"extra":     {stored, extra},
+		"twice":     {stored, twice},
+		"stillHeld": {stored, still},
+		"noTurn":    {noTurn, approved()},
+	}
+	for name, c := range cases {
+		if _, _, err := agent.Continue(ctx, a, r, nil, c.r, c.held, nil); !errors.Is(err, agent.ErrResults) {
+			t.Fatalf("%s: err = %v, want ErrResults", name, err)
+		}
+	}
+	if len(m.reqs) != 2 {
+		t.Fatalf("the model was called %d more times", len(m.reqs)-2)
+	}
+	if err := r.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, events, _ := store.ReadRun(ctx, "t1", s.ID, stored.ID)
+	if events[len(events)-1].Kind != session.Report {
+		t.Fatalf("something was recorded: %v", kinds(events))
+	}
+}
+
+// The caps hold across pauses: a run that reached its cost cap before it
+// paused stops when it continues, before any model turn.
+func TestCapsHoldAcrossPauses(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("never")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	a.MaxCost = stored.Cost
+	r, err := rec.Resume(context.Background(), s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, approved(), nil)
+	if err != nil || out.Stop != agent.CostCap || out.Cost != stored.Cost || len(m.reqs) != 2 {
+		t.Fatalf("outcome %+v, %v, after %d turns", out, err, len(m.reqs))
 	}
 }
 
@@ -271,6 +481,50 @@ func BenchmarkTurn(b *testing.B) {
 			b.Fatal(err)
 		}
 		if _, _, err := agent.Run(ctx, newAgent(m, lookup), r, nil, "Go.", nil); err != nil {
+			b.Fatal(err)
+		}
+		if err := r.End(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPauseAndContinue is the loop's own overhead for a run that pauses
+// on a held call and continues from its stored turn, with an instant model
+// and tools and the in-memory store: start, pause, resume, continue, end.
+func BenchmarkPauseAndContinue(b *testing.B) {
+	lookup, refund := lookupTool(), heldRefund()
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(time.Hour))
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	held := approved()
+	b.ReportAllocs()
+	for b.Loop() {
+		m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("Done.")}}
+		a := newAgent(m, lookup, refund)
+		s, err := rec.Open(ctx, "t1", "rae", session.KindRun)
+		if err != nil {
+			b.Fatal(err)
+		}
+		r, err := rec.Start(ctx, s, "r1", time.Now())
+		if err != nil {
+			b.Fatal(err)
+		}
+		out, _, err := agent.Run(ctx, a, r, nil, "Go.", nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := r.Pause(ctx); err != nil {
+			b.Fatal(err)
+		}
+		stored := run.Run{ID: "r1", Input: "Go.", Cost: out.Cost, Turns: out.Turns, Requirements: out.Requirements, Paused: out.Turn}
+		if r, err = rec.Resume(ctx, s, "r1"); err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err := agent.Continue(ctx, a, r, nil, stored, held, nil); err != nil {
 			b.Fatal(err)
 		}
 		if err := r.End(ctx); err != nil {
