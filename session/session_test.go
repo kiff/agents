@@ -268,6 +268,28 @@ func TestEndRecoversAfterTimeout(t *testing.T) {
 	}
 }
 
+// An End waiting for another End still gives up at its own deadline.
+func TestConcurrentEndHonoursItsDeadline(t *testing.T) {
+	f := newFlaky()
+	rec := start(t, f)
+	f.block()
+	_ = rec.Record(session.Report, "x")
+	first := make(chan error, 1)
+	go func() { first <- rec.End(ctx, session.Ended) }()
+	time.Sleep(10 * time.Millisecond) // let the first End take its turn
+	began := time.Now()
+	if err := rec.End(deadline(t, 10*time.Millisecond), session.Ended); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second End: err = %v, want its deadline", err)
+	}
+	if took := time.Since(began); took > time.Second {
+		t.Fatalf("second End took %v past its 10ms deadline", took)
+	}
+	f.release()
+	if err := <-first; err != nil {
+		t.Fatalf("first End: %v", err)
+	}
+}
+
 // A Store.End that fails once is retried by the next End.
 func TestEndRecoversAfterStoreEndFails(t *testing.T) {
 	f := newFlaky()

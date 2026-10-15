@@ -43,7 +43,7 @@ func (r *Recorder) Start(ctx context.Context, tenant, agent string, kind Kind) (
 	if err := r.store.Create(ctx, s); err != nil {
 		return nil, err
 	}
-	rec := &Recording{r: r, s: s, wake: make(chan struct{}, 1), changed: make(chan struct{})}
+	rec := &Recording{r: r, s: s, wake: make(chan struct{}, 1), changed: make(chan struct{}), ending: make(chan struct{}, 1)}
 	go rec.write(context.WithoutCancel(ctx))
 	return rec, nil
 }
@@ -76,7 +76,7 @@ type Recording struct {
 	finished bool          // the Store has ended the session
 	changed  chan struct{} // closed and replaced whenever stored or failed changes
 
-	ending sync.Mutex // one End at a time
+	ending chan struct{} // holds one token while an End runs: one End at a time
 }
 
 // Session is the session this recording records.
@@ -127,8 +127,12 @@ func (rec *Recording) Flush(ctx context.Context) error {
 // Store.End) nothing more can be recorded, and End can be called again to
 // finish. Once it has succeeded, End returns ErrEnded.
 func (rec *Recording) End(ctx context.Context, status Status) error {
-	rec.ending.Lock()
-	defer rec.ending.Unlock()
+	select { // wait for another End, as long as ctx allows
+	case rec.ending <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-rec.ending }()
 	rec.mu.Lock()
 	if rec.finished {
 		rec.mu.Unlock()
