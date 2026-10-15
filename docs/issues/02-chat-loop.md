@@ -102,9 +102,10 @@ the session's start and end included, with an instant model and tool) and
 
 - **Chat continuation.** The issue said a message joins the latest chat if it
   was active in the last 30 minutes. #7 shipped one session per message,
-  with the 30-minute window carrying the conversation. That's being replaced
-  under [#12](12-runs.md): one session per conversation, each message a run
-  through the runner (kiff/agents#34, in review).
+  with the 30-minute window carrying the conversation. #34 (under
+  [#12](12-runs.md)) replaced that: one session per conversation, each
+  message a run through the runner, with history from the conversation's
+  finished runs.
 - **Holds pause, they don't stop.** The issue said a held call stops the run.
   Since #28 it pauses, so the run can continue once KIFF resolves it.
 

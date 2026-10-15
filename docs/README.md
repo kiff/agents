@@ -8,14 +8,15 @@ ARCHITECTURE.md is the plan; these pages are what was built against it.
 issue's page in the same PR: what it adds, the tests that guard it, and what
 is left.
 
-As of `main` at 289ce0c (2026-10-16).
+As of `main` at de07a55 (2026-10-16). For runs, the runner, chat and evals
+by example, see [runs.md](runs.md).
 
 | Issue | Step | Status | Page |
 |---|---|---|---|
 | [#1](https://github.com/kiff/agents/issues/1) Sessions | — | Delivered; SQLite deferred | [01-sessions.md](issues/01-sessions.md) |
 | [#2](https://github.com/kiff/agents/issues/2) The model, the loop, KIFF's gateway as tools | — | Closed, delivered | [02-chat-loop.md](issues/02-chat-loop.md) |
 | [#3](https://github.com/kiff/agents/issues/3) Evals | — | Harness and cases built; baseline, nightly run and grading this runtime to do | [03-evals.md](issues/03-evals.md) |
-| [#12](https://github.com/kiff/agents/issues/12) Runs | 1 | Nearly delivered; chat on runs in review (#34) | [12-runs.md](issues/12-runs.md) |
+| [#12](https://github.com/kiff/agents/issues/12) Runs | 1 | Delivered (chat on runs: #34) | [12-runs.md](issues/12-runs.md) |
 | [#13](https://github.com/kiff/agents/issues/13) Server on Lambda | 2 | Routes, auth, streaming built; runner, background runs and the sweep not wired; not deployed | [13-server.md](issues/13-server.md) |
 | [#14](https://github.com/kiff/agents/issues/14) Console | 3 | Not started | [14-console.md](issues/14-console.md) |
 | [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | Not started; KIFF's side has shipped | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
@@ -29,7 +30,6 @@ As of `main` at 289ce0c (2026-10-16).
 #16 Secrets Manager adapter ──► #13 runner in cmd/lambda ──► #17 firings start runs
                                         │                    └► #3 grading this runtime (can run locally before)
 #15 IDs, Collect, /kiff/alerts ─────────┴──► paused runs continue ──► kiff/tafs#42
-#12 chat on runs (#34) ──► kiff/tafs#42 (chat)
 #14 console: needs a cross-tenant run listing and usage, which no store has yet
 ```
 
@@ -52,8 +52,8 @@ then the runner, background runs and the sweep in `cmd/lambda` (#13), then
   `cmd/eval`, now that the runner exists.
 - **#12 (Runs).** Its "done when" holds: the transition table is tested
   against both stores, a paused run continues in a fresh `Runner`, and the
-  benchmarks exist. Only chat on runs (#34) is left. **Suggested:** close
-  #12 when #34 merges. Continuing in production is #15's.
+  benchmarks exist, and chat on runs merged (#34). **Suggested:** close #12.
+  Continuing in production is #15's, and the sweep's wiring #13's.
 - **#16 (Registry)** and **#17 (Schedules)** are built up to what needs
   `cmd/lambda` wiring. Their remaining items move together with #13.
 - **#14 and #15** have no owner.

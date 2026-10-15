@@ -1,7 +1,8 @@
 # Runs: what #12 delivers
 
-**Issue:** [#12](https://github.com/kiff/agents/issues/12) · **Status:** nearly delivered. Chat as a thread of runs is in review (#34). Continuing a paused run in production waits on [#15](15-continue-on-hold.md).
-**PRs:** #18 (shared types), #20 (the `run` package and stores), #26 (a run's source), #28 (the loop pauses and continues), #29, #31, #32, #36 (the runner), #37 (evals read runs, see [#3](03-evals.md)), #38
+**Issue:** [#12](https://github.com/kiff/agents/issues/12) · **Status:** delivered. Continuing a paused run in production waits on [#15](15-continue-on-hold.md), and the sweep on [#13](13-server.md)'s wiring.
+**PRs:** #18 (shared types), #20 (the `run` package and stores), #26 (a run's source), #28 (the loop pauses and continues), #29, #31, #32, #36 (the runner), #37 (evals read runs, see [#3](03-evals.md)), #38, #34 (chat on the runner)
+**By example:** [docs/runs.md](../runs.md) shows a stored run, and the runner, chat and evals in use.
 
 ## What it's for
 
@@ -26,6 +27,7 @@ so that:
 | `session` | Sessions as threads of runs: events carry their run and are numbered per run (#18; see [#1](01-sessions.md)) |
 | `agent` | The loop pauses on a hold and continues from a stored run (#28; see [#2](02-chat-loop.md)) |
 | `runner` | Executes runs, as the server's `Runner` (#36) |
+| `chat` | A conversation: one chat session, each message a run through the runner (`Start` in the conversation's session, then `Execute`); `cmd/chat` runs on the same runner (#34) |
 
 ### A run's life
 
@@ -176,6 +178,7 @@ due   pk=W                          sk=due|key       a run the sweep must look a
 | A hold pauses; a paused run continues in a fresh Runner | `TestAHoldPausesTheRun`, `TestAPausedRunContinues` (runner) |
 | A new message while a run is paused is a run of its own | `TestANewMessageWhilePaused` (runner) |
 | A failed collect pauses again | `TestAFailedCollectPausesAgain` (runner) |
+| Each message is a run of one conversation; a message while a run is paused is a run of its own; conversations stay apart | `TestEachMessageIsARunOfOneConversation`, `TestAMessageWhilePausedIsARunOfItsOwn`, `TestConversationsAreApart` (chat) |
 | The tenant never sees a private cause | `TestTheServerShowsNoPrivateCause` (runner, through the server) |
 
 Every PR broke its own fixes on purpose, one at a time, and showed a test
@@ -188,8 +191,6 @@ compares them with `main` on every PR.
 
 ## Not delivered yet
 
-- **Chat as a thread of runs.** One session per conversation, each message
-  a run through `Runner.Start` and `Execute`. In review as #34.
 - **Continuing in production** needs `Runner.Collect`, and requirements that
   carry KIFF's IDs and the hold's expiry. Both are
   [#15](15-continue-on-hold.md). Until then a paused run waits, visibly, and
