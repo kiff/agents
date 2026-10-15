@@ -146,9 +146,10 @@ var ErrResults = errors.New("agent: the results don't match the run's requiremen
 // A run pauses when KIFF holds any of a turn's calls: the calls in that turn
 // all run, and the run stops after it, whatever its caps, so a held call
 // always has a run to continue. Before it stops, the agent gets one more
-// turn with no tools, if its caps allow, to say what it waits for: the owner
-// reads that, and the agent can't retry around the hold. That turn isn't
-// part of what a continued run sees.
+// turn, if its caps allow, to say what it waits for: the owner reads that.
+// The turn offers the agent's tools but forbids calling them
+// (model.Request.NoToolUse), so the agent can't retry around the hold. That
+// turn isn't part of what a continued run sees.
 func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.Message, input string, emit func(Event)) (Outcome, []model.Message, error) {
 	if err := a.Check(); err != nil {
 		return Outcome{}, history, err
@@ -199,9 +200,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 // merge is the paused turn's results with held's, in the order of the
 // calls, if held answers exactly the run's requirements.
 func merge(r run.Run, held []ToolResultBody) ([]model.Block, error) {
-	want := map[string]bool{}
+	want := map[string]string{} // the tool of each call the run waits for
 	for _, q := range r.Requirements {
-		want[q.CallID] = true
+		want[q.CallID] = q.Tool
 	}
 	byCall := map[string]model.Block{}
 	for _, b := range r.Paused.Results {
@@ -211,8 +212,12 @@ func merge(r run.Run, held []ToolResultBody) ([]model.Block, error) {
 		if h.Held() {
 			return nil, fmt.Errorf("%w: KIFF still holds %q", ErrResults, h.CallID)
 		}
-		if !want[h.CallID] {
+		tool, ok := want[h.CallID]
+		if !ok {
 			return nil, fmt.Errorf("%w: %q isn't a call the run waits for", ErrResults, h.CallID)
+		}
+		if h.Tool != tool {
+			return nil, fmt.Errorf("%w: %q called %s, not %s", ErrResults, h.CallID, tool, h.Tool)
 		}
 		delete(want, h.CallID)
 		byCall[h.CallID] = resultBlock(h)
@@ -254,7 +259,7 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 			out.Stop = stop
 			return out, msgs, nil
 		}
-		reply, err := a.turn(ctx, rec, msgs, specs, &out, emit)
+		reply, err := a.turn(ctx, rec, msgs, specs, false, &out, emit)
 		if err != nil {
 			return out, msgs, err
 		}
@@ -287,7 +292,7 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 			held = held || r.Held()
 		}
 		if held {
-			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, emit)
+			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 	}
@@ -295,9 +300,9 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 
 // pause stops the run in turn, whose calls returned results: a requirement
 // for each held one, the others' results kept with the turn. If the caps
-// allow, the agent first gets one turn with no tools to say what it waits
-// for.
-func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, emit func(Event)) (Outcome, []model.Message, error) {
+// allow, the agent first gets one turn to say what it waits for, offered its
+// tools but forbidden to call them.
+func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, specs []model.ToolSpec, emit func(Event)) (Outcome, []model.Message, error) {
 	turn.Results = nil
 	blocks := make([]model.Block, len(results))
 	for i, r := range results {
@@ -319,7 +324,7 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	if a.capped(out) != "" {
 		return out, msgs, nil
 	}
-	reply, err := a.turn(ctx, rec, msgs, nil, &out, emit)
+	reply, err := a.turn(ctx, rec, msgs, specs, true, &out, emit)
 	if err != nil {
 		return out, msgs, err
 	}
@@ -342,10 +347,10 @@ func (a Agent) capped(out Outcome) Stop {
 	return ""
 }
 
-// turn is one model turn, offered tools, recorded and costed into out, whose
-// Text becomes the turn's text.
-func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, out *Outcome, emit func(Event)) (model.Reply, error) {
-	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools}
+// turn is one model turn, offered tools (to call, unless noToolUse),
+// recorded and costed into out, whose Text becomes the turn's text.
+func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, out *Outcome, emit func(Event)) (model.Reply, error) {
+	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse}
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	if err != nil {
 		_ = rec.Record(session.Error, ErrorBody{Message: err.Error()})
