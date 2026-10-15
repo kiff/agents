@@ -109,6 +109,9 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		}
 		p.Tools = append(p.Tools, sdk.ToolUnionParam{OfTool: &tp})
 	}
+	if req.NoToolUse {
+		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
+	}
 	return p, nil
 }
 

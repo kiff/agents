@@ -113,3 +113,49 @@ func TestTheWholeToolSchemaIsSent(t *testing.T) {
 		t.Fatalf("sent schema %s\nwant %s", got, schema)
 	}
 }
+
+// sent is the request body the adapter sends for req.
+func sent(t *testing.T, req model.Request) map[string]any {
+	t.Helper()
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{stream[0], `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`, `{"type":"message_stop"}`} {
+			var head struct{ Type string }
+			_ = json.Unmarshal([]byte(ev), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, ev)
+		}
+	}))
+	defer srv.Close()
+	m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("test"), option.WithMaxRetries(0))
+	if _, err := m.Turn(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// A turn that forbids tool use still sends the tools, with tool_choice none:
+// its messages hold a tool call and its result, which a request without tools
+// can't carry. A turn that doesn't forbid it sends no tool_choice.
+func TestNoToolUseSendsTheToolsAndChoiceNone(t *testing.T) {
+	req := model.Request{Model: "test-model", MaxTokens: 64, NoToolUse: true,
+		Messages: []model.Message{
+			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Refund ch_1."}}},
+			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "refund", Input: json.RawMessage(`{"charge":"ch_1"}`)}}},
+			{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: "Held for the owner.", IsError: true}}},
+		},
+		Tools: []model.ToolSpec{{Name: "refund", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+	body := sent(t, req)
+	if tools, _ := body["tools"].([]any); len(tools) != 1 {
+		t.Fatalf("sent tools %v", body["tools"])
+	}
+	if choice, _ := body["tool_choice"].(map[string]any); choice["type"] != "none" || len(choice) != 1 {
+		t.Fatalf("sent tool_choice %v", body["tool_choice"])
+	}
+	req.NoToolUse = false
+	if body := sent(t, req); body["tool_choice"] != nil {
+		t.Fatalf("a turn allowed to use tools sent tool_choice %v", body["tool_choice"])
+	}
+}

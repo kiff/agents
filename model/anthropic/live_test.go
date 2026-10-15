@@ -60,4 +60,22 @@ func TestLiveTurn(t *testing.T) {
 	if second.Stop != model.EndTurn || !strings.Contains(text.String(), "42") || streamed == 0 {
 		t.Fatalf("second turn: stop %s, text %q, streamed %d bytes", second.Stop, text.String(), streamed)
 	}
+
+	// The turn the loop takes when KIFF holds a call: the conversation holds
+	// a tool call and its result, and the model must answer in text. The API
+	// takes it with the tools offered and tool use forbidden.
+	held := append(msgs[:1:1], model.Message{Role: model.Assistant, Blocks: first.Blocks},
+		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: call.CallID, Result: "Held for the owner's answer.", IsError: true}}})
+	third, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 256, Messages: held, Tools: tools, NoToolUse: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range third.Blocks {
+		if b.Kind == model.ToolUse {
+			t.Fatalf("a turn with tool use forbidden called %s", b.Tool)
+		}
+	}
+	if third.Stop != model.EndTurn || len(third.Blocks) == 0 {
+		t.Fatalf("third turn: stop %s, blocks %+v", third.Stop, third.Blocks)
+	}
 }
