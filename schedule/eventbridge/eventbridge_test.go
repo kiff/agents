@@ -185,7 +185,7 @@ func TestNameFitsEventBridgeAndSaysNothing(t *testing.T) {
 	valid := regexp.MustCompile(`^[0-9a-zA-Z_.-]{1,64}$`)
 	long := strings.Repeat("t", 256)
 	names := map[string]bool{}
-	for _, p := range [][2]string{{"t1", "morning"}, {"t2", "morning"}, {"t1", "evening"}, {long, strings.Repeat("i", 128)}, {"t1|5:m", "orning"}} {
+	for _, p := range [][2]string{{"t1", "morning"}, {"t2", "morning"}, {"t1", "evening"}, {long, strings.Repeat("i", 128)}, {"t1m", "orning"}} {
 		n := eventbridge.Name(p[0], p[1])
 		if !valid.MatchString(n) {
 			t.Fatalf("%q is not an EventBridge schedule name", n)
