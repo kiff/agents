@@ -125,7 +125,10 @@ type sse struct {
 // stream posts or gets path as tenant and reads the event stream to its end.
 func (f *runFixture) stream(tenant, method, path, body string) (int, []sse) {
 	f.t.Helper()
-	req, _ := http.NewRequest(method, f.srv.URL+path, strings.NewReader(body))
+	// A stream that never ends fails here, not at the test binary's timeout.
+	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(sctx, method, f.srv.URL+path, strings.NewReader(body))
 	req.Header.Set("X-Test-Tenant", tenant)
 	resp, err := f.srv.Client().Do(req)
 	if err != nil {
@@ -142,6 +145,9 @@ func (f *runFixture) stream(tenant, method, path, body string) (int, []sse) {
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
 		line := sc.Text()
+		if sctx.Err() != nil {
+			break
+		}
 		switch {
 		case line == "":
 			out = append(out, cur)
@@ -155,6 +161,9 @@ func (f *runFixture) stream(tenant, method, path, body string) (int, []sse) {
 				f.t.Fatalf("data %q: %v", line, err)
 			}
 		}
+	}
+	if sctx.Err() != nil {
+		f.t.Fatalf("%s %s: the stream didn't end", method, path)
 	}
 	return resp.StatusCode, out
 }
