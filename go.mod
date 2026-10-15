@@ -2,9 +2,19 @@ module github.com/kiff/agents
 
 go 1.25
 
-require github.com/anthropics/anthropic-sdk-go v1.81.0
+require (
+	github.com/anthropics/anthropic-sdk-go v1.81.0
+	github.com/aws/aws-sdk-go-v2 v1.47.3
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
+	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.70.3
+)
 
 require (
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.6 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.6 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.21 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.13.6 // indirect
+	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect

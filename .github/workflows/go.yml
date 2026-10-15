@@ -19,3 +19,21 @@ jobs:
       - run: go test -race ./...
       - name: Benchmarks still run
         run: go test -run '^$' -bench . -benchtime 1000x ./...
+  dynamodb:
+    # The DynamoDB store against DynamoDB Local: tests never touch AWS, and
+    # each one deletes the table it made.
+    runs-on: ubuntu-latest
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:3.3.1
+        ports:
+          - 8000:8000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: DynamoDB store tests
+        env:
+          DYNAMODB_ENDPOINT: http://localhost:8000
+        run: go test -race -count=1 -v ./store/dynamodb/ 2>&1 | grep -E -- "^ *(--- |PASS|FAIL|ok|panic)|_test.go" | grep -v "=== RUN"; exit ${PIPESTATUS[0]}
