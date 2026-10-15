@@ -43,12 +43,12 @@ server gets it from the verified caller, and every store call is scoped by it.
 |---|---|---|
 | PENDING | RUNNING | An invocation claims it (compare-and-set) and takes its lease |
 | PENDING | CANCELLED | Cancelled before it starts |
-| PENDING | ERROR | Its invocation failed, or its lease ran out, before it started |
+| PENDING | ERROR | Its invocation failed, or no invocation claimed it in time |
 | RUNNING | COMPLETED | The agent answered, or a cap stopped it |
 | RUNNING | ERROR | It failed, or its lease ran out (crash, timeout) |
 | RUNNING | CANCELLED | Cancelled; it stops at its next checkpoint |
 | RUNNING | PAUSED | KIFF holds at least one of its calls |
-| PAUSED | RUNNING | Every requirement resolved; continue, same run ID |
+| PAUSED | RUNNING | Every requirement resolved; continue claims it with a new lease, same run ID |
 | PAUSED | CANCELLED | Cancelled; its held calls are withdrawn in KIFF first |
 
 COMPLETED, ERROR and CANCELLED are final.
@@ -61,6 +61,12 @@ COMPLETED, ERROR and CANCELLED are final.
   model's message and the results of the calls KIFF didn't hold. Requirements
   and that turn belong to the run, not to its events, so the keep rules never
   drop them before the run ends: continuing never depends on what was kept.
+- **A hold that nobody answers expires** in KIFF: after the Card's hold expiry
+  (10 minutes by default, 7 days at most), and expiry means refused; a held
+  call never runs on silence. Each requirement records that expiry. Once it
+  has passed with no answer, the requirement counts as refused, and the sweep
+  continues the run so the agent says so; the run then ends and retention
+  starts again. So a paused run keeps what it holds for 7 days at most.
 - **Continue** happens once every requirement is resolved. KIFF resolves them,
   only KIFF: the server learns of an answer from KIFF's signed hold-answered
   alert, or by asking KIFF, never from a request that claims it. Continuing
@@ -91,11 +97,11 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | Package | Holds | Status |
 |---|---|---|
 | `session` | Sessions, events, keep rules, the Recorder; ports `Store`, `Notes` | Built (#1). Changes, in a PR of their own: a session becomes a thread of runs; events carry their run; "until the end" means the run's end; a session with a paused run doesn't expire |
-| `run` | Run, Status, Requirement (the held call and KIFF's operation ID), transitions, the lease; port `Runs` | To build |
+| `run` | Run, Status, Requirement (the held call, KIFF's operation ID and the hold's expiry), transitions, the lease; port `Runs` | To build |
 | `agent` | The loop: model → tools → model, caps, stop on a hold | Built (#2). Returns *paused* with requirements instead of ending; resumes from a paused run |
 | `chat` | A message as a run in the current conversation | Built (#2). Becomes a thin layer over runs |
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
-| `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). `tool/kiff` sends and records KIFF's operation ID for each call, and collects a held call's outcome by it (step 4) |
+| `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). To add in step 4: `tool/kiff` sends and records KIFF's operation ID for each call, and collects a held call's outcome by it |
 | `hook` | Before a run (input checks), around each tool call, after a run (output checks); background hooks for notifications | To build, when a check needs it |
 | `registry` | Stored agent definitions; port `Agents` | To build |
 | `schedule` | Schedules; port `Scheduler`, EventBridge Scheduler as the adapter | To build |
@@ -123,10 +129,10 @@ verified; the phone never calls it directly.
 | `GET /sessions?agent_id=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their runs |
 | `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |
-| `POST /kiff/alerts` | KIFF's signed hold-answered alert: resolve the requirement, continue the run in the background |
+| `POST /kiff/alerts` | KIFF's signed hold-answered alert: resolve the requirement, continue the run in the background. Answers 200 once the answer is recorded, whatever the run's state (a repeat, a cancelled run), so KIFF stops redelivering |
 | `GET /evals`, `GET /evals/{id}` | Eval runs and their cases, each linked to the run it produced |
 | `GET /usage?agent_id=&from=&to=` | Runs, tokens and cost per agent and per day: what a price is set from |
-| `GET /ops/runs`, `GET /ops/runs/{id}`, `GET /ops/evals`, `GET /ops/usage` | Operators only, read-only, across tenants: what the console reads |
+| `GET /ops/runs`, `GET /ops/runs/{id}`, `GET /ops/runs/{id}/events` (SSE while it runs), `GET /ops/sessions/{id}`, `GET /ops/agents`, `GET /ops/agents/{id}/memories`, `GET /ops/schedules`, `GET /ops/evals`, `GET /ops/usage` | Operators only, read-only, across tenants: what the console reads |
 | `GET /health` | Liveness |
 
 Errors say what to do: 404 for anything outside the caller's tenant, 409 for a
@@ -136,8 +142,9 @@ tenant's concurrency is used up.
 ## The console
 
 Where we see what the agents do, as the owner sees it on the phone, and more.
-It is served by the same server at `/console`, and reads the API's operator
-routes.
+It is served by the same server at `/console`, reads the API's operator
+routes, and changes nothing: switching a schedule or an agent goes through
+tafs.
 
 | Page | Shows |
 |---|---|
@@ -145,7 +152,7 @@ routes.
 | A run | Its timeline: messages, tool calls and results while kept, KIFF's decisions linked to app.kiff.dev, usage; live while it runs |
 | Evals | Eval runs: cases with their results, score and cost per item over time, each case linked to its run |
 | Sessions and memory | Threads with their runs; an agent's notes |
-| Agents and schedules | Definitions; schedules with their next firing and history; on, off, trigger now |
+| Agents and schedules | Definitions; schedules with their next firing and history |
 | Cost | Per agent, per run and per item over time |
 
 It is for operators (the people building and running tafs), not for a business
@@ -182,12 +189,15 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
 - **On Lambda.** One function serves the API. A background run is stored as
   PENDING before the 202, then executed by an asynchronous invocation of the
   same function, with Lambda's own retries off. The invocation claims the run
-  with a compare-and-set and holds a lease on it, renewed at each checkpoint.
-  A crash or a timeout can't write ERROR itself, so two things do: the
-  function's on-failure destination marks the run ERROR, and a scheduled sweep
-  marks ERROR any PENDING or RUNNING run whose lease ran out. A run is never
-  left RUNNING. Runs must fit Lambda's 15 minutes; the turn and cost caps keep
-  them well inside.
+  with a compare-and-set and takes a lease that ends a minute after the
+  invocation's own deadline: a healthy run can't outlive it, so it needs no
+  heartbeat, and every write the run makes checks it still holds the lease. A
+  crash or a timeout can't write ERROR itself, so two things do: for a
+  background run, the function's on-failure destination; for any run, a
+  scheduled sweep that marks ERROR a RUNNING run whose lease ran out, or a
+  PENDING run no invocation claimed in time. The same sweep continues paused
+  runs whose holds expired unanswered. A run is never left RUNNING. Runs
+  must fit Lambda's 15 minutes; the turn and cost caps keep them well inside.
 - **Schedules** are EventBridge Scheduler entries that start ordinary background
   runs; a run that pauses counts as paused, not failed.
 - **Woken by work.** A trigger (a Stripe event, an e-invoice, a hold answered)
