@@ -9,7 +9,8 @@ continued), the runner, chat, schedules, the registry, the server's routes and
 evals. How it fits together and the order of work:
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Docs: [runs](docs/runs.md).
+Docs: [runs, by example](docs/runs.md); [what each issue delivers](docs/README.md),
+with the tests that guard it.
 
 ## What it holds to
 

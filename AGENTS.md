@@ -47,13 +47,19 @@ registry/secretsmanager adapter: Secrets on AWS Secrets Manager, each key under 
 schedule/           schedules: cron in a time zone, kept in step with what fires them; ports Schedules, Scheduler
 schedule/scheduletest the checks every Schedules store must pass
 schedule/eventbridge adapter: the Scheduler on EventBridge Scheduler
+server/             the HTTP API, scoped by the verified caller; port Runner
+server/lambdaurl    adapter: a Lambda function URL with AWS_IAM auth, streaming
+eval/               eval cases, checks, the judge; grading runs
 cmd/chat            a terminal chat against KIFF, for test mode
+cmd/eval            grades runs against the eval cases
+cmd/lambda          the server and schedule firings on Lambda
+docs/issues/        what each issue delivers, with the tests that guard it
 ```
 
 Model, tools, the run loop and evals follow the same shape: a core package
 with its port, and one package per adapter (for example `model/anthropic`).
 Wiring happens in `cmd/`. ARCHITECTURE.md lists the packages still to build
-(`server`, `console`, `hook`) and where each fits;
+(`console`, `hook`) and where each fits;
 today chat still opens one session per message, until step 1 of its order of
 work lands.
 
@@ -67,6 +73,9 @@ Several assistants build this in parallel, and they don't talk to each other.
 Issues and PRs are the shared record.
 
 - Take one issue at a time. Comment on it when you start, so the others see it.
+- A PR that delivers part of an issue updates that issue's page in
+  `docs/issues/` in the same PR: what it adds, the tests that guard it, and
+  what is left.
 - The shared types are the contract between issues: sessions, events, the model
   interface and tools. Change them in a PR of their own, and comment on the
   issues that use them.
