@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -35,165 +35,194 @@ func NewRecorderAt(store Store, policy Policy, now func() time.Time) (*Recorder,
 	return &Recorder{store: store, policy: policy, now: now}, nil
 }
 
-// Start creates a running session and returns the Recording that records it. The
-// caller must End the run: that is what stops its writer.
+// Start creates a running session and returns the Recording that records it.
+// The caller must End it: that is what stops its writer.
 func (r *Recorder) Start(ctx context.Context, tenant, agent string, kind Kind) (*Recording, error) {
 	now := r.now().UTC()
 	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Status: Running, Started: now, Updated: now}
 	if err := r.store.Create(ctx, s); err != nil {
 		return nil, err
 	}
-	run := &Recording{
-		r:     r,
-		s:     s,
-		queue: make(chan item, 4*MaxBatch),
-	}
-	go run.write(context.WithoutCancel(ctx))
-	return run, nil
+	rec := &Recording{r: r, s: s, wake: make(chan struct{}, 1), changed: make(chan struct{})}
+	go rec.write(context.WithoutCancel(ctx))
+	return rec, nil
 }
 
-// Recording records one session. Record doesn't wait for the Store: one goroutine
-// per recording writes events in the order they were recorded, in batches of what
-// queued while the last write was in flight. Flush and End wait for it.
+// Recording records one session, and is its only writer.
 //
-// Record, Flush and End are safe to call from several goroutines (for example,
-// tool calls running in parallel); events then keep the order Record saw them.
+// Record never waits: it numbers and queues the event, and one goroutine per
+// recording writes the queue to the Store in order, in batches of what queued
+// during the last write. Flush and End wait for it, and every wait honours its
+// context.
+//
+// A failed write loses nothing: its events stay queued, Flush and End return
+// the error, and the next Record, Flush or End tries again. A retry can't store
+// an event twice, because the Store skips a Seq it already has. End can
+// likewise be called again after a timeout or a failed Store.End.
+//
+// All methods are safe to call from several goroutines (for example, tool
+// calls running in parallel); events keep the order Record saw them in.
 type Recording struct {
-	r     *Recorder
-	s     Session
-	queue chan item
+	r    *Recorder
+	s    Session
+	wake chan struct{} // pokes the writer; holds at most one poke
 
-	mu    sync.Mutex // orders sends on queue with closing it
-	ended bool
+	mu       sync.Mutex
+	pending  []Event       // recorded, not yet stored, in order
+	queued   int64         // events recorded so far, and the last Seq given
+	stored   int64         // events the Store has accepted
+	failed   error         // the last write's error, until the next attempt
+	closed   bool          // End was called: no more Record
+	finished bool          // the Store has ended the session
+	changed  chan struct{} // closed and replaced whenever stored or failed changes
 
-	// failed holds the first write error; every later call returns it. The
-	// writer sets it without mu, so a Record blocked on a full queue can't
-	// hold the writer up.
-	failed atomic.Pointer[error]
+	ending sync.Mutex // one End at a time
 }
 
-// item is an event to write, or, with done set, a flush marker.
-type item struct {
-	e    Event
-	done chan error
-}
+// Session is the session this recording records.
+func (rec *Recording) Session() Session { return rec.s }
 
-// Session is the session this run records.
-func (run *Recording) Session() Session { return run.s }
-
-// Record queues one event as its kind's rule says. It returns ErrEnded after
-// End, and the error of an earlier write that failed.
-func (run *Recording) Record(kind EventKind, body any) error {
-	rule := run.r.policy[kind]
-	if rule.Keep == Never {
-		return run.err()
-	}
+// Record queues one event as its kind's rule says. It fails only after End, or
+// when body can't be encoded; write errors come from Flush and End.
+func (rec *Recording) Record(kind EventKind, body any) error {
+	rule := rec.r.policy[kind]
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	now := run.r.now().UTC()
-	e := Event{Session: run.s.ID, Time: now, Kind: kind, Body: raw, UntilEnd: rule.Keep == UntilEnd}
+	now := rec.r.now().UTC()
+	e := Event{Session: rec.s.ID, Time: now, Kind: kind, Body: raw, UntilEnd: rule.Keep == UntilEnd}
 	if rule.Keep == Kept && rule.Retention > 0 {
 		e.Expires = now.Add(rule.Retention)
 	}
-	if err := run.err(); err != nil {
-		return err
-	}
-	run.mu.Lock()
-	defer run.mu.Unlock()
-	if run.ended {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.closed {
 		return ErrEnded
 	}
-	run.queue <- item{e: e}
+	if rule.Keep == Never {
+		return nil
+	}
+	rec.queued++
+	e.Seq = rec.queued
+	rec.pending = append(rec.pending, e)
+	rec.poke()
 	return nil
 }
 
-// Flush waits until every event recorded so far is stored.
-func (run *Recording) Flush(ctx context.Context) error {
-	done := make(chan error, 1)
-	run.mu.Lock()
-	if run.ended {
-		run.mu.Unlock()
+// Flush waits until every event recorded so far is stored, retrying a write
+// that failed.
+func (rec *Recording) Flush(ctx context.Context) error {
+	rec.mu.Lock()
+	finished := rec.finished
+	rec.mu.Unlock()
+	if finished {
 		return ErrEnded
 	}
-	run.queue <- item{done: done}
-	run.mu.Unlock()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return rec.flush(ctx)
 }
 
-// End stores what's queued, stops the writer and ends the session. Events kept
-// only until the end are dropped with it.
-func (run *Recording) End(ctx context.Context, status Status) error {
-	done := make(chan error, 1)
-	run.mu.Lock()
-	if run.ended {
-		run.mu.Unlock()
+// End stores what's queued and ends the session; events kept only until the
+// end are dropped with it. After an error (a timeout, a failed write, a failed
+// Store.End) nothing more can be recorded, and End can be called again to
+// finish. Once it has succeeded, End returns ErrEnded.
+func (rec *Recording) End(ctx context.Context, status Status) error {
+	rec.ending.Lock()
+	defer rec.ending.Unlock()
+	rec.mu.Lock()
+	if rec.finished {
+		rec.mu.Unlock()
 		return ErrEnded
 	}
-	run.ended = true
-	run.queue <- item{done: done}
-	close(run.queue)
-	run.mu.Unlock()
-	select {
-	case err := <-done:
-		if err != nil {
+	rec.closed = true
+	rec.mu.Unlock()
+
+	if err := rec.flush(ctx); err != nil {
+		return err
+	}
+	err := rec.r.store.End(ctx, rec.s.Tenant, rec.s.ID, status)
+	if err != nil && !errors.Is(err, ErrEnded) { // ErrEnded: an earlier attempt got through
+		return err
+	}
+	rec.mu.Lock()
+	rec.finished = true
+	rec.poke() // the writer sees closed with nothing pending, and stops
+	rec.mu.Unlock()
+	return nil
+}
+
+// flush asks for a write and waits until stored reaches what's queued now, or
+// that write fails.
+func (rec *Recording) flush(ctx context.Context) error {
+	rec.mu.Lock()
+	target := rec.queued
+	rec.failed = nil
+	rec.poke()
+	for rec.stored < target {
+		if rec.failed != nil {
+			err := rec.failed
+			rec.mu.Unlock()
 			return err
 		}
-	case <-ctx.Done():
-		return ctx.Err()
+		changed := rec.changed
+		rec.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		rec.mu.Lock()
 	}
-	return run.r.store.End(ctx, run.s.Tenant, run.s.ID, status)
-}
-
-func (run *Recording) err() error {
-	if p := run.failed.Load(); p != nil {
-		return *p
-	}
+	rec.mu.Unlock()
 	return nil
 }
 
-// write is the run's writer: it takes what's queued, up to MaxBatch events,
-// appends it in one call, and answers flush markers once everything before
-// them is stored.
-func (run *Recording) write(ctx context.Context) {
-	batch := make([]Event, 0, MaxBatch)
-	var markers []chan error
-	for first := range run.queue {
-		batch, markers = batch[:0], markers[:0]
-		add := func(it item) {
-			if it.done != nil {
-				markers = append(markers, it.done)
-			} else {
-				batch = append(batch, it.e)
-			}
-		}
-		add(first)
-	drain:
-		for len(batch) < MaxBatch && len(markers) == 0 {
-			select {
-			case it, ok := <-run.queue:
-				if !ok {
-					break drain
+// poke wakes the writer without waiting. Called with mu held.
+func (rec *Recording) poke() {
+	select {
+	case rec.wake <- struct{}{}:
+	default:
+	}
+}
+
+// broadcast tells waiters that stored or failed changed. Called with mu held.
+func (rec *Recording) broadcast() {
+	close(rec.changed)
+	rec.changed = make(chan struct{})
+}
+
+// write is the recording's writer. When poked, it appends what's pending, a
+// batch at a time, until nothing is left or a write fails; then it waits for
+// the next poke. It stops once the recording is closed and nothing is pending.
+func (rec *Recording) write(ctx context.Context) {
+	for range rec.wake {
+		for {
+			rec.mu.Lock()
+			if len(rec.pending) == 0 {
+				done := rec.closed
+				rec.mu.Unlock()
+				if done {
+					return
 				}
-				add(it)
-			default:
-				break drain
+				break
 			}
-		}
-		err := run.err()
-		if err == nil && len(batch) > 0 {
-			if err = run.r.store.Append(ctx, run.s.Tenant, run.s.ID, batch); err != nil {
-				run.failed.CompareAndSwap(nil, &err)
+			n := min(len(rec.pending), MaxBatch)
+			batch := rec.pending[:n:n] // Record appends after it, never into it
+			rec.mu.Unlock()
+
+			err := rec.r.store.Append(ctx, rec.s.Tenant, rec.s.ID, batch)
+
+			rec.mu.Lock()
+			if err != nil {
+				rec.failed = err
+				rec.broadcast()
+				rec.mu.Unlock()
+				break // the batch stays pending; the next poke retries it
 			}
-		}
-		for _, done := range markers {
-			done <- err
+			rec.pending = rec.pending[n:]
+			rec.stored += int64(n)
+			rec.broadcast()
+			rec.mu.Unlock()
 		}
 	}
 }

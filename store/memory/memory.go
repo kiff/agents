@@ -2,6 +2,7 @@
 package memory
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"slices"
@@ -21,7 +22,7 @@ type Store struct {
 type memSession struct {
 	s      session.Session
 	events []session.Event
-	seq    int64
+	seq    int64 // the last Seq stored, even if its event is gone since
 }
 
 // New returns an empty store.
@@ -60,12 +61,22 @@ func (m *Store) Append(_ context.Context, tenant, id string, events []session.Ev
 	if ms.s.Status != session.Running {
 		return session.ErrEnded
 	}
+	next, last := ms.seq, ms.s.Updated
+	var add []session.Event
 	for _, e := range events {
-		ms.seq++
-		e.Session, e.Seq = id, ms.seq
-		ms.events = append(ms.events, e)
-		ms.s.Updated = e.Time
+		if e.Seq <= ms.seq {
+			continue // stored by an earlier attempt
+		}
+		if e.Seq != next+1 {
+			return session.ErrGap
+		}
+		next = e.Seq
+		e.Session, e.Body = id, bytes.Clone(e.Body)
+		add = append(add, e)
+		last = e.Time
 	}
+	ms.events = append(ms.events, add...)
+	ms.seq, ms.s.Updated = next, last
 	return nil
 }
 
@@ -76,7 +87,11 @@ func (m *Store) Read(_ context.Context, tenant, id string) (session.Session, []s
 	if ms == nil {
 		return session.Session{}, nil, session.ErrNotFound
 	}
-	return ms.s, slices.Clone(ms.events), nil
+	out := slices.Clone(ms.events)
+	for i := range out {
+		out[i].Body = bytes.Clone(out[i].Body)
+	}
+	return ms.s, out, nil
 }
 
 func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]session.Session, error) {

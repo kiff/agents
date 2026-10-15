@@ -31,6 +31,8 @@ func Run(t *testing.T, newBackend func() Backend) {
 	t.Run("TenantsAreApart", func(t *testing.T) { tenantsAreApart(t, newBackend()) })
 	t.Run("ListNewestFirst", func(t *testing.T) { listNewestFirst(t, newBackend()) })
 	t.Run("ConcurrentRecordsAllLand", func(t *testing.T) { concurrentRecordsAllLand(t, newBackend()) })
+	t.Run("BodiesAreCopied", func(t *testing.T) { bodiesAreCopied(t, newBackend()) })
+	t.Run("RetriedAppendStoresOnce", func(t *testing.T) { retriedAppendStoresOnce(t, newBackend()) })
 	t.Run("Notes", func(t *testing.T) { notes(t, newBackend()) })
 }
 
@@ -329,5 +331,62 @@ func notes(t *testing.T, b Backend) {
 	}
 	if n := listNotes(t, b, "t1", "refunds"); len(n) != 1 || n[0].Name != "b" {
 		t.Fatalf("after forgetting: %+v", n)
+	}
+}
+
+// created makes a running session straight on the store, for checks of Append.
+func created(t *testing.T, b Backend) string {
+	t.Helper()
+	s := session.Session{ID: "s1", Tenant: "t1", Agent: "refunds", Kind: session.KindRun, Status: session.Running}
+	check(t, b.Create(ctx, s))
+	return s.ID
+}
+
+func event(seq int64, body string) session.Event {
+	return session.Event{Seq: seq, Kind: session.Report, Body: []byte(body)}
+}
+
+func bodies(t *testing.T, b Backend, id string) []string {
+	t.Helper()
+	_, events, err := b.Read(ctx, "t1", id)
+	check(t, err)
+	var out []string
+	for _, e := range events {
+		out = append(out, string(e.Body))
+	}
+	return out
+}
+
+// What's stored can't be changed through the slices that went in or came out.
+func bodiesAreCopied(t *testing.T, b Backend) {
+	id := created(t, b)
+	in := []session.Event{event(1, `"stored"`)}
+	check(t, b.Append(ctx, "t1", id, in))
+	copy(in[0].Body, `"change"`)
+	_, out, err := b.Read(ctx, "t1", id)
+	check(t, err)
+	copy(out[0].Body, `"change"`)
+	if got := bodies(t, b, id); !slices.Equal(got, []string{`"stored"`}) {
+		t.Fatalf("stored body changed from outside: %v", got)
+	}
+}
+
+// An Append retried after its answer was lost stores nothing twice; a gap is
+// refused.
+func retriedAppendStoresOnce(t *testing.T, b Backend) {
+	id := created(t, b)
+	check(t, b.Append(ctx, "t1", id, []session.Event{event(1, `1`), event(2, `2`)}))
+	check(t, b.Append(ctx, "t1", id, []session.Event{event(1, `1`), event(2, `2`), event(3, `3`)}))
+	if got := bodies(t, b, id); !slices.Equal(got, []string{`1`, `2`, `3`}) {
+		t.Fatalf("after a retry: %v", got)
+	}
+	if err := b.Append(ctx, "t1", id, []session.Event{event(5, `5`)}); !errors.Is(err, session.ErrGap) {
+		t.Fatalf("a gap: err = %v, want ErrGap", err)
+	}
+	if err := b.Append(ctx, "t1", id, []session.Event{event(4, `4`), event(6, `6`)}); !errors.Is(err, session.ErrGap) {
+		t.Fatalf("a gap inside a batch: err = %v, want ErrGap", err)
+	}
+	if got := bodies(t, b, id); !slices.Equal(got, []string{`1`, `2`, `3`}) {
+		t.Fatalf("a refused batch stored part of itself: %v", got)
 	}
 }

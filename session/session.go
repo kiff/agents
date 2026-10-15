@@ -56,11 +56,11 @@ const (
 // EventKinds lists every kind, so a Policy can be checked for gaps.
 var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, Report, MemoryNote, Usage, Error}
 
-// Event is one thing that happened in a session. Seq orders a session's events
-// and is set by the Store. Expires is when the event may be purged (zero: it
-// lives as long as its session); UntilEnd events are dropped when the session
-// ends. Events are written by one goroutine per session (see Recording), so a Store
-// sees each session's appends one at a time.
+// Event is one thing that happened in a session. Seq numbers a session's
+// events from 1, without gaps, and is set by the Recording, the session's only
+// writer. Expires is when the event may be purged (zero: it lives as long as
+// its session); UntilEnd events are dropped when the session ends. Body
+// belongs to the event: a Store copies it in and out.
 type Event struct {
 	Session  string          `json:"session"`
 	Seq      int64           `json:"seq"`
@@ -82,11 +82,12 @@ type UsageBody struct {
 	CostMicroUSD int64  `json:"cost_micro_usd"`
 }
 
-// ErrNotFound means no such session for this tenant; ErrEnded, that it took no
-// more events.
+// ErrNotFound means no such session for this tenant; ErrEnded, that it takes no
+// more events; ErrGap, that an Append skipped a Seq.
 var (
 	ErrNotFound = errors.New("session: not found")
 	ErrEnded    = errors.New("session: ended")
+	ErrGap      = errors.New("session: events out of sequence")
 )
 
 // Store keeps sessions and their events. Every read and delete names the
@@ -95,10 +96,13 @@ var (
 type Store interface {
 	// Create stores a new session.
 	Create(ctx context.Context, s Session) error
-	// Append adds events to a running session, in order and all or none,
-	// numbering them on from the session's last Seq.
+	// Append adds events to a running session, all or none. An event whose
+	// Seq the session already reached is skipped, so a retried Append stores
+	// nothing twice; any other Seq must follow on without a gap (ErrGap). The
+	// Store keeps its own copy of each Body.
 	Append(ctx context.Context, tenant, id string, events []Event) error
-	// Read returns a session and its events in order.
+	// Read returns a session and its events in order. The events are the
+	// caller's: changing them doesn't change what's stored.
 	Read(ctx context.Context, tenant, id string) (Session, []Event, error)
 	// List returns an agent's sessions, most recently updated first, at most limit.
 	List(ctx context.Context, tenant, agent string, limit int) ([]Session, error)
