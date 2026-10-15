@@ -1,6 +1,7 @@
 # AGENTS.md
 
-For AI assistants working on this repository. Read this first, then the README.
+For AI assistants working on this repository. Read this first, then the README
+and ARCHITECTURE.md, which says where everything goes and in what order.
 
 ## Rules
 
