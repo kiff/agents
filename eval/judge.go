@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+
+	"github.com/kiff/agents/model"
 )
 
 // Judge asks a model whether a piece of a run meets a rule. The model id and
 // its price are configuration, never constants here.
 type Judge struct {
-	Model   Model
+	Model   model.Model
 	ModelID string
-	Price   Price
+	Price   model.Price
 
 	spent atomic.Int64 // millionths of a dollar, over every Ask
 }
@@ -30,10 +32,10 @@ var ErrVerdict = errors.New("eval: the judge gave no verdict")
 // Ask grades text against rule.
 func (j *Judge) Ask(ctx context.Context, rule, text string) (Grade, error) {
 	prompt := fmt.Sprintf("Rule: %s\n\n<graded>\n%s\n</graded>", rule, text)
-	reply, err := j.Model.Turn(ctx, Request{
+	reply, err := j.Model.Turn(ctx, model.Request{
 		Model:     j.ModelID,
 		System:    judgeSystem,
-		Messages:  []Message{{Role: User, Blocks: []Block{{Kind: Text, Text: prompt}}}},
+		Messages:  []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: prompt}}}},
 		MaxTokens: 300,
 	}, nil)
 	if err != nil {
@@ -42,7 +44,7 @@ func (j *Judge) Ask(ctx context.Context, rule, text string) (Grade, error) {
 	j.spent.Add(j.Price.Cost(reply.Usage))
 	var out strings.Builder
 	for _, b := range reply.Blocks {
-		if b.Kind == Text {
+		if b.Kind == model.Text {
 			out.WriteString(b.Text)
 		}
 	}

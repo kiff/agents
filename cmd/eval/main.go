@@ -1,15 +1,17 @@
 // Command eval grades recorded runs against the eval cases and prints a score
 // and cost per case.
 //
-//	eval [-ids seed.json] [-baseline base.json] [-out results.json] case=session...
+//	eval [-judge-model id -judge-price in,out] [-ids seed.json] [-baseline base.json] [-out results.json] case=session...
 //
 // Each argument names a case (refunds, chargebacks) and the Managed Agents
 // session of the run to grade, read with ANTHROPIC_API_KEY from the
 // environment. With -baseline, a case that scores lower than it did there
 // fails the command. -ids is the seed's Stripe ids by item reference.
 //
-// Checks that need a judge are skipped until the model port (#2) is wired in
-// here; the output says which.
+// With -judge-model, checks that need a judge ask that model on the Claude API,
+// with the same key; its price is in millionths of a dollar per million input
+// and output tokens. Without it, those checks are skipped and the output says
+// which.
 package main
 
 import (
@@ -21,11 +23,16 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+
+	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
 	"github.com/kiff/agents/eval/managed"
+	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/model/anthropic"
 )
 
 func main() {
@@ -44,12 +51,16 @@ type reader interface {
 
 var newReader = func(base, key string) reader { return managed.New(base, key, nil) }
 
+var newModel = func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) }
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	idsPath := fs.String("ids", "", "the seed's Stripe ids by item reference (JSON)")
 	basePath := fs.String("baseline", "", "results to compare against (JSON); a lower score fails")
 	outPath := fs.String("out", "", "also write the results here (JSON)")
+	judgeModel := fs.String("judge-model", "", "the judge's model id; without it, judged checks are skipped")
+	judgePrice := fs.String("judge-price", "", "the judge's input,output price in millionths of a dollar per million tokens")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -69,6 +80,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		return errors.New("set ANTHROPIC_API_KEY to read the runs")
 	}
 	src := newReader(env("ANTHROPIC_BASE_URL"), key)
+	var judge *eval.Judge
+	if *judgeModel != "" {
+		p, err := parsePrice(*judgePrice)
+		if err != nil {
+			return err
+		}
+		judge = &eval.Judge{Model: newModel(key), ModelID: *judgeModel, Price: p}
+	}
 
 	var results []eval.Result
 	for _, arg := range fs.Args() {
@@ -81,13 +100,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		if err != nil {
 			return err
 		}
-		res, err := s.WithIDs(ids).Case().Grade(ctx, r, nil)
+		res, err := s.WithIDs(ids).Case().Grade(ctx, r, judge)
 		if err != nil {
 			return err
 		}
 		results = append(results, res)
-		fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item  (%s)\n",
-			res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), res.Session)
+		fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
+			res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), res.Session)
 		for _, c := range res.Checks {
 			mark := "pass"
 			switch {
@@ -138,6 +157,16 @@ func readJSON(path string, v any) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil
+}
+
+func parsePrice(s string) (model.Price, error) {
+	in, out, ok := strings.Cut(s, ",")
+	i, err1 := strconv.ParseInt(strings.TrimSpace(in), 10, 64)
+	o, err2 := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if !ok || err1 != nil || err2 != nil || i <= 0 || o <= 0 {
+		return model.Price{}, errors.New("-judge-price is input,output in millionths of a dollar per million tokens, both positive")
+	}
+	return model.Price{Input: i, Output: o}, nil
 }
 
 func dollars(micro int64) float64 { return float64(micro) / 1e6 }

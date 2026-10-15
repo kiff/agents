@@ -9,6 +9,7 @@ import (
 
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
+	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/session"
 )
 
@@ -77,8 +78,8 @@ const goodRefundReport = "Refunded T-1001 and T-1006, credited T-1007. T-1004 wa
 // verdict is a judge that passes everything, or fails everything.
 type verdict bool
 
-func (v verdict) Turn(context.Context, eval.Request, func(string)) (eval.Reply, error) {
-	return eval.Reply{Blocks: []eval.Block{{Kind: eval.Text, Text: fmt.Sprintf(`{"pass": %v, "why": "judged"}`, bool(v))}}}, nil
+func (v verdict) Turn(context.Context, model.Request, func(string)) (model.Reply, error) {
+	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: fmt.Sprintf(`{"pass": %v, "why": "judged"}`, bool(v))}}}, nil
 }
 
 func grade(t *testing.T, s cases.Scenario, ids map[string][]string, r eval.Run, j *eval.Judge) eval.Result {
