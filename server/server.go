@@ -72,10 +72,6 @@ type Server struct {
 // Handler returns the API's routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	// A route the API doesn't have answers as every other error does.
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	})
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -113,7 +109,50 @@ func (s *Server) Handler() http.Handler {
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
 	mux.HandleFunc("POST /agents/{id}/runs/{run_id}/resume", s.resumeRun)
-	return mux
+	return jsonErrors{mux}
+}
+
+// jsonErrors answers what the routes don't serve (a path the API doesn't
+// have: 404; a method a path doesn't take: 405, with Allow) as every other
+// error is answered, in JSON. The mux decides which: its own answer runs
+// once, into a recorder, only for a request no route matches.
+type jsonErrors struct{ mux *http.ServeMux }
+
+func (j jsonErrors) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if _, pattern := j.mux.Handler(r); pattern != "" {
+		j.mux.ServeHTTP(w, r)
+		return
+	}
+	rec := &statusRecorder{header: http.Header{}}
+	j.mux.ServeHTTP(rec, r)
+	switch rec.code {
+	case http.StatusNotFound:
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	case http.StatusMethodNotAllowed:
+		w.Header().Set("Allow", rec.header.Get("Allow"))
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "this path doesn't take that method"})
+	default: // a redirect to a path's clean form: the mux's own
+		j.mux.ServeHTTP(w, r)
+	}
+}
+
+// statusRecorder keeps a response's status and header, and drops its body.
+type statusRecorder struct {
+	header http.Header
+	code   int
+}
+
+func (s *statusRecorder) Header() http.Header { return s.header }
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.code == 0 {
+		s.code = code
+	}
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.WriteHeader(http.StatusOK)
+	return len(b), nil
 }
 
 // serve verifies the caller, runs h, and writes what it returns, or its

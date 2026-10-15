@@ -41,7 +41,10 @@ type Runner interface {
 	Start(ctx context.Context, s Start) (run.Run, error)
 	// Execute claims the run and runs it to its next stop (answered, a cap,
 	// paused on a hold, cancelled, failed), passing each event to emit, nil
-	// in the background. It returns the run as stored at that stop.
+	// in the background. It returns the run as stored at that stop. ctx
+	// bounds the run, not the client: the server detaches it from the
+	// request, keeping the invocation's deadline, so a client that goes away
+	// doesn't end the run.
 	//
 	// A cancel can change the run between two of its saves: the server sets
 	// Cancel with a compare-and-set, so the claimant's next save meets
@@ -259,14 +262,30 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-done:
 				return
+			case <-ctx.Done():
+				// The client went away: nothing more to send it. The run
+				// carries on, and the client can resume from its cursor.
+				return
 			case <-tick.C:
+				if sse.gone() {
+					return // a write failed: the client went away
+				}
 				if err := f.catchUp(ctx); err != nil {
 					s.logError(r, "following a run", err)
 				}
 			}
 		}
 	}()
-	end, err := s.Runner.Execute(ctx, c.Tenant, rn.ID, func(e agent.Event) { sse.send("delta", e) })
+	// The run is the invocation's, not the client's: a client that goes away
+	// doesn't stop it. Its context keeps the invocation's deadline, which the
+	// Runner's lease needs.
+	runCtx := context.WithoutCancel(ctx)
+	if dl, ok := ctx.Deadline(); ok {
+		var cancelRun context.CancelFunc
+		runCtx, cancelRun = context.WithDeadline(runCtx, dl)
+		defer cancelRun()
+	}
+	end, err := s.Runner.Execute(runCtx, c.Tenant, rn.ID, func(e agent.Event) { sse.send("delta", e) })
 	close(done)
 	<-followed
 	if err != nil {
@@ -276,6 +295,9 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		} else {
 			end.Status = "" // unknown: the client reads the run
 		}
+	}
+	if ctx.Err() != nil || sse.gone() {
+		return // nobody is left to read the rest
 	}
 	if err := f.catchUp(ctx); err != nil { // what was recorded since the last look
 		s.logError(r, "following a run", err)
@@ -384,11 +406,21 @@ func (s *Server) logError(r *http.Request, msg string, err error) {
 }
 
 // stream writes server-sent events. The run's own goroutines and the
-// follower write to it, so each event is written whole, one at a time.
+// follower write to it, so each event is written whole, one at a time. It
+// remembers a failed write: the client went away, on any server, even where
+// the request's context isn't cancelled for it (a Lambda function URL).
 type stream struct {
-	mu sync.Mutex
-	w  http.ResponseWriter
-	f  http.Flusher
+	mu     sync.Mutex
+	w      http.ResponseWriter
+	f      http.Flusher
+	broken bool
+}
+
+// gone reports whether a write failed: nobody is left to read.
+func (s *stream) gone() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.broken
 }
 
 func newStream(w http.ResponseWriter) *stream {
@@ -410,10 +442,21 @@ func (s *stream) event(name, id string, v any) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if id != "" {
-		fmt.Fprintf(s.w, "id: %s\n", id)
+	if s.broken {
+		return
 	}
-	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, b)
+	var werr error // the write's, apart from the encoding's: an event that
+	// couldn't be encoded is still sent, as its fallback
+	if id != "" {
+		_, werr = fmt.Fprintf(s.w, "id: %s\n", id)
+	}
+	if werr == nil {
+		_, werr = fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, b)
+	}
+	if werr != nil {
+		s.broken = true
+		return
+	}
 	if s.f != nil {
 		s.f.Flush()
 	}
