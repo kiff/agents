@@ -46,8 +46,9 @@ type Runner interface {
 	// A cancel can change the run between two of its saves: the server sets
 	// Cancel with a compare-and-set. run.Save re-reads the run for the
 	// claimant and writes its change onto it; if the run it returns has
-	// Cancel set, the claimant ends it CANCELLED at that checkpoint. A pause
-	// onto it is refused (run.ErrCancelled), so it ends CANCELLED instead.
+	// Cancel set, the claimant ends it CANCELLED at that checkpoint. If KIFF
+	// holds a call, the run pauses with Cancel set: run.Claim takes it again
+	// once KIFF has resolved it, and it ends CANCELLED at its first checkpoint.
 	Execute(ctx context.Context, tenant, id string, emit func(agent.Event)) (run.Run, error)
 }
 

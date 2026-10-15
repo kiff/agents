@@ -38,7 +38,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"NoWriteAfterTheLease", noWriteAfterTheLease},
 		{"ACancelKeepsTheClaimantsSave", aCancelKeepsTheClaimantsSave},
 		{"ASaveAfterAnotherClaimIsRefused", aSaveAfterAnotherClaimIsRefused},
-		{"ARunAskedToStopNeverPauses", aRunAskedToStopNeverPauses},
+		{"ARunCancelledWhileHeldEndsOnceResolved", aRunCancelledWhileHeldEndsOnceResolved},
 		{"ASaveGivesUpOnARunThatKeepsChanging", aSaveGivesUpOnARunThatKeepsChanging},
 		{"APausedRunContinuesWhenResolved", aPausedRunContinuesWhenResolved},
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
@@ -254,45 +254,45 @@ func aCancelKeepsTheClaimantsSave(t *testing.T, s run.Runs, c *clock) {
 	}
 }
 
-// A run asked to stop never pauses: a stale pausing save after a cancel is
-// refused, hands back the run as stored with Cancel set, and the claimant can
-// end it CANCELLED. A pause written with Cancel at once is refused too.
-func aRunAskedToStopNeverPauses(t *testing.T, s run.Runs, c *clock) {
+// A run cancelled while KIFF holds one of its calls pauses, Cancel set, and
+// waits for KIFF. Once KIFF has resolved it, it is claimed again, still asked
+// to stop, so its claimant records the outcomes and ends it CANCELLED. A
+// pending run asked to stop is never claimed.
+func aRunCancelledWhileHeldEndsOnceResolved(t *testing.T, s run.Runs, c *clock) {
 	r := claimed(t, s, c)
 	if _, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	pause := func(n *run.Run) error {
+	paused, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error { // from the stale copy
 		n.Status = run.Paused
 		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund"}}
 		return nil
+	})
+	check(t, err)
+	if paused.Status != run.Paused || !paused.Cancel || paused.Claim != "" {
+		t.Fatalf("paused %+v, want PAUSED, Cancel set", paused)
 	}
-	got, err := run.Save(ctx, s, r, c.now(), pause)
-	if !errors.Is(err, run.ErrCancelled) || !errors.Is(err, run.ErrTransition) {
-		t.Fatalf("a pause after a cancel: err = %v, want ErrCancelled", err)
+	if _, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now()); !errors.Is(err, run.ErrNotReady) {
+		t.Fatalf("claiming it before KIFF answered: err = %v, want ErrNotReady", err)
 	}
-	if got.Status != run.Running || !got.Cancel || got.Claim != "i1" {
-		t.Fatalf("returned %+v, want the stored run, Cancel set", got)
+	_, err = run.Change(ctx, s, paused, c.now(), func(n *run.Run) error { n.Requirements[0].Answered = c.now(); return nil })
+	check(t, err)
+	again, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	if again.Status != run.Running || !again.Cancel || again.Claim != "i2" {
+		t.Fatalf("claimed %+v, want RUNNING, still asked to stop", again)
 	}
-	if stored := get(t, s, r); !reflect.DeepEqual(stored, got) {
-		t.Fatalf("stored %+v", stored)
-	}
-	done, err := run.Save(ctx, s, got, c.now(), set(run.Cancelled))
+	done, err := run.Save(ctx, s, again, c.now(), set(run.Cancelled))
 	check(t, err)
 	if done.Status != run.Cancelled {
 		t.Fatalf("ended %+v", done)
 	}
 
-	fresh := claimed(t, s, c)
-	if _, err := run.Save(ctx, s, fresh, c.now(), func(n *run.Run) error { n.Cancel = true; return pause(n) }); !errors.Is(err, run.ErrCancelled) {
-		t.Fatalf("a pause with Cancel: err = %v, want ErrCancelled", err)
-	}
-	// Nor is a run asked to stop claimed.
 	pending := created(t, s, c, "t1", "refunds")
 	pending, err = run.Change(ctx, s, pending, c.now(), func(n *run.Run) error { n.Cancel = true; return nil })
 	check(t, err)
-	if _, err := run.Claim(ctx, s, "t1", pending.ID, "i2", c.now().Add(time.Minute), c.now()); !errors.Is(err, run.ErrCancelled) {
-		t.Fatalf("claiming a run asked to stop: err = %v, want ErrCancelled", err)
+	if _, err := run.Claim(ctx, s, "t1", pending.ID, "i3", c.now().Add(time.Minute), c.now()); !errors.Is(err, run.ErrCancelled) {
+		t.Fatalf("claiming a pending run asked to stop: err = %v, want ErrCancelled", err)
 	}
 }
 

@@ -24,8 +24,8 @@ const PendingTimeout = 5 * time.Minute
 // one; ErrConflict, that the run changed since it was read (read it again);
 // ErrTransition, that its status can't move as asked; ErrLeaseLost, that the
 // invocation's lease ran out, so it may write nothing more; ErrNotReady, that a
-// paused run still waits for a requirement; ErrCancelled, that the run was
-// asked to stop, so it can't be claimed or paused (it is also ErrTransition).
+// paused run still waits for a requirement; ErrCancelled, that a pending run
+// was asked to stop, so it never starts (it is also ErrTransition).
 var (
 	ErrNotFound   = errors.New("run: not found")
 	ErrExists     = errors.New("run: already exists")
@@ -133,11 +133,6 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	if !CanMove(r.Status, next.Status) {
 		return r, fmt.Errorf("%w: %s to %s", ErrTransition, r.Status, next.Status)
 	}
-	if next.Cancel && next.Status == Paused {
-		// A run asked to stop never pauses: a paused run with Cancel set
-		// could be neither claimed, cancelled, swept nor expired.
-		return r, fmt.Errorf("%w: %w", ErrTransition, ErrCancelled)
-	}
 	if next.Status != Running {
 		next.Claim, next.Lease = "", time.Time{}
 	}
@@ -200,7 +195,12 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 	if r.Status != Pending && r.Status != Paused {
 		return r, fmt.Errorf("%w: claiming a %s run", ErrTransition, r.Status)
 	}
-	if r.Cancel {
+	// A pending run asked to stop never starts. A paused one still goes on
+	// once KIFF has resolved it: its held calls' outcomes are recorded (a call
+	// KIFF forwards always has a record here), and it stops at its first
+	// checkpoint. Otherwise a run cancelled while KIFF came to hold one of its
+	// calls could never move again.
+	if r.Cancel && r.Status == Pending {
 		return r, fmt.Errorf("%w: %w", ErrTransition, ErrCancelled)
 	}
 	return Change(ctx, runs, r, now, func(n *Run) error {
@@ -223,9 +223,10 @@ const SaveTries = 5
 // run under its claimant is a cancel (answers are recorded on PAUSED runs,
 // which hold no claim). The run Save returns shows what changed meanwhile: a
 // claimant that finds Cancel set ends the run CANCELLED at its next
-// checkpoint. A pause onto a run asked to stop is refused with ErrCancelled,
-// and the run returned is the one stored, Cancel set: end it CANCELLED
-// instead. A run that still changes after SaveTries writes is ErrConflict.
+// checkpoint. A pause onto a run asked to stop is stored, Cancel set: KIFF
+// holds a call, so the run waits for it, is claimed again once KIFF has
+// resolved it (see Claim), records the call's outcome, and ends CANCELLED.
+// A run that still changes after SaveTries writes is ErrConflict.
 func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run) error) (Run, error) {
 	for try := 1; ; try++ {
 		if r.Status != Running || r.Claim == "" || !now.Before(r.Lease) {
