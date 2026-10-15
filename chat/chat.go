@@ -1,5 +1,5 @@
-// Package chat is the owner talking to an agent. Each message is a chat
-// session of its own, ended when the agent answers, so what tools returned is
+// Package chat is the owner talking to an agent. Each message is a run in a
+// chat session of its own, ended when the agent answers, so what tools did is
 // dropped at once under the default keep rules. Chats that follow one another
 // within Window form one conversation: a new message carries all of it on, so
 // the agent sees everything said, though not what tools returned.
@@ -14,6 +14,7 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
 
@@ -25,7 +26,7 @@ const Window = 30 * time.Minute
 // carries on.
 const MaxChats = 50
 
-// EndTimeout bounds ending a chat's session, which runs even when the request
+// EndTimeout bounds ending a chat's run, which runs even when the request
 // that sent the message was cancelled.
 const EndTimeout = 10 * time.Second
 
@@ -96,25 +97,24 @@ func conversation(events []session.Event) []model.Message {
 	return msgs
 }
 
-// NotEnded is returned when a chat ran but its session couldn't be ended. The
-// session takes no more events; Retry ends it, and drops what was kept only
-// until the end.
+// NotEnded is returned when a chat ran but its run couldn't be ended. The run
+// takes no more events; Retry ends it, and drops what was kept only until the
+// end.
 type NotEnded struct {
 	Recording *session.Recording
-	Status    session.Status
 	Err       error
 }
 
-func (e *NotEnded) Error() string { return "chat: the session was not ended: " + e.Err.Error() }
+func (e *NotEnded) Error() string { return "chat: the run was not ended: " + e.Err.Error() }
 func (e *NotEnded) Unwrap() error { return e.Err }
 
-// Retry ends the session again.
-func (e *NotEnded) Retry(ctx context.Context) error { return e.Recording.End(ctx, e.Status) }
+// Retry ends the run again.
+func (e *NotEnded) Retry(ctx context.Context) error { return e.Recording.End(ctx) }
 
-// Send runs one owner message as a chat session: it carries on the current
-// conversation, streams the run to emit, and ends the session. Ending uses its
-// own bounded context, so a cancelled request still ends it; if ending fails
-// anyway, the error is a *NotEnded to retry.
+// Send runs one owner message as a run in a chat session: it carries on the
+// current conversation, streams the run to emit, and ends the run. Ending uses
+// its own bounded context, so a cancelled request still ends it; if ending
+// fails anyway, the error is a *NotEnded to retry.
 func Send(ctx context.Context, rec *session.Recorder, store session.Store, a agent.Agent, text string, now time.Time, emit func(agent.Event)) (session.Session, agent.Outcome, error) {
 	if err := a.Check(); err != nil {
 		return session.Session{}, agent.Outcome{}, err
@@ -123,19 +123,16 @@ func Send(ctx context.Context, rec *session.Recorder, store session.Store, a age
 	if err != nil {
 		return session.Session{}, agent.Outcome{}, err
 	}
-	r, err := rec.Start(ctx, a.Tenant, a.ID, session.KindChat)
+	s, err := rec.Open(ctx, a.Tenant, a.ID, session.KindChat)
 	if err != nil {
 		return session.Session{}, agent.Outcome{}, err
 	}
+	r := rec.Start(s, run.NewID())
 	out, _, runErr := agent.Run(ctx, a, r, history, text, emit)
-	status := session.Ended
-	if runErr != nil {
-		status = session.Failed
-	}
 	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), EndTimeout)
 	defer cancel()
-	if err := r.End(endCtx, status); err != nil {
-		ne := &NotEnded{Recording: r, Status: status, Err: err}
+	if err := r.End(endCtx); err != nil {
+		ne := &NotEnded{Recording: r, Err: err}
 		if runErr != nil {
 			return r.Session(), out, errors.Join(runErr, ne)
 		}

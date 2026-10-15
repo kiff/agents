@@ -20,8 +20,8 @@ func TestPurgeRemoves(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
 	m := memory.NewAt(func() time.Time { return at })
-	old := session.Session{ID: "old", Tenant: "t1", Agent: "a", Status: session.Running, Expires: at.Add(time.Hour)}
-	live := session.Session{ID: "live", Tenant: "t1", Agent: "a", Status: session.Running}
+	old := session.Session{ID: "old", Tenant: "t1", Agent: "a", Expires: at.Add(time.Hour)}
+	live := session.Session{ID: "live", Tenant: "t1", Agent: "a"}
 	for _, s := range []session.Session{old, live} {
 		if err := m.Create(ctx, s); err != nil {
 			t.Fatal(err)
@@ -30,8 +30,8 @@ func TestPurgeRemoves(t *testing.T) {
 	ev := func(seq int64, expires time.Time) session.Event {
 		return session.Event{Seq: seq, Time: at, Kind: session.Report, Body: []byte(`1`), Expires: expires}
 	}
-	_ = m.Append(ctx, "t1", "old", []session.Event{ev(1, at.Add(time.Hour)), ev(2, at.Add(time.Hour))})
-	_ = m.Append(ctx, "t1", "live", []session.Event{ev(1, at.Add(time.Hour)), ev(2, time.Time{})})
+	_ = m.Append(ctx, "t1", "old", "r1", []session.Event{ev(1, at.Add(time.Hour)), ev(2, at.Add(time.Hour))})
+	_ = m.Append(ctx, "t1", "live", "r1", []session.Event{ev(1, at.Add(time.Hour)), ev(2, time.Time{})})
 
 	n, err := m.Purge(ctx, at.Add(2*time.Hour))
 	if err != nil || n != 3 {

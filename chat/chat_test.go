@@ -68,9 +68,12 @@ func TestAMessageCarriesOnTheLastChatWithinTheWindow(t *testing.T) {
 	if m.reqs[1].Messages[0].Blocks[0].Text != "Offer store credit first." || m.reqs[1].Messages[1].Role != model.Assistant {
 		t.Fatalf("history = %+v", m.reqs[1].Messages)
 	}
-	s, _, err := store.Read(ctx, "t1", first.ID)
-	if err != nil || s.Status != session.Ended {
-		t.Fatalf("first session %+v %v", s, err)
+	_, events, err := store.Read(ctx, "t1", first.ID)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("first session: %d events, %v", len(events), err)
+	}
+	if state, _, err := store.ReadRun(ctx, "t1", first.ID, events[0].Run); err != nil || !state.Ended {
+		t.Fatalf("first run %+v %v", state, err)
 	}
 
 	*now = now.Add(chat.Window + time.Minute)
@@ -134,20 +137,20 @@ func TestAConversationCarriesEveryEarlierMessage(t *testing.T) {
 }
 
 // fragileStore honours cancellation, like a networked store, and can fail
-// its next End once.
+// its next EndRun once.
 type fragileStore struct {
 	*memory.Store
 	failEnd bool
 }
 
-func (f *fragileStore) Append(ctx context.Context, tenant, id string, events []session.Event) error {
+func (f *fragileStore) Append(ctx context.Context, tenant, id, run string, events []session.Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return f.Store.Append(ctx, tenant, id, events)
+	return f.Store.Append(ctx, tenant, id, run, events)
 }
 
-func (f *fragileStore) End(ctx context.Context, tenant, id string, status session.Status) error {
+func (f *fragileStore) EndRun(ctx context.Context, tenant, id, run string, expires time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -155,7 +158,7 @@ func (f *fragileStore) End(ctx context.Context, tenant, id string, status sessio
 		f.failEnd = false
 		return errors.New("store unavailable")
 	}
-	return f.Store.End(ctx, tenant, id, status)
+	return f.Store.EndRun(ctx, tenant, id, run, expires)
 }
 
 // cancelling is a model that calls the memory tool, then has its request
@@ -174,9 +177,9 @@ func (c *cancelling) Turn(ctx context.Context, _ model.Request, _ func(string)) 
 	return model.Reply{}, ctx.Err()
 }
 
-// A request cancelled after a tool answered still ends its session, and
-// what the tool returned is dropped.
-func TestACancelledChatStillEndsItsSession(t *testing.T) {
+// A request cancelled after a tool answered still ends its run, and what the
+// tool did is dropped.
+func TestACancelledChatStillEndsItsRun(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	store := &fragileStore{Store: memory.New()}
 	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
@@ -192,12 +195,19 @@ func TestACancelledChatStillEndsItsSession(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	got, events, err := store.Read(context.Background(), "t1", s.ID)
-	if err != nil || got.Status != session.Failed {
+	if err != nil {
 		t.Fatalf("session %+v %v", got, err)
 	}
+	if len(events) == 0 {
+		t.Fatal("nothing recorded")
+	}
+	state, _, err := store.ReadRun(context.Background(), "t1", s.ID, events[0].Run)
+	if err != nil || !state.Ended {
+		t.Fatalf("run %+v %v", state, err)
+	}
 	for _, e := range events {
-		if e.Kind == session.ToolResult {
-			t.Fatal("a tool result outlived the ended session")
+		if e.Kind == session.ToolCall || e.Kind == session.ToolResult {
+			t.Fatal("a tool call or result outlived the ended run")
 		}
 	}
 }
@@ -216,13 +226,13 @@ func TestAFailedEndCanBeRetried(t *testing.T) {
 	if !errors.As(err, &ne) {
 		t.Fatalf("err = %v", err)
 	}
-	if got, _, _ := store.Read(context.Background(), "t1", s.ID); got.Status != session.Running {
-		t.Fatalf("status before retry = %s", got.Status)
+	if state, _, _ := store.ReadRun(context.Background(), "t1", s.ID, ne.Recording.Run()); state.Ended {
+		t.Fatal("the run ended before the retry")
 	}
 	if err := ne.Retry(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := store.Read(context.Background(), "t1", s.ID); got.Status != session.Ended {
-		t.Fatalf("status after retry = %s", got.Status)
+	if state, _, _ := store.ReadRun(context.Background(), "t1", s.ID, ne.Recording.Run()); !state.Ended {
+		t.Fatal("the run didn't end on the retry")
 	}
 }

@@ -14,13 +14,15 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
 
-// Run is one recorded run of an agent: its session and the session's events,
-// in order.
+// Run is one recorded run of an agent: its session, where it is, and its
+// events, in order.
 type Run struct {
 	Session session.Session
+	Status  run.Status
 	Events  []session.Event
 }
 
