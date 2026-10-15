@@ -303,6 +303,15 @@ func TestGetRun(t *testing.T) {
 			t.Errorf("shows %q", k)
 		}
 	}
+	// A running run has a claim and a lease; neither is shown.
+	running := f.stored(run.Running)
+	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+running.ID, nil)
+	f.want(200, code, body, "get a running run")
+	for _, k := range []string{"claim", "lease", "version"} {
+		if _, ok := body[k]; ok {
+			t.Errorf("a running run shows %q", k)
+		}
+	}
 	code, body = f.do("t2", "GET", "/agents/payouts/runs/"+r.ID, nil)
 	f.want(404, code, body, "another tenant's run")
 	code, body = f.do("t1", "GET", "/agents/refunds/runs/"+r.ID, nil)
