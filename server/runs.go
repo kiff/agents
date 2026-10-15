@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/kiff/agents/agent"
@@ -26,7 +27,7 @@ type Runner interface {
 	// Start creates a PENDING run for the tenant's agent: in Session (an
 	// existing conversation) or in a new session when it is empty. It
 	// returns the run as stored; session.ErrNotFound when Session isn't the
-	// tenant's.
+	// tenant's, or is another agent's (a session is one agent's thread).
 	Start(ctx context.Context, s Start) (run.Run, error)
 	// Execute claims the run and runs it to its next stop (answered, a cap,
 	// paused on a hold, cancelled, failed), passing each event to emit, nil
@@ -125,6 +126,20 @@ type startBody struct {
 	Background bool   `json:"background,omitempty"`
 }
 
+// The stream a run's start and resume share, as server-sent events:
+//
+//	event: run    the run as stored, once, first (start only)
+//	event: event  one recorded session event of the run, its id the event's
+//	              Seq: the cursor resume?after= takes
+//	event: delta  what the agent does as it does it (an agent.Event): text as
+//	              it is written, tool calls as they are made. No id: it is for
+//	              showing, and the recorded events carry what is kept. Start
+//	              only, in the foreground
+//	event: end    the run as stored at its stop
+//
+// A client that loses the stream resumes after the last id it saw: the run's
+// recorded events come again from there, none twice.
+
 // startRun starts a run of the agent: streamed as SSE, or in the background,
 // answering 202 once it is stored PENDING.
 func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
@@ -142,10 +157,25 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("the input is 1 to %d bytes", MaxInput))
 		return
 	}
+	if body.Background && s.Background == nil {
+		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
+		return
+	}
 	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		s.fail(w, r, err)
 		return
+	}
+	if body.SessionID != "" {
+		// A session is one agent's thread: another agent's is not found.
+		sess, _, err := s.Sessions.Read(ctx, c.Tenant, body.SessionID)
+		if err == nil && sess.Agent != id {
+			err = session.ErrNotFound
+		}
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	rn, err := s.Runner.Start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input})
 	if err != nil {
@@ -168,9 +198,32 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, viewRun(rn))
 		return
 	}
+
 	sse := newStream(w)
 	sse.send("run", viewRun(rn))
-	end, err := s.Runner.Execute(ctx, c.Tenant, rn.ID, func(e agent.Event) { sse.send(string(e.Kind), e) })
+	f := &follower{s: s, sse: sse, tenant: c.Tenant, rn: rn}
+	// The run's recorded events follow while it executes; the follower is
+	// this request's, and ends before the stream does.
+	done := make(chan struct{})
+	followed := make(chan struct{})
+	go func() {
+		defer close(followed)
+		tick := time.NewTicker(followEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+				if err := f.catchUp(ctx); err != nil {
+					s.logError(r, "following a run", err)
+				}
+			}
+		}
+	}()
+	end, err := s.Runner.Execute(ctx, c.Tenant, rn.ID, func(e agent.Event) { sse.send("delta", e) })
+	close(done)
+	<-followed
 	if err != nil {
 		s.logError(r, "run failed", err)
 		if got, gerr := s.Runs.Get(context.WithoutCancel(ctx), c.Tenant, rn.ID); gerr == nil {
@@ -178,6 +231,9 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		} else {
 			end.Status = "" // unknown: the client reads the run
 		}
+	}
+	if err := f.catchUp(ctx); err != nil { // what was recorded since the last look
+		s.logError(r, "following a run", err)
 	}
 	sse.send("end", viewRun(end))
 }
@@ -204,23 +260,16 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	sse := newStream(w)
+	f := &follower{s: s, sse: newStream(w), tenant: c.Tenant, rn: rn, after: after}
 	tick := time.NewTicker(followEvery)
 	defer tick.Stop()
 	for {
-		_, events, err := s.Sessions.ReadRun(ctx, c.Tenant, rn.Session, rn.ID)
-		if err != nil && !errors.Is(err, session.ErrNotFound) {
+		if err := f.catchUp(ctx); err != nil {
 			s.logError(r, "resume", err)
 			return
 		}
-		for _, e := range events {
-			if e.Seq > after {
-				sse.event("event", strconv.FormatInt(e.Seq, 10), e)
-				after = e.Seq
-			}
-		}
 		if rn.Status.Final() || rn.Status == run.Paused {
-			sse.send("end", viewRun(rn))
+			f.sse.send("end", viewRun(rn))
 			return
 		}
 		select {
@@ -233,6 +282,38 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// follower sends a run's recorded events as they are recorded, each once.
+type follower struct {
+	s      *Server
+	sse    *stream
+	tenant string
+	rn     run.Run
+	after  int64 // the last Seq sent
+}
+
+// catchUp sends what the run recorded since the last Seq sent. It reads the
+// events only when the run's Seq has moved, so looking is one cheap read.
+func (f *follower) catchUp(ctx context.Context) error {
+	st, err := f.s.Sessions.State(ctx, f.tenant, f.rn.Session, f.rn.ID)
+	if errors.Is(err, session.ErrNotFound) {
+		return nil // nothing recorded yet
+	}
+	if err != nil || st.Seq <= f.after {
+		return err
+	}
+	_, events, err := f.s.Sessions.ReadRun(ctx, f.tenant, f.rn.Session, f.rn.ID)
+	if err != nil {
+		return err
+	}
+	for _, e := range events {
+		if e.Seq > f.after {
+			f.sse.event("event", strconv.FormatInt(e.Seq, 10), e)
+			f.after = e.Seq
+		}
+	}
+	return nil
 }
 
 // caller verifies the request's caller for a route that writes its own
@@ -257,10 +338,12 @@ func (s *Server) logError(r *http.Request, msg string, err error) {
 	}
 }
 
-// stream writes server-sent events.
+// stream writes server-sent events. The run's own goroutines and the
+// follower write to it, so each event is written whole, one at a time.
 type stream struct {
-	w http.ResponseWriter
-	f http.Flusher
+	mu sync.Mutex
+	w  http.ResponseWriter
+	f  http.Flusher
 }
 
 func newStream(w http.ResponseWriter) *stream {
@@ -280,6 +363,8 @@ func (s *stream) event(name, id string, v any) {
 	if err != nil {
 		b, _ = json.Marshal(map[string]string{"error": "the event could not be written"})
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if id != "" {
 		fmt.Fprintf(s.w, "id: %s\n", id)
 	}
