@@ -1,7 +1,7 @@
 # Evals: what #3 delivers
 
 **Issue:** [#3](https://github.com/kiff/agents/issues/3) · **Status:** partly delivered. The harness, both cases and the baseline reader are built. `cmd/eval -run` runs each case on this runtime and grades it. The baseline numbers and the nightly run are still to do.
-**PRs:** #8, #37 (under [#12](12-runs.md)), #62 (`cmd/eval -run`); open: #9 (nightly workflow, no review yet), #10 (Stripe seed, draft)
+**PRs:** #8, #37 (under [#12](12-runs.md)), #62 (`cmd/eval -run`); #10 (`eval seed`); open: #9 (nightly workflow, no review yet)
 
 ## What it's for
 
@@ -52,6 +52,20 @@ Stripe metadata, and the Card limits that make one call held and one refused.
 - **`eval.Load(ctx, sessions, runs, tenant, id)`** builds an `eval.Run` from
   the run store (its status) and the session store (only that run's events),
   so one run in a multi-run session grades on its own.
+
+### Seeding a case (`eval seed`)
+
+```sh
+STRIPE_API_KEY=sk_test_… eval seed -out seed.json chargebacks
+# seeded 8 disputes for chargebacks (closed 6 left open)
+# the taf's owner note: Always fight disputes from Gus Regular, …
+```
+
+It fills the test-mode account with the case's items: for Chargebacks, a
+customer, a payment and the dispute Stripe opens on it, each tagged with the
+item's reference and the facts the taf can read. It closes what an earlier
+seed left open first, writes the Stripe ids by reference (the file `-ids`
+reads), and prints the owner's note. A live key is refused.
 
 ### Running it
 
@@ -173,13 +187,12 @@ PR.
 
 ## Not delivered yet
 
-- **The baseline score and cost**, which the issue's "done when" asks to be
-  posted on #3. It needs one Refunds run and one Chargebacks run on Stripe
-  test mode, seeded as the cases describe. #10 seeds Chargebacks; the run
-  itself needs a KIFF agent key whose Card has the case's limits, set up on
-  the tafs side ([kiff/tafs#22](https://github.com/kiff/tafs/issues/22)).
-  With those, `eval -run refunds chargebacks` gives this runtime's numbers
-  next to the Managed Agents baseline.
+- **The baseline score and cost.** Chargebacks on this runtime has
+  numbers on #3 (4/6, $0.68 a run, $0.10 an item, Opus 5.5), from a KIFF
+  agent that had run before. A clean number needs an agent that never ran:
+  `kiff_pending` carries an earlier run's held, refused and unknown calls
+  into the next. Refunds needs its own tools first (a request queue and a
+  refund that carries its amount), and the Managed Agents baseline its run.
 - **The nightly run.** #9 adds `.github/workflows/eval.yml` (nightly and by
   hand, never on PRs, so the key never meets PR code). It's waiting for
   review.
