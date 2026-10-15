@@ -28,8 +28,14 @@ import (
 // than one item holds; the parts are written in the same transaction as the
 // run, so a run is never read with half a turn. Only runs that are PENDING or
 // RUNNING have a due entry, written and removed with the run's own change, so
-// the sweep reads one small partition instead of the table. A run that has
-// ended carries a TTL on every item from its Expires.
+// the sweep reads one small partition instead of the table; Due deletes an
+// entry whose run is gone or due at another time, so the partition heals. A
+// run that has ended carries a TTL on every item from its Expires.
+//
+// Every run writes the due partition a few times (created, claimed, ended,
+// and again for each continue). One partition key takes about 1,000 writes a
+// second, so this holds to some 300 run starts a second across all tenants.
+// Past that, shard the key by run ID (W|0 to W|15) and have Due read each.
 type Runs struct {
 	db    API
 	table string
@@ -280,9 +286,9 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 	return err
 }
 
-// runs reads runs by tenant and id, in that order, leaving out those gone.
-// They come without their paused turn.
-func (rs *Runs) runs(ctx context.Context, keys [][2]string) ([]run.Run, error) {
+// byKey reads runs by tenant and id, without their paused turns, gone or
+// not; a run that isn't there is left out.
+func (rs *Runs) byKey(ctx context.Context, keys [][2]string) (map[[2]string]run.Run, error) {
 	ks := make([]map[string]types.AttributeValue, len(keys))
 	for i, k := range keys {
 		ks[i] = pkey(runPK(k[0], k[1]), metaSK)
@@ -291,7 +297,7 @@ func (rs *Runs) runs(ctx context.Context, keys [][2]string) ([]run.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	byKey := map[string]run.Run{}
+	out := map[[2]string]run.Run{}
 	for _, item := range items {
 		b, _ := item["run"].(*types.AttributeValueMemberB)
 		if b == nil {
@@ -301,13 +307,21 @@ func (rs *Runs) runs(ctx context.Context, keys [][2]string) ([]run.Run, error) {
 		if err := json.Unmarshal(b.Value, &r); err != nil {
 			return nil, err
 		}
-		if !rs.gone(r) {
-			byKey[getS(item, "pk")] = r
-		}
+		out[[2]string{r.Tenant, r.ID}] = r
+	}
+	return out, nil
+}
+
+// runs reads runs by tenant and id, in that order, leaving out those gone.
+// They come without their paused turn.
+func (rs *Runs) runs(ctx context.Context, keys [][2]string) ([]run.Run, error) {
+	byKey, err := rs.byKey(ctx, keys)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]run.Run, 0, len(keys))
-	for _, k := range keys { // in the order asked
-		if r, ok := byKey[runPK(k[0], k[1])]; ok {
+	for _, k := range keys {
+		if r, ok := byKey[k]; ok && !rs.gone(r) {
 			out = append(out, r)
 		}
 	}
@@ -369,19 +383,32 @@ func (rs *Runs) Due(ctx context.Context, now time.Time, limit int) ([]run.Run, e
 	if limit > 0 {
 		in.Limit = aws.Int32(int32(min(limit, 100)))
 	}
+	var stale []map[string]types.AttributeValue
 	err := rs.query(ctx, in, func(items []map[string]types.AttributeValue) (bool, error) {
 		keys := make([][2]string, len(items))
 		for i, item := range items {
 			keys[i] = [2]string{getS(item, "tenant"), getS(item, "id")}
 		}
-		runs, err := rs.runs(ctx, keys)
-		for _, r := range runs {
-			if d := r.Due(); !d.IsZero() && d.Before(now) {
+		byKey, err := rs.byKey(ctx, keys)
+		if err != nil {
+			return false, err
+		}
+		for i, item := range items {
+			r, ok := byKey[keys[i]]
+			switch {
+			case !ok || r.Due().IsZero() || dueSK(r) != getS(item, "sk"):
+				// its run is gone, or due at another time: an entry left
+				// behind (read after the run's own write, which is newer)
+				stale = append(stale, pkey(duePK, getS(item, "sk")))
+			case !rs.gone(r) && r.Due().Before(now):
 				out = append(out, r)
 			}
 		}
-		return limit > 0 && len(out) >= limit, err
+		return limit > 0 && len(out) >= limit, nil
 	})
+	if err == nil {
+		err = (&Store{db: rs.db, table: rs.table}).deleteKeys(ctx, stale)
+	}
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -396,14 +423,37 @@ func (rs *Runs) Delete(ctx context.Context, tenant, id string) error {
 	return rs.remove(ctx, r)
 }
 
-// remove deletes every item of r, as read, in one transaction.
+// remove deletes every item of r, read again until a delete goes through as
+// read: a write that lands meanwhile (a claim moving its due entry) can't
+// leave items behind.
 func (rs *Runs) remove(ctx context.Context, r run.Run) error {
+	for try := 0; ; try++ {
+		err := rs.removeAt(ctx, r)
+		var cancelled *types.TransactionCanceledException
+		if !errors.As(err, &cancelled) || try == 5 {
+			return err
+		}
+		if r, err = rs.read(ctx, r.Tenant, r.ID); errors.Is(err, run.ErrNotFound) {
+			return nil // removed meanwhile
+		} else if err != nil {
+			return err
+		}
+	}
+}
+
+// removeAt deletes every item of r, as read, in one transaction, if the run
+// is still at r's Version.
+func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 	st, err := storedOf(r)
 	if err != nil {
 		return err
 	}
 	items := []types.TransactWriteItem{
-		rs.del(pkey(runPK(r.Tenant, r.ID), metaSK)),
+		{Delete: &types.Delete{
+			TableName: &rs.table, Key: pkey(runPK(r.Tenant, r.ID), metaSK),
+			ConditionExpression:       aws.String("version = :version"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{":version": n(r.Version)},
+		}},
 		rs.del(pkey(runListPK(r.Tenant, r.Agent), runListSK(r))),
 	}
 	for i := range st.parts {

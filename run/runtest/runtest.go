@@ -39,6 +39,9 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
 		{"SweepMarksWhatIsDue", sweepMarksWhatIsDue},
 		{"SweepLeavesWhatMovedOn", sweepLeavesWhatMovedOn},
+		{"AContinuedRunThatCrashesIsSwept", aContinuedRunThatCrashesIsSwept},
+		{"AFinishedRunKeepsNoTurn", aFinishedRunKeepsNoTurn},
+		{"SweptRunsExpireAndCancelsHold", sweptRunsExpireAndCancelsHold},
 		{"ListNewestFirst", listNewestFirst},
 		{"EndedRunsExpire", endedRunsExpire},
 		{"TenantsAreApart", tenantsAreApart},
@@ -203,7 +206,7 @@ func noWriteAfterTheLease(t *testing.T, s run.Runs, c *clock) {
 	if _, err := run.Save(ctx, s, r, c.now(), set(run.Completed)); !errors.Is(err, run.ErrLeaseLost) {
 		t.Fatalf("write after the lease: err = %v, want ErrLeaseLost", err)
 	}
-	if n, err := run.Sweep(ctx, s, c.now(), 10, nil); err != nil || n != 1 {
+	if n, err := (run.Sweeper{Runs: s}).Sweep(ctx, c.now(), 10); err != nil || n != 1 {
 		t.Fatalf("sweep marked %d, err = %v", n, err)
 	}
 	r.Lease = c.now().Add(time.Hour) // a clock gone wrong: the store still refuses
@@ -292,10 +295,11 @@ func sweepMarksWhatIsDue(t *testing.T, s run.Runs, c *clock) {
 	}
 	c.add(16 * time.Minute)
 	var ended []string
-	n, err := run.Sweep(ctx, s, c.now(), 10, func(_ context.Context, r run.Run) error { ended = append(ended, r.ID); return nil })
+	sw := run.Sweeper{Runs: s, Ended: func(_ context.Context, r run.Run) error { ended = append(ended, r.ID); return nil }}
+	n, err := sw.Sweep(ctx, c.now(), 10)
 	check(t, err)
-	if n != 2 || !slices.Equal(ended, []string{pending.ID, running.ID}) {
-		t.Fatalf("swept %d, ended %v, want the pending run then the running one", n, ended)
+	if n != 2 || !slices.Equal(ended, []string{running.ID}) {
+		t.Fatalf("swept %d, ended %v, want both marked and only the running one's recording ended: a pending run has none", n, ended)
 	}
 	for _, r := range []run.Run{pending, running} {
 		if got := get(t, s, r); got.Status != run.Error || got.Error == "" {
@@ -313,24 +317,86 @@ func sweepMarksWhatIsDue(t *testing.T, s run.Runs, c *clock) {
 // A run that moved on between the sweep's read and its write is left as it
 // is; a run whose recording couldn't be ended stays due, for the next sweep.
 func sweepLeavesWhatMovedOn(t *testing.T, s run.Runs, c *clock) {
-	r := created(t, s, c, "t1", "refunds")
-	c.add(run.PendingTimeout + time.Second)
+	r := claimed(t, s, c)
+	c.add(16*time.Minute + run.LeaseGrace)
 	broken := errors.New("store down")
-	if n, err := run.Sweep(ctx, s, c.now(), 10, func(context.Context, run.Run) error { return broken }); n != 0 || !errors.Is(err, broken) {
+	if n, err := (run.Sweeper{Runs: s, Ended: func(context.Context, run.Run) error { return broken }}).Sweep(ctx, c.now(), 10); n != 0 || !errors.Is(err, broken) {
 		t.Fatalf("swept %d, err = %v", n, err)
 	}
-	if got := get(t, s, r); got.Status != run.Pending {
+	if got := get(t, s, r); got.Status != run.Running {
 		t.Fatalf("marked although its recording wasn't ended: %+v", got)
 	}
-	n, err := run.Sweep(ctx, s, c.now(), 10, func(context.Context, run.Run) error {
-		_, err := run.Claim(ctx, s, "t1", r.ID, "late", c.now().Add(time.Minute), c.now()) // claimed just now
+	n, err := (run.Sweeper{Runs: s, Ended: func(context.Context, run.Run) error {
+		_, err := run.Change(ctx, s, get(t, s, r), c.now(), func(n *run.Run) error { n.Cost = 7; return nil }) // a write just now
 		return err
-	})
+	}}).Sweep(ctx, c.now(), 10)
 	if err != nil || n != 0 {
 		t.Fatalf("swept %d, err = %v", n, err)
 	}
-	if got := get(t, s, r); got.Status != run.Running || got.Claim != "late" {
-		t.Fatalf("the claimed run was swept: %+v", got)
+	if got := get(t, s, r); got.Status != run.Running || got.Cost != 7 {
+		t.Fatalf("the run was swept over a newer write: %+v", got)
+	}
+}
+
+// A run continued from PAUSED still holds its paused turn until its first
+// Save; if its invocation crashes before that, the sweep still marks it, and
+// the turn goes with it.
+func aContinuedRunThatCrashesIsSwept(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	turn := &run.Turn{Results: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: strings.Repeat("x", 400<<10)}}}
+	r, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error { n.Status, n.Paused = run.Paused, turn; return nil })
+	check(t, err)
+	r, err = run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	if r.Paused == nil {
+		t.Fatal("the continued run lost its turn")
+	}
+	c.add(16*time.Minute + run.LeaseGrace) // i2 crashed
+	if n, err := (run.Sweeper{Runs: s}).Sweep(ctx, c.now(), 10); err != nil || n != 1 {
+		t.Fatalf("swept %d, err = %v", n, err)
+	}
+	if got := get(t, s, r); got.Status != run.Error || got.Paused != nil {
+		t.Fatalf("after the sweep: %s, paused turn kept: %v", got.Status, got.Paused != nil)
+	}
+}
+
+// A run that ends, by the sweep or otherwise, keeps nothing of what tools
+// returned: its paused turn goes.
+func aFinishedRunKeepsNoTurn(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	turn := &run.Turn{Results: []model.Block{{Kind: model.ToolResult, Result: "customer data"}}}
+	r, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error { n.Status, n.Paused = run.Paused, turn; return nil })
+	check(t, err)
+	r, err = run.Change(ctx, s, r, c.now(), set(run.Cancelled))
+	check(t, err)
+	if r.Paused != nil || get(t, s, r).Paused != nil {
+		t.Fatal("a cancelled run kept its paused turn")
+	}
+}
+
+// The sweep gives what it ends an expiry from the caller's keep rules; a run
+// that was asked to stop ends CANCELLED, as asked.
+func sweptRunsExpireAndCancelsHold(t *testing.T, s run.Runs, c *clock) {
+	plain := created(t, s, c, "t1", "refunds")
+	stopped := created(t, s, c, "t1", "refunds")
+	stopped, err := run.Change(ctx, s, stopped, c.now(), func(n *run.Run) error { n.Cancel = true; return nil })
+	check(t, err)
+	c.add(run.PendingTimeout + time.Second)
+	sw := run.Sweeper{Runs: s, Expires: func(r run.Run) time.Time { return c.now().Add(24 * time.Hour) }}
+	if n, err := sw.Sweep(ctx, c.now(), 10); err != nil || n != 2 {
+		t.Fatalf("swept %d, err = %v", n, err)
+	}
+	if got := get(t, s, stopped); got.Status != run.Cancelled {
+		t.Fatalf("a run asked to stop ended %s, want CANCELLED", got.Status)
+	}
+	if got := get(t, s, plain); got.Status != run.Error || !got.Expires.Equal(c.now().Add(24*time.Hour)) {
+		t.Fatalf("swept run: %s, expires %v", got.Status, got.Expires)
+	}
+	c.add(24*time.Hour + time.Second)
+	for _, r := range []run.Run{plain, stopped} {
+		if _, err := s.Get(ctx, "t1", r.ID); !errors.Is(err, run.ErrNotFound) {
+			t.Fatalf("a swept run past its expiry: err = %v, want ErrNotFound", err)
+		}
 	}
 }
 

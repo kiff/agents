@@ -99,7 +99,9 @@ func New(tenant, agent, session string, trigger Trigger, input string, now time.
 
 // Change applies change to r, as read, and stores the result with a
 // compare-and-set. The status may move only as CanMove allows. Leaving
-// RUNNING ends the claim. It returns the run as stored.
+// RUNNING ends the claim, and a final status drops the paused turn: it holds
+// what tools returned, and exists only to continue the run. It returns the run
+// as stored.
 func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run) error) (Run, error) {
 	next := r
 	next.Requirements = append([]Requirement(nil), r.Requirements...)
@@ -111,6 +113,9 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	}
 	if next.Status != Running {
 		next.Claim, next.Lease = "", time.Time{}
+	}
+	if next.Status.Final() {
+		next.Paused = nil
 	}
 	next.ID, next.Tenant, next.Agent, next.Session, next.Created = r.ID, r.Tenant, r.Agent, r.Session, r.Created
 	next.Updated, next.Version = now.UTC(), r.Version+1
@@ -163,47 +168,76 @@ func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run
 	return next, err
 }
 
-// Ended is called by Sweep for each run before it marks it ERROR, to end
-// what else the run left open (its recording). It must accept a run with
-// nothing open, which is ended already.
-type Ended func(ctx context.Context, r Run) error
+// Sweeper marks ended the runs nobody is left to end: a RUNNING run whose
+// lease ran out (its invocation crashed or timed out, and can't write ERROR
+// itself), and a PENDING run no invocation claimed within PendingTimeout.
+type Sweeper struct {
+	Runs Runs
+	// Ended ends what else a RUNNING run left open (its recording), before
+	// the run is marked: if it fails, the run stays due, and the next sweep
+	// tries again. It must accept a run whose recording has ended already.
+	// A PENDING run has begun no recording, so it isn't called for one.
+	Ended func(ctx context.Context, r Run) error
+	// Expires is when a run the sweep ends may go, from its agent's keep
+	// rules (nil, or zero: kept until deleted).
+	Expires func(r Run) time.Time
+}
 
-// Sweep marks ERROR every run whose Due has passed: a RUNNING run whose lease
-// ran out (its invocation crashed or timed out, and can't write ERROR
-// itself), and a PENDING run no invocation claimed in time. For each, it calls
-// ended first, if not nil: a run whose ended fails stays due, so the next
-// sweep tries again. A run that moved meanwhile is left alone. It returns how
-// many runs it marked; errors are joined.
-func Sweep(ctx context.Context, runs Runs, now time.Time, limit int, ended Ended) (int, error) {
-	due, err := runs.Due(ctx, now, limit)
+// Sweep marks every run whose Due has passed, at most limit: ERROR, or
+// CANCELLED if it was asked to stop. A run that moved on meanwhile is left
+// alone. It returns how many runs it marked; errors are joined.
+func (sw Sweeper) Sweep(ctx context.Context, now time.Time, limit int) (int, error) {
+	due, err := sw.Runs.Due(ctx, now, limit)
 	if err != nil {
 		return 0, err
 	}
 	var errs []error
 	marked := 0
-	for _, r := range due {
-		if ended != nil {
-			if err := ended(ctx, r); err != nil {
-				errs = append(errs, fmt.Errorf("run %s: %w", r.ID, err))
-				continue
-			}
+	for _, d := range due {
+		ok, err := sw.mark(ctx, d, now)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("run %s: %w", d.ID, err))
 		}
-		why := "no invocation claimed it in time"
-		if r.Status == Running {
-			why = "its lease ran out: the invocation crashed or timed out"
-		}
-		_, err := Change(ctx, runs, r, now, func(n *Run) error {
-			n.Status, n.Error = Error, why
-			return nil
-		})
-		switch {
-		case errors.Is(err, ErrConflict):
-			// it moved on meanwhile: not ours to mark
-		case err != nil:
-			errs = append(errs, fmt.Errorf("run %s: %w", r.ID, err))
-		default:
+		if ok {
 			marked++
 		}
 	}
 	return marked, errors.Join(errs...)
+}
+
+// mark ends one due run, read again whole: Due leaves out the paused turn,
+// which a run continued from PAUSED still holds until its first Save.
+func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) {
+	r, err := sw.Runs.Get(ctx, d.Tenant, d.ID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	case r.Due().IsZero() || !r.Due().Before(now):
+		return false, nil // it moved on meanwhile
+	}
+	if r.Status == Running && sw.Ended != nil {
+		if err := sw.Ended(ctx, r); err != nil {
+			return false, err
+		}
+	}
+	_, err = Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		switch {
+		case r.Cancel:
+			n.Status = Cancelled
+		case r.Status == Running:
+			n.Status, n.Error = Error, "its lease ran out: the invocation crashed or timed out"
+		default:
+			n.Status, n.Error = Error, "no invocation claimed it in time"
+		}
+		if sw.Expires != nil {
+			n.Expires = sw.Expires(r)
+		}
+		return nil
+	})
+	if errors.Is(err, ErrConflict) {
+		return false, nil // it moved on meanwhile: not ours to mark
+	}
+	return err == nil, err
 }
