@@ -87,7 +87,9 @@ type ToolResultBody struct {
 	tool.Result
 }
 
-// ErrorBody is the body of an Error event.
+// ErrorBody is the body of an Error event. It says what failed, never why:
+// events are shown to the tenant, and a cause can carry a backend's own
+// diagnostics. The cause goes to the caller, as the error returned.
 type ErrorBody struct {
 	Message string `json:"message"`
 }
@@ -141,6 +143,9 @@ type Outcome struct {
 	// message, and the results of the calls KIFF didn't hold.
 	Turn *run.Turn `json:"turn,omitempty"`
 }
+
+// ModelFailed is the Error event a failed model turn records.
+const ModelFailed = "the model call failed"
 
 // ErrResults means Continue was given results that don't match what the run
 // waits for: one result for each requirement, and nothing else.
@@ -371,7 +376,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse}
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	if err != nil {
-		_ = rec.Record(session.Error, ErrorBody{Message: err.Error()})
+		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})
 		return reply, err
 	}
 	cost := a.Price.Cost(reply.Usage)

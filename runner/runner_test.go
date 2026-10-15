@@ -128,6 +128,8 @@ type fixture struct {
 	model  *script
 	refund *gatewayTool
 	r      *runner.Runner
+	// connectErr, when set, is what connecting to the gateway fails with.
+	connectErr error
 }
 
 func newFixture(t testing.TB, replies ...model.Reply) *fixture {
@@ -147,7 +149,12 @@ func newFixture(t testing.TB, replies ...model.Reply) *fixture {
 func (f *fixture) newRunner() *runner.Runner {
 	return &runner.Runner{Runs: f.runs, Sessions: f.store, Now: f.clock.now,
 		Builder: &registry.Builder{Agents: f.agents, Secrets: keys{}, Model: f.model, Gateways: []string{"https://gateway.test/mcp"},
-			Connect: func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{f.refund}, nil }}}
+			Connect: func(context.Context, string, string) ([]tool.Tool, error) {
+				if f.connectErr != nil {
+					return nil, f.connectErr
+				}
+				return []tool.Tool{f.refund}, nil
+			}}}
 }
 
 func (f *fixture) start(s server.Start) run.Run {
@@ -411,6 +418,41 @@ func TestHistoryLeavesOutARunStillGoing(t *testing.T) {
 	}
 }
 
+// Which runs came before a continued one doesn't depend on its events: the
+// keep rules may have dropped them all while it was paused.
+func TestHistoryWhenAPausedRunsEventsExpired(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Waiting."))
+	d := registrytest.Definition("t1", "rae")
+	for k := range d.Keep {
+		d.Keep[k] = session.Rule{Keep: session.Kept, Retention: time.Hour}
+	}
+	d.Keep[session.ToolCall], d.Keep[session.ToolResult] = session.Rule{Keep: session.Never}, session.Rule{Keep: session.Never}
+	_ = f.agents.Put(ctx, d)
+	r := f.start(server.Start{Input: "original request"})
+	f.pause(r)
+	f.clock.add(2 * time.Hour)
+	if n := len(f.events(r)); n != 0 {
+		t.Fatalf("the paused run still has %d events; the test needs them expired", n)
+	}
+	f.model.add(say("Later answer."))
+	later := f.start(server.Start{Session: r.Session, Input: "later request"})
+	if _, err := f.r.Execute(ctx, "t1", later.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded"}}}, nil
+	}
+	f.model.add(say("Refunded."))
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.model.requests()
+	if got := texts(reqs[len(reqs)-1].Messages); !slices.Equal(got, []string{"user: original request"}) {
+		t.Fatalf("the continued run saw %q, want only its own input", got)
+	}
+}
+
 func TestHistoryIsBoundedByTheDefinition(t *testing.T) {
 	f := newFixture(t, say("one"), say("two"), say("three"))
 	d := registrytest.Definition("t1", "rae")
@@ -622,10 +664,10 @@ func TestAFailedModelIsAnError(t *testing.T) {
 	f := newFixture(t) // no replies: the first turn fails
 	r := f.start(server.Start{Input: "go"})
 	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
-	if err == nil {
-		t.Fatal("a failed run returned no error")
+	if err == nil || !strings.Contains(err.Error(), "no more replies") {
+		t.Fatalf("got %v, want the model's failure for the caller to log", err)
 	}
-	if got.Status != run.Error || !strings.Contains(got.Error, "no more replies") || got.Expires.IsZero() {
+	if got.Status != run.Error || got.Error != runner.FailedRun || got.Expires.IsZero() {
 		t.Fatalf("failed to %+v", got)
 	}
 	if !f.state(r).Ended || !slices.Contains(f.events(r), session.Error) {
@@ -763,5 +805,64 @@ func TestTheServerRunsOnIt(t *testing.T) {
 	}
 	if got := f.get(end.ID); got.Status != run.Completed {
 		t.Fatalf("stored %+v", got)
+	}
+}
+
+// What a run's failure was caused by stays out of what the tenant is shown:
+// the run's error, streamed or read, and its events replayed.
+func TestTheServerShowsNoPrivateCause(t *testing.T) {
+	f := newFixture(t) // no replies: a model turn fails with "script: no more replies"
+	srv := httptest.NewServer((&server.Server{
+		Auth:   func(*http.Request) (server.Caller, error) { return server.Caller{Tenant: "t1"}, nil },
+		Agents: f.agents, Sessions: f.store, Notes: f.store, Runs: f.runs, Runner: f.r, Now: f.clock.now,
+	}).Handler())
+	defer srv.Close()
+	post := func(path, body string) string {
+		t.Helper()
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	runID := func(stream string) string {
+		t.Helper()
+		_, last, _ := strings.Cut(stream, "event: end\ndata: ")
+		var end struct {
+			ID     string     `json:"id"`
+			Status run.Status `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(last)), &end); err != nil || end.Status != run.Error {
+			t.Fatalf("want an end event with the run failed, in %s", stream)
+		}
+		return end.ID
+	}
+
+	f.connectErr = errors.New("private backend diagnostic")
+	built := post("/agents/rae/runs", `{"input":"go"}`)
+	if strings.Contains(built, "private backend diagnostic") || !strings.Contains(built, runner.FailedBuild) {
+		t.Fatalf("a failed build streamed %s", built)
+	}
+	runID(built)
+
+	f.connectErr = nil
+	stream := post("/agents/rae/runs", `{"input":"go"}`)
+	id := runID(stream)
+	replay := post("/agents/rae/runs/"+id+"/resume", "")
+	resp, err := http.Get(srv.URL + "/agents/rae/runs/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for name, body := range map[string]string{"streamed": stream, "replayed": replay, "read": string(read)} {
+		if strings.Contains(body, "no more replies") {
+			t.Errorf("the model's failure is %s: %s", name, body)
+		}
+	}
+	if !strings.Contains(replay, agent.ModelFailed) || !strings.Contains(string(read), runner.FailedRun) {
+		t.Fatalf("replayed %s\nread %s", replay, read)
 	}
 }

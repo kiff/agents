@@ -36,6 +36,16 @@ const StopTimeout = 10 * time.Second
 // whatever its definition asks.
 const MaxHistory = 50
 
+// What a run's Error says, for each way it fails. Run.Error is shown to the
+// tenant, so it says what failed, never why: the cause can carry a backend's
+// own diagnostics, and Execute returns it to its caller to log instead.
+const (
+	FailedBuild = "the agent could not be built"
+	FailedStart = "the run could not be started"
+	FailedRun   = "the run failed"
+	FailedTime  = "the run reached its time limit"
+)
+
 // ErrNoCollect means a paused run can't be continued: no Collect is set to get
 // its held calls' outcomes from KIFF.
 var ErrNoCollect = errors.New("runner: a paused run can't continue: nothing collects its held calls' outcomes")
@@ -138,26 +148,26 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 
 	a, d, err := rn.Builder.Build(ctx, tenant, r.Agent)
 	if err != nil {
-		return x.notRun(ctx, r, paused, d.Keep, fmt.Errorf("building the agent: %w", err))
+		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
 	a.Cancel = x.cancelled
 	sess, events, err := rn.Sessions.Read(ctx, tenant, r.Session)
 	if err != nil {
-		return x.notRun(ctx, r, paused, d.Keep, fmt.Errorf("reading its session: %w", err))
+		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
 	}
-	history, err := rn.history(ctx, sess, events, r.ID, d.History)
+	history, err := rn.history(ctx, sess, events, r, d.History)
 	if err != nil {
-		return x.notRun(ctx, r, paused, d.Keep, fmt.Errorf("reading its history: %w", err))
+		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its history: %w", err))
 	}
 	rec, err := session.NewRecorderAt(rn.Sessions, d.Keep, rn.now)
 	if err != nil {
-		return x.notRun(ctx, r, paused, d.Keep, err)
+		return x.notRun(ctx, r, paused, d.Keep, FailedStart, err)
 	}
 
 	if !paused {
 		recording, err := rec.Start(ctx, sess, r.ID, r.Created)
 		if err != nil {
-			return x.notRun(ctx, r, false, d.Keep, fmt.Errorf("starting its recording: %w", err))
+			return x.notRun(ctx, r, false, d.Keep, FailedStart, fmt.Errorf("starting its recording: %w", err))
 		}
 		out, _, err := agent.Run(ctx, a, recording, history, r.Input, emit)
 		return x.stop(ctx, recording, d.Keep, out, err)
@@ -167,7 +177,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// what it returned.
 	recording, err := rec.Resume(ctx, sess, r.ID)
 	if err != nil {
-		return x.notRun(ctx, r, true, d.Keep, fmt.Errorf("resuming its recording: %w", err))
+		return x.notRun(ctx, r, true, d.Keep, FailedStart, fmt.Errorf("resuming its recording: %w", err))
 	}
 	held, err := rn.Collect(ctx, a, r.Requirements)
 	if err != nil {
@@ -196,10 +206,13 @@ func (rn *Runner) Ended(ctx context.Context, r run.Run) error {
 	return err
 }
 
-// history is what the model gets before run: the owner's and the agent's
-// messages of the session's last n finished runs before it, in order. A run
-// still going, or paused, is left out until it ends.
-func (rn *Runner) history(ctx context.Context, sess session.Session, events []session.Event, current string, n int) ([]model.Message, error) {
+// history is what the model gets before current: the owner's and the agent's
+// messages of the session's last n finished runs created before it, in
+// order. A run still going, or paused, is left out until it ends. Which runs
+// came before is read from the runs themselves, not from their events: the
+// keep rules may have dropped all of the current run's own while it was
+// paused.
+func (rn *Runner) history(ctx context.Context, sess session.Session, events []session.Event, current run.Run, n int) ([]model.Message, error) {
 	n = min(n, MaxHistory)
 	if n <= 0 {
 		return nil, nil
@@ -210,19 +223,19 @@ func (rn *Runner) history(ctx context.Context, sess session.Session, events []se
 			order = append(order, e.Run)
 		}
 	}
-	if i := slices.Index(order, current); i >= 0 {
-		order = order[:i] // a continued run sees only what came before it
-	}
 	finished := map[string]bool{}
 	for i := len(order) - 1; i >= 0 && len(finished) < n; i-- {
-		if slices.Contains(sess.Held, order[i]) {
+		if order[i] == current.ID || slices.Contains(sess.Held, order[i]) {
 			continue
 		}
-		state, err := rn.Sessions.State(ctx, sess.Tenant, sess.ID, order[i])
+		r, err := rn.Runs.Get(ctx, sess.Tenant, order[i])
+		if errors.Is(err, run.ErrNotFound) {
+			continue // its run is gone: deleted, or expired before its events
+		}
 		if err != nil {
 			return nil, err
 		}
-		if state.Ended {
+		if r.Status.Final() && r.Created.Before(current.Created) {
 			finished[order[i]] = true
 		}
 	}
@@ -233,6 +246,14 @@ func (rn *Runner) history(ctx context.Context, sess session.Session, events []se
 		}
 	}
 	return chat.Conversation(kept), nil
+}
+
+// failed is what the Error of a run whose loop failed with err says.
+func failed(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return FailedTime
+	}
+	return FailedRun
 }
 
 // expires is when a run that ended at now may go, under keep (zero: kept
@@ -316,7 +337,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
 		switch {
 		case runErr != nil:
-			n.Status, n.Stop, n.Error = run.Error, "", runErr.Error()
+			n.Status, n.Stop, n.Error = run.Error, "", failed(runErr)
 		case out.Stop == agent.Cancelled:
 			n.Status, n.Stop, n.Output = run.Cancelled, string(out.Stop), out.Text
 		default:
@@ -329,8 +350,8 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 
 // notRun stores a run that stopped before its loop began, because of cause. A
 // paused one goes back to PAUSED, still waiting for what KIFF holds; a
-// pending one is ERROR. Nothing was recorded either way.
-func (x *execution) notRun(ctx context.Context, r run.Run, paused bool, keep session.Policy, cause error) (run.Run, error) {
+// pending one is ERROR, saying public. Nothing was recorded either way.
+func (x *execution) notRun(ctx context.Context, r run.Run, paused bool, keep session.Policy, public string, cause error) (run.Run, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), StopTimeout)
 	defer cancel()
 	if paused {
@@ -338,7 +359,7 @@ func (x *execution) notRun(ctx context.Context, r run.Run, paused bool, keep ses
 		return next, errors.Join(cause, err)
 	}
 	next, err := x.save(ctx, func(n *run.Run) error {
-		n.Status, n.Error, n.Expires = run.Error, cause.Error(), expires(keep, x.rn.now())
+		n.Status, n.Error, n.Expires = run.Error, public, expires(keep, x.rn.now())
 		return nil
 	})
 	return next, errors.Join(cause, err)
@@ -352,7 +373,7 @@ func (x *execution) repause(ctx context.Context, rec *session.Recording, r run.R
 	if err := rec.Pause(ctx); err != nil {
 		return x.current(ctx, errors.Join(cause, err))
 	}
-	return x.notRun(ctx, r, true, nil, cause)
+	return x.notRun(ctx, r, true, nil, "", cause)
 }
 
 // current is the run as stored, with err.
