@@ -11,7 +11,7 @@
 //	session  pk=S|tenant|id     sk=M             the Session, and its open runs' last Seq
 //	ended    pk=S|tenant|id     sk=R|run         a run that has ended
 //	event    pk=S|tenant|id     sk=E|run|seq     one Event
-//	index    pk=A|tenant|agent  sk=id            lists an agent's sessions
+//	index    pk=A|tenant|agent  sk=minute|id     lists an agent's sessions
 //	note     pk=N|tenant|agent  sk=name          one memory Note
 //
 // A run that is open (begun and not ended, held or not) has its last Seq and
@@ -25,6 +25,14 @@
 // least MaxStartDelay past the run's creation, after which Begin refuses the
 // run anyway, and usually as long as the session. "held" is the string set of runs held in the session;
 // while it has any, the session and its index entry carry no TTL.
+//
+// An index entry's sort key starts with the minute the session was last
+// updated, so List reads an agent's sessions newest first and stops once it
+// has enough: what it costs doesn't grow with the agent's history. The
+// session item names its entry ("isk"). An append that updates the session
+// into another minute moves the entry in the same write, so an active
+// session's entry moves at most once a minute; and the entry is deleted in
+// the same write as the session item, so neither outlives the other.
 package dynamodb
 
 import (
@@ -104,6 +112,29 @@ func eventSK(run string, seq int64) string { return fmt.Sprintf("%s%020d", event
 
 func endedSK(run string) string { return key("R", run) }
 
+// indexMinute is how finely the index orders sessions by when they were last
+// updated. List sorts the sessions of the last minute it reads exactly.
+const indexMinute = time.Minute
+
+// indexSK is the sort key of a session's index entry: the minute it was last
+// updated, then its ID.
+func indexSK(updated time.Time, id string) string {
+	return fmt.Sprintf("%020d|%s", max(updated.Unix()/int64(indexMinute/time.Second), 0), id)
+}
+
+// minuteOf is the minute an index sort key starts with.
+func minuteOf(sk string) string { return sk[:20] }
+
+// indexItem is a session's index entry, with the TTL the session carries.
+func indexItem(tenant, agent, isk, id string, expires time.Time, held int) map[string]types.AttributeValue {
+	item := pkey(indexPK(tenant, agent), isk)
+	item["id"] = s(id)
+	if held == 0 && !expires.IsZero() {
+		item["ttl"] = ttl(expires)
+	}
+	return item
+}
+
 const metaSK = "M"
 
 func s(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
@@ -170,6 +201,7 @@ func metaItem(se session.Session) map[string]types.AttributeValue {
 	item["started"] = nanos(se.Started)
 	item["updated"] = nanos(se.Updated)
 	item["expires"] = nanos(se.Expires)
+	item["isk"] = s(indexSK(se.Updated, se.ID))
 	item["runs"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}}
 	if !se.Expires.IsZero() {
 		item["ttl"] = ttl(se.Expires)
@@ -181,6 +213,7 @@ func metaItem(se session.Session) map[string]types.AttributeValue {
 type meta struct {
 	session.Session
 	runs     map[string]types.AttributeValue
+	isk      string // the sort key of its index entry
 	deleting bool
 }
 
@@ -192,7 +225,7 @@ func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 		Started: getTime(item, "started"),
 		Updated: getTime(item, "updated"),
 		Expires: getTime(item, "expires"),
-	}, deleting: getBool(item, "deleting")}
+	}, isk: getS(item, "isk"), deleting: getBool(item, "deleting")}
 	if v, ok := item["held"].(*types.AttributeValueMemberSS); ok {
 		m.Held = slices.Sorted(slices.Values(v.Value))
 	}
@@ -254,10 +287,7 @@ func eventOf(id string, item map[string]types.AttributeValue) session.Event {
 
 func (st *Store) Create(ctx context.Context, se session.Session) error {
 	se.Held = nil
-	index := pkey(indexPK(se.Tenant, se.Agent), se.ID)
-	if !se.Expires.IsZero() {
-		index["ttl"] = ttl(se.Expires)
-	}
+	index := indexItem(se.Tenant, se.Agent, indexSK(se.Updated, se.ID), se.ID, se.Expires, 0)
 	_, err := st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
 		{Put: &types.Put{TableName: &st.table, Item: metaItem(se), ConditionExpression: aws.String("attribute_not_exists(pk)")}},
 		{Put: &types.Put{TableName: &st.table, Item: index}},
@@ -326,6 +356,7 @@ type change struct {
 	cond                  []string
 	names                 map[string]string
 	values                map[string]types.AttributeValue
+	asRead                bool // cond holds that Expires and the held runs are as read
 }
 
 func newChange() *change {
@@ -372,15 +403,9 @@ func (c *change) expiry(table string, m meta, expires time.Time, heldAfter int) 
 	if expires.Equal(m.Expires) && ttlBefore == ttlAfter {
 		return nil
 	}
-	c.values[":expires"], c.values[":read_expires"] = nanos(expires), nanos(m.Expires)
+	c.values[":expires"] = nanos(expires)
 	c.set = append(c.set, "expires = :expires")
-	c.cond = append(c.cond, "expires = :read_expires")
-	if len(m.Held) == 0 {
-		c.cond = append(c.cond, "attribute_not_exists(held)")
-	} else {
-		c.values[":held_n"] = n(int64(len(m.Held)))
-		c.cond = append(c.cond, "size(held) = :held_n")
-	}
+	c.expiryAsRead(m)
 	if !ttlAfter {
 		return nil // Hold removes a TTL; nothing here sets one
 	}
@@ -388,11 +413,28 @@ func (c *change) expiry(table string, m meta, expires time.Time, heldAfter int) 
 	c.values[":ttl"] = ttl(expires)
 	c.set = append(c.set, "#ttl = :ttl")
 	return &types.Update{
-		TableName: &table, Key: pkey(indexPK(m.Tenant, m.Agent), m.ID),
+		TableName: &table, Key: pkey(indexPK(m.Tenant, m.Agent), m.isk),
 		UpdateExpression:          aws.String("SET #ttl = :ttl"),
 		ConditionExpression:       aws.String("attribute_exists(pk)"),
 		ExpressionAttributeNames:  map[string]string{"#ttl": "ttl"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{":ttl": ttl(expires)},
+	}
+}
+
+// expiryAsRead adds to c that the session's Expires and held runs are still
+// as m read them: they decide whether it carries a TTL.
+func (c *change) expiryAsRead(m meta) {
+	if c.asRead {
+		return
+	}
+	c.asRead = true
+	c.values[":read_expires"] = nanos(m.Expires)
+	c.cond = append(c.cond, "expires = :read_expires")
+	if len(m.Held) == 0 {
+		c.cond = append(c.cond, "attribute_not_exists(held)")
+	} else {
+		c.values[":held_n"] = n(int64(len(m.Held)))
+		c.cond = append(c.cond, "size(held) = :held_n")
 	}
 }
 
@@ -496,13 +538,30 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	c.set = append(c.set, "updated = :updated")
 	c.values[":next"] = n(next)
 	c.set = append(c.set, "runs.#run.seq = :next")
+	// The index entry stays where m read it, or moves with this write to the
+	// minute the session is now updated in; either way, only if no other
+	// write moved it meanwhile.
+	c.values[":read_isk"] = s(m.isk)
+	c.cond = append(c.cond, "isk = :read_isk")
 	index := c.expiry(st.table, m, expires, len(m.Held))
+	var move []types.TransactWriteItem
+	if isk := indexSK(updated, id); isk != m.isk {
+		c.values[":isk"] = s(isk)
+		c.set = append(c.set, "isk = :isk")
+		c.expiryAsRead(m) // they decide the moved entry's TTL
+		move = []types.TransactWriteItem{
+			{Delete: &types.Delete{TableName: &st.table, Key: pkey(indexPK(tenant, m.Agent), m.isk)}},
+			{Put: &types.Put{TableName: &st.table, Item: indexItem(tenant, m.Agent, isk, id, expires, len(m.Held))}},
+		}
+		index = nil // the moved entry carries its TTL itself
+	}
 	items := []types.TransactWriteItem{{Update: c.update(st.table, pkey(sessionPK(tenant, id), metaSK))}}
 	for _, e := range add {
 		items = append(items, types.TransactWriteItem{Put: &types.Put{
 			TableName: &st.table, Item: eventItem(tenant, id, run, e), ConditionExpression: aws.String("attribute_not_exists(pk)"),
 		}})
 	}
+	items = append(items, move...)
 	if index != nil {
 		items = append(items, types.TransactWriteItem{Update: index})
 	}
@@ -609,25 +668,62 @@ func (st *Store) State(ctx context.Context, tenant, id, run string) (session.Run
 	return state, err
 }
 
+// listPage is how many index entries past its limit List reads in its first
+// request, so a few expired or deleted sessions don't cost it a second one.
+const listPage = 8
+
+// List reads the agent's index newest first. It stops once it has limit live
+// sessions and has read the rest of the minute the last of them is in: every
+// session in an older minute was updated before all of those. So it reads
+// about as many sessions as it returns, however long the agent's history.
 func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]session.Session, error) {
-	index, err := st.partition(ctx, indexPK(tenant, agent), "", nil)
-	if err != nil {
-		return nil, err
+	in := &ddb.QueryInput{
+		TableName:                 &st.table,
+		KeyConditionExpression:    aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(indexPK(tenant, agent))},
+		ScanIndexForward:          aws.Bool(false),
+		ConsistentRead:            aws.Bool(true),
 	}
-	keys := make([]map[string]types.AttributeValue, 0, len(index))
-	for _, item := range index {
-		keys = append(keys, pkey(sessionPK(tenant, getS(item, "sk")), metaSK))
-	}
-	metas, err := st.batchGet(ctx, keys)
-	if err != nil {
-		return nil, err
+	if limit > 0 {
+		in.Limit = aws.Int32(int32(min(limit+listPage, 1000)))
 	}
 	now := st.now()
-	var out []session.Session
-	for _, item := range metas {
-		if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) {
-			out = append(out, m.Session)
+	var (
+		out    []session.Session
+		cutoff string // once out has limit sessions: the last minute List reads
+	)
+	for {
+		page, err := st.db.Query(ctx, in)
+		if err != nil {
+			return nil, err
 		}
+		var keys []map[string]types.AttributeValue
+		last, done := "", false
+		for _, item := range page.Items {
+			sk := getS(item, "sk")
+			if cutoff != "" && minuteOf(sk) != cutoff {
+				done = true
+				break
+			}
+			keys = append(keys, pkey(sessionPK(tenant, getS(item, "id")), metaSK))
+			last = sk
+		}
+		metas, err := st.batchGet(ctx, keys)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range metas {
+			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) {
+				out = append(out, m.Session)
+			}
+		}
+		if limit > 0 && cutoff == "" && len(out) >= limit {
+			cutoff = minuteOf(last)
+		}
+		if done || page.LastEvaluatedKey == nil {
+			break
+		}
+		in.ExclusiveStartKey = page.LastEvaluatedKey
 	}
 	sortNewestFirst(out)
 	if limit > 0 && len(out) > limit {
@@ -698,6 +794,10 @@ func keysOf(items []map[string]types.AttributeValue) []map[string]types.Attribut
 }
 
 func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
+	return retry(ctx, func() error { return st.hold(ctx, tenant, id, run) })
+}
+
+func (st *Store) hold(ctx context.Context, tenant, id, run string) error {
 	m, state, err := st.state(ctx, tenant, id, run)
 	if err != nil {
 		return err
@@ -714,7 +814,7 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
 		{Update: c.update(st.table, pkey(sessionPK(tenant, id), metaSK))},
 		{Update: &types.Update{
-			TableName: &st.table, Key: pkey(indexPK(tenant, m.Agent), id),
+			TableName: &st.table, Key: pkey(indexPK(tenant, m.Agent), m.isk),
 			UpdateExpression:         aws.String("REMOVE #ttl"),
 			ConditionExpression:      aws.String("attribute_exists(pk)"),
 			ExpressionAttributeNames: map[string]string{"#ttl": "ttl"},
@@ -728,7 +828,10 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 			return rerr
 		case !now.Open:
 			return session.ErrEnded
+		case !now.Held:
+			return errRace // an append moved the session's index entry meanwhile
 		}
+		return nil // an earlier attempt got through
 	}
 	return err
 }
@@ -826,24 +929,32 @@ func (st *Store) Delete(ctx context.Context, tenant, id string) error {
 	if !m.deleting && m.Expired(st.now()) {
 		return session.ErrNotFound
 	}
-	return st.deleteSession(ctx, tenant, m.Agent, id)
+	return st.deleteSession(ctx, tenant, m.Agent, id, m.isk)
 }
 
-// deleteSession marks the session deleting, then deletes its events, then
-// the session, then its index entry. Once marked, nothing more can be
-// appended, so no event is left behind; and whichever step fails, a retry
-// still finds the session, through Delete (the session item) or DeleteAgent
-// (the index entry), and carries on.
-func (st *Store) deleteSession(ctx context.Context, tenant, agent, id string) error {
-	_, err := st.db.UpdateItem(ctx, &ddb.UpdateItemInput{
+// deleteSession marks the session deleting, then deletes its events, then the
+// session item and its index entry in one write. Once marked, nothing more can
+// be appended and the entry can't move, so nothing is left behind; and
+// whichever step fails, the session item and its entry are both still there,
+// for a retry of Delete or of DeleteAgent to find. seen is the index entry the
+// caller read.
+func (st *Store) deleteSession(ctx context.Context, tenant, agent, id, seen string) error {
+	out, err := st.db.UpdateItem(ctx, &ddb.UpdateItemInput{
 		TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK),
 		UpdateExpression:          aws.String("SET deleting = :yes"),
 		ConditionExpression:       aws.String("attribute_exists(pk)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":yes": yes},
+		ReturnValues:              types.ReturnValueAllNew,
 	})
 	var gone *types.ConditionalCheckFailedException
-	if err != nil && !errors.As(err, &gone) { // gone: an earlier attempt deleted the session item
+	if err != nil && !errors.As(err, &gone) { // gone: deleted meanwhile, or expired before its entry
 		return err
+	}
+	entries := []string{seen}
+	if err == nil {
+		if isk := getS(out.Attributes, "isk"); isk != seen {
+			entries = append(entries, isk) // seen was read before an append moved it
+		}
 	}
 	items, err := st.partition(ctx, sessionPK(tenant, id), "", func(item map[string]types.AttributeValue) bool {
 		return getS(item, "sk") != metaSK
@@ -854,10 +965,14 @@ func (st *Store) deleteSession(ctx context.Context, tenant, agent, id string) er
 	if err := st.deleteKeys(ctx, keysOf(items)); err != nil {
 		return err
 	}
-	if _, err := st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK)}); err != nil {
-		return err
+	deletes := []types.TransactWriteItem{{Delete: &types.Delete{TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK)}}}
+	for _, isk := range entries {
+		if isk != "" {
+			deletes = append(deletes, types.TransactWriteItem{Delete: &types.Delete{TableName: &st.table, Key: pkey(indexPK(tenant, agent), isk)}})
+		}
 	}
-	return st.deleteKeys(ctx, []map[string]types.AttributeValue{pkey(indexPK(tenant, agent), id)})
+	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: deletes})
+	return err
 }
 
 func (st *Store) DeleteAgent(ctx context.Context, tenant, agent string) error {
@@ -866,7 +981,7 @@ func (st *Store) DeleteAgent(ctx context.Context, tenant, agent string) error {
 		return err
 	}
 	return chunks(ctx, index, 1, func(ctx context.Context, one []map[string]types.AttributeValue) error {
-		return st.deleteSession(ctx, tenant, agent, getS(one[0], "sk"))
+		return st.deleteSession(ctx, tenant, agent, getS(one[0], "id"), getS(one[0], "sk"))
 	})
 }
 
