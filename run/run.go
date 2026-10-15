@@ -120,9 +120,11 @@ type Requirement struct {
 }
 
 // Resolved reports whether KIFF has resolved the requirement as of now: it
-// was answered, or its hold has expired.
+// was answered, or its hold has expired. A requirement with no expiry and no
+// answer is not resolved: it fails closed, so a run paused before KIFF's
+// expiry was recorded waits, visibly, rather than continuing unanswered.
 func (r Requirement) Resolved(now time.Time) bool {
-	return !r.Answered.IsZero() || !now.Before(r.Expires)
+	return !r.Answered.IsZero() || (!r.Expires.IsZero() && !now.Before(r.Expires))
 }
 
 // Turn is the turn a run paused in: the model's message, with its tool calls,
