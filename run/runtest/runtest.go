@@ -38,6 +38,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"NoWriteAfterTheLease", noWriteAfterTheLease},
 		{"ACancelKeepsTheClaimantsSave", aCancelKeepsTheClaimantsSave},
 		{"ASaveAfterAnotherClaimIsRefused", aSaveAfterAnotherClaimIsRefused},
+		{"ARunAskedToStopNeverPauses", aRunAskedToStopNeverPauses},
 		{"ASaveGivesUpOnARunThatKeepsChanging", aSaveGivesUpOnARunThatKeepsChanging},
 		{"APausedRunContinuesWhenResolved", aPausedRunContinuesWhenResolved},
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
@@ -250,6 +251,48 @@ func aCancelKeepsTheClaimantsSave(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	if done.Status != run.Cancelled || done.Cost != 100 {
 		t.Fatalf("ended %+v", done)
+	}
+}
+
+// A run asked to stop never pauses: a stale pausing save after a cancel is
+// refused, hands back the run as stored with Cancel set, and the claimant can
+// end it CANCELLED. A pause written with Cancel at once is refused too.
+func aRunAskedToStopNeverPauses(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	if _, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	pause := func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund"}}
+		return nil
+	}
+	got, err := run.Save(ctx, s, r, c.now(), pause)
+	if !errors.Is(err, run.ErrCancelled) || !errors.Is(err, run.ErrTransition) {
+		t.Fatalf("a pause after a cancel: err = %v, want ErrCancelled", err)
+	}
+	if got.Status != run.Running || !got.Cancel || got.Claim != "i1" {
+		t.Fatalf("returned %+v, want the stored run, Cancel set", got)
+	}
+	if stored := get(t, s, r); !reflect.DeepEqual(stored, got) {
+		t.Fatalf("stored %+v", stored)
+	}
+	done, err := run.Save(ctx, s, got, c.now(), set(run.Cancelled))
+	check(t, err)
+	if done.Status != run.Cancelled {
+		t.Fatalf("ended %+v", done)
+	}
+
+	fresh := claimed(t, s, c)
+	if _, err := run.Save(ctx, s, fresh, c.now(), func(n *run.Run) error { n.Cancel = true; return pause(n) }); !errors.Is(err, run.ErrCancelled) {
+		t.Fatalf("a pause with Cancel: err = %v, want ErrCancelled", err)
+	}
+	// Nor is a run asked to stop claimed.
+	pending := created(t, s, c, "t1", "refunds")
+	pending, err = run.Change(ctx, s, pending, c.now(), func(n *run.Run) error { n.Cancel = true; return nil })
+	check(t, err)
+	if _, err := run.Claim(ctx, s, "t1", pending.ID, "i2", c.now().Add(time.Minute), c.now()); !errors.Is(err, run.ErrCancelled) {
+		t.Fatalf("claiming a run asked to stop: err = %v, want ErrCancelled", err)
 	}
 }
 

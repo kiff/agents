@@ -24,7 +24,8 @@ const PendingTimeout = 5 * time.Minute
 // one; ErrConflict, that the run changed since it was read (read it again);
 // ErrTransition, that its status can't move as asked; ErrLeaseLost, that the
 // invocation's lease ran out, so it may write nothing more; ErrNotReady, that a
-// paused run still waits for a requirement.
+// paused run still waits for a requirement; ErrCancelled, that the run was
+// asked to stop, so it can't be claimed or paused (it is also ErrTransition).
 var (
 	ErrNotFound   = errors.New("run: not found")
 	ErrExists     = errors.New("run: already exists")
@@ -33,6 +34,7 @@ var (
 	ErrLeaseLost  = errors.New("run: lease ran out")
 	ErrNotReady   = errors.New("run: a requirement is still unresolved")
 	ErrFixed      = errors.New("run: what it is can't change")
+	ErrCancelled  = errors.New("run: asked to stop")
 )
 
 // Same reports whether two versions of a run are the same run: the same
@@ -131,6 +133,11 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	if !CanMove(r.Status, next.Status) {
 		return r, fmt.Errorf("%w: %s to %s", ErrTransition, r.Status, next.Status)
 	}
+	if next.Cancel && next.Status == Paused {
+		// A run asked to stop never pauses: a paused run with Cancel set
+		// could be neither claimed, cancelled, swept nor expired.
+		return r, fmt.Errorf("%w: %w", ErrTransition, ErrCancelled)
+	}
 	if next.Status != Running {
 		next.Claim, next.Lease = "", time.Time{}
 	}
@@ -194,7 +201,7 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 		return r, fmt.Errorf("%w: claiming a %s run", ErrTransition, r.Status)
 	}
 	if r.Cancel {
-		return r, fmt.Errorf("%w: the run was cancelled", ErrTransition)
+		return r, fmt.Errorf("%w: %w", ErrTransition, ErrCancelled)
 	}
 	return Change(ctx, runs, r, now, func(n *Run) error {
 		n.Status, n.Claim, n.Lease = Running, claim, deadline.UTC().Add(LeaseGrace)
@@ -210,12 +217,15 @@ const SaveTries = 5
 // holds the lease. A change it makes after its lease ran out, or after the run
 // moved on without it, writes nothing (ErrLeaseLost).
 //
-// A run that changed since r was read but is still this invocation's (the
-// server set Cancel, or recorded an answer) is read again and change applied
-// to it as stored, so change may run more than once, each time on the run as
-// stored. The run Save returns shows what changed meanwhile: a claimant that
-// finds Cancel set stops at its next checkpoint. A run that still changes
-// after SaveTries writes is ErrConflict.
+// A run that changed since r was read but is still this invocation's is read
+// again and change applied to it as stored, so change may run more than once,
+// each time on the run as stored. Today the only writer that changes a RUNNING
+// run under its claimant is a cancel (answers are recorded on PAUSED runs,
+// which hold no claim). The run Save returns shows what changed meanwhile: a
+// claimant that finds Cancel set ends the run CANCELLED at its next
+// checkpoint. A pause onto a run asked to stop is refused with ErrCancelled,
+// and the run returned is the one stored, Cancel set: end it CANCELLED
+// instead. A run that still changes after SaveTries writes is ErrConflict.
 func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run) error) (Run, error) {
 	for try := 1; ; try++ {
 		if r.Status != Running || r.Claim == "" || !now.Before(r.Lease) {
