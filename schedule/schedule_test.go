@@ -61,7 +61,7 @@ func TestFiringKey(t *testing.T) {
 	f := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "go", Due: due}
 	again := f
 	again.Due = due.In(time.FixedZone("", 7200))
-	again.Input = "changed since"
+	again.Input, again.Agent = "changed since", "refunds"
 	if f.Key() != again.Key() {
 		t.Fatal("two deliveries of one firing have different keys")
 	}
@@ -169,6 +169,11 @@ func TestPutThatFailsToSetCanBeRetried(t *testing.T) {
 	f.sched.fail = errors.New("throttled")
 	if err := f.sv.Put(ctx, s); err == nil {
 		t.Fatal("a Put whose Set failed reported success")
+	}
+	// What is stored is the truth: the owner sees the schedule, and a retry
+	// sets it.
+	if got, err := f.store.Get(ctx, "t1", "morning"); err != nil || got != s {
+		t.Fatalf("after a failed Set, stored %+v (err %v)", got, err)
 	}
 	f.sched.fail = nil
 	if err := f.sv.Put(ctx, s); err != nil || f.sched.set[[2]string{"t1", "morning"}] != s {
