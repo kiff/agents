@@ -4,9 +4,11 @@ Agents that act under KIFF Cards: a runtime for running them, and an API for
 watching what they do. [tafs](https://github.com/kiff/tafs) is the first product
 built on it. Each taf is one agent here.
 
-Status: early. Sessions, the run loop, chat and evals exist as libraries; runs
-as stored records and the server that runs agents come next. How it fits
-together, what's built and the order of work: [ARCHITECTURE.md](ARCHITECTURE.md).
+Status: early. Sessions, runs, the run loop, the runner, the registry,
+schedules, evals and the server's routes are built; the server isn't deployed
+yet, and a paused run can't continue until KIFF's outcomes are collected. How
+it fits together and the order of work: [ARCHITECTURE.md](ARCHITECTURE.md).
+What each issue delivers, with the tests that guard it: [docs/](docs/README.md).
 
 ## What it holds to
 

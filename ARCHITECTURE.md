@@ -2,7 +2,8 @@
 
 How kiff/agents is put together, and the order it is built in. Read this before
 taking an issue: every package below has its place here, and a change that
-doesn't fit is a change to this page first.
+doesn't fit is a change to this page first. What each issue has delivered so
+far, with the tests that guard it, is in [docs/](docs/README.md).
 
 ## In one picture
 
@@ -109,14 +110,14 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
 | `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). To add in step 4: `tool/kiff` sends and records KIFF's operation ID for each call, and collects a held call's outcome by it |
 | `hook` | Before a run (input checks), around each tool call, after a run (output checks); background hooks for notifications | To build, when a check needs it |
-| `registry` | Stored agent definitions, each bounded as stored; built per request for their tenant, with its gateway on the server's list and its KIFF key by reference; ports `Agents`, `Secrets` | Built (#16): definitions, `Build`, memory and DynamoDB stores. Still to come: the routes (step 2), removing an agent and what is kept for it, the Secrets Manager adapter |
-| `schedule` | Schedules: five-field cron in a time zone, at most every 15 minutes, on or off; ports `Schedules`, `Scheduler` (EventBridge Scheduler, `schedule/eventbridge`). A firing reads the stored schedule and heals the Scheduler when the two disagree | Built (#17): the core, memory and DynamoDB stores, the EventBridge adapter. Still to come: the routes and the wiring (step 2), triggers |
-| `server` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud | To build |
-| `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3). Reads runs once they exist; stores eval runs through a port |
+| `registry` | Stored agent definitions, each bounded as stored; built per request for their tenant, with its gateway on the server's list and its KIFF key by reference; ports `Agents`, `Secrets` | Built (#16): definitions, `Build`, memory and DynamoDB stores; the routes and removing an agent (#13). Still to come: the Secrets Manager adapter, withdrawing an agent's holds on removal (step 4) |
+| `schedule` | Schedules: five-field cron in a time zone, at most every 15 minutes, on or off; ports `Schedules`, `Scheduler` (EventBridge Scheduler, `schedule/eventbridge`). A firing reads the stored schedule and heals the Scheduler when the two disagree | Built (#17): the core, memory and DynamoDB stores, the EventBridge adapter, the routes (#13). Still to come: firings starting runs (wired in `cmd/lambda`), `/schedules/{id}/trigger`, triggers |
+| `server`, `server/lambdaurl` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud; the `Runner` port | Built (#13): agents, memory, sessions, schedules and run routes; the IAM function URL adapter, streaming. Still to come: `continue` and `/kiff/alerts` (step 4), `/evals`, `/usage` and `/ops` (step 3), the 429 cap, `/schedules/{id}/trigger` |
+| `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3): the harness, Refunds and Chargebacks, the Managed Agents baseline reader; `Policy` and `Load` grade runs of this runtime (#12). Still to come: `cmd/eval` starting cases as runs, stored eval runs (step 3) |
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
 | `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents and schedules; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
-| `cmd/lambda` | The server on Lambda | To build |
+| `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode, and schedule firings. Still to come: the runner, background runs as async invocations, the sweep on a schedule, firings starting runs; the deploy |
 
 ## The API
 
@@ -228,8 +229,9 @@ Each step is useful to tafs on its own:
    stored from here on).
 4. **Continue on a hold:** `tool/kiff` records KIFF's operation IDs;
    `/kiff/alerts`, requirements resolved from KIFF, continue in the background;
-   cancel withdraws held calls in KIFF (kiff/kiff-cloud#1245, the likely
-   bottleneck: it's outside this repo).
+   cancel withdraws held calls in KIFF (kiff/kiff-cloud#1245, shipped: KIFF
+   withdraws an agent's own held call, and tells alert targets when a hold
+   expires).
 5. **The registry:** agents stored, built per request for their tenant.
 6. **Schedules:** EventBridge Scheduler; then triggers.
 7. **tafs switches over:** tafs cloud calls the server; Managed Agents retired.
