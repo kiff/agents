@@ -32,11 +32,6 @@ const MaxRun = 15 * time.Minute
 // run stopped because its deadline passed.
 const StopTimeout = 10 * time.Second
 
-// HoldExpiry is when a requirement's hold is taken to expire, until KIFF
-// reports each hold's own expiry (step 4): the longest KIFF allows, so a run
-// is never continued before KIFF has resolved its calls.
-const HoldExpiry = 7 * 24 * time.Hour
-
 // MaxHistory bounds how many finished runs of its session a run sees,
 // whatever its definition asks.
 const MaxHistory = 50
@@ -306,15 +301,11 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		if err := rec.Pause(ctx); err != nil {
 			return x.current(ctx, fmt.Errorf("runner: pausing the recording: %w", err))
 		}
-		reqs := slices.Clone(out.Requirements)
-		for i := range reqs {
-			if reqs[i].Expires.IsZero() {
-				reqs[i].Expires = now.Add(HoldExpiry)
-			}
-		}
+		// Each requirement's hold expiry is KIFF's to report (step 4). Until
+		// then it is zero, and the requirement resolves only once answered.
 		return x.save(ctx, func(n *run.Run) error {
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
-			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, reqs, out.Turn
+			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			return nil
 		})
 	}

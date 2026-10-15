@@ -478,7 +478,7 @@ func TestAHoldPausesTheRun(t *testing.T) {
 		t.Fatalf("paused %+v", got)
 	}
 	if len(got.Requirements) != 1 || got.Requirements[0].CallID != "c1" || got.Requirements[0].Tool != "stripe_refund" ||
-		string(got.Requirements[0].Input) != `{"order":42}` || !got.Requirements[0].Expires.Equal(f.clock.now().Add(runner.HoldExpiry)) {
+		string(got.Requirements[0].Input) != `{"order":42}` || !got.Requirements[0].Expires.IsZero() {
 		t.Fatalf("requirements %+v", got.Requirements)
 	}
 	if got.Paused == nil || len(got.Paused.Reply.Blocks) != 1 {
@@ -758,7 +758,7 @@ func TestTheServerRunsOnIt(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(last)), &end); err != nil {
 		t.Fatalf("no end event in %s", body)
 	}
-	if end.Status != run.Completed || end.Output != "Refunded." || !strings.Contains(string(body), "event: text\n") {
+	if end.Status != run.Completed || end.Output != "Refunded." || !strings.Contains(string(body), "event: delta\n") {
 		t.Fatalf("streamed %s", body)
 	}
 	if got := f.get(end.ID); got.Status != run.Completed {
