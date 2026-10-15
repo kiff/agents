@@ -1,6 +1,6 @@
-// Command chat talks to an agent from the terminal, through KIFF's gateway,
-// with sessions kept in memory. It's for trying an agent against KIFF in test
-// mode, not for production.
+// Command chat talks to an agent from the terminal, through KIFF's gateway, on
+// the runner the server uses, with its runs and sessions kept in memory. It's
+// for trying an agent against KIFF in test mode, not for production.
 //
 //	KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… go run ./cmd/chat -model <model id> -price 5000000,25000000
 //
@@ -22,8 +22,11 @@ import (
 	"github.com/kiff/agents/chat"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
+	"github.com/kiff/agents/registry"
+	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
+	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
 )
@@ -61,38 +64,46 @@ func run() error {
 	}
 
 	ctx := context.Background()
-	tools, err := kiff.New(*gateway, key, nil).Tools(ctx)
-	if err != nil {
-		return err
-	}
 	store := memory.New()
-	tools = append(tools, toolmemory.New(store, "local", "cli"))
-	a := agent.Agent{Tenant: "local", ID: "cli", Model: anthropic.New(), ModelID: *modelID, Price: p,
-		MaxTokens: 8192, System: instructions, Tools: tools, MaxCost: int64(*maxCost * 1_000_000)}
-	if err := a.Check(); err != nil {
+	d := registry.Definition{Tenant: "local", ID: "cli", Instructions: instructions, Model: *modelID, Price: p,
+		MaxTokens: 8192, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY", Keep: session.DefaultPolicy(30 * 24 * time.Hour),
+		MaxCost: int64(*maxCost * 1_000_000), History: 20}
+	agents := memory.NewAgents()
+	if err := agents.Put(ctx, d); err != nil {
 		return err
 	}
-	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	builder := &registry.Builder{Agents: agents, Secrets: envKey(key), Model: anthropic.New(), Gateways: []string{*gateway},
+		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+			return kiff.New(gateway, key, nil).Tools(ctx)
+		},
+		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} }}
+	a, _, err := builder.Build(ctx, d.Tenant, d.ID) // check it builds, and say what it reaches
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%d tools through KIFF. Type a message; Ctrl-D ends.\n", len(tools)-1)
+	c := chat.Chat{Runner: &runner.Runner{Runs: memory.NewRuns(), Sessions: store, Builder: builder}, Tenant: d.Tenant, Agent: d.ID}
+	fmt.Fprintf(os.Stderr, "%d tools through KIFF. Type a message; Ctrl-D ends.\n", len(a.Tools)-1)
 	in := bufio.NewScanner(os.Stdin)
 	for fmt.Print("> "); in.Scan(); fmt.Print("> ") {
 		text := strings.TrimSpace(in.Text())
 		if text == "" {
 			continue
 		}
-		_, out, err := chat.Send(ctx, rec, store, a, text, time.Now(), show)
+		r, err := c.Send(ctx, text, show)
 		fmt.Println()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "[%s · $%.4f]\n", out.Stop, float64(out.Cost)/1_000_000)
+		fmt.Fprintf(os.Stderr, "[%s %s · $%.4f]\n", r.Status, r.Stop, float64(r.Cost)/1_000_000)
 	}
 	return in.Err()
 }
+
+// envKey is the agent's KIFF key, read from the environment.
+type envKey string
+
+func (k envKey) Key(context.Context, string, string) (string, error) { return string(k), nil }
 
 func show(e agent.Event) {
 	switch e.Kind {
