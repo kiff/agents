@@ -193,7 +193,11 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 	if r.Status != Pending && r.Status != Paused {
 		return r, fmt.Errorf("%w: claiming a %s run", ErrTransition, r.Status)
 	}
-	if r.Cancel {
+	// A pending run asked to stop never starts. A paused one still goes on
+	// once KIFF has resolved it: its held calls' outcomes are recorded, and
+	// it stops at its first checkpoint. Otherwise a run cancelled while KIFF
+	// came to hold one of its calls could never move again.
+	if r.Cancel && r.Status == Pending {
 		return r, fmt.Errorf("%w: the run was cancelled", ErrTransition)
 	}
 	return Change(ctx, runs, r, now, func(n *Run) error {

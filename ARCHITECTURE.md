@@ -82,6 +82,9 @@ COMPLETED, ERROR and CANCELLED are final.
   rather than retrying.
 - **Cancel** records the intent; the loop stops at its next checkpoint (before a
   model turn, after a tool batch). It doesn't undo what a tool already did.
+  A run asked to stop in a turn where KIFF holds one of its calls pauses as
+  usual; once KIFF resolves the hold, it continues, records the outcome and
+  stops at its first checkpoint, CANCELLED.
   Cancelling a paused run first withdraws its held calls in KIFF
   (kiff/kiff-cloud#1245), so an answer that comes later forwards nothing. A
   hold-answered alert for a cancelled run is still recorded on it, so a call

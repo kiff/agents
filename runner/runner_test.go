@@ -866,3 +866,103 @@ func TestTheServerShowsNoPrivateCause(t *testing.T) {
 		t.Fatalf("replayed %s\nread %s", replay, read)
 	}
 }
+
+// A run asked to stop while KIFF comes to hold one of its calls pauses, and
+// once KIFF has resolved the hold it records the outcome and stops, CANCELLED.
+func TestACancelDuringAHeldBatchEndsOnceResolved(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Waiting."))
+	r := f.start(server.Start{Input: "refund"})
+	f.refund.onCall = func() {
+		f.refund.onCall = nil
+		if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+			t.Error(err)
+		}
+	}
+	paused := f.pause(r)
+	if paused.Status != run.Paused || !paused.Cancel {
+		t.Fatalf("paused %+v, want paused and asked to stop", paused)
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refused by the owner"}}}, nil
+	}
+	turns := len(f.model.requests())
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Cancelled || got.Stop != string(agent.Cancelled) || got.Requirements != nil {
+		t.Fatalf("ended %+v, want cancelled", got)
+	}
+	if n := len(f.model.requests()); n != turns {
+		t.Fatalf("the model was called %d more times, want none", n-turns)
+	}
+	s, _, _ := f.store.Read(ctx, "t1", r.Session)
+	if !f.state(r).Ended || len(s.Held) != 0 {
+		t.Fatal("the cancelled run's recording still holds its session")
+	}
+}
+
+// The loop stops StopTimeout before the caller's deadline, so where the run
+// stopped is stored in time.
+func TestTheLoopLeavesTimeToStoreTheStop(t *testing.T) {
+	f := newFixture(t, say("too late"))
+	r := f.start(server.Start{Input: "go"})
+	dctx, cancel := context.WithDeadline(ctx, time.Now().Add(runner.StopTimeout/2))
+	defer cancel()
+	got, err := f.r.Execute(dctx, "t1", r.ID, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v, want the deadline", err)
+	}
+	if got.Status != run.Error || got.Error != runner.FailedTime || got.Claim != "" {
+		t.Fatalf("stored %+v, want the time limit", got)
+	}
+}
+
+// flakyRuns fails the next fail reads.
+type flakyRuns struct {
+	*memory.Runs
+	mu   sync.Mutex
+	fail int
+}
+
+func (fr *flakyRuns) Get(ctx context.Context, tenant, id string) (run.Run, error) {
+	fr.mu.Lock()
+	failing := fr.fail > 0
+	if failing {
+		fr.fail--
+	}
+	fr.mu.Unlock()
+	if failing {
+		return run.Run{}, errors.New("throttled")
+	}
+	return fr.Runs.Get(ctx, tenant, id)
+}
+
+// A store's passing error at a checkpoint doesn't end the run.
+func TestAFailedCheckpointReadCarriesOn(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Refunded."))
+	flaky := &flakyRuns{Runs: f.runs}
+	f.r.Runs = flaky
+	f.refund.onCall = func() { flaky.mu.Lock(); flaky.fail = 1; flaky.mu.Unlock() }
+	r := f.start(server.Start{Input: "refund"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil || got.Status != run.Completed {
+		t.Fatalf("got %+v, %v; want it completed", got, err)
+	}
+}
+
+// A run whose turn after the hold failed still pauses, and the caller gets the
+// failure to log.
+func TestAPauseKeepsTheCauseOfAFailedTurn(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`)) // the turn after it fails
+	r := f.start(server.Start{Input: "refund"})
+	f.refund.result = tool.Result{Text: "held", State: tool.StateHeld}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || !strings.Contains(err.Error(), "no more replies") {
+		t.Fatalf("got %v, want the failed turn's cause", err)
+	}
+	if got.Status != run.Paused || len(got.Requirements) != 1 {
+		t.Fatalf("stored %+v, want it paused", got)
+	}
+}

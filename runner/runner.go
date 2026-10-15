@@ -130,7 +130,10 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if !ok {
 		deadline = rn.now().Add(MaxRun)
 	}
-	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	// The loop stops StopTimeout short of the deadline, so storing where it
+	// stopped has time before the invocation is gone. The lease runs to the
+	// deadline itself.
+	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline.Add(-StopTimeout))
 	defer cancel()
 
 	r, err := rn.Runs.Get(ctx, tenant, id)
@@ -273,11 +276,13 @@ type execution struct {
 }
 
 // cancelled is the loop's checkpoint: whether the run was asked to stop. A
-// claim that no longer holds stops the run with run.ErrLeaseLost.
+// claim that no longer holds stops the run with run.ErrLeaseLost. A read that
+// fails counts as not asked: a store's passing error shouldn't end a run, the
+// next checkpoint reads again, and save still finds a lost lease.
 func (x *execution) cancelled(ctx context.Context) (bool, error) {
 	r, err := x.rn.Runs.Get(ctx, x.tenant, x.id)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	if r.Status != run.Running || r.Claim != x.claim || !x.rn.now().Before(r.Lease) {
 		return false, run.ErrLeaseLost
@@ -324,11 +329,12 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		}
 		// Each requirement's hold expiry is KIFF's to report (step 4). Until
 		// then it is zero, and the requirement resolves only once answered.
-		return x.save(ctx, func(n *run.Run) error {
+		r, err := x.save(ctx, func(n *run.Run) error {
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			return nil
 		})
+		return r, errors.Join(runErr, err) // a failed turn after the hold is still the caller's to log
 	}
 	if err := rec.End(ctx); err != nil {
 		return x.current(ctx, errors.Join(runErr, fmt.Errorf("runner: ending the recording: %w", err)))

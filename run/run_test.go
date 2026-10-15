@@ -131,6 +131,39 @@ func TestACancelledRunIsNotClaimed(t *testing.T) {
 	}
 }
 
+// A paused run asked to stop is still claimed once KIFF has resolved it, so
+// it can record its held calls' outcomes and stop.
+func TestACancelledPausedRunIsClaimedOnceResolved(t *testing.T) {
+	ctx := context.Background()
+	runs := memory.NewRuns()
+	now := time.Now()
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", now)
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Claim(ctx, runs, "t1", r.ID, "i1", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = run.Change(ctx, runs, r, now, func(n *run.Run) error {
+		n.Status, n.Cancel = run.Paused, true
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund"}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Claim(ctx, runs, "t1", r.ID, "i2", now.Add(time.Minute), now); !errors.Is(err, run.ErrNotReady) {
+		t.Fatalf("claiming it before KIFF answered: %v", err)
+	}
+	if _, err := run.Change(ctx, runs, r, now, func(n *run.Run) error { n.Requirements[0].Answered = now; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := run.Claim(ctx, runs, "t1", r.ID, "i2", now.Add(time.Minute), now); err != nil || got.Status != run.Running || !got.Cancel {
+		t.Fatalf("claimed %+v, %v; want it running, still asked to stop", got, err)
+	}
+}
+
 // Starting a run is stored, then claimed: twice the store, on every message.
 func BenchmarkStart(b *testing.B) {
 	ctx := context.Background()
