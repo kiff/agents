@@ -3,91 +3,192 @@ package chat_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/chat"
 	"github.com/kiff/agents/model"
-	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/registry"
+	"github.com/kiff/agents/registry/registrytest"
+	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	toolmemory "github.com/kiff/agents/tool/memory"
 )
 
-// echo answers every turn with a fixed text, and keeps what it was sent.
+// echo answers "Noted." and keeps what it was sent. A message that asks for
+// a refund gets a refund call first, and the call's result is answered with
+// "Waiting for your answer.".
 type echo struct {
 	mu   sync.Mutex
 	reqs []model.Request
 }
 
-func (e *echo) Turn(_ context.Context, req model.Request, _ func(string)) (model.Reply, error) {
+func (e *echo) Turn(_ context.Context, req model.Request, onText func(string)) (model.Reply, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.reqs = append(e.reqs, req)
-	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Noted."}}, Stop: model.EndTurn}, nil
+	last := req.Messages[len(req.Messages)-1].Blocks[0]
+	if last.Kind != model.ToolResult && strings.HasPrefix(last.Text, "Refund") {
+		return model.Reply{Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{}`)}},
+			Stop: model.CallTools}, nil
+	}
+	text := "Noted."
+	if last.Kind == model.ToolResult {
+		text = "Waiting for your answer."
+	}
+	if onText != nil {
+		onText(text)
+	}
+	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: text}}, Stop: model.EndTurn}, nil
 }
 
-func setup(t *testing.T) (*session.Recorder, *memory.Store, *echo, agent.Agent, *time.Time) {
+func (e *echo) last() model.Request {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.reqs[len(e.reqs)-1]
+}
+
+// held is a refund KIFF holds for the owner.
+type held struct{}
+
+func (held) Spec() model.ToolSpec {
+	return model.ToolSpec{Name: "stripe_refund", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (held) Access() tool.Access { return tool.Write }
+func (held) Gateway() bool       { return true }
+func (held) Call(context.Context, json.RawMessage) (tool.Result, error) {
+	return tool.Result{Text: "Held for the owner.", IsError: true, State: tool.StateHeld}, nil
+}
+
+type keys struct{}
+
+func (keys) Key(context.Context, string, string) (string, error) { return "key", nil }
+
+type env struct {
+	runner *runner.Runner
+	runs   *memory.Runs
+	store  *memory.Store
+	model  *echo
+}
+
+// setup is a runner on memory stores, with t1's agents "rae" and "max".
+func setup(t *testing.T) env {
 	t.Helper()
-	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	store := memory.NewAt(func() time.Time { return now }) // the store's clock is the test's
-	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
+	ctx := context.Background()
+	agents := memory.NewAgents()
+	for _, id := range []string{"rae", "max"} {
+		if err := agents.Put(ctx, registrytest.Definition("t1", id)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	m := &echo{}
-	a := agent.Agent{Tenant: "t1", ID: "rae", Model: m, ModelID: "test-model", MaxTokens: 1024, MaxCost: 1_000_000,
-		Tools: []tool.Tool{toolmemory.New(store, "t1", "rae")}}
-	return rec, store, m, a, &now
+	e := env{runs: memory.NewRuns(), store: memory.New(), model: &echo{}}
+	e.runner = &runner.Runner{Runs: e.runs, Sessions: e.store,
+		Builder: &registry.Builder{Agents: agents, Secrets: keys{}, Model: e.model, Gateways: []string{"https://gateway.test/mcp"},
+			Connect: func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{held{}}, nil }}}
+	return e
 }
 
-// A message within the window carries the last chat on; after it, a chat
-// starts fresh. Each message is its own ended session.
-func TestAMessageCarriesOnTheLastChatWithinTheWindow(t *testing.T) {
-	rec, store, m, a, now := setup(t)
-	ctx := context.Background()
-	first, _, err := chat.Send(ctx, rec, store, a, "Offer store credit first.", *now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	*now = now.Add(10 * time.Minute)
-	second, _, err := chat.Send(ctx, rec, store, a, "And for Acme, ask me.", *now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.ID == second.ID {
-		t.Fatal("two messages shared a session")
-	}
-	// The second turn saw the first exchange, then its own message.
-	if got := len(m.reqs[1].Messages); got != 3 {
-		t.Fatalf("carried %d messages, want 3", got)
-	}
-	if m.reqs[1].Messages[0].Blocks[0].Text != "Offer store credit first." || m.reqs[1].Messages[1].Role != model.Assistant {
-		t.Fatalf("history = %+v", m.reqs[1].Messages)
-	}
-	_, events, err := store.Read(ctx, "t1", first.ID)
-	if err != nil || len(events) == 0 {
-		t.Fatalf("first session: %d events, %v", len(events), err)
-	}
-	if state, _, err := store.ReadRun(ctx, "t1", first.ID, events[0].Run); err != nil || !state.Ended {
-		t.Fatalf("first run %+v %v", state, err)
-	}
+func (e env) chat(agentID string) *chat.Chat {
+	return &chat.Chat{Runner: e.runner, Tenant: "t1", Agent: agentID}
+}
 
-	*now = now.Add(chat.Window + time.Minute)
-	if _, _, err := chat.Send(ctx, rec, store, a, "New topic.", *now, nil); err != nil {
+func texts(msgs []model.Message) []string {
+	var out []string
+	for _, m := range msgs {
+		for _, b := range m.Blocks {
+			out = append(out, b.Text)
+		}
+	}
+	return out
+}
+
+// A conversation is one session, and each message a run in it, carrying the
+// conversation on.
+func TestEachMessageIsARunOfOneConversation(t *testing.T) {
+	e := setup(t)
+	c := e.chat("rae")
+	ctx := context.Background()
+	var made []run.Run
+	for _, text := range []string{"A", "B", "C"} {
+		r, err := c.Send(ctx, text, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		made = append(made, r)
+	}
+	if got := texts(e.model.last().Messages); !slices.Equal(got, []string{"A", "Noted.", "B", "Noted.", "C"}) {
+		t.Fatalf("the third message carried %q", got)
+	}
+	for _, r := range made {
+		if r.Session != c.Session || r.Trigger != run.ByOwner || r.Status != run.Completed || r.Output != "Noted." {
+			t.Fatalf("run %+v", r)
+		}
+	}
+	if l, _ := e.store.List(ctx, "t1", "rae", 10); len(l) != 1 || l[0].ID != c.Session {
+		t.Fatalf("%d sessions, want the one conversation", len(l))
+	}
+}
+
+// A message whose call KIFF holds pauses its run. The next message is a run of
+// its own, and carries nothing of the paused run until it ends.
+func TestAMessageWhilePausedIsARunOfItsOwn(t *testing.T) {
+	e := setup(t)
+	c := e.chat("rae")
+	ctx := context.Background()
+	paused, err := c.Send(ctx, "Refund ch_big.", nil)
+	if err != nil || paused.Status != run.Paused || len(paused.Requirements) != 1 {
+		t.Fatalf("paused %+v, %v", paused, err)
+	}
+	next, err := c.Send(ctx, "Meanwhile, hello.", nil)
+	if err != nil || next.Status != run.Completed || next.Session != paused.Session || next.ID == paused.ID {
+		t.Fatalf("next %+v, %v", next, err)
+	}
+	if got := texts(e.model.last().Messages); !slices.Equal(got, []string{"Meanwhile, hello."}) {
+		t.Fatalf("a message during a pause carried %q", got)
+	}
+}
+
+// Two conversations with the same agent are apart, and so are two agents'.
+func TestConversationsAreApart(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	one, two, other := e.chat("rae"), e.chat("rae"), e.chat("max")
+	for _, c := range []*chat.Chat{one, two, other} {
+		if _, err := c.Send(ctx, "Hi.", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if one.Session == two.Session || one.Session == other.Session {
+		t.Fatalf("sessions %q %q %q", one.Session, two.Session, other.Session)
+	}
+	if _, err := two.Send(ctx, "Again.", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(m.reqs[2].Messages); got != 1 {
-		t.Fatalf("a chat after the window carried %d messages", got)
+	if got := texts(e.model.last().Messages); !slices.Equal(got, []string{"Hi.", "Noted.", "Again."}) {
+		t.Fatalf("the second conversation carried %q", got)
+	}
+}
+
+// A message streams its run as it goes.
+func TestSendStreams(t *testing.T) {
+	e := setup(t)
+	var kinds []agent.EventKind
+	if _, err := e.chat("rae").Send(context.Background(), "Hi.", func(ev agent.Event) { kinds = append(kinds, ev.Kind) }); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(kinds, []agent.EventKind{agent.TextDelta}) {
+		t.Fatalf("streamed %v", kinds)
 	}
 }
 
 // The memory tool keeps notes between chats, for this agent only.
 func TestTheMemoryToolKeepsNotes(t *testing.T) {
-	_, store, _, _, _ := setup(t)
+	store := memory.New()
 	ctx := context.Background()
 	mem := toolmemory.New(store, "t1", "rae")
 	call := func(in string) tool.Result {
@@ -116,123 +217,5 @@ func TestTheMemoryToolKeepsNotes(t *testing.T) {
 	}
 	if mem.Access() != tool.Own || mem.Gateway() {
 		t.Fatal("memory must be Own, outside the gateway")
-	}
-}
-
-// Three messages within the window are one conversation: the third sees both
-// earlier exchanges.
-func TestAConversationCarriesEveryEarlierMessage(t *testing.T) {
-	rec, store, m, a, now := setup(t)
-	ctx := context.Background()
-	for _, text := range []string{"A", "B", "C"} {
-		if _, _, err := chat.Send(ctx, rec, store, a, text, *now, nil); err != nil {
-			t.Fatal(err)
-		}
-		*now = now.Add(time.Minute)
-	}
-	msgs := m.reqs[2].Messages
-	if len(msgs) != 5 || msgs[0].Blocks[0].Text != "A" || msgs[2].Blocks[0].Text != "B" || msgs[4].Blocks[0].Text != "C" {
-		t.Fatalf("third request carried %+v", msgs)
-	}
-}
-
-// fragileStore honours cancellation, like a networked store, and can fail
-// its next EndRun once.
-type fragileStore struct {
-	*memory.Store
-	failEnd bool
-}
-
-func (f *fragileStore) Append(ctx context.Context, tenant, id, run string, events []session.Event) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return f.Store.Append(ctx, tenant, id, run, events)
-}
-
-func (f *fragileStore) EndRun(ctx context.Context, tenant, id, run string, expires time.Time) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if f.failEnd {
-		f.failEnd = false
-		return errors.New("store unavailable")
-	}
-	return f.Store.EndRun(ctx, tenant, id, run, expires)
-}
-
-// cancelling is a model that calls the memory tool, then has its request
-// cancelled during the next turn.
-type cancelling struct {
-	cancel context.CancelFunc
-	turns  int
-}
-
-func (c *cancelling) Turn(ctx context.Context, _ model.Request, _ func(string)) (model.Reply, error) {
-	c.turns++
-	if c.turns == 1 {
-		return model.Reply{Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: toolmemory.Name, Input: json.RawMessage(`{"action":"list"}`)}}, Stop: model.CallTools}, nil
-	}
-	c.cancel()
-	return model.Reply{}, ctx.Err()
-}
-
-// A request cancelled after a tool answered still ends its run, and what the
-// tool did is dropped.
-func TestACancelledChatStillEndsItsRun(t *testing.T) {
-	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	store := &fragileStore{Store: memory.NewAt(func() time.Time { return now })}
-	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m := &cancelling{cancel: cancel}
-	a := agent.Agent{Tenant: "t1", ID: "rae", Model: m, ModelID: "test-model", MaxTokens: 1024, MaxCost: 1_000_000,
-		Tools: []tool.Tool{toolmemory.New(store, "t1", "rae")}}
-	s, _, err := chat.Send(ctx, rec, store, a, "What do you remember?", now, nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v", err)
-	}
-	got, events, err := store.Read(context.Background(), "t1", s.ID)
-	if err != nil {
-		t.Fatalf("session %+v %v", got, err)
-	}
-	if len(events) == 0 {
-		t.Fatal("nothing recorded")
-	}
-	state, _, err := store.ReadRun(context.Background(), "t1", s.ID, events[0].Run)
-	if err != nil || !state.Ended {
-		t.Fatalf("run %+v %v", state, err)
-	}
-	for _, e := range events {
-		if e.Kind == session.ToolCall || e.Kind == session.ToolResult {
-			t.Fatal("a tool call or result outlived the ended run")
-		}
-	}
-}
-
-// If ending fails anyway, the caller gets a NotEnded it can retry.
-func TestAFailedEndCanBeRetried(t *testing.T) {
-	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	store := &fragileStore{Store: memory.NewAt(func() time.Time { return now }), failEnd: true}
-	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := agent.Agent{Tenant: "t1", ID: "rae", Model: &echo{}, ModelID: "test-model", MaxTokens: 1024, MaxCost: 1_000_000}
-	s, _, err := chat.Send(context.Background(), rec, store, a, "Hi.", now, nil)
-	var ne *chat.NotEnded
-	if !errors.As(err, &ne) {
-		t.Fatalf("err = %v", err)
-	}
-	if state, _, _ := store.ReadRun(context.Background(), "t1", s.ID, ne.Recording.Run()); state.Ended {
-		t.Fatal("the run ended before the retry")
-	}
-	if err := ne.Retry(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if state, _, _ := store.ReadRun(context.Background(), "t1", s.ID, ne.Recording.Run()); !state.Ended {
-		t.Fatal("the run didn't end on the retry")
 	}
 }
