@@ -16,7 +16,11 @@ import (
 // reads the tool's result back. It runs only with ANTHROPIC_API_KEY and
 // AGENTS_LIVE_MODEL set, never in CI, so it costs nothing unasked:
 //
-//	ANTHROPIC_API_KEY=… AGENTS_LIVE_MODEL=claude-haiku-5-5 go test -run Live ./model/anthropic/
+//	ANTHROPIC_API_KEY=… AGENTS_LIVE_MODEL=claude-opus-5-5 go test -run Live ./model/anthropic/
+//
+// Run it on the model agents run on in production: with thinking on, the
+// replayed tool calls come without their thinking, which is what it checks.
+// MaxTokens leaves room for thinking, so a turn fails only for what it tests.
 func TestLiveTurn(t *testing.T) {
 	modelID := os.Getenv("AGENTS_LIVE_MODEL")
 	if os.Getenv("ANTHROPIC_API_KEY") == "" || modelID == "" {
@@ -30,7 +34,7 @@ func TestLiveTurn(t *testing.T) {
 	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "What is the amount of charge ch_1? Use the tool."}}}}
 
 	streamed := 0
-	first, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 512, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
+	first, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 2048, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +53,7 @@ func TestLiveTurn(t *testing.T) {
 
 	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: first.Blocks},
 		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: call.CallID, Result: `{"id":"ch_1","amount":4200,"currency":"eur"}`}}})
-	second, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 512, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
+	second, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 2048, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +70,7 @@ func TestLiveTurn(t *testing.T) {
 	// takes it with the tools offered and tool use forbidden.
 	held := append(msgs[:1:1], model.Message{Role: model.Assistant, Blocks: first.Blocks},
 		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: call.CallID, Result: "Held for the owner's answer.", IsError: true}}})
-	third, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 256, Messages: held, Tools: tools, NoToolUse: true}, nil)
+	third, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 2048, Messages: held, Tools: tools, NoToolUse: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

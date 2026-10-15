@@ -61,7 +61,8 @@ type Request struct {
 	// NoToolUse offers Tools but forbids calling any of them this turn: the
 	// model must answer in text. Use it, not an empty Tools, when Messages
 	// hold tool calls or results: a request with those must still define its
-	// tools, and keeping them unchanged keeps the cached prompt prefix.
+	// tools, and keeping them unchanged keeps the cached prompt prefix. With
+	// no Tools it changes nothing.
 	NoToolUse bool
 }
 

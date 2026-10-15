@@ -158,4 +158,8 @@ func TestNoToolUseSendsTheToolsAndChoiceNone(t *testing.T) {
 	if body := sent(t, req); body["tool_choice"] != nil {
 		t.Fatalf("a turn allowed to use tools sent tool_choice %v", body["tool_choice"])
 	}
+	req.NoToolUse, req.Tools, req.Messages = true, nil, req.Messages[:1]
+	if body := sent(t, req); body["tool_choice"] != nil || body["tools"] != nil {
+		t.Fatalf("a turn with no tools sent tools %v, tool_choice %v", body["tools"], body["tool_choice"])
+	}
 }
