@@ -61,7 +61,7 @@ func TestFiringKey(t *testing.T) {
 	f := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "go", Due: due}
 	again := f
 	again.Due = due.In(time.FixedZone("", 7200))
-	again.Input, again.Agent = "changed since", "refunds"
+	again.Input, again.Agent = "changed since", "chargebacks"
 	if f.Key() != again.Key() {
 		t.Fatal("two deliveries of one firing have different keys")
 	}
