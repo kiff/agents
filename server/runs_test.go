@@ -38,6 +38,7 @@ type runner struct {
 	execs     []string
 	deadlines []time.Time   // each Execute's context deadline (zero: none)
 	failing   error         // Execute fails with it, after the run started
+	badCall   bool          // Execute first emits a tool call whose input isn't JSON
 	hold      chan struct{} // when set, Execute waits on it after its first event
 }
 
@@ -92,6 +93,9 @@ func (rr *runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err := ctx.Err(); err != nil {
 		_, _ = run.Change(context.WithoutCancel(ctx), rr.runs, r, now, func(n *run.Run) error { n.Status, n.Error = run.Error, err.Error(); return nil })
 		return run.Run{}, err
+	}
+	if rr.badCall { // a turn cut off at its token limit leaves a call's input unfinished
+		emit(agent.Event{Kind: agent.CallStart, CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":`)})
 	}
 	emit(agent.Event{Kind: agent.TextDelta, Text: "do"})
 	emit(agent.Event{Kind: agent.TextDelta, Text: "ne"})
@@ -886,5 +890,30 @@ func TestAGoneClientStopsTheFollowerOnLambdaToo(t *testing.T) {
 			t.Fatal("the run didn't complete without its client")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// An event that can't be encoded is sent as its fallback, and the stream
+// carries on to its end.
+func TestAnEventThatCantBeEncodedDoesntEndTheStream(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.runner.badCall = true
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
+	if code != 200 || len(events) == 0 || events[len(events)-1].name != "end" {
+		t.Fatalf("got %d %s; want the stream to reach end", code, names(events))
+	}
+	var fallback bool
+	var texts []string
+	for _, e := range events {
+		if e.name == "delta" && e.data["error"] != nil {
+			fallback = true
+		}
+		if e.name == "delta" && e.data["text"] != nil {
+			texts = append(texts, fmt.Sprint(e.data["text"]))
+		}
+	}
+	if !fallback || strings.Join(texts, ",") != "do,ne" {
+		t.Fatalf("events %s: fallback sent %v, texts after it %v; want the fallback, then do,ne", names(events), fallback, texts)
 	}
 }

@@ -445,13 +445,15 @@ func (s *stream) event(name, id string, v any) {
 	if s.broken {
 		return
 	}
+	var werr error // the write's, apart from the encoding's: an event that
+	// couldn't be encoded is still sent, as its fallback
 	if id != "" {
-		_, err = fmt.Fprintf(s.w, "id: %s\n", id)
+		_, werr = fmt.Fprintf(s.w, "id: %s\n", id)
 	}
-	if err == nil {
-		_, err = fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, b)
+	if werr == nil {
+		_, werr = fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, b)
 	}
-	if err != nil {
+	if werr != nil {
 		s.broken = true
 		return
 	}
