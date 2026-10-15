@@ -27,7 +27,7 @@ Ports and adapters. The core packages hold types, the interfaces they need
 a database driver; adapters import the core.
 
 ```
-session/            sessions, events, keep rules, Recorder; ports Store, Notes
+session/            sessions (threads of runs), events, keep rules, Recorder; ports Store, Notes
 session/sessiontest the checks every Store must pass
 store/memory        adapter: in memory, for tests and local runs
 store/<name>        one package per store (sqlite, dynamodb)
@@ -36,14 +36,17 @@ model/anthropic     adapter: Claude API, through the official Go SDK
 tool/               the tool port; Check refuses a write tool outside KIFF's gateway
 tool/kiff           adapter: MCP client to KIFF's gateway, with the agent's own key
 tool/memory         adapter: the agent's notes, on session.Notes
-agent/              the run loop: model → tools → model, recorded and streamed
-chat/               the owner talking to an agent: one session per message
+agent/              the run loop: model → tools → model, recorded and streamed; pauses on a KIFF hold
+chat/               the owner talking to an agent: each message a run in the conversation's session
 cmd/chat            a terminal chat against KIFF, for test mode
 ```
 
 Model, tools, the run loop and evals follow the same shape: a core package
 with its port, and one package per adapter (for example `model/anthropic`).
-Wiring happens in `cmd/`.
+Wiring happens in `cmd/`. ARCHITECTURE.md lists the packages still to build
+(`run`, `registry`, `schedule`, `server`, `console`, `hook`) and where each fits;
+today chat still opens one session per message, until step 1 of its order of
+work lands.
 
 Goroutines where they save waiting: one writer per recording, so the run loop
 never waits on the store, and tool calls in parallel. Every goroutine has an
