@@ -15,10 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
+
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
 )
@@ -30,11 +33,13 @@ type runner struct {
 	runs  *memory.Runs
 	store *memory.Store
 
-	mu      sync.Mutex
-	starts  []server.Start
-	execs   []string
-	failing error         // Execute fails with it, after the run started
-	hold    chan struct{} // when set, Execute waits on it after its first event
+	mu        sync.Mutex
+	starts    []server.Start
+	execs     []string
+	deadlines []time.Time   // each Execute's context deadline (zero: none)
+	failing   error         // Execute fails with it, after the run started
+	badCall   bool          // Execute first emits a tool call whose input isn't JSON
+	hold      chan struct{} // when set, Execute waits on it after its first event
 }
 
 func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
@@ -60,9 +65,10 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 func (rr *runner) Execute(ctx context.Context, tenant, id string, emit func(agent.Event)) (run.Run, error) {
 	rr.mu.Lock()
 	rr.execs = append(rr.execs, id)
+	dl, _ := ctx.Deadline()
+	rr.deadlines = append(rr.deadlines, dl)
 	hold := rr.hold
 	rr.mu.Unlock()
-	ctx = context.WithoutCancel(ctx)
 	if emit == nil {
 		emit = func(agent.Event) {}
 	}
@@ -81,6 +87,15 @@ func (rr *runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	record(1, session.OwnerMessage, r.Input)
 	if hold != nil {
 		<-hold
+	}
+	// A real run's next model or store call would fail on a cancelled
+	// context: so does this one.
+	if err := ctx.Err(); err != nil {
+		_, _ = run.Change(context.WithoutCancel(ctx), rr.runs, r, now, func(n *run.Run) error { n.Status, n.Error = run.Error, err.Error(); return nil })
+		return run.Run{}, err
+	}
+	if rr.badCall { // a turn cut off at its token limit leaves a call's input unfinished
+		emit(agent.Event{Kind: agent.CallStart, CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":`)})
 	}
 	emit(agent.Event{Kind: agent.TextDelta, Text: "do"})
 	emit(agent.Event{Kind: agent.TextDelta, Text: "ne"})
@@ -689,4 +704,216 @@ func (f *runFixture) restart() {
 	f.srv.Close()
 	f.srv = httptest.NewServer(f.server.Handler())
 	f.t.Cleanup(f.srv.Close)
+}
+
+// A path the API has, asked with a method it doesn't take, is 405 with
+// Allow; a path it doesn't have is 404. Both in JSON, like every error.
+func TestWrongMethodAndUnknownPath(t *testing.T) {
+	f := newRunFixture(t)
+	for _, c := range []struct {
+		method, path, allow string
+		status              int
+	}{
+		{"PUT", "/health", "GET, HEAD", 405},
+		{"DELETE", "/schedules/x/runs", "GET, HEAD", 405},
+		{"PATCH", "/agents/payouts", "DELETE, GET, HEAD, PUT", 405},
+		{"GET", "/nowhere", "", 404},
+		{"GET", "/agents/payouts/runs/r1/nothing", "", 404},
+	} {
+		req, _ := http.NewRequest(c.method, f.srv.URL+c.path, nil)
+		req.Header.Set("X-Test-Tenant", "t1")
+		resp, err := f.srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		err = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if resp.StatusCode != c.status || err != nil || body["error"] == nil || resp.Header.Get("Allow") != c.allow {
+			t.Errorf("%s %s: got %d Allow %q body %v (%v); want %d Allow %q and a JSON error",
+				c.method, c.path, resp.StatusCode, resp.Header.Get("Allow"), body, err, c.status, c.allow)
+		}
+	}
+}
+
+// ctxSessions is the memory store reading as a networked store does: a
+// cancelled context fails the read.
+type ctxSessions struct{ *memory.Store }
+
+func (c ctxSessions) State(ctx context.Context, tenant, sess, rn string) (session.RunState, error) {
+	if err := ctx.Err(); err != nil {
+		return session.RunState{}, err
+	}
+	return c.Store.State(ctx, tenant, sess, rn)
+}
+
+func (c ctxSessions) ReadRun(ctx context.Context, tenant, sess, rn string) (session.RunState, []session.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return session.RunState{}, nil, err
+	}
+	return c.Store.ReadRun(ctx, tenant, sess, rn)
+}
+
+// A client that goes away mid-run leaves the run going and the log quiet:
+// nothing is left to follow for it.
+func TestADroppedClientIsNotFollowed(t *testing.T) {
+	f := newRunFixture(t)
+	f.server.Sessions = ctxSessions{f.store}
+	f.restart()
+	f.putAgent("t1", "payouts")
+	f.runner.hold = make(chan struct{})
+	release := sync.OnceFunc(func() { close(f.runner.hold) })
+	t.Cleanup(release)
+
+	sctx, cancel := context.WithCancel(ctx)
+	req, _ := http.NewRequestWithContext(sctx, "POST", f.srv.URL+"/agents/payouts/runs", strings.NewReader(`{"input":"x"}`))
+	req.Header.Set("X-Test-Tenant", "t1")
+	resp, err := f.srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = bufio.NewReader(resp.Body).ReadString('\n') // the stream has begun
+	cancel()
+	resp.Body.Close()
+
+	time.Sleep(4 * followEvery) // the follower would have looked, and failed, a few times
+	release()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if l := f.list("t1", "payouts"); len(l) == 1 && l[0].Status == run.Completed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run didn't complete without its client")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(2 * followEvery)
+	if strings.Contains(f.logs.String(), "following a run") {
+		t.Fatalf("the log filled after the client went away:\n%s", f.logs.String())
+	}
+}
+
+// followEvery mirrors the server's: how often a stream looks for more of a run.
+const followEvery = 500 * time.Millisecond
+
+// The run keeps the invocation's deadline: the Runner's lease needs it.
+func TestTheRunKeepsTheDeadline(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	dl := time.Now().Add(time.Minute).Truncate(time.Second)
+	rctx, cancel := context.WithDeadline(ctx, dl)
+	defer cancel()
+	req := httptest.NewRequestWithContext(rctx, "POST", "/agents/payouts/runs", strings.NewReader(`{"input":"x"}`))
+	req.Header.Set("X-Test-Tenant", "t1")
+	w := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(w, req)
+	if w.Code != 200 || len(f.runner.deadlines) != 1 || !f.runner.deadlines[0].Equal(dl) {
+		t.Fatalf("got %d, deadlines %v; want the request's %v", w.Code, f.runner.deadlines, dl)
+	}
+}
+
+// countingSessions counts how often the run is looked at.
+type countingSessions struct {
+	*memory.Store
+	mu    sync.Mutex
+	looks int
+}
+
+func (c *countingSessions) State(ctx context.Context, tenant, sess, rn string) (session.RunState, error) {
+	c.mu.Lock()
+	c.looks++
+	c.mu.Unlock()
+	return c.Store.State(ctx, tenant, sess, rn)
+}
+
+func (c *countingSessions) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.looks
+}
+
+// Through a Lambda function URL the request's context isn't cancelled when
+// the client goes away: a failed write tells the stream instead, and the
+// follower stops looking.
+func TestAGoneClientStopsTheFollowerOnLambdaToo(t *testing.T) {
+	f := newRunFixture(t)
+	counting := &countingSessions{Store: f.store}
+	f.server.Sessions = counting
+	f.putAgent("t1", "payouts")
+	f.runner.hold = make(chan struct{})
+	release := sync.OnceFunc(func() { close(f.runner.hold) })
+	t.Cleanup(release)
+
+	e := events.LambdaFunctionURLRequest{RawPath: "/agents/payouts/runs", Body: `{"input":"x"}`,
+		Headers:        map[string]string{"x-test-tenant": "t1"},
+		RequestContext: events.LambdaFunctionURLRequestContext{HTTP: events.LambdaFunctionURLRequestContextHTTPDescription{Method: "POST"}}}
+	out, err := lambdaurl.Serve(ctx, f.server.Handler(), e, nil) // ctx is never cancelled
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = bufio.NewReader(out.Body).ReadString('\n') // the stream has begun
+	_ = out.Close()                                   // the client goes away
+
+	// While the run still waits, it records an event: the follower's write
+	// of it fails, and from then on it must stop looking.
+	runs := f.list("t1", "payouts")
+	if len(runs) != 1 {
+		t.Fatalf("%d runs", len(runs))
+	}
+	for wait := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) { // its first event is in
+		if st, _ := f.store.State(ctx, "t1", runs[0].Session, runs[0].ID); st.Seq >= 1 {
+			break
+		}
+		if time.Now().After(wait) {
+			t.Fatal("the run never recorded its first event")
+		}
+	}
+	ev := session.Event{Session: runs[0].Session, Run: runs[0].ID, Seq: 2, Time: now, Kind: session.AgentMessage, Body: json.RawMessage(`{"text":"x"}`)}
+	if err := f.store.Append(ctx, "t1", runs[0].Session, runs[0].ID, []session.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * followEvery) // it looks, tries to send event 2, and fails
+	before := counting.count()
+	time.Sleep(4 * followEvery)
+	if after := counting.count(); after != before {
+		t.Fatalf("the follower looked %d more times after its client went away", after-before)
+	}
+
+	release() // the run carries on without its client
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if l := f.list("t1", "payouts"); len(l) == 1 && l[0].Status == run.Completed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run didn't complete without its client")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// An event that can't be encoded is sent as its fallback, and the stream
+// carries on to its end.
+func TestAnEventThatCantBeEncodedDoesntEndTheStream(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.runner.badCall = true
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
+	if code != 200 || len(events) == 0 || events[len(events)-1].name != "end" {
+		t.Fatalf("got %d %s; want the stream to reach end", code, names(events))
+	}
+	var fallback bool
+	var texts []string
+	for _, e := range events {
+		if e.name == "delta" && e.data["error"] != nil {
+			fallback = true
+		}
+		if e.name == "delta" && e.data["text"] != nil {
+			texts = append(texts, fmt.Sprint(e.data["text"]))
+		}
+	}
+	if !fallback || strings.Join(texts, ",") != "do,ne" {
+		t.Fatalf("events %s: fallback sent %v, texts after it %v; want the fallback, then do,ne", names(events), fallback, texts)
+	}
 }
