@@ -64,9 +64,11 @@ COMPLETED, ERROR and CANCELLED are final.
 - **A hold that nobody answers expires** in KIFF: after the Card's hold expiry
   (10 minutes by default, 7 days at most), and expiry means refused; a held
   call never runs on silence. Each requirement records that expiry. Once it
-  has passed with no answer, the requirement counts as refused, and the sweep
-  continues the run so the agent says so; the run then ends and retention
-  starts again. So a paused run keeps what it holds for 7 days at most.
+  has passed with no answer recorded, the sweep asks KIFF for the call's
+  outcome by its operation ID, as any continue does, and continues the run
+  with it: refused if the hold expired, or the owner's answer if it came in
+  time and its alert was late or lost. Retention starts again once the run
+  ends, so a paused run keeps what it holds for 7 days at most.
 - **Continue** happens once every requirement is resolved. KIFF resolves them,
   only KIFF: the server learns of an answer from KIFF's signed hold-answered
   alert, or by asking KIFF, never from a request that claims it. Continuing
@@ -195,8 +197,8 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   crash or a timeout can't write ERROR itself, so two things do: for a
   background run, the function's on-failure destination; for any run, a
   scheduled sweep that marks ERROR a RUNNING run whose lease ran out, or a
-  PENDING run no invocation claimed in time. The same sweep continues paused
-  runs whose holds expired unanswered. A run is never left RUNNING. Runs
+  PENDING run no invocation claimed in time. The same sweep asks KIFF about
+  paused runs whose holds expired with no answer recorded. A run is never left RUNNING. Runs
   must fit Lambda's 15 minutes; the turn and cost caps keep them well inside.
 - **Schedules** are EventBridge Scheduler entries that start ordinary background
   runs; a run that pauses counts as paused, not failed.
