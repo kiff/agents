@@ -39,6 +39,8 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"EndedRunTakesNoEvents", endedRunTakesNoEvents},
 		{"RunsReadInOrder", runsReadInOrder},
 		{"PausedRunResumesWhereItStopped", pausedRunResumesWhereItStopped},
+		{"OnlyAPausedRunResumes", onlyAPausedRunResumes},
+		{"ARunThatRecordedNothingEnds", aRunThatRecordedNothingEnds},
 		{"HeldSessionDoesNotExpire", heldSessionDoesNotExpire},
 		{"PurgeRemovesExpired", purgeRemovesExpired},
 		{"SessionExpiresAsAWhole", sessionExpiresAsAWhole},
@@ -260,7 +262,7 @@ func endedRunTakesNoEvents(t *testing.T, b Backend, c *clock) {
 	if _, err := r.Resume(ctx, rec.Session(), "r1"); !errors.Is(err, session.ErrEnded) {
 		t.Fatalf("resuming an ended run: err = %v, want ErrEnded", err)
 	}
-	if state, _, err := b.ReadRun(ctx, "t1", id, "r1"); err != nil || !state.Ended {
+	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || !state.Ended {
 		t.Fatalf("run state = %+v, err = %v", state, err)
 	}
 	next := startRun(t, r, rec.Session(), "r2") // the session goes on
@@ -311,6 +313,9 @@ func pausedRunResumesWhereItStopped(t *testing.T, b Backend, c *clock) {
 	if state, _, err := b.ReadRun(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Seq: 3, Held: true}) {
 		t.Fatalf("paused run state = %+v, err = %v", state, err)
 	}
+	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Seq: 3, Held: true}) {
+		t.Fatalf("paused run State = %+v, err = %v", state, err)
+	}
 	check(t, b.Hold(ctx, "t1", id, "r1")) // holding again changes nothing
 
 	fresh := recorder(t, b, session.DefaultPolicy(30*day), c)
@@ -335,6 +340,50 @@ func pausedRunResumesWhereItStopped(t *testing.T, b Backend, c *clock) {
 	}
 	if s, _, _ := b.Read(ctx, "t1", id); len(s.Held) != 0 {
 		t.Fatalf("held after the end = %v", s.Held)
+	}
+}
+
+// A run still recording has its writer: a second Recording would number from
+// the same Seq, and the Store would skip its events as retries. So only a held
+// run resumes.
+func onlyAPausedRunResumes(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(0), c)
+	rec := begin(t, r, "refunds", session.KindRun)
+	record(t, rec, session.AgentMessage, "1")
+	check(t, rec.Flush(ctx))
+	if _, err := r.Resume(ctx, rec.Session(), "r1"); !errors.Is(err, session.ErrNotPaused) {
+		t.Fatalf("resuming a live run: err = %v, want ErrNotPaused", err)
+	}
+	if _, err := r.Resume(ctx, rec.Session(), "never"); !errors.Is(err, session.ErrNotPaused) {
+		t.Fatalf("resuming a run never recorded: err = %v, want ErrNotPaused", err)
+	}
+	if state, err := b.State(ctx, "t1", rec.Session().ID, "never"); err != nil || state != (session.RunState{}) {
+		t.Fatalf("a run never recorded: %+v, err = %v", state, err)
+	}
+	if _, err := b.State(ctx, "t2", rec.Session().ID, "r1"); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("t2 read t1's run state: err = %v", err)
+	}
+}
+
+// A run can end with nothing recorded (every kind Never, or a failure before
+// its first event); once ended, it takes nothing more.
+func aRunThatRecordedNothingEnds(t *testing.T, b Backend, c *clock) {
+	id := created(t, b)
+	check(t, b.EndRun(ctx, "t1", id, "r1", time.Time{}))
+	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Ended: true}) {
+		t.Fatalf("state = %+v, err = %v", state, err)
+	}
+	if err := b.Append(ctx, "t1", id, "r1", []session.Event{event(1, `1`)}); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("append after the end: err = %v, want ErrEnded", err)
+	}
+	if err := b.EndRun(ctx, "t1", id, "r1", time.Time{}); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("ending again: err = %v, want ErrEnded", err)
+	}
+	if err := b.Hold(ctx, "t1", id, "r1"); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("holding after the end: err = %v, want ErrEnded", err)
+	}
+	if got := bodies(t, b, id); len(got) != 0 {
+		t.Fatalf("events = %v", got)
 	}
 }
 

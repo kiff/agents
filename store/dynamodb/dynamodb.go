@@ -8,17 +8,19 @@
 //
 // Items, in the partition each lives in:
 //
-//	session  pk=S|tenant|id     sk=M             the Session, and each run's last Seq
+//	session  pk=S|tenant|id     sk=M             the Session, and its open runs' last Seq
+//	ended    pk=S|tenant|id     sk=R|run         a run that has ended
 //	event    pk=S|tenant|id     sk=E|run|seq     one Event
 //	index    pk=A|tenant|agent  sk=id            lists an agent's sessions
 //	note     pk=N|tenant|agent  sk=name          one memory Note
 //
-// What the store knows of a session's runs lives on the session item, in the
-// map "runs": every Append writes that item anyway, so a run costs no item of
-// its own, and its state goes with the session. "held" is the string set of
-// runs held in the session; while it has any, the session and its index entry
-// carry no TTL. A session holds a few hundred runs well within DynamoDB's
-// item size.
+// A run that is open (recording, or held) has its last Seq in the session
+// item's map "runs": every Append writes that item anyway, so an open run
+// costs no item of its own, and its state can't expire apart from the
+// session. When the run ends it leaves the map, so the session item stays as
+// small as the runs open in it, however long the thread, and an "ended" item
+// takes its place. "held" is the string set of runs held in the session;
+// while it has any, the session and its index entry carry no TTL.
 package dynamodb
 
 import (
@@ -51,9 +53,10 @@ type API interface {
 }
 
 // UntilEndTTL is how long an event kept only until its run ends may stay if
-// the run never ends (a crash before End): a safety net so what a tool
-// returned can't stay in the table for good.
-const UntilEndTTL = 7 * 24 * time.Hour
+// the run never ends (a crash before End): a safety net so what a tool did
+// can't stay in the table for good. It is a day past KIFF's longest hold (7
+// days), so a run paused that long still has its timeline when it continues.
+const UntilEndTTL = 8 * 24 * time.Hour
 
 // Store is a session.Store and session.Notes on one table.
 type Store struct {
@@ -94,6 +97,8 @@ func notesPK(tenant, agent string) string { return key("N", tenant, agent) }
 func eventPrefix(run string) string { return key("E", run) + "|" }
 
 func eventSK(run string, seq int64) string { return fmt.Sprintf("%s%020d", eventPrefix(run), seq) }
+
+func endedSK(run string) string { return key("R", run) }
 
 const metaSK = "M"
 
@@ -193,11 +198,11 @@ func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 	return m
 }
 
-// run is what the session item says of one run.
+// run is what the session item says of one open run.
 func (m meta) run(id string) session.RunState {
 	state := session.RunState{Held: slices.Contains(m.Held, id)}
 	if v, ok := m.runs[id].(*types.AttributeValueMemberM); ok {
-		state.Seq, state.Ended = getN(v.Value, "seq"), getBool(v.Value, "ended")
+		state.Seq = getN(v.Value, "seq")
 	}
 	return state
 }
@@ -269,6 +274,39 @@ func (st *Store) metaAny(ctx context.Context, tenant, id string) (meta, error) {
 	return metaOf(tenant, out.Item), nil
 }
 
+// state reads the tenant's live session and what it knows of one run: open,
+// from the session item, or ended, from the run's ended item. One request.
+func (st *Store) state(ctx context.Context, tenant, id, run string) (meta, session.RunState, error) {
+	items, err := st.batchGet(ctx, []map[string]types.AttributeValue{pkey(sessionPK(tenant, id), metaSK), pkey(sessionPK(tenant, id), endedSK(run))})
+	if err != nil {
+		return meta{}, session.RunState{}, err
+	}
+	var m meta
+	var ended map[string]types.AttributeValue
+	for _, item := range items {
+		if getS(item, "sk") == metaSK {
+			m = metaOf(tenant, item)
+		} else {
+			ended = item
+		}
+	}
+	if m.ID == "" || m.deleting || m.Expired(st.now()) {
+		return meta{}, session.RunState{}, session.ErrNotFound
+	}
+	if ended != nil {
+		return m, session.RunState{Seq: getN(ended, "seq"), Ended: true}, nil
+	}
+	return m, m.run(run), nil
+}
+
+// notEnded is the check, in a transaction, that run has no ended item.
+func (st *Store) notEnded(tenant, id, run string) types.TransactWriteItem {
+	return types.TransactWriteItem{ConditionCheck: &types.ConditionCheck{
+		TableName: &st.table, Key: pkey(sessionPK(tenant, id), endedSK(run)),
+		ConditionExpression: aws.String("attribute_not_exists(pk)"),
+	}}
+}
+
 // change is one conditional update of a session item, built up in parts.
 type change struct {
 	set, remove, add, del []string
@@ -283,6 +321,22 @@ func newChange() *change {
 		names:  map[string]string{},
 		values: map[string]types.AttributeValue{},
 	}
+}
+
+// write is c as one write of a transaction: an update, or, when c changes
+// nothing (ending a run that recorded nothing), just its condition.
+func (c *change) write(table string, k map[string]types.AttributeValue) types.TransactWriteItem {
+	if len(c.set)+len(c.remove)+len(c.add)+len(c.del) > 0 {
+		return types.TransactWriteItem{Update: c.update(table, k)}
+	}
+	check := &types.ConditionCheck{TableName: &table, Key: k, ConditionExpression: aws.String(strings.Join(c.cond, " AND "))}
+	if len(c.names) > 0 {
+		check.ExpressionAttributeNames = c.names
+	}
+	if len(c.values) > 0 {
+		check.ExpressionAttributeValues = c.values
+	}
+	return types.TransactWriteItem{ConditionCheck: check}
 }
 
 func (c *change) update(table string, k map[string]types.AttributeValue) *types.Update {
@@ -345,17 +399,18 @@ func (c *change) expiry(table string, m meta, expires time.Time, heldAfter int) 
 	}
 }
 
-// runCond adds to c that run's state is still state: its last Seq, and not
-// ended.
+// runCond adds to c that run's last Seq is still state's. A run with an
+// entry in the map is open: ending it takes the entry out in the same write
+// that stores its ended item. A run with none may have ended, so a write that
+// finds none also checks for its ended item (notEnded).
 func (c *change) runCond(run string, state session.RunState) {
 	c.names["#run"] = run
 	if state.Seq == 0 {
-		c.cond = append(c.cond, "attribute_not_exists(runs.#run.seq)")
+		c.cond = append(c.cond, "attribute_not_exists(runs.#run)")
 	} else {
 		c.values[":seq"] = n(state.Seq)
 		c.cond = append(c.cond, "runs.#run.seq = :seq")
 	}
-	c.cond = append(c.cond, "attribute_not_exists(runs.#run.ended)")
 }
 
 // errRace means a conditional write lost to another: read again and retry.
@@ -381,11 +436,10 @@ func (st *Store) Append(ctx context.Context, tenant, id, run string, events []se
 }
 
 func (st *Store) append(ctx context.Context, tenant, id, run string, events []session.Event) error {
-	m, err := st.meta(ctx, tenant, id)
+	m, state, err := st.state(ctx, tenant, id, run)
 	if err != nil {
 		return err
 	}
-	state := m.run(run)
 	if state.Ended {
 		return session.ErrEnded
 	}
@@ -429,6 +483,9 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	if index != nil {
 		items = append(items, types.TransactWriteItem{Update: index})
 	}
+	if state.Seq == 0 {
+		items = append(items, st.notEnded(tenant, id, run))
+	}
 	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
 	if !errors.As(err, &cancelled) {
@@ -437,13 +494,13 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	// Someone got there first: the session went, the run ended, an earlier
 	// attempt of this very append landed, or another run wrote the session
 	// meanwhile. Say which.
-	now, rerr := st.meta(ctx, tenant, id)
+	_, now, rerr := st.state(ctx, tenant, id, run)
 	switch {
 	case rerr != nil:
 		return rerr
-	case now.run(run).Ended:
+	case now.Ended:
 		return session.ErrEnded
-	case now.run(run).Seq >= next:
+	case now.Seq >= next:
 		return nil
 	}
 	return errRace
@@ -502,11 +559,12 @@ func (st *Store) Read(ctx context.Context, tenant, id string) (session.Session, 
 	found := false
 	events := items[:0:0]
 	for _, item := range items {
-		if getS(item, "sk") == metaSK {
+		switch sk := getS(item, "sk"); {
+		case sk == metaSK:
 			m, found = metaOf(tenant, item), true
-			continue
+		case strings.HasPrefix(sk, "E|"):
+			events = append(events, item)
 		}
-		events = append(events, item)
 	}
 	if !found || m.deleting || m.Expired(st.now()) {
 		return session.Session{}, nil, session.ErrNotFound
@@ -515,7 +573,7 @@ func (st *Store) Read(ctx context.Context, tenant, id string) (session.Session, 
 }
 
 func (st *Store) ReadRun(ctx context.Context, tenant, id, run string) (session.RunState, []session.Event, error) {
-	m, err := st.meta(ctx, tenant, id)
+	_, state, err := st.state(ctx, tenant, id, run)
 	if err != nil {
 		return session.RunState{}, nil, err
 	}
@@ -523,7 +581,12 @@ func (st *Store) ReadRun(ctx context.Context, tenant, id, run string) (session.R
 	if err != nil {
 		return session.RunState{}, nil, err
 	}
-	return m.run(run), st.events(id, items), nil
+	return state, st.events(id, items), nil
+}
+
+func (st *Store) State(ctx context.Context, tenant, id, run string) (session.RunState, error) {
+	_, state, err := st.state(ctx, tenant, id, run)
+	return state, err
 }
 
 func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]session.Session, error) {
@@ -615,17 +678,16 @@ func keysOf(items []map[string]types.AttributeValue) []map[string]types.Attribut
 }
 
 func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
-	m, err := st.meta(ctx, tenant, id)
+	m, state, err := st.state(ctx, tenant, id, run)
 	if err != nil {
 		return err
 	}
-	if m.run(run).Ended {
+	if state.Ended {
 		return session.ErrEnded
 	}
 	c := newChange()
-	c.names["#run"], c.names["#ttl"] = run, "ttl"
+	c.names["#ttl"] = "ttl"
 	c.values[":held"] = &types.AttributeValueMemberSS{Value: []string{run}}
-	c.cond = append(c.cond, "attribute_not_exists(runs.#run.ended)")
 	c.add = append(c.add, "held :held")
 	c.remove = append(c.remove, "#ttl")
 	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
@@ -636,14 +698,15 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 			ConditionExpression:      aws.String("attribute_exists(pk)"),
 			ExpressionAttributeNames: map[string]string{"#ttl": "ttl"},
 		}},
+		st.notEnded(tenant, id, run),
 	}})
 	var cancelled *types.TransactionCanceledException
 	if errors.As(err, &cancelled) {
-		now, rerr := st.meta(ctx, tenant, id)
+		_, now, rerr := st.state(ctx, tenant, id, run)
 		switch {
 		case rerr != nil:
 			return rerr
-		case now.run(run).Ended:
+		case now.Ended:
 			return session.ErrEnded
 		}
 	}
@@ -651,11 +714,9 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 }
 
 func (st *Store) EndRun(ctx context.Context, tenant, id, run string, expires time.Time) error {
-	m, err := st.meta(ctx, tenant, id)
-	if err != nil {
+	if _, state, err := st.state(ctx, tenant, id, run); err != nil {
 		return err
-	}
-	if m.run(run).Ended {
+	} else if state.Ended {
 		return session.ErrEnded
 	}
 	// Drop what was kept only until the end first: if this fails, the run
@@ -672,21 +733,22 @@ func (st *Store) EndRun(ctx context.Context, tenant, id, run string, expires tim
 	return retry(ctx, func() error { return st.endRun(ctx, tenant, id, run, expires) })
 }
 
-// endRun marks the run ended, releases its hold and moves the session's
-// expiry on, in one conditional write.
+// endRun takes the run out of the session's open runs and stores its ended
+// item, releases its hold and moves the session's expiry on, in one
+// conditional write.
 func (st *Store) endRun(ctx context.Context, tenant, id, run string, expires time.Time) error {
-	m, err := st.meta(ctx, tenant, id)
+	m, state, err := st.state(ctx, tenant, id, run)
 	if err != nil {
 		return err
 	}
-	state := m.run(run)
 	if state.Ended {
 		return session.ErrEnded
 	}
 	c := newChange()
 	c.runCond(run, state)
-	c.values[":ended"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"seq": n(state.Seq), "ended": yes}}
-	c.set = append(c.set, "runs.#run = :ended")
+	if state.Seq > 0 {
+		c.remove = append(c.remove, "runs.#run")
+	}
 	heldAfter := len(m.Held)
 	if state.Held {
 		c.values[":held"] = &types.AttributeValueMemberSS{Value: []string{run}}
@@ -701,21 +763,28 @@ func (st *Store) endRun(ctx context.Context, tenant, id, run string, expires tim
 		c.values[":held_n"] = n(int64(len(m.Held)))
 		c.cond = append(c.cond, "size(held) = :held_n")
 	}
-	items := []types.TransactWriteItem{{}}
+	ended := pkey(sessionPK(tenant, id), endedSK(run))
+	ended["seq"] = n(state.Seq)
+	if !expires.IsZero() {
+		ended["ttl"] = ttl(expires) // it goes no later than the session
+	}
+	items := []types.TransactWriteItem{{}, {Put: &types.Put{
+		TableName: &st.table, Item: ended, ConditionExpression: aws.String("attribute_not_exists(pk)"),
+	}}}
 	if index := c.expiry(st.table, m, expires, heldAfter); index != nil {
 		items = append(items, types.TransactWriteItem{Update: index})
 	}
-	items[0].Update = c.update(st.table, pkey(sessionPK(tenant, id), metaSK))
+	items[0] = c.write(st.table, pkey(sessionPK(tenant, id), metaSK))
 	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
 	if !errors.As(err, &cancelled) {
 		return err
 	}
-	now, rerr := st.meta(ctx, tenant, id)
+	_, now, rerr := st.state(ctx, tenant, id, run)
 	switch {
 	case rerr != nil:
 		return rerr
-	case now.run(run).Ended:
+	case now.Ended:
 		return session.ErrEnded
 	}
 	return errRace

@@ -143,6 +143,19 @@ func (m *Store) ReadRun(_ context.Context, tenant, id, run string) (session.RunS
 	return state, live(ms.events, m.now(), func(e session.Event) bool { return e.Run == run }), nil
 }
 
+func (m *Store) State(_ context.Context, tenant, id, run string) (session.RunState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return session.RunState{}, session.ErrNotFound
+	}
+	if r := ms.runs[run]; r != nil {
+		return *r, nil
+	}
+	return session.RunState{}, nil
+}
+
 func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]session.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

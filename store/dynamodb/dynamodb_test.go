@@ -232,6 +232,104 @@ func TestAHeldSessionCarriesNoTTL(t *testing.T) {
 	}
 }
 
+// The session item holds only the runs open in it: however long a thread
+// grows, writing to it costs the same. Ended runs leave an item each instead.
+func TestTheSessionItemHoldsOnlyOpenRuns(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	st := dynamodb.New(db, name)
+	r, err := session.NewRecorder(st, session.DefaultPolicy(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	se, err := r.Open(ctx, "t1", "refunds", session.KindChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		rec := r.Start(se, "r"+itoa(int64(i)))
+		_ = rec.Record(session.OwnerMessage, "message")
+		if err := rec.End(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := r.Start(se, "open")
+	_ = open.Record(session.OwnerMessage, "message")
+	if err := open.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	out, err := db.Scan(ctx, &ddb.ScanInput{TableName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := 0
+	for _, item := range out.Items {
+		sk := item["sk"].(*types.AttributeValueMemberS).Value
+		switch {
+		case sk == "M":
+			runs := item["runs"].(*types.AttributeValueMemberM).Value
+			if len(runs) != 1 || runs["open"] == nil {
+				t.Fatalf("the session item holds %d runs, want only the open one", len(runs))
+			}
+		case strings.HasPrefix(sk, "R|"):
+			ended++
+		}
+	}
+	if ended != 20 {
+		t.Fatalf("%d ended items, want 20", ended)
+	}
+	if err := open.End(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// racing runs before, once, the first transaction that writes to sessions:
+// another writer getting in between a store's read and its write.
+type racing struct {
+	dynamodb.API
+	once   sync.Once
+	before func()
+}
+
+func (r *racing) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	r.once.Do(r.before)
+	return r.API.TransactWriteItems(ctx, in, opts...)
+}
+
+// A run that ends between an Append's or a Hold's read and its write takes
+// nothing: the write itself checks the run has no ended item.
+func TestARunEndedMidWriteTakesNothing(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	plain := dynamodb.New(db, name)
+	se := session.Session{ID: "s1", Tenant: "t1", Agent: "refunds", Kind: session.KindRun}
+	if err := plain.Create(ctx, se); err != nil {
+		t.Fatal(err)
+	}
+	end := func(run string) func() {
+		return func() {
+			if err := plain.EndRun(ctx, "t1", "s1", run, time.Time{}); err != nil {
+				t.Errorf("ending %s meanwhile: %v", run, err)
+			}
+		}
+	}
+	appendRace := dynamodb.New(&racing{API: db, before: end("r1")}, name)
+	err := appendRace.Append(ctx, "t1", "s1", "r1", []session.Event{{Seq: 1, Kind: session.Report, Body: []byte(`1`)}})
+	if !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("append racing the end: err = %v, want ErrEnded", err)
+	}
+	if _, events, _ := plain.Read(ctx, "t1", "s1"); len(events) != 0 {
+		t.Fatalf("%d events landed after the run ended", len(events))
+	}
+	holdRace := dynamodb.New(&racing{API: db, before: end("r2")}, name)
+	if err := holdRace.Hold(ctx, "t1", "s1", "r2"); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("hold racing the end: err = %v, want ErrEnded", err)
+	}
+	if s, _, _ := plain.Read(ctx, "t1", "s1"); len(s.Held) != 0 {
+		t.Fatalf("an ended run is held: %v", s.Held)
+	}
+}
+
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 // faulty fails chosen deletes once, to show a retry finishes the job.

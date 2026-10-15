@@ -66,14 +66,20 @@ func (r *Recorder) Start(s Session, run string) *Recording {
 }
 
 // Resume carries on recording a run that paused, from its last Seq: in this
-// process or a fresh one. A run that has ended can't be resumed (ErrEnded).
+// process or a fresh one. Only a held run resumes: an ended run is ErrEnded,
+// and one that never paused is ErrNotPaused, since its own Recording is still
+// its writer. Two resumes of one paused run would both get through, so the
+// caller must have claimed the run first (its compare-and-set from PAUSED to
+// RUNNING): one writer at a time.
 func (r *Recorder) Resume(ctx context.Context, s Session, run string) (*Recording, error) {
-	state, _, err := r.store.ReadRun(ctx, s.Tenant, s.ID, run)
-	if err != nil {
+	state, err := r.store.State(ctx, s.Tenant, s.ID, run)
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if state.Ended {
+	case state.Ended:
 		return nil, ErrEnded
+	case !state.Held:
+		return nil, ErrNotPaused
 	}
 	return r.recording(s, run, state.Seq), nil
 }

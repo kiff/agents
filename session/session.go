@@ -123,11 +123,13 @@ type OmittedBody struct {
 }
 
 // ErrNotFound means no such session for this tenant; ErrEnded, that a run
-// takes no more events; ErrGap, that an Append skipped a Seq.
+// takes no more events; ErrGap, that an Append skipped a Seq; ErrNotPaused,
+// that a run can't resume because it isn't held.
 var (
-	ErrNotFound = errors.New("session: not found")
-	ErrEnded    = errors.New("session: run ended")
-	ErrGap      = errors.New("session: events out of sequence")
+	ErrNotFound  = errors.New("session: not found")
+	ErrEnded     = errors.New("session: run ended")
+	ErrGap       = errors.New("session: events out of sequence")
+	ErrNotPaused = errors.New("session: run not paused")
 )
 
 // RunState is what a Store knows of one run's recording: the last Seq it
@@ -164,6 +166,8 @@ type Store interface {
 	// ReadRun returns what is recorded of one run of a session, and its
 	// events in order. A run with nothing recorded has a zero RunState.
 	ReadRun(ctx context.Context, tenant, session, run string) (RunState, []Event, error)
+	// State is ReadRun without the events: one cheap read.
+	State(ctx context.Context, tenant, session, run string) (RunState, error)
 	// List returns an agent's sessions, most recently updated first, at most limit.
 	List(ctx context.Context, tenant, agent string, limit int) ([]Session, error)
 	// Hold marks a run paused: the session doesn't expire until the run ends.
