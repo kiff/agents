@@ -701,9 +701,13 @@ func TestALostLeaseWritesNothing(t *testing.T) {
 			t.Errorf("swept %d, %v", n, err)
 		}
 	}
+	began := time.Now()
 	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
 	if !errors.Is(err, run.ErrLeaseLost) {
 		t.Fatalf("got %v, want ErrLeaseLost", err)
+	}
+	if took := time.Since(began); took > 2*time.Second {
+		t.Fatalf("took %v: a lost lease is final, not tried again until StopTimeout", took)
 	}
 	if got.Status != run.Error || !strings.Contains(got.Error, "lease ran out") {
 		t.Fatalf("the run is %+v, want it as the sweep left it", got)
@@ -983,5 +987,121 @@ func TestAPauseKeepsTheCauseOfAFailedTurn(t *testing.T) {
 	}
 	if got.Status != run.Paused || len(got.Requirements) != 1 {
 		t.Fatalf("stored %+v, want it paused", got)
+	}
+}
+
+// throttled is a run store whose writes of a given status fail a number of
+// times first, as DynamoDB's client can under throttling, and whose Create can
+// fail.
+type throttled struct {
+	*memory.Runs
+	status     run.Status
+	fails      int
+	failCreate bool
+}
+
+func (s *throttled) Put(cx context.Context, prev, next run.Run) error {
+	if next.Status == s.status && s.fails > 0 {
+		s.fails--
+		return errors.New("throttled")
+	}
+	return s.Runs.Put(cx, prev, next)
+}
+
+func (s *throttled) Create(cx context.Context, r run.Run) error {
+	if s.failCreate {
+		return errors.New("throttled")
+	}
+	return s.Runs.Create(cx, r)
+}
+
+// A write that may pass (a throttled one) is tried again when storing where
+// a run stopped, so an answered or paused run isn't lost to the sweep.
+func TestAPassingFailureStoringTheStopIsRetried(t *testing.T) {
+	for _, c := range []struct {
+		status  run.Status
+		replies []model.Reply
+		held    bool
+	}{
+		{run.Completed, []model.Reply{say("Done.")}, false},
+		{run.Paused, []model.Reply{use("c1", "stripe_refund", `{}`), say("Waiting for the owner.")}, true},
+	} {
+		t.Run(string(c.status), func(t *testing.T) {
+			f := newFixture(t, c.replies...)
+			if c.held {
+				f.refund.result = tool.Result{Text: "KIFF holds this call for the owner", State: tool.StateHeld}
+			}
+			f.r.Runs = &throttled{Runs: f.runs, status: c.status, fails: 2}
+			r := f.start(server.Start{Input: "go"})
+			got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+			if err != nil || got.Status != c.status {
+				t.Fatalf("got %+v, %v", got, err)
+			}
+			if stored := f.get(r.ID); stored.Status != c.status || stored.Output == "" {
+				t.Fatalf("stored %+v", stored)
+			}
+		})
+	}
+}
+
+// A run whose agent is gone by the time it executes ends ERROR, and is kept
+// UnknownKeep, not for good: its keep rules went with the agent.
+func TestARunWhoseAgentIsGoneExpires(t *testing.T) {
+	f := newFixture(t, say("never"))
+	r := f.start(server.Start{Input: "go"})
+	if err := f.agents.Delete(ctx, "t1", "rae"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.r.Execute(ctx, "t1", r.ID, nil)
+	if got.Status != run.Error || got.Error != runner.FailedBuild || !got.Expires.Equal(f.clock.now().Add(runner.UnknownKeep)) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A run that can't be stored leaves no session behind that Start opened for
+// it; a session the caller gave is left as it is.
+func TestAFailedStartLeavesNoSession(t *testing.T) {
+	f := newFixture(t)
+	given := f.start(server.Start{Input: "first"})
+	f.r.Runs = &throttled{Runs: f.runs, failCreate: true}
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "go"}); err == nil {
+		t.Fatal("no error")
+	}
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: given.Session, Input: "again"}); err == nil {
+		t.Fatal("no error")
+	}
+	sessions, err := f.store.List(ctx, "t1", "rae", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != given.Session {
+		t.Fatalf("sessions %+v, want only the given one", sessions)
+	}
+}
+
+// lostOnStop is a run store that answers the write of where a run stopped
+// with a lost lease, as a store does once another writer moved the run on.
+type lostOnStop struct{ *memory.Runs }
+
+func (s lostOnStop) Put(cx context.Context, prev, next run.Run) error {
+	if next.Status.Final() {
+		return run.ErrLeaseLost
+	}
+	return s.Runs.Put(cx, prev, next)
+}
+
+// An error that won't pass (a lost lease) is not tried again: storing the
+// stop gives up at once rather than spending StopTimeout on it.
+func TestALastingFailureStoringTheStopIsNotRetried(t *testing.T) {
+	f := newFixture(t, say("Done."))
+	f.r.Runs = lostOnStop{f.runs}
+	r := f.start(server.Start{Input: "go"})
+	began := time.Now()
+	_, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if !errors.Is(err, run.ErrLeaseLost) {
+		t.Fatalf("err = %v, want ErrLeaseLost", err)
+	}
+	if took := time.Since(began); took > 2*time.Second {
+		t.Fatalf("took %v: a lost lease was tried again", took)
 	}
 }

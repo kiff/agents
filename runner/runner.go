@@ -86,6 +86,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	if err != nil {
 		return run.Run{}, err
 	}
+	opened := false // a session Start opens is removed again if the run can't be stored
 	if s.Session == "" {
 		rec, err := session.NewRecorderAt(rn.Sessions, d.Keep, rn.now)
 		if err != nil {
@@ -99,7 +100,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		if err != nil {
 			return run.Run{}, err
 		}
-		s.Session = sess.ID
+		s.Session, opened = sess.ID, true
 	} else {
 		sess, _, err := rn.Sessions.Read(ctx, s.Tenant, s.Session)
 		if err != nil {
@@ -112,6 +113,11 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
 	if err := rn.Runs.Create(ctx, r); err != nil {
+		if opened {
+			if derr := rn.Sessions.Delete(context.WithoutCancel(ctx), s.Tenant, s.Session); derr != nil {
+				err = errors.Join(err, fmt.Errorf("runner: removing the session it opened: %w", derr))
+			}
+		}
 		return run.Run{}, err
 	}
 	return r, nil
@@ -261,9 +267,17 @@ func failed(err error) string {
 	return FailedRun
 }
 
+// UnknownKeep is how long a run is kept once it has ended when its agent's
+// keep rules are unknown (the agent was removed before the run executed), so
+// nothing is kept for good by accident.
+const UnknownKeep = 7 * 24 * time.Hour
+
 // expires is when a run that ended at now may go, under keep (zero: kept
-// until deleted).
+// until deleted); with no keep rules, after UnknownKeep.
 func expires(keep session.Policy, now time.Time) time.Time {
+	if keep == nil {
+		return now.Add(UnknownKeep)
+	}
 	if d := keep.SessionRetention(); d > 0 {
 		return now.Add(d)
 	}
@@ -290,6 +304,36 @@ func (x *execution) cancelled(ctx context.Context) (bool, error) {
 		return false, run.ErrLeaseLost
 	}
 	return r.Cancel, nil
+}
+
+// saveStop is save for the writes a run's outcome depends on (where it
+// stopped): an error that may pass (a throttled or dropped write) is tried
+// again, backing off, until ctx ends. One that won't pass (the lease is lost,
+// the run moved on or is gone) returns at once.
+func (x *execution) saveStop(ctx context.Context, change func(*run.Run) error) (run.Run, error) {
+	wait := 50 * time.Millisecond
+	for {
+		r, err := x.save(ctx, change)
+		if err == nil || lasting(err) {
+			return r, err
+		}
+		select {
+		case <-ctx.Done():
+			return r, err
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, time.Second)
+	}
+}
+
+// lasting reports whether a save's error won't pass by trying again.
+func lasting(err error) bool {
+	for _, e := range []error{run.ErrLeaseLost, run.ErrConflict, run.ErrTransition, run.ErrNotFound, run.ErrFixed, context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
 }
 
 // save stores change on the run while this invocation holds it. The
@@ -324,7 +368,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		}
 		// Each requirement's hold expiry is KIFF's to report (step 4). Until
 		// then it is zero, and the requirement resolves only once answered.
-		r, err := x.save(ctx, func(n *run.Run) error {
+		r, err := x.saveStop(ctx, func(n *run.Run) error {
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			return nil
@@ -334,7 +378,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 	if err := rec.End(ctx); err != nil {
 		return x.current(ctx, errors.Join(runErr, fmt.Errorf("runner: ending the recording: %w", err)))
 	}
-	r, err := x.save(ctx, func(n *run.Run) error {
+	r, err := x.saveStop(ctx, func(n *run.Run) error {
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
 		switch {
 		case runErr != nil:
@@ -356,10 +400,10 @@ func (x *execution) notRun(ctx context.Context, r run.Run, paused bool, keep ses
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), StopTimeout)
 	defer cancel()
 	if paused {
-		next, err := x.save(ctx, func(n *run.Run) error { n.Status = run.Paused; return nil })
+		next, err := x.saveStop(ctx, func(n *run.Run) error { n.Status = run.Paused; return nil })
 		return next, errors.Join(cause, err)
 	}
-	next, err := x.save(ctx, func(n *run.Run) error {
+	next, err := x.saveStop(ctx, func(n *run.Run) error {
 		n.Status, n.Error, n.Expires = run.Error, public, expires(keep, x.rn.now())
 		return nil
 	})
