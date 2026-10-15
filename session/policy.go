@@ -55,3 +55,20 @@ func DefaultPolicy(retention time.Duration) Policy {
 	p[ToolResult] = Rule{Keep: UntilEnd}
 	return p
 }
+
+// SessionRetention is how long a session lives after its last event: the
+// longest retention of a kept kind. It is zero (kept until deleted) when any
+// kept kind has no retention.
+func (p Policy) SessionRetention() time.Duration {
+	var longest time.Duration
+	for _, r := range p {
+		if r.Keep != Kept {
+			continue
+		}
+		if r.Retention == 0 {
+			return 0
+		}
+		longest = max(longest, r.Retention)
+	}
+	return longest
+}

@@ -2,7 +2,9 @@ package session_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +39,72 @@ func TestPolicyRefusesRetentionOnUnkept(t *testing.T) {
 	}
 }
 
+func TestSessionRetention(t *testing.T) {
+	p := session.DefaultPolicy(30 * 24 * time.Hour)
+	if got := p.SessionRetention(); got != 30*24*time.Hour {
+		t.Fatalf("default: %v", got)
+	}
+	p[session.Report] = session.Rule{Keep: session.Kept, Retention: 90 * 24 * time.Hour}
+	if got := p.SessionRetention(); got != 90*24*time.Hour {
+		t.Fatalf("the longest kept kind decides: %v", got)
+	}
+	p[session.Usage] = session.Rule{Keep: session.Kept}
+	if got := p.SessionRetention(); got != 0 {
+		t.Fatalf("a kind kept with no retention keeps the session: %v", got)
+	}
+}
+
+// A body over MaxBody is recorded as a placeholder that says how big it was:
+// the run goes on, and the store never sees an event it can't keep.
+func TestABodyOverMaxBodyIsOmitted(t *testing.T) {
+	f := newFlaky()
+	rec := start(t, f)
+	big := strings.Repeat("a", session.MaxBody)
+	if err := rec.Record(session.ToolResult, big); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if err := rec.Record(session.Report, "small"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, events := stored(t, f, rec)
+	var got session.OmittedBody
+	if len(events) != 2 || events[0].Kind != session.ToolResult || json.Unmarshal(events[0].Body, &got) != nil {
+		t.Fatalf("events = %+v", events)
+	}
+	if got.Omitted != "over MaxBody" || got.Bytes != session.MaxBody+2 { // the JSON string's quotes
+		t.Fatalf("placeholder = %+v", got)
+	}
+	if err := rec.End(ctx, session.Ended); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Batches stay under MaxBatchBytes, so a store's transaction limit holds.
+func TestBatchesStayUnderMaxBatchBytes(t *testing.T) {
+	f := newFlaky()
+	rec := start(t, f)
+	f.block()
+	body := strings.Repeat("a", 200<<10) // about 200 KB encoded
+	for range 20 {
+		if err := rec.Record(session.ToolCall, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.release()
+	if err := rec.End(ctx, session.Ended); err != nil {
+		t.Fatal(err)
+	}
+	if max := f.maxBatchBytes.Load(); max > session.MaxBatchBytes {
+		t.Fatalf("a batch of %d bytes, over %d", max, session.MaxBatchBytes)
+	}
+	if _, events := stored(t, f, rec); len(events) != 20 {
+		t.Fatalf("%d events stored", len(events))
+	}
+}
+
 func TestDefaultPolicyKeepsToolResultsOnlyForTheRun(t *testing.T) {
 	p := session.DefaultPolicy(30 * 24 * time.Hour)
 	if p[session.ToolResult].Keep != session.UntilEnd {
@@ -51,7 +119,8 @@ func TestDefaultPolicyKeepsToolResultsOnlyForTheRun(t *testing.T) {
 // appends or ends can be made to fail.
 type flaky struct {
 	*memory.Store
-	appends atomic.Int64
+	appends       atomic.Int64
+	maxBatchBytes atomic.Int64
 
 	mu       sync.Mutex
 	gate     chan struct{} // appends wait until it's closed
@@ -78,6 +147,16 @@ func (f *flaky) set(fn func(f *flaky)) { f.mu.Lock(); fn(f); f.mu.Unlock() }
 
 func (f *flaky) Append(ctx context.Context, tenant, id string, events []session.Event) error {
 	f.appends.Add(1)
+	size := 0
+	for _, e := range events {
+		size += len(e.Body)
+	}
+	for {
+		m := f.maxBatchBytes.Load()
+		if int64(size) <= m || f.maxBatchBytes.CompareAndSwap(m, int64(size)) {
+			break
+		}
+	}
 	f.mu.Lock()
 	gate := f.gate
 	f.mu.Unlock()
