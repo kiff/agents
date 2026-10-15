@@ -234,7 +234,11 @@ func start(t *testing.T, f *flaky) *session.Recording {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return r.Start(s, "r1")
+	rec, err := r.Start(ctx, s, "r1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
 }
 
 func stored(t *testing.T, f *flaky, rec *session.Recording) (session.RunState, []session.Event) {
@@ -471,7 +475,10 @@ func BenchmarkRecord(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	rec := r.Start(s, "r1")
+	rec, err := r.Start(ctx, s, "r1", time.Now())
+	if err != nil {
+		b.Fatal(err)
+	}
 	body := map[string]string{"tool": "list_charges", "args": `{"limit":10}`}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -492,7 +499,10 @@ func BenchmarkResume(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	rec := r.Start(s, "r1")
+	rec, err := r.Start(ctx, s, "r1", time.Now())
+	if err != nil {
+		b.Fatal(err)
+	}
 	for range 20 {
 		_ = rec.Record(session.AgentMessage, "turn")
 	}

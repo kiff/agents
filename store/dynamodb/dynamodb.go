@@ -14,12 +14,16 @@
 //	index    pk=A|tenant|agent  sk=id            lists an agent's sessions
 //	note     pk=N|tenant|agent  sk=name          one memory Note
 //
-// A run that is open (recording, or held) has its last Seq in the session
-// item's map "runs": every Append writes that item anyway, so an open run
-// costs no item of its own, and its state can't expire apart from the
+// A run that is open (begun and not ended, held or not) has its last Seq and
+// its creation time in the session item's map "runs": every Append writes
+// that item anyway, so an open run costs no item of its own, and its state
+// can't expire apart from the session. Only an open run takes events or a
+// hold, and that check is on the session item, so it lasts as long as the
 // session. When the run ends it leaves the map, so the session item stays as
-// small as the runs open in it, however long the thread, and an "ended" item
-// takes its place. "held" is the string set of runs held in the session;
+// small as the runs open in it, however long the thread. An "ended" item
+// takes its place, which keeps Begin from opening the run again: it lives at
+// least MaxStartDelay past the run's creation, after which Begin refuses the
+// run anyway, and usually as long as the session. "held" is the string set of runs held in the session;
 // while it has any, the session and its index entry carry no TTL.
 package dynamodb
 
@@ -198,13 +202,22 @@ func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 	return m
 }
 
-// run is what the session item says of one open run.
+// run is what the session item says of one run: open, with its last Seq, or
+// not.
 func (m meta) run(id string) session.RunState {
 	state := session.RunState{Held: slices.Contains(m.Held, id)}
 	if v, ok := m.runs[id].(*types.AttributeValueMemberM); ok {
-		state.Seq = getN(v.Value, "seq")
+		state.Seq, state.Open = getN(v.Value, "seq"), true
 	}
 	return state
+}
+
+// created is when an open run was made.
+func (m meta) created(id string) time.Time {
+	if v, ok := m.runs[id].(*types.AttributeValueMemberM); ok {
+		return getTime(v.Value, "created")
+	}
+	return time.Time{}
 }
 
 func eventItem(tenant, id, run string, e session.Event) map[string]types.AttributeValue {
@@ -323,22 +336,6 @@ func newChange() *change {
 	}
 }
 
-// write is c as one write of a transaction: an update, or, when c changes
-// nothing (ending a run that recorded nothing), just its condition.
-func (c *change) write(table string, k map[string]types.AttributeValue) types.TransactWriteItem {
-	if len(c.set)+len(c.remove)+len(c.add)+len(c.del) > 0 {
-		return types.TransactWriteItem{Update: c.update(table, k)}
-	}
-	check := &types.ConditionCheck{TableName: &table, Key: k, ConditionExpression: aws.String(strings.Join(c.cond, " AND "))}
-	if len(c.names) > 0 {
-		check.ExpressionAttributeNames = c.names
-	}
-	if len(c.values) > 0 {
-		check.ExpressionAttributeValues = c.values
-	}
-	return types.TransactWriteItem{ConditionCheck: check}
-}
-
 func (c *change) update(table string, k map[string]types.AttributeValue) *types.Update {
 	var expr []string
 	for _, part := range []struct {
@@ -399,18 +396,13 @@ func (c *change) expiry(table string, m meta, expires time.Time, heldAfter int) 
 	}
 }
 
-// runCond adds to c that run's last Seq is still state's. A run with an
-// entry in the map is open: ending it takes the entry out in the same write
-// that stores its ended item. A run with none may have ended, so a write that
-// finds none also checks for its ended item (notEnded).
+// runCond adds to c that run is still open, with state's last Seq. Ending
+// the run takes its entry out of the map in the same write that stores its
+// ended item, so this also says it hasn't ended.
 func (c *change) runCond(run string, state session.RunState) {
 	c.names["#run"] = run
-	if state.Seq == 0 {
-		c.cond = append(c.cond, "attribute_not_exists(runs.#run)")
-	} else {
-		c.values[":seq"] = n(state.Seq)
-		c.cond = append(c.cond, "runs.#run.seq = :seq")
-	}
+	c.values[":seq"] = n(state.Seq)
+	c.cond = append(c.cond, "runs.#run.seq = :seq")
 }
 
 // errRace means a conditional write lost to another: read again and retry.
@@ -431,6 +423,42 @@ func retry(ctx context.Context, fn func() error) error {
 	}
 }
 
+func (st *Store) Begin(ctx context.Context, tenant, id, run string, created time.Time) error {
+	m, state, err := st.state(ctx, tenant, id, run)
+	switch {
+	case err != nil:
+		return err
+	case state.Open:
+		return nil
+	case state.Ended:
+		return session.ErrEnded
+	case st.now().Sub(created) > session.MaxStartDelay:
+		return session.ErrLate
+	}
+	c := newChange()
+	c.names["#run"] = run
+	c.values[":run"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"seq": n(0), "created": nanos(created)}}
+	c.cond = append(c.cond, "attribute_not_exists(runs.#run)")
+	c.set = append(c.set, "runs.#run = :run")
+	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
+		{Update: c.update(st.table, pkey(sessionPK(tenant, m.ID), metaSK))},
+		st.notEnded(tenant, id, run),
+	}})
+	var cancelled *types.TransactionCanceledException
+	if errors.As(err, &cancelled) {
+		_, now, rerr := st.state(ctx, tenant, id, run)
+		switch {
+		case rerr != nil:
+			return rerr
+		case now.Open:
+			return nil // an earlier attempt got through
+		case now.Ended:
+			return session.ErrEnded
+		}
+	}
+	return err
+}
+
 func (st *Store) Append(ctx context.Context, tenant, id, run string, events []session.Event) error {
 	return retry(ctx, func() error { return st.append(ctx, tenant, id, run, events) })
 }
@@ -440,7 +468,7 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	if err != nil {
 		return err
 	}
-	if state.Ended {
+	if !state.Open {
 		return session.ErrEnded
 	}
 	next, updated, expires := state.Seq, m.Updated, m.Expires
@@ -466,13 +494,8 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	c.runCond(run, state)
 	c.values[":updated"] = nanos(updated)
 	c.set = append(c.set, "updated = :updated")
-	if state.Seq == 0 {
-		c.values[":run"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"seq": n(next)}}
-		c.set = append(c.set, "runs.#run = :run")
-	} else {
-		c.values[":next"] = n(next)
-		c.set = append(c.set, "runs.#run.seq = :next")
-	}
+	c.values[":next"] = n(next)
+	c.set = append(c.set, "runs.#run.seq = :next")
 	index := c.expiry(st.table, m, expires, len(m.Held))
 	items := []types.TransactWriteItem{{Update: c.update(st.table, pkey(sessionPK(tenant, id), metaSK))}}
 	for _, e := range add {
@@ -482,9 +505,6 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	}
 	if index != nil {
 		items = append(items, types.TransactWriteItem{Update: index})
-	}
-	if state.Seq == 0 {
-		items = append(items, st.notEnded(tenant, id, run))
 	}
 	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
@@ -498,7 +518,7 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 	switch {
 	case rerr != nil:
 		return rerr
-	case now.Ended:
+	case !now.Open:
 		return session.ErrEnded
 	case now.Seq >= next:
 		return nil
@@ -682,11 +702,12 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 	if err != nil {
 		return err
 	}
-	if state.Ended {
+	if !state.Open {
 		return session.ErrEnded
 	}
 	c := newChange()
-	c.names["#ttl"] = "ttl"
+	c.names["#ttl"], c.names["#run"] = "ttl", run
+	c.cond = append(c.cond, "attribute_exists(runs.#run)")
 	c.values[":held"] = &types.AttributeValueMemberSS{Value: []string{run}}
 	c.add = append(c.add, "held :held")
 	c.remove = append(c.remove, "#ttl")
@@ -698,7 +719,6 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 			ConditionExpression:      aws.String("attribute_exists(pk)"),
 			ExpressionAttributeNames: map[string]string{"#ttl": "ttl"},
 		}},
-		st.notEnded(tenant, id, run),
 	}})
 	var cancelled *types.TransactionCanceledException
 	if errors.As(err, &cancelled) {
@@ -706,7 +726,7 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 		switch {
 		case rerr != nil:
 			return rerr
-		case now.Ended:
+		case !now.Open:
 			return session.ErrEnded
 		}
 	}
@@ -716,7 +736,7 @@ func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
 func (st *Store) EndRun(ctx context.Context, tenant, id, run string, expires time.Time) error {
 	if _, state, err := st.state(ctx, tenant, id, run); err != nil {
 		return err
-	} else if state.Ended {
+	} else if !state.Open {
 		return session.ErrEnded
 	}
 	// Drop what was kept only until the end first: if this fails, the run
@@ -741,14 +761,13 @@ func (st *Store) endRun(ctx context.Context, tenant, id, run string, expires tim
 	if err != nil {
 		return err
 	}
-	if state.Ended {
+	if !state.Open {
 		return session.ErrEnded
 	}
+	created := m.created(run)
 	c := newChange()
 	c.runCond(run, state)
-	if state.Seq > 0 {
-		c.remove = append(c.remove, "runs.#run")
-	}
+	c.remove = append(c.remove, "runs.#run")
 	heldAfter := len(m.Held)
 	if state.Held {
 		c.values[":held"] = &types.AttributeValueMemberSS{Value: []string{run}}
@@ -766,7 +785,9 @@ func (st *Store) endRun(ctx context.Context, tenant, id, run string, expires tim
 	ended := pkey(sessionPK(tenant, id), endedSK(run))
 	ended["seq"] = n(state.Seq)
 	if !expires.IsZero() {
-		ended["ttl"] = ttl(expires) // it goes no later than the session
+		// Past MaxStartDelay, Begin refuses the run by its age; until the
+		// session's expiry as of now, State still says it ended.
+		ended["ttl"] = ttl(later(expires, created.Add(session.MaxStartDelay)))
 	}
 	items := []types.TransactWriteItem{{}, {Put: &types.Put{
 		TableName: &st.table, Item: ended, ConditionExpression: aws.String("attribute_not_exists(pk)"),
@@ -774,7 +795,7 @@ func (st *Store) endRun(ctx context.Context, tenant, id, run string, expires tim
 	if index := c.expiry(st.table, m, expires, heldAfter); index != nil {
 		items = append(items, types.TransactWriteItem{Update: index})
 	}
-	items[0] = c.write(st.table, pkey(sessionPK(tenant, id), metaSK))
+	items[0].Update = c.update(st.table, pkey(sessionPK(tenant, id), metaSK))
 	_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
 	if !errors.As(err, &cancelled) {
@@ -784,10 +805,17 @@ func (st *Store) endRun(ctx context.Context, tenant, id, run string, expires tim
 	switch {
 	case rerr != nil:
 		return rerr
-	case now.Ended:
+	case !now.Open:
 		return session.ErrEnded
 	}
 	return errRace
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 func (st *Store) Delete(ctx context.Context, tenant, id string) error {

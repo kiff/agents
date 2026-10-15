@@ -41,6 +41,7 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"PausedRunResumesWhereItStopped", pausedRunResumesWhereItStopped},
 		{"OnlyAPausedRunResumes", onlyAPausedRunResumes},
 		{"ARunThatRecordedNothingEnds", aRunThatRecordedNothingEnds},
+		{"OnlyAnOpenRunTakesEvents", onlyAnOpenRunTakesEvents},
 		{"HeldSessionDoesNotExpire", heldSessionDoesNotExpire},
 		{"PurgeRemovesExpired", purgeRemovesExpired},
 		{"SessionExpiresAsAWhole", sessionExpiresAsAWhole},
@@ -63,7 +64,9 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 
 var ctx = context.Background()
 
-// clock is a time that moves only when told. Stores read it from the
+// clock is a time that moves only when told. It starts at the real time: a
+// database that deletes expired items by itself (DynamoDB Local does, within
+// seconds) must never see a TTL already past. Stores read it from the
 // recording's writer goroutine, so it locks.
 type clock struct {
 	mu sync.Mutex
@@ -72,7 +75,7 @@ type clock struct {
 
 func (c *clock) now() time.Time      { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 func (c *clock) add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
-func start() *clock                  { return &clock{t: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)} }
+func start() *clock                  { return &clock{t: time.Now().UTC().Truncate(time.Second)} }
 
 func check(t *testing.T, err error) {
 	t.Helper()
@@ -99,17 +102,18 @@ func open(t *testing.T, r *session.Recorder, agent string, kind session.Kind) se
 
 // startRun starts recording run in s; it is ended when the test ends, if it
 // wasn't.
-func startRun(t *testing.T, r *session.Recorder, s session.Session, run string) *session.Recording {
+func startRun(t *testing.T, c *clock, r *session.Recorder, s session.Session, run string) *session.Recording {
 	t.Helper()
-	rec := r.Start(s, run)
+	rec, err := r.Start(ctx, s, run, c.now())
+	check(t, err)
 	t.Cleanup(func() { _ = rec.End(ctx) })
 	return rec
 }
 
 // begin opens a session and starts recording its first run, "r1".
-func begin(t *testing.T, r *session.Recorder, agent string, kind session.Kind) *session.Recording {
+func begin(t *testing.T, c *clock, r *session.Recorder, agent string, kind session.Kind) *session.Recording {
 	t.Helper()
-	return startRun(t, r, open(t, r, agent, kind), "r1")
+	return startRun(t, c, r, open(t, r, agent, kind), "r1")
 }
 
 func record(t *testing.T, rec *session.Recording, k session.EventKind, body any) {
@@ -167,7 +171,7 @@ func order(events []session.Event) []string {
 }
 
 func recordAndRead(t *testing.T, b Backend, c *clock) {
-	rec := begin(t, recorder(t, b, session.DefaultPolicy(30*day), c), "refunds", session.KindChat)
+	rec := begin(t, c, recorder(t, b, session.DefaultPolicy(30*day), c), "refunds", session.KindChat)
 	record(t, rec, session.OwnerMessage, map[string]string{"text": "refund order 12"})
 	c.add(time.Second)
 	record(t, rec, session.AgentMessage, map[string]string{"text": "done"})
@@ -193,7 +197,7 @@ func recordAndRead(t *testing.T, b Backend, c *clock) {
 	}
 	state, own, err := b.ReadRun(ctx, "t1", got.ID, "r1")
 	check(t, err)
-	if state != (session.RunState{Seq: 3}) || len(own) != 3 {
+	if state != (session.RunState{Seq: 3, Open: true}) || len(own) != 3 {
 		t.Fatalf("run: %+v, %d events", state, len(own))
 	}
 }
@@ -202,7 +206,7 @@ func neverIsNotWritten(t *testing.T, b Backend, c *clock) {
 	p := session.DefaultPolicy(0)
 	p[session.ToolCall] = session.Rule{Keep: session.Never}
 	p[session.ToolResult] = session.Rule{Keep: session.Never}
-	rec := begin(t, recorder(t, b, p, c), "refunds", session.KindRun)
+	rec := begin(t, c, recorder(t, b, p, c), "refunds", session.KindRun)
 	record(t, rec, session.ToolResult, map[string]string{"customer": "someone"})
 	if _, events := read(t, b, rec); len(events) != 0 {
 		t.Fatalf("a Never event was stored: %v", kinds(events))
@@ -214,7 +218,7 @@ func neverIsNotWritten(t *testing.T, b Backend, c *clock) {
 func untilEndIsDroppedWhenItsRunEnds(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(0), c)
 	s := open(t, r, "refunds", session.KindChat)
-	first, second := startRun(t, r, s, "r1"), startRun(t, r, s, "r2")
+	first, second := startRun(t, c, r, s, "r1"), startRun(t, c, r, s, "r2")
 	for _, rec := range []*session.Recording{first, second} {
 		record(t, rec, session.ToolCall, map[string]string{"tool": "list_charges"})
 		record(t, rec, session.ToolResult, map[string]string{"charges": "…"})
@@ -241,7 +245,7 @@ func untilEndIsDroppedWhenItsRunEnds(t *testing.T, b Backend, c *clock) {
 
 func endedRunTakesNoEvents(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(0), c)
-	rec := begin(t, r, "refunds", session.KindChat)
+	rec := begin(t, c, r, "refunds", session.KindChat)
 	id := rec.Session().ID
 	check(t, rec.End(ctx))
 	if err := rec.Record(session.AgentMessage, "late"); !errors.Is(err, session.ErrEnded) {
@@ -265,7 +269,7 @@ func endedRunTakesNoEvents(t *testing.T, b Backend, c *clock) {
 	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || !state.Ended {
 		t.Fatalf("run state = %+v, err = %v", state, err)
 	}
-	next := startRun(t, r, rec.Session(), "r2") // the session goes on
+	next := startRun(t, c, r, rec.Session(), "r2") // the session goes on
 	record(t, next, session.OwnerMessage, "next")
 	if _, events := read(t, b, next); !slices.Equal(order(events), []string{"r2:1"}) {
 		t.Fatalf("events = %v", order(events))
@@ -277,7 +281,7 @@ func endedRunTakesNoEvents(t *testing.T, b Backend, c *clock) {
 func runsReadInOrder(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(0), c)
 	s := open(t, r, "refunds", session.KindChat)
-	later, earlier := startRun(t, r, s, "a-later"), startRun(t, r, s, "z-earlier") // run IDs don't decide
+	later, earlier := startRun(t, c, r, s, "a-later"), startRun(t, c, r, s, "z-earlier") // run IDs don't decide
 	record(t, earlier, session.OwnerMessage, "1")
 	check(t, earlier.Flush(ctx))
 	c.add(time.Second)
@@ -298,7 +302,7 @@ func runsReadInOrder(t *testing.T, b Backend, c *clock) {
 // still there until it ends.
 func pausedRunResumesWhereItStopped(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(30*day), c)
-	rec := begin(t, r, "refunds", session.KindRun)
+	rec := begin(t, c, r, "refunds", session.KindRun)
 	record(t, rec, session.OwnerMessage, "refund order 12")
 	record(t, rec, session.ToolCall, "refund")
 	record(t, rec, session.ToolResult, "held")
@@ -310,10 +314,10 @@ func pausedRunResumesWhereItStopped(t *testing.T, b Backend, c *clock) {
 		t.Fatalf("pausing twice: err = %v, want ErrEnded", err)
 	}
 	id := rec.Session().ID
-	if state, _, err := b.ReadRun(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Seq: 3, Held: true}) {
+	if state, _, err := b.ReadRun(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Seq: 3, Open: true, Held: true}) {
 		t.Fatalf("paused run state = %+v, err = %v", state, err)
 	}
-	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Seq: 3, Held: true}) {
+	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Seq: 3, Open: true, Held: true}) {
 		t.Fatalf("paused run State = %+v, err = %v", state, err)
 	}
 	check(t, b.Hold(ctx, "t1", id, "r1")) // holding again changes nothing
@@ -348,7 +352,7 @@ func pausedRunResumesWhereItStopped(t *testing.T, b Backend, c *clock) {
 // run resumes.
 func onlyAPausedRunResumes(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(0), c)
-	rec := begin(t, r, "refunds", session.KindRun)
+	rec := begin(t, c, r, "refunds", session.KindRun)
 	record(t, rec, session.AgentMessage, "1")
 	check(t, rec.Flush(ctx))
 	if _, err := r.Resume(ctx, rec.Session(), "r1"); !errors.Is(err, session.ErrNotPaused) {
@@ -366,10 +370,14 @@ func onlyAPausedRunResumes(t *testing.T, b Backend, c *clock) {
 }
 
 // A run can end with nothing recorded (every kind Never, or a failure before
-// its first event); once ended, it takes nothing more.
+// its first event); once ended, it takes nothing more, and never opens again.
 func aRunThatRecordedNothingEnds(t *testing.T, b Backend, c *clock) {
-	id := created(t, b)
+	id := created(t, b, c)
+	check(t, b.Begin(ctx, "t1", id, "r1", c.now())) // beginning an open run again changes nothing
 	check(t, b.EndRun(ctx, "t1", id, "r1", time.Time{}))
+	if err := b.Begin(ctx, "t1", id, "r1", c.now()); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("beginning an ended run: err = %v, want ErrEnded", err)
+	}
 	if state, err := b.State(ctx, "t1", id, "r1"); err != nil || state != (session.RunState{Ended: true}) {
 		t.Fatalf("state = %+v, err = %v", state, err)
 	}
@@ -387,11 +395,36 @@ func aRunThatRecordedNothingEnds(t *testing.T, b Backend, c *clock) {
 	}
 }
 
+// Only a begun run takes events or a hold; a run created more than
+// MaxStartDelay ago can't begin.
+func onlyAnOpenRunTakesEvents(t *testing.T, b Backend, c *clock) {
+	id := created(t, b, c)
+	if err := b.Append(ctx, "t1", id, "never", []session.Event{event(1, `1`)}); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("append to a run never begun: err = %v, want ErrEnded", err)
+	}
+	if err := b.Hold(ctx, "t1", id, "never"); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("hold of a run never begun: err = %v, want ErrEnded", err)
+	}
+	if err := b.EndRun(ctx, "t1", id, "never", time.Time{}); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("end of a run never begun: err = %v, want ErrEnded", err)
+	}
+	if err := b.Begin(ctx, "t1", id, "old", c.now().Add(-session.MaxStartDelay-time.Second)); !errors.Is(err, session.ErrLate) {
+		t.Fatalf("begin of a run created too long ago: err = %v, want ErrLate", err)
+	}
+	check(t, b.Begin(ctx, "t1", id, "recent", c.now().Add(-session.MaxStartDelay+time.Second)))
+	if state, err := b.State(ctx, "t1", id, "recent"); err != nil || state != (session.RunState{Open: true}) {
+		t.Fatalf("a begun run: %+v, err = %v", state, err)
+	}
+	if got := bodies(t, b, id); len(got) != 0 {
+		t.Fatalf("events = %v", got)
+	}
+}
+
 // A paused run keeps its session past its Expires; once the run ends,
 // retention starts again from then.
 func heldSessionDoesNotExpire(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(day), c)
-	rec := begin(t, r, "refunds", session.KindRun)
+	rec := begin(t, c, r, "refunds", session.KindRun)
 	record(t, rec, session.OwnerMessage, "refund order 12")
 	check(t, rec.Pause(ctx))
 	id := rec.Session().ID
@@ -425,7 +458,7 @@ func heldSessionDoesNotExpire(t *testing.T, b Backend, c *clock) {
 func purgeRemovesExpired(t *testing.T, b Backend, c *clock) {
 	p := session.DefaultPolicy(30 * day)
 	p[session.Report] = session.Rule{Keep: session.Kept} // no retention: the session lives until deleted
-	rec := begin(t, recorder(t, b, p, c), "refunds", session.KindRun)
+	rec := begin(t, c, recorder(t, b, p, c), "refunds", session.KindRun)
 	record(t, rec, session.OwnerMessage, "old")
 	c.add(20 * day)
 	record(t, rec, session.AgentMessage, "newer")
@@ -450,10 +483,10 @@ func purgeRemovesExpired(t *testing.T, b Backend, c *clock) {
 // event has: nothing is left behind as an empty shell.
 func sessionExpiresAsAWhole(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(30*day), c)
-	done := begin(t, r, "refunds", session.KindRun)
+	done := begin(t, c, r, "refunds", session.KindRun)
 	record(t, done, session.Report, "x")
 	check(t, done.End(ctx))
-	busy := begin(t, r, "refunds", session.KindChat)
+	busy := begin(t, c, r, "refunds", session.KindChat)
 	record(t, busy, session.OwnerMessage, "first")
 	c.add(20 * day)
 	record(t, busy, session.OwnerMessage, "twenty days later")
@@ -481,10 +514,10 @@ func sessionExpiresAsAWhole(t *testing.T, b Backend, c *clock) {
 
 func removeLeavesNothing(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(0), c)
-	gone := begin(t, r, "refunds", session.KindRun)
+	gone := begin(t, c, r, "refunds", session.KindRun)
 	record(t, gone, session.Report, "x")
 	check(t, gone.Pause(ctx)) // a held run doesn't keep its session from removal
-	kept := begin(t, r, "chargebacks", session.KindRun)
+	kept := begin(t, c, r, "chargebacks", session.KindRun)
 	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: "a", Text: "x"}))
 	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "chargebacks", Name: "a", Text: "y"}))
 
@@ -507,13 +540,16 @@ func removeLeavesNothing(t *testing.T, b Backend, c *clock) {
 }
 
 func tenantsAreApart(t *testing.T, b Backend, c *clock) {
-	rec := begin(t, recorder(t, b, session.DefaultPolicy(0), c), "refunds", session.KindRun)
+	rec := begin(t, c, recorder(t, b, session.DefaultPolicy(0), c), "refunds", session.KindRun)
 	id := rec.Session().ID
 	if _, _, err := b.Read(ctx, "t2", id); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("t2 read t1's session: err = %v", err)
 	}
 	if _, _, err := b.ReadRun(ctx, "t2", id, "r1"); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("t2 read t1's run: err = %v", err)
+	}
+	if err := b.Begin(ctx, "t2", id, "r9", c.now()); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("t2 began a run in t1's session: err = %v", err)
 	}
 	if err := b.Append(ctx, "t2", id, "r1", []session.Event{{Seq: 1, Kind: session.AgentMessage}}); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("t2 wrote to t1's session: err = %v", err)
@@ -534,16 +570,16 @@ func tenantsAreApart(t *testing.T, b Backend, c *clock) {
 	s, events := read(t, b, rec)
 	state, _, err := b.ReadRun(ctx, "t1", id, "r1")
 	check(t, err)
-	if len(s.Held) != 0 || len(events) != 0 || state != (session.RunState{}) {
+	if len(s.Held) != 0 || len(events) != 0 || state != (session.RunState{Open: true}) {
 		t.Fatalf("t1's session changed after t2's calls: %+v, %d events, run %+v", s, len(events), state)
 	}
 }
 
 func listNewestFirst(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(0), c)
-	first := begin(t, r, "refunds", session.KindRun)
+	first := begin(t, c, r, "refunds", session.KindRun)
 	c.add(time.Minute)
-	second := begin(t, r, "refunds", session.KindChat)
+	second := begin(t, c, r, "refunds", session.KindChat)
 	c.add(time.Minute)
 	record(t, first, session.Report, "x") // first is now the latest updated
 	check(t, first.Flush(ctx))
@@ -563,7 +599,7 @@ func listNewestFirst(t *testing.T, b Backend, c *clock) {
 // Tool calls may run in parallel and record at once: every event lands, once,
 // numbered without gaps.
 func concurrentRecordsAllLand(t *testing.T, b Backend, c *clock) {
-	rec := begin(t, recorder(t, b, session.DefaultPolicy(0), c), "refunds", session.KindRun)
+	rec := begin(t, c, recorder(t, b, session.DefaultPolicy(0), c), "refunds", session.KindRun)
 	const workers, each = 8, 50
 	done := make(chan error, workers)
 	for w := range workers {
@@ -599,7 +635,7 @@ func concurrentRunsInOneSession(t *testing.T, b Backend, c *clock) {
 	const runs, each = 4, 30
 	recs := make([]*session.Recording, runs)
 	for i := range recs {
-		recs[i] = startRun(t, r, s, fmt.Sprintf("r%d", i))
+		recs[i] = startRun(t, c, r, s, fmt.Sprintf("r%d", i))
 	}
 	done := make(chan error, runs)
 	for _, rec := range recs {
@@ -657,11 +693,14 @@ func notes(t *testing.T, b Backend, c *clock) {
 	}
 }
 
-// created makes a session straight on the store, for checks of Append.
-func created(t *testing.T, b Backend) string {
+// created makes a session straight on the store, with runs r1 and r2 begun,
+// for checks of Append.
+func created(t *testing.T, b Backend, c *clock) string {
 	t.Helper()
 	s := session.Session{ID: "s1", Tenant: "t1", Agent: "refunds", Kind: session.KindRun}
 	check(t, b.Create(ctx, s))
+	check(t, b.Begin(ctx, "t1", s.ID, "r1", c.now()))
+	check(t, b.Begin(ctx, "t1", s.ID, "r2", c.now()))
 	return s.ID
 }
 
@@ -682,7 +721,7 @@ func bodies(t *testing.T, b Backend, id string) []string {
 
 // What's stored can't be changed through the slices that went in or came out.
 func bodiesAreCopied(t *testing.T, b Backend, c *clock) {
-	id := created(t, b)
+	id := created(t, b, c)
 	in := []session.Event{event(1, `"stored"`)}
 	check(t, b.Append(ctx, "t1", id, "r1", in))
 	copy(in[0].Body, `"change"`)
@@ -697,7 +736,7 @@ func bodiesAreCopied(t *testing.T, b Backend, c *clock) {
 // An Append retried after its answer was lost stores nothing twice; a gap is
 // refused. Each run has its own sequence.
 func retriedAppendStoresOnce(t *testing.T, b Backend, c *clock) {
-	id := created(t, b)
+	id := created(t, b, c)
 	check(t, b.Append(ctx, "t1", id, "r1", []session.Event{event(1, `1`), event(2, `2`)}))
 	check(t, b.Append(ctx, "t1", id, "r1", []session.Event{event(1, `1`), event(2, `2`), event(3, `3`)}))
 	if got := bodies(t, b, id); !slices.Equal(got, []string{`r1=1`, `r1=2`, `r1=3`}) {

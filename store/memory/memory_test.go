@@ -30,6 +30,11 @@ func TestPurgeRemoves(t *testing.T) {
 	ev := func(seq int64, expires time.Time) session.Event {
 		return session.Event{Seq: seq, Time: at, Kind: session.Report, Body: []byte(`1`), Expires: expires}
 	}
+	for _, id := range []string{"old", "live"} {
+		if err := m.Begin(ctx, "t1", id, "r1", at); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_ = m.Append(ctx, "t1", "old", "r1", []session.Event{ev(1, at.Add(time.Hour)), ev(2, at.Add(time.Hour))})
 	_ = m.Append(ctx, "t1", "live", "r1", []session.Event{ev(1, at.Add(time.Hour)), ev(2, time.Time{})})
 

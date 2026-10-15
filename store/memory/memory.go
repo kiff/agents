@@ -24,7 +24,7 @@ type Store struct {
 type memSession struct {
 	s      session.Session
 	events []session.Event
-	runs   map[string]*session.RunState // the last Seq stored, even if its event is gone since
+	runs   map[string]*session.RunState // every run begun, ended ones included: the last Seq stored, even if its event is gone since
 }
 
 // New returns an empty store on the system clock.
@@ -60,14 +60,30 @@ func (m *Store) get(tenant, id string) *memSession {
 	return ms
 }
 
-// run returns a run's state, made on first use.
-func (ms *memSession) run(id string) *session.RunState {
-	r := ms.runs[id]
-	if r == nil {
-		r = &session.RunState{}
-		ms.runs[id] = r
+// open returns an open run's state, or nil.
+func (ms *memSession) open(id string) *session.RunState {
+	if r := ms.runs[id]; r != nil && r.Open {
+		return r
 	}
-	return r
+	return nil
+}
+
+func (m *Store) Begin(_ context.Context, tenant, id, run string, created time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	switch {
+	case ms == nil:
+		return session.ErrNotFound
+	case ms.runs[run] != nil && ms.runs[run].Open:
+		return nil
+	case ms.runs[run] != nil:
+		return session.ErrEnded
+	case m.now().Sub(created) > session.MaxStartDelay:
+		return session.ErrLate
+	}
+	ms.runs[run] = &session.RunState{Open: true}
+	return nil
 }
 
 func (m *Store) Append(_ context.Context, tenant, id, run string, events []session.Event) error {
@@ -77,8 +93,8 @@ func (m *Store) Append(_ context.Context, tenant, id, run string, events []sessi
 	if ms == nil {
 		return session.ErrNotFound
 	}
-	r := ms.run(run)
-	if r.Ended {
+	r := ms.open(run)
+	if r == nil {
 		return session.ErrEnded
 	}
 	next, s := r.Seq, ms.s
@@ -181,8 +197,8 @@ func (m *Store) Hold(_ context.Context, tenant, id, run string) error {
 	if ms == nil {
 		return session.ErrNotFound
 	}
-	r := ms.run(run)
-	if r.Ended {
+	r := ms.open(run)
+	if r == nil {
 		return session.ErrEnded
 	}
 	if !r.Held {
@@ -200,11 +216,11 @@ func (m *Store) EndRun(_ context.Context, tenant, id, run string, expires time.T
 	if ms == nil {
 		return session.ErrNotFound
 	}
-	r := ms.run(run)
-	if r.Ended {
+	r := ms.open(run)
+	if r == nil {
 		return session.ErrEnded
 	}
-	r.Ended, r.Held = true, false
+	r.Open, r.Ended, r.Held = false, true, false
 	ms.s.Held = slices.DeleteFunc(ms.s.Held, func(h string) bool { return h == run })
 	if len(ms.s.Held) == 0 {
 		ms.s.Held = nil

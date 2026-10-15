@@ -33,7 +33,7 @@ func (e *echo) Turn(_ context.Context, req model.Request, _ func(string)) (model
 func setup(t *testing.T) (*session.Recorder, *memory.Store, *echo, agent.Agent, *time.Time) {
 	t.Helper()
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	store := memory.New()
+	store := memory.NewAt(func() time.Time { return now }) // the store's clock is the test's
 	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func (c *cancelling) Turn(ctx context.Context, _ model.Request, _ func(string)) 
 // tool did is dropped.
 func TestACancelledChatStillEndsItsRun(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	store := &fragileStore{Store: memory.New()}
+	store := &fragileStore{Store: memory.NewAt(func() time.Time { return now })}
 	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestACancelledChatStillEndsItsRun(t *testing.T) {
 // If ending fails anyway, the caller gets a NotEnded it can retry.
 func TestAFailedEndCanBeRetried(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	store := &fragileStore{Store: memory.New(), failEnd: true}
+	store := &fragileStore{Store: memory.NewAt(func() time.Time { return now }), failEnd: true}
 	rec, err := session.NewRecorderAt(store, session.DefaultPolicy(30*24*time.Hour), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)

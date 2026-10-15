@@ -127,7 +127,10 @@ func Send(ctx context.Context, rec *session.Recorder, store session.Store, a age
 	if err != nil {
 		return session.Session{}, agent.Outcome{}, err
 	}
-	r := rec.Start(s, run.NewID())
+	r, err := rec.Start(ctx, s, run.NewID(), now)
+	if err != nil {
+		return session.Session{}, agent.Outcome{}, err
+	}
 	out, _, runErr := agent.Run(ctx, a, r, history, text, emit)
 	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), EndTimeout)
 	defer cancel()

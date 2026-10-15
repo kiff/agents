@@ -123,19 +123,30 @@ type OmittedBody struct {
 }
 
 // ErrNotFound means no such session for this tenant; ErrEnded, that a run
-// takes no more events; ErrGap, that an Append skipped a Seq; ErrNotPaused,
-// that a run can't resume because it isn't held.
+// isn't open (it ended, or never started), so it takes no events; ErrGap, that
+// an Append skipped a Seq; ErrNotPaused, that a run can't resume because it
+// isn't held; ErrLate, that a run was created too long ago to start.
 var (
 	ErrNotFound  = errors.New("session: not found")
-	ErrEnded     = errors.New("session: run ended")
+	ErrEnded     = errors.New("session: run not open")
 	ErrGap       = errors.New("session: events out of sequence")
 	ErrNotPaused = errors.New("session: run not paused")
+	ErrLate      = errors.New("session: run created too long ago to start")
 )
 
+// MaxStartDelay is how long after its creation a run may start recording.
+// Past it, Begin refuses the run, so an ended run can never be started again
+// even once what a Store keeps of its end has expired.
+const MaxStartDelay = time.Hour
+
 // RunState is what a Store knows of one run's recording: the last Seq it
-// stored, whether the run is held (paused), and whether it has ended.
+// stored, whether it is open (started and not ended), whether it is held
+// (paused), and whether it has ended. Ended is known while the Store keeps a
+// trace of the end, at least MaxStartDelay past the run's creation and
+// usually as long as the session; an ended run is never open again.
 type RunState struct {
 	Seq   int64 `json:"seq"`
+	Open  bool  `json:"open,omitempty"`
 	Held  bool  `json:"held,omitempty"`
 	Ended bool  `json:"ended,omitempty"`
 }
@@ -153,10 +164,15 @@ type RunState struct {
 type Store interface {
 	// Create stores a new session.
 	Create(ctx context.Context, s Session) error
-	// Append adds a run's events, all or none. An event whose Seq the run
-	// already reached is skipped, so a retried Append stores nothing twice;
-	// any other Seq must follow on without a gap (ErrGap). A run that has
-	// ended takes no more (ErrEnded). The Store keeps its own copy of each
+	// Begin opens a run in a session, so it can take events. created is when
+	// the run was made: a run created more than MaxStartDelay ago is refused
+	// (ErrLate), and so is one that ended (ErrEnded). Beginning an open run
+	// again changes nothing.
+	Begin(ctx context.Context, tenant, session, run string, created time.Time) error
+	// Append adds an open run's events, all or none. An event whose Seq the
+	// run already reached is skipped, so a retried Append stores nothing
+	// twice; any other Seq must follow on without a gap (ErrGap). A run that
+	// isn't open takes none (ErrEnded). The Store keeps its own copy of each
 	// Body. The session's Updated becomes the last event's Time, and its
 	// Expires (unless zero) moves on to the latest event Expires.
 	Append(ctx context.Context, tenant, session, run string, events []Event) error
@@ -170,14 +186,14 @@ type Store interface {
 	State(ctx context.Context, tenant, session, run string) (RunState, error)
 	// List returns an agent's sessions, most recently updated first, at most limit.
 	List(ctx context.Context, tenant, agent string, limit int) ([]Session, error)
-	// Hold marks a run paused: the session doesn't expire until the run ends.
-	// Holding a held run again changes nothing; an ended run can't be held
-	// (ErrEnded).
+	// Hold marks an open run paused: the session doesn't expire until the run
+	// ends. Holding a held run again changes nothing; a run that isn't open
+	// can't be held (ErrEnded).
 	Hold(ctx context.Context, tenant, session, run string) error
 	// EndRun ends a run: it takes no more events, its UntilEnd events are
 	// dropped, and its hold is released. The session's Expires (unless zero)
 	// moves on to expires, if later: retention starts again when a run ends.
-	// Ending an ended run is ErrEnded.
+	// Ending a run that isn't open is ErrEnded.
 	EndRun(ctx context.Context, tenant, session, run string, expires time.Time) error
 	// Delete removes a session and its events.
 	Delete(ctx context.Context, tenant, id string) error

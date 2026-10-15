@@ -98,7 +98,7 @@ func TestTableIsFrugal(t *testing.T) {
 func TestItemsCarryTTL(t *testing.T) {
 	db := local(t)
 	name := table(t, db)
-	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	at := now() // TTLs in the past would be deleted by DynamoDB Local itself
 	clock := func() time.Time { return at }
 	st := dynamodb.NewAt(db, name, clock)
 	r, err := session.NewRecorderAt(st, session.DefaultPolicy(30*24*time.Hour), clock)
@@ -109,7 +109,7 @@ func TestItemsCarryTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := r.Start(se, "r1")
+	rec := started(t, r, se, "r1")
 	_ = rec.Record(session.Report, "kept")
 	_ = rec.Record(session.ToolResult, "until the end")
 	if err := rec.Flush(ctx); err != nil {
@@ -185,7 +185,7 @@ func ttls(t *testing.T, db *ddb.Client, table string) (session, index int64) {
 func TestAHeldSessionCarriesNoTTL(t *testing.T) {
 	db := local(t)
 	name := table(t, db)
-	at := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	at := now() // TTLs in the past would be deleted by DynamoDB Local itself
 	clock := func() time.Time { return at }
 	st := dynamodb.NewAt(db, name, clock)
 	r, err := session.NewRecorderAt(st, session.DefaultPolicy(24*time.Hour), clock)
@@ -196,7 +196,7 @@ func TestAHeldSessionCarriesNoTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, second := r.Start(se, "r1"), r.Start(se, "r2")
+	first, second := started(t, r, se, "r1"), started(t, r, se, "r2")
 	for _, rec := range []*session.Recording{first, second} {
 		_ = rec.Record(session.OwnerMessage, "refund order 12")
 		if err := rec.Pause(ctx); err != nil {
@@ -247,13 +247,13 @@ func TestTheSessionItemHoldsOnlyOpenRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 20 {
-		rec := r.Start(se, "r"+itoa(int64(i)))
+		rec := started(t, r, se, "r"+itoa(int64(i)))
 		_ = rec.Record(session.OwnerMessage, "message")
 		if err := rec.End(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	open := r.Start(se, "open")
+	open := started(t, r, se, "open")
 	_ = open.Record(session.OwnerMessage, "message")
 	if err := open.Flush(ctx); err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func (r *racing) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteIt
 }
 
 // A run that ends between an Append's or a Hold's read and its write takes
-// nothing: the write itself checks the run has no ended item.
+// nothing: the write itself checks the run is still open.
 func TestARunEndedMidWriteTakesNothing(t *testing.T) {
 	db := local(t)
 	name := table(t, db)
@@ -305,6 +305,11 @@ func TestARunEndedMidWriteTakesNothing(t *testing.T) {
 	se := session.Session{ID: "s1", Tenant: "t1", Agent: "refunds", Kind: session.KindRun}
 	if err := plain.Create(ctx, se); err != nil {
 		t.Fatal(err)
+	}
+	for _, run := range []string{"r1", "r2"} {
+		if err := plain.Begin(ctx, "t1", "s1", run, time.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	end := func(run string) func() {
 		return func() {
@@ -329,6 +334,78 @@ func TestARunEndedMidWriteTakesNothing(t *testing.T) {
 		t.Fatalf("an ended run is held: %v", s.Held)
 	}
 }
+
+// started starts recording run in se, as a run created when se opened.
+func started(t *testing.T, r *session.Recorder, se session.Session, run string) *session.Recording {
+	t.Helper()
+	rec, err := r.Start(ctx, se, run, se.Started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// An ended run's ended item may go by TTL while its session lives on (another
+// run holds it, or the thread is busy). The run still takes nothing: only an
+// open run takes events or a hold, and that is on the session item. Nor can it
+// begin again: it was created more than MaxStartDelay ago by then.
+func TestAnEndedRunStaysEndedOnceItsEndedItemExpires(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	at := now() // TTLs in the past would be deleted by DynamoDB Local itself
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return at }
+	st := dynamodb.NewAt(db, name, clock)
+	r, err := session.NewRecorderAt(st, session.DefaultPolicy(time.Hour), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	se, err := r.Open(ctx, "t1", "refunds", session.KindChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended, held := started(t, r, se, "r1"), started(t, r, se, "r2")
+	_ = ended.Record(session.OwnerMessage, "1")
+	if err := ended.End(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = held.Record(session.OwnerMessage, "2")
+	if err := held.Pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	at = at.Add(2 * time.Hour) // r1's ended item is past its TTL; r2 keeps the session
+	mu.Unlock()
+	// DynamoDB Local doesn't expire items: delete it, as TTL would.
+	if _, err := db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &name, Key: map[string]types.AttributeValue{
+		"pk": &types.AttributeValueMemberS{Value: "S|2:t1|" + itoa(int64(len(se.ID))) + ":" + se.ID},
+		"sk": &types.AttributeValueMemberS{Value: "R|2:r1"},
+	}, ConditionExpression: aws.String("attribute_exists(pk)")}); err != nil {
+		t.Fatalf("deleting r1's ended item: %v", err)
+	}
+	if state, err := st.State(ctx, "t1", se.ID, "r1"); err != nil || state.Open {
+		t.Fatalf("r1's state = %+v, err = %v: it isn't open", state, err)
+	}
+	if err := st.Hold(ctx, "t1", se.ID, "r1"); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("hold of the ended run: err = %v, want ErrEnded", err)
+	}
+	if err := st.Append(ctx, "t1", se.ID, "r1", []session.Event{{Seq: 2, Time: clock(), Kind: session.Report, Body: []byte(`"late"`)}}); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("append to the ended run: err = %v, want ErrEnded", err)
+	}
+	if err := st.EndRun(ctx, "t1", se.ID, "r1", time.Time{}); !errors.Is(err, session.ErrEnded) {
+		t.Fatalf("ending the ended run: err = %v, want ErrEnded", err)
+	}
+	if err := st.Begin(ctx, "t1", se.ID, "r1", se.Started); !errors.Is(err, session.ErrLate) {
+		t.Fatalf("beginning the ended run again: err = %v, want ErrLate", err)
+	}
+	if _, events, err := st.ReadRun(ctx, "t1", se.ID, "r1"); err != nil || len(events) != 0 {
+		t.Fatalf("r1's events: %d, err = %v", len(events), err)
+	}
+}
+
+// now is the real time to the second: a test's clock starts here, so no TTL
+// it writes is already past.
+func now() time.Time { return time.Now().UTC().Truncate(time.Second) }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
@@ -406,7 +483,7 @@ func recorded(t *testing.T, api dynamodb.API, table string) session.Session {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := r.Start(se, "r1")
+	rec := started(t, r, se, "r1")
 	_ = rec.Record(session.Report, "a")
 	_ = rec.Record(session.Report, "b")
 	if err := rec.End(ctx); err != nil {
@@ -468,7 +545,7 @@ func TestNoAppendOnceDeleteStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := r.Start(se, "r1")
+	rec := started(t, r, se, "r1")
 	_ = rec.Record(session.Report, "a")
 	if err := rec.Flush(ctx); err != nil {
 		t.Fatal(err)

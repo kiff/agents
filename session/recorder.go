@@ -59,10 +59,14 @@ func (r *Recorder) Open(ctx context.Context, tenant, agent string, kind Kind) (S
 	return s, nil
 }
 
-// Start records a new run in s: nothing may be recorded for the run yet. The
-// caller must End or Pause the Recording: that is what stops its writer.
-func (r *Recorder) Start(s Session, run string) *Recording {
-	return r.recording(s, run, 0)
+// Start opens a new run in s and records it. created is when the run was
+// made (see MaxStartDelay). The caller must End or Pause the Recording: that
+// is what stops its writer.
+func (r *Recorder) Start(ctx context.Context, s Session, run string, created time.Time) (*Recording, error) {
+	if err := r.store.Begin(ctx, s.Tenant, s.ID, run, created); err != nil {
+		return nil, err
+	}
+	return r.recording(s, run, 0), nil
 }
 
 // Resume carries on recording a run that paused, from its last Seq: in this

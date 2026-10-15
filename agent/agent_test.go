@@ -89,7 +89,11 @@ func start(t *testing.T, kind session.Kind) (*memory.Store, *session.Recording) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, rec.Start(s, "r1")
+	r, err := rec.Start(context.Background(), s, "r1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, r
 }
 
 func kinds(events []session.Event) []session.EventKind {
@@ -262,7 +266,10 @@ func BenchmarkTurn(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		r := rec.Start(s, "r1")
+		r, err := rec.Start(ctx, s, "r1", time.Now())
+		if err != nil {
+			b.Fatal(err)
+		}
 		if _, _, err := agent.Run(ctx, newAgent(m, lookup), r, nil, "Go.", nil); err != nil {
 			b.Fatal(err)
 		}
