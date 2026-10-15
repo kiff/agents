@@ -207,10 +207,11 @@ func TestPutAgentRefuses(t *testing.T) {
 		"another id in the body":     {func() any { d := agentBody("p"); d.ID = "other"; return d }(), 400},
 		"no cost cap":                {func() any { d := agentBody("p"); d.MaxCost = 0; return d }(), 400},
 		"a gateway not on the list":  {func() any { d := agentBody("p"); d.Gateway = "https://elsewhere.test/mcp"; return d }(), 400},
-		"an unknown field":           {`{"instructions":"x","admin":true}`, 400},
-		"not JSON":                   {`{`, 400},
-		"two values":                 {`{} {}`, 400},
-		"a body too large":           {`{"instructions":"` + strings.Repeat("x", 5<<20) + `"}`, 413},
+		// A valid definition with more: refused for the extra, not for the rest.
+		"an unknown field": {withValid(`,"admin":true}`), 400},
+		"not JSON":         {`{`, 400},
+		"two values":       {withValid(`} {}`), 400},
+		"a body too large": {`{"instructions":"` + strings.Repeat("x", 5<<20) + `"}`, 413},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -226,6 +227,31 @@ func TestPutAgentRefuses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// withValid is a valid definition's JSON, its closing brace replaced by end.
+func withValid(end string) string {
+	b, err := json.Marshal(agentBody("p"))
+	if err != nil {
+		panic(err)
+	}
+	return string(b[:len(b)-1]) + end
+}
+
+// A caller verified with no tenant is no caller.
+func TestACallerWithNoTenantIsRefused(t *testing.T) {
+	f := newFixture(t)
+	s := &server.Server{Auth: func(*http.Request) (server.Caller, error) { return server.Caller{}, nil }, Agents: f.agents}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/agents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("got %d, want 401", resp.StatusCode)
 	}
 }
 
