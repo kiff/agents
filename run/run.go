@@ -85,6 +85,10 @@ type Run struct {
 
 	Created time.Time `json:"created"`
 	Updated time.Time `json:"updated"`
+	// Expires is when a run that has ended may be removed (zero: kept until
+	// deleted). It comes from the agent's keep rules; a run that hasn't
+	// ended never expires.
+	Expires time.Time `json:"expires,omitzero"`
 	// Version counts the run's stored changes. Every change is a
 	// compare-and-set on it.
 	Version int64 `json:"version"`

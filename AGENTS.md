@@ -29,6 +29,8 @@ a database driver; adapters import the core.
 ```
 session/            sessions (threads of runs), events, keep rules, Recorder; ports Store, Notes
 session/sessiontest the checks every Store must pass
+run/                runs: statuses, the transition table, the lease, the sweep; port Runs
+run/runtest         the checks every Runs must pass
 store/memory        adapter: in memory, for tests and local runs
 store/<name>        one package per store (sqlite, dynamodb)
 model/              the model port: one streamed turn, Price
@@ -44,7 +46,7 @@ cmd/chat            a terminal chat against KIFF, for test mode
 Model, tools, the run loop and evals follow the same shape: a core package
 with its port, and one package per adapter (for example `model/anthropic`).
 Wiring happens in `cmd/`. ARCHITECTURE.md lists the packages still to build
-(`run`, `registry`, `schedule`, `server`, `console`, `hook`) and where each fits;
+(`registry`, `schedule`, `server`, `console`, `hook`) and where each fits;
 today chat still opens one session per message, until step 1 of its order of
 work lands.
 

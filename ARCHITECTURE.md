@@ -99,7 +99,7 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | Package | Holds | Status |
 |---|---|---|
 | `session` | Sessions, events, keep rules, the Recorder; ports `Store`, `Notes` | Built (#1). Changes, in a PR of their own: a session becomes a thread of runs; events carry their run; "until the end" means the run's end; a session with a paused run doesn't expire |
-| `run` | Run, Status, Requirement (the held call, KIFF's operation ID and the hold's expiry), transitions, the lease; port `Runs` | To build |
+| `run` | Run, Status, Requirement (the held call, KIFF's operation ID and the hold's expiry), transitions, the lease, the sweep; port `Runs` | Built (#12): types, transitions with compare-and-set, the lease, the sweep, memory and DynamoDB stores. Paused runs whose holds expired join the sweep in step 4 |
 | `agent` | The loop: model → tools → model, caps, stop on a hold | Built (#2). Returns *paused* with requirements instead of ending; resumes from a paused run |
 | `chat` | A message as a run in the current conversation | Built (#2). Becomes a thin layer over runs |
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
