@@ -48,6 +48,7 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"RemoveLeavesNothing", removeLeavesNothing},
 		{"TenantsAreApart", tenantsAreApart},
 		{"ListNewestFirst", listNewestFirst},
+		{"ListLimitIsTheNewest", listLimitIsTheNewest},
 		{"ConcurrentRecordsAllLand", concurrentRecordsAllLand},
 		{"ConcurrentRunsInOneSession", concurrentRunsInOneSession},
 		{"BodiesAreCopied", bodiesAreCopied},
@@ -593,6 +594,45 @@ func listNewestFirst(t *testing.T, b Backend, c *clock) {
 	check(t, b.Delete(ctx, "t1", first.Session().ID))
 	if l := list(t, b, "t1", 0); len(l) != 1 || l[0].ID != second.Session().ID {
 		t.Fatalf("after delete: %+v", l)
+	}
+}
+
+// Whatever its limit, List returns the newest of the whole list: sessions
+// updated close together, or some again much later, are ordered the same.
+func listLimitIsTheNewest(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(0), c)
+	var recs []*session.Recording
+	for range 12 {
+		recs = append(recs, begin(t, c, r, "refunds", session.KindChat))
+		c.add(25 * time.Second) // a few to a minute
+	}
+	for _, i := range []int{2, 7, 3} {
+		c.add(40 * time.Second)
+		record(t, recs[i], session.OwnerMessage, "again")
+		check(t, recs[i].Flush(ctx))
+	}
+	all := list(t, b, "t1", 0)
+	if len(all) != 12 {
+		t.Fatalf("list = %d sessions, want 12", len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].Updated.After(all[i-1].Updated) {
+			t.Fatalf("list isn't newest first at %d: %v after %v", i, all[i].Updated, all[i-1].Updated)
+		}
+	}
+	if all[0].ID != recs[3].Session().ID || all[1].ID != recs[7].Session().ID || all[2].ID != recs[2].Session().ID {
+		t.Fatalf("the sessions updated last don't come first")
+	}
+	for limit := 1; limit <= 12; limit++ {
+		l := list(t, b, "t1", limit)
+		if len(l) != limit {
+			t.Fatalf("limit %d: %d sessions", limit, len(l))
+		}
+		for i := range l {
+			if l[i].ID != all[i].ID {
+				t.Fatalf("limit %d: session %d is %s, want %s", limit, i, l[i].ID, all[i].ID)
+			}
+		}
 	}
 }
 

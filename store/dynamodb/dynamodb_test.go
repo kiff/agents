@@ -413,7 +413,7 @@ func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 type faulty struct {
 	dynamodb.API
 	mu            sync.Mutex
-	failMetaOnce  bool   // the DeleteItem of a session item
+	failMetaOnce  bool   // the write that deletes a session item and its index entry
 	failBatchOnce string // a BatchWriteItem deleting a key with this prefix ("E|" events, "A|" index)
 }
 
@@ -427,11 +427,16 @@ func (f *faulty) take(flag *bool) bool {
 	return was
 }
 
-func (f *faulty) DeleteItem(ctx context.Context, in *ddb.DeleteItemInput, opts ...func(*ddb.Options)) (*ddb.DeleteItemOutput, error) {
-	if sk, _ := in.Key["sk"].(*types.AttributeValueMemberS); sk != nil && sk.Value == "M" && f.take(&f.failMetaOnce) {
-		return nil, errInjected
+func (f *faulty) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	for _, item := range in.TransactItems {
+		if item.Delete == nil {
+			continue
+		}
+		if sk, _ := item.Delete.Key["sk"].(*types.AttributeValueMemberS); sk != nil && sk.Value == "M" && f.take(&f.failMetaOnce) {
+			return nil, errInjected
+		}
 	}
-	return f.API.DeleteItem(ctx, in, opts...)
+	return f.API.TransactWriteItems(ctx, in, opts...)
 }
 
 func (f *faulty) BatchWriteItem(ctx context.Context, in *ddb.BatchWriteItemInput, opts ...func(*ddb.Options)) (*ddb.BatchWriteItemOutput, error) {
@@ -511,12 +516,13 @@ func TestDeleteAgentRetryAfterSessionItemFails(t *testing.T) {
 	}
 }
 
-// If deleting the index entry fails, the session is already gone from Read,
-// and DeleteAgent still removes the entry on the retry.
-func TestDeleteAgentRetryAfterIndexFails(t *testing.T) {
+// If the last write of a Delete fails, the session item and its index entry
+// both stay, so a retried Delete finds the session and leaves nothing: no
+// index entry outlives its session.
+func TestARetriedDeleteLeavesNothing(t *testing.T) {
 	db := local(t)
 	name := table(t, db)
-	f := &faulty{API: db, failBatchOnce: "A|"}
+	f := &faulty{API: db, failMetaOnce: true}
 	se := recorded(t, f, name)
 	st := dynamodb.New(f, name)
 	if err := st.Delete(ctx, "t1", se.ID); !errors.Is(err, errInjected) {
@@ -525,8 +531,11 @@ func TestDeleteAgentRetryAfterIndexFails(t *testing.T) {
 	if _, _, err := st.Read(ctx, "t1", se.ID); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("read after a partial delete: err = %v", err)
 	}
-	if err := st.DeleteAgent(ctx, "t1", "refunds"); err != nil {
-		t.Fatalf("DeleteAgent: %v", err)
+	if l, err := st.List(ctx, "t1", "refunds", 0); err != nil || len(l) != 0 {
+		t.Fatalf("list after a partial delete: %d sessions, err = %v", len(l), err)
+	}
+	if err := st.Delete(ctx, "t1", se.ID); err != nil {
+		t.Fatalf("retry: %v", err)
 	}
 	if n := sessionItems(t, db, name); n != 0 {
 		t.Fatalf("%d session items left", n)
@@ -568,5 +577,112 @@ func TestNoAppendOnceDeleteStarted(t *testing.T) {
 	}
 	if n := sessionItems(t, db, name); n != 0 {
 		t.Fatalf("%d session items left", n)
+	}
+}
+
+// counting counts the session items List reads.
+type counting struct {
+	dynamodb.API
+	mu   sync.Mutex
+	read int
+}
+
+func (c *counting) BatchGetItem(ctx context.Context, in *ddb.BatchGetItemInput, opts ...func(*ddb.Options)) (*ddb.BatchGetItemOutput, error) {
+	c.mu.Lock()
+	for _, req := range in.RequestItems {
+		c.read += len(req.Keys)
+	}
+	c.mu.Unlock()
+	return c.API.BatchGetItem(ctx, in, opts...)
+}
+
+// List reads about as many sessions as it returns, however many the agent
+// has: chat lists an agent's sessions for every message.
+func TestListReadsOnlyWhatItReturns(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	at := now()
+	clock := func() time.Time { return at }
+	c := &counting{API: db}
+	st := dynamodb.NewAt(c, name, clock)
+	r, err := session.NewRecorderAt(st, session.DefaultPolicy(0), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string // oldest first
+	for range 60 {
+		se, err := r.Open(ctx, "t1", "refunds", session.KindChat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, se.ID)
+		at = at.Add(70 * time.Second)
+	}
+	c.read = 0
+	l, err := st.List(ctx, "t1", "refunds", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l) != 5 || l[0].ID != ids[59] || l[4].ID != ids[55] {
+		t.Fatalf("List(5) = %d sessions, first %s, want the newest five", len(l), l[0].ID)
+	}
+	if c.read > 5+8 {
+		t.Fatalf("List(5) read %d sessions of 60", c.read)
+	}
+}
+
+// An append into a later minute moves the session's index entry: there is
+// only ever one, where the session item says, and List finds the session
+// where its last update puts it.
+func TestAnAppendMovesTheIndexEntry(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	at := now()
+	clock := func() time.Time { return at }
+	st := dynamodb.NewAt(db, name, clock)
+	r, err := session.NewRecorderAt(st, session.DefaultPolicy(24*time.Hour), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := r.Open(ctx, "t1", "refunds", session.KindChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = at.Add(2 * time.Minute)
+	second, err := r.Open(ctx, "t1", "refunds", session.KindChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = at.Add(2 * time.Minute)
+	rec := started(t, r, first, "r1")
+	_ = rec.Record(session.OwnerMessage, "refund order 12")
+	if err := rec.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.List(ctx, "t1", "refunds", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l) != 1 || l[0].ID != first.ID {
+		t.Fatalf("List(1) = %+v, want %s, updated last", l, first.ID)
+	}
+	if err := rec.End(ctx); err != nil {
+		t.Fatal(err)
+	}
+	out, err := db.Scan(ctx, &ddb.ScanInput{TableName: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]int{}
+	for _, item := range out.Items {
+		if pk := item["pk"].(*types.AttributeValueMemberS).Value; pk[0] == 'A' {
+			entries[item["id"].(*types.AttributeValueMemberS).Value]++
+			if _, ok := item["ttl"]; !ok {
+				t.Errorf("index entry %v carries no TTL", item["sk"])
+			}
+		}
+	}
+	if len(entries) != 2 || entries[first.ID] != 1 || entries[second.ID] != 1 {
+		t.Fatalf("index entries per session: %v, want one each", entries)
 	}
 }
