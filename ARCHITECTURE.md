@@ -110,7 +110,7 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `server` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud | To build |
 | `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3). Reads runs once they exist; stores eval runs through a port |
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
-| `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, agents and schedules; grow with each port |
+| `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents and schedules; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
 | `cmd/lambda` | The server on Lambda | To build |
 

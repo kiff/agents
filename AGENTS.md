@@ -51,7 +51,7 @@ cmd/chat            a terminal chat against KIFF, for test mode
 Model, tools, the run loop and evals follow the same shape: a core package
 with its port, and one package per adapter (for example `model/anthropic`).
 Wiring happens in `cmd/`. ARCHITECTURE.md lists the packages still to build
-(`registry`, `schedule`, `server`, `console`, `hook`) and where each fits;
+(`server`, `console`, `hook`) and where each fits;
 today chat still opens one session per message, until step 1 of its order of
 work lands.
 
