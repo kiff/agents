@@ -62,12 +62,13 @@ func History(ctx context.Context, store session.Store, tenant, agentID string, n
 		}
 		events = append(events, evs...)
 	}
-	return conversation(events), nil
+	return Conversation(events), nil
 }
 
-// conversation turns owner and agent messages into model messages, joining
-// consecutive ones of the same role.
-func conversation(events []session.Event) []model.Message {
+// Conversation turns the owner's and the agent's messages among events into
+// model messages, joining consecutive ones of the same role. Tool calls and
+// their results are left out, so what it returns is always valid to send.
+func Conversation(events []session.Event) []model.Message {
 	var msgs []model.Message
 	for _, e := range events {
 		var role model.Role

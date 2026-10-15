@@ -82,6 +82,9 @@ COMPLETED, ERROR and CANCELLED are final.
   rather than retrying.
 - **Cancel** records the intent; the loop stops at its next checkpoint (before a
   model turn, after a tool batch). It doesn't undo what a tool already did.
+  A run asked to stop in a turn where KIFF holds one of its calls pauses as
+  usual; once KIFF resolves the hold, it continues, records the outcome and
+  stops at its first checkpoint, CANCELLED.
   Cancelling a paused run first withdraws its held calls in KIFF
   (kiff/kiff-cloud#1245), so an answer that comes later forwards nothing. A
   hold-answered alert for a cancelled run is still recorded on it, so a call
@@ -100,7 +103,8 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 |---|---|---|
 | `session` | Sessions, events, keep rules, the Recorder; ports `Store`, `Notes` | Built (#1). Changes, in a PR of their own: a session becomes a thread of runs; events carry their run; "until the end" means the run's end; a session with a paused run doesn't expire |
 | `run` | Run, Status, Requirement (the held call, KIFF's operation ID and the hold's expiry), transitions, the lease, the sweep; port `Runs` | Built (#12): types, transitions with compare-and-set, the lease, the sweep, memory and DynamoDB stores. Paused runs whose holds expired join the sweep in step 4 |
-| `agent` | The loop: model → tools → model, caps, pause on a hold | Built (#2, #12): a held call pauses the run with its requirements and the turn it paused in; `Continue` carries on from a stored paused run with the held calls' outcomes |
+| `agent` | The loop: model → tools → model, caps, pause on a hold, stop on a cancel | Built (#2, #12): a held call pauses the run with its requirements and the turn it paused in; `Continue` carries on from a stored paused run with the held calls' outcomes; a cancel stops it at its next checkpoint |
+| `runner` | Executing runs, as the server's `Runner`: a run started in its session (the conversation's, or a new one), claimed under a lease, its agent built for its tenant, recorded, run, and its stop stored (answered or capped, paused with its requirements, cancelled, failed). The history it sends is the session's last finished runs before it. A paused run continues here, in any process, once KIFF has resolved it | Built (#12). Continuing needs `Collect`, KIFF's outcome for each held call, from step 4 |
 | `chat` | A message as a run in the current conversation | Built (#2). Becomes a thin layer over runs |
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
 | `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). To add in step 4: `tool/kiff` sends and records KIFF's operation ID for each call, and collects a held call's outcome by it |

@@ -42,6 +42,13 @@ type Agent struct {
 	MaxCost int64
 	// MaxTurns bounds the model turns of one run; 0 means DefaultMaxTurns.
 	MaxTurns int
+
+	// Cancel, when set, says whether the run was asked to stop. The loop asks
+	// at each checkpoint, before a model turn (so after each tool batch), and
+	// a run asked to stop stops there, Cancelled. A turn in which KIFF held a
+	// call pauses the run instead: its held calls are withdrawn in KIFF
+	// before a paused run is cancelled.
+	Cancel func(ctx context.Context) (bool, error)
 }
 
 // Check refuses an agent that can't run safely: no model or id, no cost cap,
@@ -80,7 +87,9 @@ type ToolResultBody struct {
 	tool.Result
 }
 
-// ErrorBody is the body of an Error event.
+// ErrorBody is the body of an Error event. It says what failed, never why:
+// events are shown to the tenant, and a cause can carry a backend's own
+// diagnostics. The cause goes to the caller, as the error returned.
 type ErrorBody struct {
 	Message string `json:"message"`
 }
@@ -108,11 +117,12 @@ type Event struct {
 type Stop string
 
 const (
-	Answered Stop = "answered"  // the agent answered and called nothing more
-	Paused   Stop = "paused"    // KIFF holds at least one call for the owner; the run waits for it
-	CostCap  Stop = "cost_cap"  // the run reached its cost cap
-	TurnCap  Stop = "turn_cap"  // the run reached its turn limit
-	TooLong  Stop = "max_token" // the model ran out of room mid-answer
+	Answered  Stop = "answered"  // the agent answered and called nothing more
+	Paused    Stop = "paused"    // KIFF holds at least one call for the owner; the run waits for it
+	CostCap   Stop = "cost_cap"  // the run reached its cost cap
+	TurnCap   Stop = "turn_cap"  // the run reached its turn limit
+	TooLong   Stop = "max_token" // the model ran out of room mid-answer
+	Cancelled Stop = "cancelled" // the run was asked to stop, and stopped at a checkpoint
 )
 
 // Outcome is how a run stopped. Cost and Turns count the whole run, across
@@ -133,6 +143,9 @@ type Outcome struct {
 	// message, and the results of the calls KIFF didn't hold.
 	Turn *run.Turn `json:"turn,omitempty"`
 }
+
+// ModelFailed is the Error event a failed model turn records.
+const ModelFailed = "the model call failed"
 
 // ErrResults means Continue was given results that don't match what the run
 // waits for: one result for each requirement, and nothing else.
@@ -259,6 +272,16 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 			out.Stop = stop
 			return out, msgs, nil
 		}
+		if a.Cancel != nil {
+			stop, err := a.Cancel(ctx)
+			if err != nil {
+				return out, msgs, err
+			}
+			if stop {
+				out.Stop = Cancelled
+				return out, msgs, nil
+			}
+		}
 		reply, err := a.turn(ctx, rec, msgs, specs, false, &out, emit)
 		if err != nil {
 			return out, msgs, err
@@ -353,7 +376,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse}
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	if err != nil {
-		_ = rec.Record(session.Error, ErrorBody{Message: err.Error()})
+		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})
 		return reply, err
 	}
 	cost := a.Price.Cost(reply.Usage)
