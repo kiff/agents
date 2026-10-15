@@ -333,12 +333,11 @@ func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int
 	return http.StatusOK, map[string]any{"session": sess, "events": events}, nil
 }
 
+// deleteSession leaves "not found" to the Store's Delete, which also
+// finishes a session whose deletion was cut short; a Read first would hide
+// that one, and it could never be finished.
 func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
-	id := r.PathValue("id")
-	if _, _, err := s.Sessions.Read(ctx, c.Tenant, id); err != nil {
-		return 0, nil, err
-	}
-	if err := s.Sessions.Delete(ctx, c.Tenant, id); err != nil {
+	if err := s.Sessions.Delete(ctx, c.Tenant, r.PathValue("id")); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
