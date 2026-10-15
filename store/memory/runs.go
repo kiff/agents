@@ -82,6 +82,8 @@ func (m *Runs) Put(_ context.Context, prev, next run.Run) error {
 	switch {
 	case !ok:
 		return run.ErrNotFound
+	case !run.Same(stored, next):
+		return run.ErrFixed
 	case stored.Version != prev.Version || next.Version != prev.Version+1:
 		return run.ErrConflict
 	}
@@ -106,11 +108,30 @@ func (m *Runs) List(_ context.Context, tenant, agent string, limit int) ([]run.R
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := m.all(func(r run.Run) bool { return r.Tenant == tenant && r.Agent == agent })
-	slices.SortFunc(out, func(a, b run.Run) int { return cmp.Or(b.Created.Compare(a.Created), cmp.Compare(b.ID, a.ID)) })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+	newestFirst(out)
+	return limitTo(out, limit), nil
+}
+
+func newestFirst(runs []run.Run) {
+	slices.SortFunc(runs, func(a, b run.Run) int { return cmp.Or(b.Created.Compare(a.Created), cmp.Compare(b.ID, a.ID)) })
+}
+
+func limitTo(runs []run.Run, limit int) []run.Run {
+	if limit > 0 && len(runs) > limit {
+		return runs[:limit]
 	}
-	return out, nil
+	return runs
+}
+
+func (m *Runs) ListSource(_ context.Context, tenant string, trigger run.Trigger, source string, limit int) ([]run.Run, error) {
+	if source == "" {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.all(func(r run.Run) bool { return r.Tenant == tenant && r.Trigger == trigger && r.Source == source })
+	newestFirst(out)
+	return limitTo(out, limit), nil
 }
 
 func (m *Runs) Due(_ context.Context, now time.Time, limit int) ([]run.Run, error) {

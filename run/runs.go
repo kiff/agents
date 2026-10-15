@@ -32,7 +32,16 @@ var (
 	ErrTransition = errors.New("run: status can't move so")
 	ErrLeaseLost  = errors.New("run: lease ran out")
 	ErrNotReady   = errors.New("run: a requirement is still unresolved")
+	ErrFixed      = errors.New("run: what it is can't change")
 )
+
+// Same reports whether two versions of a run are the same run: the same
+// tenant, ID, agent, session, trigger, source and creation time. None of
+// those ever changes; stores list runs by them.
+func Same(a, b Run) bool {
+	return a.Tenant == b.Tenant && a.ID == b.ID && a.Agent == b.Agent && a.Session == b.Session &&
+		a.Trigger == b.Trigger && a.Source == b.Source && a.Created.Equal(b.Created)
+}
 
 // moves is a run's life: where each status may go. Final statuses go nowhere.
 var moves = map[Status][]Status{
@@ -80,11 +89,17 @@ type Runs interface {
 	// Get returns a run.
 	Get(ctx context.Context, tenant, id string) (Run, error)
 	// Put replaces prev, as read, with next, if the stored run is still at
-	// prev.Version (ErrConflict otherwise). next.Version is prev.Version+1.
+	// prev.Version (ErrConflict otherwise). next.Version is prev.Version+1,
+	// and next is the Same run as prev (ErrFixed otherwise).
 	Put(ctx context.Context, prev, next Run) error
 	// List returns an agent's runs, newest first, at most limit, without
 	// their paused turn (Get has it).
 	List(ctx context.Context, tenant, agent string, limit int) ([]Run, error)
+	// ListSource returns the runs one source started, by trigger and
+	// source (the runs a schedule started: BySchedule and its ID), newest
+	// first, at most limit, without their paused turn. An empty source lists
+	// nothing.
+	ListSource(ctx context.Context, tenant string, trigger Trigger, source string, limit int) ([]Run, error)
 	// Due returns runs whose Due is before now, across tenants, the oldest
 	// due first, at most limit, without their paused turn.
 	Due(ctx context.Context, now time.Time, limit int) ([]Run, error)
@@ -109,6 +124,9 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	next := r.clone() // the change can't reach r, so Put sees both as they are
 	if err := change(&next); err != nil {
 		return r, err
+	}
+	if !Same(r, next) {
+		return r, ErrFixed
 	}
 	if !CanMove(r.Status, next.Status) {
 		return r, fmt.Errorf("%w: %s to %s", ErrTransition, r.Status, next.Status)

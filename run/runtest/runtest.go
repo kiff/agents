@@ -45,6 +45,8 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"ASweepNeverEndsAJustClaimedRun", aSweepNeverEndsAJustClaimedRun},
 		{"SweptRunsExpireAndCancelsHold", sweptRunsExpireAndCancelsHold},
 		{"ListNewestFirst", listNewestFirst},
+		{"ListBySource", listBySource},
+		{"WhatARunIsNeverChanges", whatARunIsNeverChanges},
 		{"EndedRunsExpire", endedRunsExpire},
 		{"TenantsAreApart", tenantsAreApart},
 		{"DeleteAgentLeavesNothing", deleteAgentLeavesNothing},
@@ -497,6 +499,108 @@ func listNewestFirst(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	if !slices.Equal(ids(l), made[:2]) {
 		t.Fatalf("limit 2: %v", ids(l))
+	}
+}
+
+// sourced stores a new PENDING run of agent that source started.
+func sourced(t *testing.T, s run.Runs, c *clock, tenant, agent string, trigger run.Trigger, source string) run.Run {
+	t.Helper()
+	r := run.New(tenant, agent, "s1", trigger, "daily report", c.now())
+	r.Source = source
+	check(t, s.Create(ctx, r))
+	return r
+}
+
+// A source lists the runs it started, newest first, and only those: not
+// another source's, not the same ID under another trigger, not another
+// tenant's. Its list follows the runs as they end, expire and are removed.
+func listBySource(t *testing.T, s run.Runs, c *clock) {
+	var made []string
+	for range 3 {
+		made = append(made, sourced(t, s, c, "t1", "refunds", run.BySchedule, "sch1").ID)
+		c.add(time.Second)
+	}
+	other := sourced(t, s, c, "t1", "chargebacks", run.BySchedule, "sch1") // another agent, the same schedule: listed
+	sourced(t, s, c, "t1", "refunds", run.BySchedule, "sch2")
+	sourced(t, s, c, "t1", "refunds", run.ByEvent, "sch1")
+	sourced(t, s, c, "t2", "refunds", run.BySchedule, "sch1")
+	created(t, s, c, "t1", "refunds")
+	l, err := s.ListSource(ctx, "t1", run.BySchedule, "sch1", 0)
+	check(t, err)
+	if want := []string{other.ID, made[2], made[1], made[0]}; !slices.Equal(ids(l), want) {
+		t.Fatalf("listed %v, want %v", ids(l), want)
+	}
+	for _, r := range l {
+		if r.Tenant != "t1" || r.Trigger != run.BySchedule || r.Source != "sch1" {
+			t.Fatalf("listed a run another source started: %+v", r)
+		}
+	}
+	l, err = s.ListSource(ctx, "t1", run.BySchedule, "sch1", 2)
+	check(t, err)
+	if len(l) != 2 {
+		t.Fatalf("limit 2: %v", ids(l))
+	}
+	if l, _ := s.ListSource(ctx, "t1", run.ByOwner, "", 0); len(l) != 0 {
+		t.Fatalf("an empty source lists %v", ids(l))
+	}
+
+	// One ends and expires, one is deleted, and the agent goes: the list
+	// keeps up with each.
+	r, err := run.Claim(ctx, s, "t1", made[0], "i1", c.now().Add(time.Minute), c.now())
+	check(t, err)
+	_, err = run.Save(ctx, s, r, c.now(), func(n *run.Run) error {
+		n.Status, n.Expires = run.Completed, c.now().Add(time.Hour)
+		return nil
+	})
+	check(t, err)
+	if l, _ := s.ListSource(ctx, "t1", run.BySchedule, "sch1", 0); len(l) != 4 {
+		t.Fatalf("an ended run left its source's list: %v", ids(l))
+	}
+	c.add(time.Hour + time.Second)
+	check(t, s.Delete(ctx, "t1", made[1]))
+	if l, _ := s.ListSource(ctx, "t1", run.BySchedule, "sch1", 0); !slices.Equal(ids(l), []string{other.ID, made[2]}) {
+		t.Fatalf("after one expired and one was deleted: %v", ids(l))
+	}
+	check(t, s.DeleteAgent(ctx, "t1", "refunds"))
+	if l, _ := s.ListSource(ctx, "t1", run.BySchedule, "sch1", 0); !slices.Equal(ids(l), []string{other.ID}) {
+		t.Fatalf("after the agent was removed: %v", ids(l))
+	}
+	if l, _ := s.ListSource(ctx, "t2", run.BySchedule, "sch1", 0); len(l) != 1 {
+		t.Fatalf("t2's run went with t1's agent: %v", ids(l))
+	}
+}
+
+// What a run is (its tenant, ID, agent, session, trigger, source, creation
+// time) never changes: Change refuses it, and so does the store, so a run
+// never leaves a list it's in or lands in one it isn't.
+func whatARunIsNeverChanges(t *testing.T, s run.Runs, c *clock) {
+	r := sourced(t, s, c, "t1", "refunds", run.BySchedule, "sch1")
+	edits := map[string]func(*run.Run){
+		"agent":   func(n *run.Run) { n.Agent = "chargebacks" },
+		"session": func(n *run.Run) { n.Session = "s2" },
+		"trigger": func(n *run.Run) { n.Trigger = run.ByEvent },
+		"source":  func(n *run.Run) { n.Source = "sch2" },
+		"created": func(n *run.Run) { n.Created = n.Created.Add(time.Second) },
+	}
+	for name, edit := range edits {
+		if _, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { edit(n); return nil }); !errors.Is(err, run.ErrFixed) {
+			t.Fatalf("Change of the %s: err = %v, want ErrFixed", name, err)
+		}
+		next := r
+		next.Version++
+		edit(&next)
+		if err := s.Put(ctx, r, next); !errors.Is(err, run.ErrFixed) {
+			t.Fatalf("Put of the %s: err = %v, want ErrFixed", name, err)
+		}
+	}
+	if got := get(t, s, r); !reflect.DeepEqual(got, r) {
+		t.Fatalf("the run changed: %+v", got)
+	}
+	if l, _ := s.ListSource(ctx, "t1", run.BySchedule, "sch1", 0); !slices.Equal(ids(l), []string{r.ID}) {
+		t.Fatalf("its source lists %v", ids(l))
+	}
+	if l, _ := s.ListSource(ctx, "t1", run.BySchedule, "sch2", 0); len(l) != 0 {
+		t.Fatalf("another source lists %v", ids(l))
 	}
 }
 

@@ -50,7 +50,12 @@ type Run struct {
 	Agent   string  `json:"agent"`
 	Session string  `json:"session"`
 	Trigger Trigger `json:"trigger"`
-	Status  Status  `json:"status"`
+	// Source is what started the run within its trigger: the schedule's ID
+	// for a scheduled run, the event's for one an event started; empty for
+	// the owner's runs and evals'. ListSource lists the runs one source
+	// started.
+	Source string `json:"source,omitempty"`
+	Status Status `json:"status"`
 	// Input is what the run was asked: the owner's message, or the job's
 	// instruction. A PENDING run is started from it.
 	Input string `json:"input"`
