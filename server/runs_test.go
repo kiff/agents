@@ -721,10 +721,30 @@ func TestWrongMethodAndUnknownPath(t *testing.T) {
 	}
 }
 
+// ctxSessions is the memory store reading as a networked store does: a
+// cancelled context fails the read.
+type ctxSessions struct{ *memory.Store }
+
+func (c ctxSessions) State(ctx context.Context, tenant, sess, rn string) (session.RunState, error) {
+	if err := ctx.Err(); err != nil {
+		return session.RunState{}, err
+	}
+	return c.Store.State(ctx, tenant, sess, rn)
+}
+
+func (c ctxSessions) ReadRun(ctx context.Context, tenant, sess, rn string) (session.RunState, []session.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return session.RunState{}, nil, err
+	}
+	return c.Store.ReadRun(ctx, tenant, sess, rn)
+}
+
 // A client that goes away mid-run leaves the run going and the log quiet:
 // nothing is left to follow for it.
 func TestADroppedClientIsNotFollowed(t *testing.T) {
 	f := newRunFixture(t)
+	f.server.Sessions = ctxSessions{f.store}
+	f.restart()
 	f.putAgent("t1", "payouts")
 	f.runner.hold = make(chan struct{})
 	release := sync.OnceFunc(func() { close(f.runner.hold) })
