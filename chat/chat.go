@@ -1,13 +1,15 @@
 // Package chat is the owner talking to an agent. Each message is a chat
 // session of its own, ended when the agent answers, so what tools returned is
-// dropped at once under the default keep rules. A message within Window of
-// the agent's last chat carries on that conversation: the agent sees what was
-// said, though not what tools returned.
+// dropped at once under the default keep rules. Chats that follow one another
+// within Window form one conversation: a new message carries all of it on, so
+// the agent sees everything said, though not what tools returned.
 package chat
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"time"
 
 	"github.com/kiff/agents/agent"
@@ -15,34 +17,51 @@ import (
 	"github.com/kiff/agents/session"
 )
 
-// Window is how recent the last chat must be for a message to carry it on.
+// Window is the longest pause within one conversation: a message carries on
+// the chats before it while each followed the last within Window.
 const Window = 30 * time.Minute
 
-// listed bounds how many of an agent's sessions are read to find its last chat.
-const listed = 20
+// MaxChats bounds how many earlier chats (one message each) a conversation
+// carries on.
+const MaxChats = 50
 
-// History is the conversation of the agent's last chat, when it was active
-// within Window of now: what the owner and the agent said, in order. It's nil
-// when there is none to carry on.
+// EndTimeout bounds ending a chat's session, which runs even when the request
+// that sent the message was cancelled.
+const EndTimeout = 10 * time.Second
+
+// History is the agent's current conversation as of now: every chat that
+// followed the one before it within Window, the last within Window of now.
+// It holds what the owner and the agent said, in order, and is nil when there
+// is no conversation to carry on.
 func History(ctx context.Context, store session.Store, tenant, agentID string, now time.Time) ([]model.Message, error) {
-	sessions, err := store.List(ctx, tenant, agentID, listed)
+	sessions, err := store.List(ctx, tenant, agentID, 2*MaxChats)
 	if err != nil {
 		return nil, err
 	}
+	var chain []session.Session // newest first
+	edge := now
 	for _, s := range sessions {
 		if s.Kind != session.KindChat {
 			continue
 		}
-		if now.Sub(s.Updated) > Window {
-			return nil, nil
+		if edge.Sub(s.Updated) > Window || len(chain) == MaxChats {
+			break
 		}
-		_, events, err := store.Read(ctx, tenant, s.ID)
+		chain = append(chain, s)
+		edge = s.Started
+	}
+	var events []session.Event
+	for _, s := range slices.Backward(chain) {
+		_, evs, err := store.Read(ctx, tenant, s.ID)
+		if errors.Is(err, session.ErrNotFound) {
+			continue // deleted meanwhile
+		}
 		if err != nil {
 			return nil, err
 		}
-		return conversation(events), nil
+		events = append(events, evs...)
 	}
-	return nil, nil
+	return conversation(events), nil
 }
 
 // conversation turns owner and agent messages into model messages, joining
@@ -77,8 +96,25 @@ func conversation(events []session.Event) []model.Message {
 	return msgs
 }
 
-// Send runs one owner message as a chat session: it carries on the last chat
-// within Window, streams the run to emit, and ends the session.
+// NotEnded is returned when a chat ran but its session couldn't be ended. The
+// session takes no more events; Retry ends it, and drops what was kept only
+// until the end.
+type NotEnded struct {
+	Recording *session.Recording
+	Status    session.Status
+	Err       error
+}
+
+func (e *NotEnded) Error() string { return "chat: the session was not ended: " + e.Err.Error() }
+func (e *NotEnded) Unwrap() error { return e.Err }
+
+// Retry ends the session again.
+func (e *NotEnded) Retry(ctx context.Context) error { return e.Recording.End(ctx, e.Status) }
+
+// Send runs one owner message as a chat session: it carries on the current
+// conversation, streams the run to emit, and ends the session. Ending uses its
+// own bounded context, so a cancelled request still ends it; if ending fails
+// anyway, the error is a *NotEnded to retry.
 func Send(ctx context.Context, rec *session.Recorder, store session.Store, a agent.Agent, text string, now time.Time, emit func(agent.Event)) (session.Session, agent.Outcome, error) {
 	if err := a.Check(); err != nil {
 		return session.Session{}, agent.Outcome{}, err
@@ -96,8 +132,14 @@ func Send(ctx context.Context, rec *session.Recorder, store session.Store, a age
 	if runErr != nil {
 		status = session.Failed
 	}
-	if err := r.End(ctx, status); err != nil && runErr == nil {
-		runErr = err
+	endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), EndTimeout)
+	defer cancel()
+	if err := r.End(endCtx, status); err != nil {
+		ne := &NotEnded{Recording: r, Status: status, Err: err}
+		if runErr != nil {
+			return r.Session(), out, errors.Join(runErr, ne)
+		}
+		return r.Session(), out, ne
 	}
 	return r.Session(), out, runErr
 }

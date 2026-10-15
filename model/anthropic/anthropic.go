@@ -79,14 +79,31 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		}
 	}
 	for _, t := range req.Tools {
-		var schema struct {
-			Properties any      `json:"properties"`
-			Required   []string `json:"required"`
-		}
+		// The whole schema goes through: properties and required in their
+		// fields, every other root keyword ($defs, additionalProperties, …)
+		// as an extra field. "type" is always object.
+		var schema map[string]any
 		if err := json.Unmarshal(t.InputSchema, &schema); err != nil {
 			return p, fmt.Errorf("anthropic: tool %s: input schema: %w", t.Name, err)
 		}
-		tp := sdk.ToolParam{Name: t.Name, InputSchema: sdk.ToolInputSchemaParam{Properties: schema.Properties, Required: schema.Required}}
+		in := sdk.ToolInputSchemaParam{Properties: schema["properties"]}
+		if req, ok := schema["required"].([]any); ok {
+			for _, r := range req {
+				if s, ok := r.(string); ok {
+					in.Required = append(in.Required, s)
+				}
+			}
+		}
+		for k, v := range schema {
+			if k == "properties" || k == "required" || k == "type" {
+				continue
+			}
+			if in.ExtraFields == nil {
+				in.ExtraFields = map[string]any{}
+			}
+			in.ExtraFields[k] = v
+		}
+		tp := sdk.ToolParam{Name: t.Name, InputSchema: in}
 		if t.Description != "" {
 			tp.Description = sdk.String(t.Description)
 		}

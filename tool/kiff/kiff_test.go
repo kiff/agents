@@ -126,3 +126,49 @@ func TestTheKeyStaysOutOfErrors(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A JSON-RPC error that echoes the key, on initialize or on a call, never
+// carries it on: not into the error, and not into what the model reads.
+func TestTheKeyStaysOutOfGatewayErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		if msg.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var resp any
+		switch msg.Method {
+		case "initialize":
+			resp = map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": map[string]any{}}
+		case "tools/list":
+			resp = map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": map[string]any{"tools": []any{map[string]any{"name": "stripe_refund"}}}}
+		default:
+			resp = map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "error": map[string]any{"code": -32000, "message": "bad token " + r.Header.Get("Authorization")}}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tools[0].Call(context.Background(), nil)
+	if err == nil || strings.Contains(err.Error(), testKey) || !strings.Contains(err.Error(), "[key]") {
+		t.Fatalf("err = %v", err)
+	}
+
+	initErr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32001, "message": "no session for " + r.Header.Get("Authorization")}})
+	}))
+	defer initErr.Close()
+	_, err = kiff.New(initErr.URL, testKey, initErr.Client()).Tools(context.Background())
+	if err == nil || strings.Contains(err.Error(), testKey) {
+		t.Fatalf("initialize err = %v", err)
+	}
+}
