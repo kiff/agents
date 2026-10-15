@@ -1,7 +1,9 @@
 package dynamodb_test
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,5 +172,59 @@ func TestARunRemovedWhileClaimedLeavesNothing(t *testing.T) {
 	}
 	if by := scan(t, db, name); len(by["RM"])+len(by["L"])+len(by["W"]) != 0 {
 		t.Fatalf("left behind: %d run, %d list, %d due items", len(by["RM"]), len(by["L"]), len(by["W"]))
+	}
+}
+
+// pageRace runs before, once, after the first page of a query of a run's
+// partition: a write landing between the pages of a big read.
+type pageRace struct {
+	dynamodb.API
+	once   sync.Once
+	before func()
+}
+
+func (p *pageRace) Query(ctx context.Context, in *ddb.QueryInput, opts ...func(*ddb.Options)) (*ddb.QueryOutput, error) {
+	out, err := p.API.Query(ctx, in, opts...)
+	if pk, ok := in.ExpressionAttributeValues[":pk"].(*types.AttributeValueMemberS); err == nil && ok && strings.HasPrefix(pk.Value, "R|") && out.LastEvaluatedKey != nil {
+		p.once.Do(p.before)
+	}
+	return out, err
+}
+
+// A paused turn bigger than one page of a query is read whole, from one
+// version, even when a write replaces it between the pages: never part of one
+// turn and part of the next.
+func TestABigTurnIsNeverReadTorn(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	at := now()
+	plain := dynamodb.NewRunsAt(db, name, func() time.Time { return at })
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	r.Status = run.Paused
+	r.Paused = &run.Turn{Results: []model.Block{{Kind: model.ToolResult, Result: strings.Repeat("x", 1500<<10)}}}
+	if err := plain.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	replace := func() {
+		_, err := run.Change(ctx, plain, r, at, func(n *run.Run) error {
+			n.Paused = &run.Turn{Results: []model.Block{{Kind: model.ToolResult, Result: strings.Repeat("y", 1500<<10)}}}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("replacing the turn meanwhile: %v", err)
+		}
+	}
+	racy := dynamodb.NewRunsAt(&pageRace{API: db, before: replace}, name, func() time.Time { return at })
+	got, err := racy.Get(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := got.Paused.Results[0].Result
+	xs, ys := strings.Count(result, "x"), strings.Count(result, "y")
+	if (xs != 0 && ys != 0) || len(result) != 1500<<10 {
+		t.Fatalf("read version %d with %d x and %d y bytes: a torn turn", got.Version, xs, ys)
+	}
+	if got.Version != 2 || ys == 0 {
+		t.Fatalf("read version %d (%d y bytes), want the new turn at version 2", got.Version, ys)
 	}
 }

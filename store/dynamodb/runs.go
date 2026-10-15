@@ -178,8 +178,39 @@ func (rs *Runs) Create(ctx context.Context, r run.Run) error {
 	return err
 }
 
-// read reads a run's items, expired or not, or ErrNotFound.
+// read reads a run's items, expired or not, or ErrNotFound. A big paused
+// turn spans several pages of a query, and a write can land between them, so
+// a run with a turn is checked against its head read again: if the version
+// moved, what was read may mix two turns, and it is read again.
 func (rs *Runs) read(ctx context.Context, tenant, id string) (run.Run, error) {
+	for try := 0; ; try++ {
+		r, err := rs.readOnce(ctx, tenant, id)
+		if err != nil && (errors.Is(err, run.ErrNotFound) || !errors.Is(err, errTorn)) {
+			return r, err
+		}
+		if err == nil && r.Paused == nil {
+			return r, nil // one item: one read, nothing to mix
+		}
+		if err == nil {
+			out, gerr := rs.db.GetItem(ctx, &ddb.GetItemInput{TableName: &rs.table, Key: pkey(runPK(tenant, id), metaSK),
+				ConsistentRead: aws.Bool(true), ProjectionExpression: aws.String("version")})
+			if gerr != nil {
+				return run.Run{}, gerr
+			}
+			if out.Item != nil && getN(out.Item, "version") == r.Version {
+				return r, nil
+			}
+		}
+		if try == 5 {
+			return run.Run{}, fmt.Errorf("dynamodb: run %s kept changing while it was read", id)
+		}
+	}
+}
+
+// errTorn means a read saw a turn its run's head doesn't match.
+var errTorn = errors.New("dynamodb: a torn read of a paused turn")
+
+func (rs *Runs) readOnce(ctx context.Context, tenant, id string) (run.Run, error) {
 	items, err := (&Store{db: rs.db, table: rs.table}).partition(ctx, runPK(tenant, id), "", nil)
 	if err != nil {
 		return run.Run{}, err
@@ -209,13 +240,13 @@ func (rs *Runs) read(ctx context.Context, tenant, id string) (run.Run, error) {
 		for i := range int(count) {
 			part, ok := parts[turnSK(i)]
 			if !ok {
-				return run.Run{}, fmt.Errorf("dynamodb: run %s: part %d of its paused turn is missing", id, i)
+				return run.Run{}, fmt.Errorf("%w: run %s: part %d is missing", errTorn, id, i)
 			}
 			turn.Write(part)
 		}
 		r.Paused = new(run.Turn)
 		if err := json.Unmarshal(turn.Bytes(), r.Paused); err != nil {
-			return run.Run{}, err
+			return run.Run{}, fmt.Errorf("%w: run %s: %w", errTorn, id, err)
 		}
 	}
 	return r, nil

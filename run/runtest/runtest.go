@@ -41,6 +41,8 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"SweepLeavesWhatMovedOn", sweepLeavesWhatMovedOn},
 		{"AContinuedRunThatCrashesIsSwept", aContinuedRunThatCrashesIsSwept},
 		{"AFinishedRunKeepsNoTurn", aFinishedRunKeepsNoTurn},
+		{"AnEditInPlaceIsStored", anEditInPlaceIsStored},
+		{"ASweepNeverEndsAJustClaimedRun", aSweepNeverEndsAJustClaimedRun},
 		{"SweptRunsExpireAndCancelsHold", sweptRunsExpireAndCancelsHold},
 		{"ListNewestFirst", listNewestFirst},
 		{"EndedRunsExpire", endedRunsExpire},
@@ -371,6 +373,76 @@ func aFinishedRunKeepsNoTurn(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	if r.Paused != nil || get(t, s, r).Paused != nil {
 		t.Fatal("a cancelled run kept its paused turn")
+	}
+}
+
+// A change may edit the paused turn or a requirement in place: what it edits
+// is stored, and the run it started from is left as it was.
+func anEditInPlaceIsStored(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	turn := &run.Turn{Reply: model.Message{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Input: json.RawMessage(`{"a":1}`)}}},
+		Results: []model.Block{{Kind: model.ToolResult, CallID: "c0", Result: "before"}}}
+	held := []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"a":1}`), Operation: "op_1", Expires: c.now().Add(time.Hour)}}
+	r, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error { n.Status, n.Paused, n.Requirements = run.Paused, turn, held; return nil })
+	check(t, err)
+	r = get(t, s, r)
+	next, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error {
+		n.Paused.Results[0].Result = "after"
+		n.Paused.Reply.Blocks[0].Input[5] = '2'
+		n.Requirements[0].Input[5] = '2'
+		return nil
+	})
+	check(t, err)
+	if r.Paused.Results[0].Result != "before" || string(r.Paused.Reply.Blocks[0].Input) != `{"a":1}` || string(r.Requirements[0].Input) != `{"a":1}` {
+		t.Fatalf("the change reached the run it started from: %+v", r)
+	}
+	got := get(t, s, next)
+	if got.Version != r.Version+1 || got.Paused.Results[0].Result != "after" || string(got.Paused.Reply.Blocks[0].Input) != `{"a":2}` || string(got.Requirements[0].Input) != `{"a":2}` {
+		t.Fatalf("stored: version %d, result %q, call input %s, requirement input %s",
+			got.Version, got.Paused.Results[0].Result, got.Paused.Reply.Blocks[0].Input, got.Requirements[0].Input)
+	}
+}
+
+// stale is a store whose Due answers with what it read before a claim landed.
+type stale struct {
+	run.Runs
+	due []run.Run
+}
+
+func (s stale) Due(context.Context, time.Time, int) ([]run.Run, error) { return s.due, nil }
+
+// A run claimed after the sweep read it as due is neither marked nor has its
+// recording ended: the sweep reads it again, and it's no longer due.
+func aSweepNeverEndsAJustClaimedRun(t *testing.T, s run.Runs, c *clock) {
+	for _, from := range []run.Status{run.Pending, run.Running} {
+		var r run.Run
+		if from == run.Pending {
+			r = created(t, s, c, "t1", "refunds")
+			c.add(run.PendingTimeout + time.Second)
+		} else {
+			r = claimed(t, s, c)
+			c.add(16*time.Minute + run.LeaseGrace)
+		}
+		all, err := s.Due(ctx, c.now(), 10)
+		check(t, err)
+		due := slices.DeleteFunc(all, func(d run.Run) bool { return d.ID != r.ID }) // only this pass's run
+		if len(due) != 1 {
+			t.Fatalf("%s: the run isn't due: %v", from, ids(all))
+		}
+		if from == run.Running { // a run whose lease ran out isn't claimed again, but it may be cancelled
+			_, err = run.Change(ctx, s, get(t, s, r), c.now(), func(n *run.Run) error { n.Status = run.Cancelled; return nil })
+		} else {
+			_, err = run.Claim(ctx, s, "t1", r.ID, "late", c.now().Add(15*time.Minute), c.now())
+		}
+		check(t, err)
+		ended := 0
+		sw := run.Sweeper{Runs: stale{s, due}, Ended: func(context.Context, run.Run) error { ended++; return nil }}
+		if n, err := sw.Sweep(ctx, c.now(), 10); err != nil || n != 0 || ended != 0 {
+			t.Fatalf("%s: swept %d, ended %d, err = %v: the run had moved on", from, n, ended, err)
+		}
+		if got := get(t, s, r); got.Status == run.Error {
+			t.Fatalf("%s: marked ERROR after it moved on", from)
+		}
 	}
 }
 

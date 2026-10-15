@@ -1,10 +1,13 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/kiff/agents/model"
 )
 
 // LeaseGrace is how long past its invocation's own deadline a claim lasts. A
@@ -103,8 +106,7 @@ func New(tenant, agent, session string, trigger Trigger, input string, now time.
 // what tools returned, and exists only to continue the run. It returns the run
 // as stored.
 func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run) error) (Run, error) {
-	next := r
-	next.Requirements = append([]Requirement(nil), r.Requirements...)
+	next := r.clone() // the change can't reach r, so Put sees both as they are
 	if err := change(&next); err != nil {
 		return r, err
 	}
@@ -123,6 +125,34 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 		return r, err
 	}
 	return next, nil
+}
+
+// clone is r with its own copy of everything a change could edit in place:
+// the requirements and the paused turn, with their inputs and results.
+func (r Run) clone() Run {
+	c := r
+	c.Requirements = nil
+	for _, q := range r.Requirements {
+		q.Input = bytes.Clone(q.Input)
+		c.Requirements = append(c.Requirements, q)
+	}
+	if r.Paused != nil {
+		t := Turn{Reply: model.Message{Role: r.Paused.Reply.Role, Blocks: cloneBlocks(r.Paused.Reply.Blocks)}, Results: cloneBlocks(r.Paused.Results)}
+		c.Paused = &t
+	}
+	return c
+}
+
+func cloneBlocks(blocks []model.Block) []model.Block {
+	if blocks == nil {
+		return nil
+	}
+	out := make([]model.Block, len(blocks))
+	for i, b := range blocks {
+		b.Input = bytes.Clone(b.Input)
+		out[i] = b
+	}
+	return out
 }
 
 // Claim takes a run for the invocation named claim, whose own deadline is
