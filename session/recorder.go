@@ -10,8 +10,13 @@ import (
 	"time"
 )
 
-// MaxBatch is the most events a Recording hands its Store in one Append.
-const MaxBatch = 25
+// A Recording hands its Store at most MaxBatch events, and at most
+// MaxBatchBytes of bodies, in one Append: within DynamoDB's limits for one
+// transaction.
+const (
+	MaxBatch      = 25
+	MaxBatchBytes = 2 << 20
+)
 
 // Recorder starts sessions on a Store and records them under a Policy. The rule
 // is applied when an event is recorded: a Never kind doesn't reach the Store,
@@ -40,6 +45,9 @@ func NewRecorderAt(store Store, policy Policy, now func() time.Time) (*Recorder,
 func (r *Recorder) Start(ctx context.Context, tenant, agent string, kind Kind) (*Recording, error) {
 	now := r.now().UTC()
 	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Status: Running, Started: now, Updated: now}
+	if keep := r.policy.SessionRetention(); keep > 0 {
+		s.Expires = now.Add(keep)
+	}
 	if err := r.store.Create(ctx, s); err != nil {
 		return nil, err
 	}
@@ -82,13 +90,17 @@ type Recording struct {
 // Session is the session this recording records.
 func (rec *Recording) Session() Session { return rec.s }
 
-// Record queues one event as its kind's rule says. It fails only after End, or
-// when body can't be encoded; write errors come from Flush and End.
+// Record queues one event as its kind's rule says. It fails only after End,
+// when body can't be encoded, or when it is over MaxBody (ErrTooLarge); write
+// errors come from Flush and End.
 func (rec *Recording) Record(kind EventKind, body any) error {
 	rule := rec.r.policy[kind]
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
+	}
+	if len(raw) > MaxBody {
+		return ErrTooLarge
 	}
 	now := rec.r.now().UTC()
 	e := Event{Session: rec.s.ID, Time: now, Kind: kind, Body: raw, UntilEnd: rule.Keep == UntilEnd}
@@ -210,7 +222,13 @@ func (rec *Recording) write(ctx context.Context) {
 				}
 				break
 			}
-			n := min(len(rec.pending), MaxBatch)
+			n, size := 0, 0
+			for _, e := range rec.pending[:min(len(rec.pending), MaxBatch)] {
+				if n > 0 && size+len(e.Body) > MaxBatchBytes {
+					break
+				}
+				n, size = n+1, size+len(e.Body)
+			}
 			batch := rec.pending[:n:n] // Record appends after it, never into it
 			rec.mu.Unlock()
 

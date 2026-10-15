@@ -28,7 +28,9 @@ const (
 	Failed  Status = "failed"
 )
 
-// Session is one run or chat of one agent.
+// Session is one run or chat of one agent. Expires is when the whole session,
+// with its events, may be removed (zero: kept until deleted). It comes from
+// the keep rules and moves on with each event recorded.
 type Session struct {
 	ID      string    `json:"id"`
 	Tenant  string    `json:"tenant"`
@@ -37,6 +39,7 @@ type Session struct {
 	Status  Status    `json:"status"`
 	Started time.Time `json:"started"`
 	Updated time.Time `json:"updated"`
+	Expires time.Time `json:"expires,omitzero"`
 }
 
 // EventKind is what an event records. Each kind has its own keep rule.
@@ -82,24 +85,38 @@ type UsageBody struct {
 	CostMicroUSD int64  `json:"cost_micro_usd"`
 }
 
+// MaxBody is the largest event body, encoded. A bigger one is refused when it
+// is recorded (ErrTooLarge), so every Store can keep any event: whatever
+// produced it, a tool result most likely, must be cut down first.
+const MaxBody = 256 << 10
+
 // ErrNotFound means no such session for this tenant; ErrEnded, that it takes no
-// more events; ErrGap, that an Append skipped a Seq.
+// more events; ErrGap, that an Append skipped a Seq; ErrTooLarge, that a body
+// is over MaxBody.
 var (
 	ErrNotFound = errors.New("session: not found")
 	ErrEnded    = errors.New("session: ended")
 	ErrGap      = errors.New("session: events out of sequence")
+	ErrTooLarge = errors.New("session: event body over MaxBody")
 )
 
 // Store keeps sessions and their events. Every read and delete names the
 // tenant, so one tenant never reaches another's sessions. A Store doesn't
 // apply keep rules; a Recorder does, and sets Expires and UntilEnd.
+//
+// What has expired is gone as far as callers can tell: from its Expires on,
+// Read and List leave it out, by the Store's own clock. Removing it for real is
+// Purge's job, or the database's own expiry (DynamoDB's TTL), which costs
+// nothing.
 type Store interface {
 	// Create stores a new session.
 	Create(ctx context.Context, s Session) error
 	// Append adds events to a running session, all or none. An event whose
 	// Seq the session already reached is skipped, so a retried Append stores
 	// nothing twice; any other Seq must follow on without a gap (ErrGap). The
-	// Store keeps its own copy of each Body.
+	// Store keeps its own copy of each Body. The session's Updated becomes the
+	// last event's Time, and its Expires (unless zero) moves on to the latest
+	// event Expires.
 	Append(ctx context.Context, tenant, id string, events []Event) error
 	// Read returns a session and its events in order. The events are the
 	// caller's: changing them doesn't change what's stored.
@@ -112,6 +129,8 @@ type Store interface {
 	Delete(ctx context.Context, tenant, id string) error
 	// DeleteAgent removes all of an agent's sessions and events.
 	DeleteAgent(ctx context.Context, tenant, agent string) error
-	// Purge removes events whose Expires is before now and returns how many.
+	// Purge removes events and sessions whose Expires is before now, and
+	// returns how many events it removed. A Store whose database expires items
+	// by itself may remove nothing here.
 	Purge(ctx context.Context, now time.Time) (int, error)
 }

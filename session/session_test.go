@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +38,58 @@ func TestPolicyRefusesRetentionOnUnkept(t *testing.T) {
 	}
 }
 
+func TestSessionRetention(t *testing.T) {
+	p := session.DefaultPolicy(30 * 24 * time.Hour)
+	if got := p.SessionRetention(); got != 30*24*time.Hour {
+		t.Fatalf("default: %v", got)
+	}
+	p[session.Report] = session.Rule{Keep: session.Kept, Retention: 90 * 24 * time.Hour}
+	if got := p.SessionRetention(); got != 90*24*time.Hour {
+		t.Fatalf("the longest kept kind decides: %v", got)
+	}
+	p[session.Usage] = session.Rule{Keep: session.Kept}
+	if got := p.SessionRetention(); got != 0 {
+		t.Fatalf("a kind kept with no retention keeps the session: %v", got)
+	}
+}
+
+func TestRecordRefusesABodyOverMaxBody(t *testing.T) {
+	rec := start(t, newFlaky())
+	big := make([]byte, session.MaxBody) // encodes larger than MaxBody, as a JSON string
+	if err := rec.Record(session.ToolResult, big); !errors.Is(err, session.ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if err := rec.Record(session.ToolResult, "small"); err != nil {
+		t.Fatalf("a small event after the refusal: %v", err)
+	}
+	if err := rec.End(ctx, session.Ended); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Batches stay under MaxBatchBytes, so a store's transaction limit holds.
+func TestBatchesStayUnderMaxBatchBytes(t *testing.T) {
+	f := newFlaky()
+	rec := start(t, f)
+	f.block()
+	body := strings.Repeat("a", 200<<10) // about 200 KB encoded
+	for range 20 {
+		if err := rec.Record(session.ToolCall, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.release()
+	if err := rec.End(ctx, session.Ended); err != nil {
+		t.Fatal(err)
+	}
+	if max := f.maxBatchBytes.Load(); max > session.MaxBatchBytes {
+		t.Fatalf("a batch of %d bytes, over %d", max, session.MaxBatchBytes)
+	}
+	if _, events := stored(t, f, rec); len(events) != 20 {
+		t.Fatalf("%d events stored", len(events))
+	}
+}
+
 func TestDefaultPolicyKeepsToolResultsOnlyForTheRun(t *testing.T) {
 	p := session.DefaultPolicy(30 * 24 * time.Hour)
 	if p[session.ToolResult].Keep != session.UntilEnd {
@@ -51,7 +104,8 @@ func TestDefaultPolicyKeepsToolResultsOnlyForTheRun(t *testing.T) {
 // appends or ends can be made to fail.
 type flaky struct {
 	*memory.Store
-	appends atomic.Int64
+	appends       atomic.Int64
+	maxBatchBytes atomic.Int64
 
 	mu       sync.Mutex
 	gate     chan struct{} // appends wait until it's closed
@@ -78,6 +132,16 @@ func (f *flaky) set(fn func(f *flaky)) { f.mu.Lock(); fn(f); f.mu.Unlock() }
 
 func (f *flaky) Append(ctx context.Context, tenant, id string, events []session.Event) error {
 	f.appends.Add(1)
+	size := 0
+	for _, e := range events {
+		size += len(e.Body)
+	}
+	for {
+		m := f.maxBatchBytes.Load()
+		if int64(size) <= m || f.maxBatchBytes.CompareAndSwap(m, int64(size)) {
+			break
+		}
+	}
 	f.mu.Lock()
 	gate := f.gate
 	f.mu.Unlock()

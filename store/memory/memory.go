@@ -14,6 +14,8 @@ import (
 
 // Store is a session.Store and session.Notes held in memory.
 type Store struct {
+	now func() time.Time
+
 	mu       sync.Mutex
 	sessions map[string]*memSession     // by session id
 	notes    map[[3]string]session.Note // by tenant, agent, name
@@ -25,15 +27,20 @@ type memSession struct {
 	seq    int64 // the last Seq stored, even if its event is gone since
 }
 
-// New returns an empty store.
-func New() *Store {
-	return &Store{sessions: map[string]*memSession{}, notes: map[[3]string]session.Note{}}
+// New returns an empty store on the system clock.
+func New() *Store { return NewAt(time.Now) }
+
+// NewAt returns an empty store whose clock decides what has expired.
+func NewAt(now func() time.Time) *Store {
+	return &Store{now: now, sessions: map[string]*memSession{}, notes: map[[3]string]session.Note{}}
 }
 
 var (
 	_ session.Store = (*Store)(nil)
 	_ session.Notes = (*Store)(nil)
 )
+
+func expired(at, now time.Time) bool { return !at.IsZero() && at.Before(now) }
 
 func (m *Store) Create(_ context.Context, s session.Session) error {
 	m.mu.Lock()
@@ -42,10 +49,11 @@ func (m *Store) Create(_ context.Context, s session.Session) error {
 	return nil
 }
 
-// get returns the tenant's session, or nil: another tenant's is not found.
+// get returns the tenant's live session, or nil: another tenant's, or an
+// expired one, is not found.
 func (m *Store) get(tenant, id string) *memSession {
 	ms := m.sessions[id]
-	if ms == nil || ms.s.Tenant != tenant {
+	if ms == nil || ms.s.Tenant != tenant || expired(ms.s.Expires, m.now()) {
 		return nil
 	}
 	return ms
@@ -61,7 +69,7 @@ func (m *Store) Append(_ context.Context, tenant, id string, events []session.Ev
 	if ms.s.Status != session.Running {
 		return session.ErrEnded
 	}
-	next, last := ms.seq, ms.s.Updated
+	next, s := ms.seq, ms.s
 	var add []session.Event
 	for _, e := range events {
 		if e.Seq <= ms.seq {
@@ -73,10 +81,13 @@ func (m *Store) Append(_ context.Context, tenant, id string, events []session.Ev
 		next = e.Seq
 		e.Session, e.Body = id, bytes.Clone(e.Body)
 		add = append(add, e)
-		last = e.Time
+		s.Updated = e.Time
+		if !s.Expires.IsZero() && e.Expires.After(s.Expires) {
+			s.Expires = e.Expires
+		}
 	}
 	ms.events = append(ms.events, add...)
-	ms.seq, ms.s.Updated = next, last
+	ms.seq, ms.s = next, s
 	return nil
 }
 
@@ -87,9 +98,13 @@ func (m *Store) Read(_ context.Context, tenant, id string) (session.Session, []s
 	if ms == nil {
 		return session.Session{}, nil, session.ErrNotFound
 	}
-	out := slices.Clone(ms.events)
-	for i := range out {
-		out[i].Body = bytes.Clone(out[i].Body)
+	now := m.now()
+	var out []session.Event
+	for _, e := range ms.events {
+		if !expired(e.Expires, now) {
+			e.Body = bytes.Clone(e.Body)
+			out = append(out, e)
+		}
 	}
 	return ms.s, out, nil
 }
@@ -98,8 +113,8 @@ func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]sess
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []session.Session
-	for _, ms := range m.sessions {
-		if ms.s.Tenant == tenant && ms.s.Agent == agent {
+	for id, ms := range m.sessions {
+		if ms.s.Agent == agent && m.get(tenant, id) != nil {
 			out = append(out, ms.s)
 		}
 	}
@@ -150,9 +165,14 @@ func (m *Store) Purge(_ context.Context, now time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
-	for _, ms := range m.sessions {
+	for id, ms := range m.sessions {
+		if expired(ms.s.Expires, now) {
+			n += len(ms.events)
+			delete(m.sessions, id)
+			continue
+		}
 		before := len(ms.events)
-		ms.events = slices.DeleteFunc(ms.events, func(e session.Event) bool { return !e.Expires.IsZero() && e.Expires.Before(now) })
+		ms.events = slices.DeleteFunc(ms.events, func(e session.Event) bool { return expired(e.Expires, now) })
 		n += before - len(ms.events)
 	}
 	return n, nil
