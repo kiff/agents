@@ -256,6 +256,10 @@ func TestStartThenResumeFromTheLastCursor(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
 	f.runner.hold = make(chan struct{})
+	// Released once, here or when the test ends, so a failure can't leave
+	// the run (and the server's shutdown) waiting.
+	release := sync.OnceFunc(func() { close(f.runner.hold) })
+	t.Cleanup(release)
 
 	// Read the start stream until its first recorded event, then go away.
 	sctx, cancel := context.WithCancel(ctx)
@@ -292,7 +296,7 @@ func TestStartThenResumeFromTheLastCursor(t *testing.T) {
 	}
 
 	// The run goes on without the client, and ends.
-	close(f.runner.hold)
+	release()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		got, _ := f.runs.Get(ctx, "t1", runID)
