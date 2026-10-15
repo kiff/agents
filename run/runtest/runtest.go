@@ -593,6 +593,17 @@ func whatARunIsNeverChanges(t *testing.T, s run.Runs, c *clock) {
 			t.Fatalf("Put of the %s: err = %v, want ErrFixed", name, err)
 		}
 	}
+	// A prev that wasn't read from the store, changed alike in prev and
+	// next, is refused against the stored run.
+	for name, edit := range edits {
+		prev := r
+		edit(&prev)
+		next := prev
+		next.Version++
+		if err := s.Put(ctx, prev, next); !errors.Is(err, run.ErrFixed) {
+			t.Fatalf("Put of a forged %s: err = %v, want ErrFixed", name, err)
+		}
+	}
 	if got := get(t, s, r); !reflect.DeepEqual(got, r) {
 		t.Fatalf("the run changed: %+v", got)
 	}
