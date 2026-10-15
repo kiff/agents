@@ -220,14 +220,14 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	}
 	if resp.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("kiff: %s: HTTP %d: %s", method, resp.StatusCode, strings.TrimSpace(strings.ReplaceAll(string(snippet), c.key, "[key]")))
+		return fmt.Errorf("kiff: %s: HTTP %d: %s", method, resp.StatusCode, c.redact(strings.TrimSpace(string(snippet))))
 	}
 	if !withID {
 		return nil
 	}
 	raw, err := readResponse(resp, id)
 	if err != nil {
-		return fmt.Errorf("kiff: %s: %w", method, err)
+		return fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key))
 	}
 	var rpc struct {
 		Result json.RawMessage `json:"result"`
@@ -240,7 +240,7 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 		return fmt.Errorf("kiff: %s: %w", method, err)
 	}
 	if rpc.Error != nil {
-		return &Error{Method: method, Code: rpc.Error.Code, Message: rpc.Error.Message}
+		return &Error{Method: method, Code: rpc.Error.Code, Message: c.redact(rpc.Error.Message)}
 	}
 	if out == nil {
 		return nil
@@ -278,6 +278,15 @@ func readResponse(resp *http.Response, id int64) (json.RawMessage, error) {
 		return nil, err
 	}
 	return nil, errors.New("the event stream ended without a response")
+}
+
+// redact keeps the key out of text the gateway sent back, which reaches
+// errors, tool results and the model.
+func (c *Client) redact(s string) string {
+	if c.key == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, c.key, "[key]")
 }
 
 // scrub keeps the key out of an error's text.
