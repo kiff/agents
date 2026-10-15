@@ -40,6 +40,7 @@ tool/kiff           adapter: MCP client to KIFF's gateway, with the agent's own 
 tool/memory         adapter: the agent's notes, on session.Notes
 agent/              the run loop: model → tools → model, recorded and streamed; pauses on a KIFF hold
 chat/               the owner talking to an agent: each message a run in the conversation's session
+runner/             executes runs, as the server's Runner: start in a session, claim, build, record, run, store the stop; continue a paused run
 registry/           stored agent definitions, built per request for their tenant; ports Agents, Secrets
 registry/registrytest the checks every Agents store must pass
 schedule/           schedules: cron in a time zone, kept in step with what fires them; ports Schedules, Scheduler

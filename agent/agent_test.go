@@ -532,3 +532,30 @@ func BenchmarkPauseAndContinue(b *testing.B) {
 		}
 	}
 }
+
+// A run asked to stop stops at its next checkpoint: after the tool batch,
+// before the model's next turn.
+func TestCancelStopsAtACheckpoint(t *testing.T) {
+	m := &script{replies: []model.Reply{use("c1", "lookup", `{}`), say("never said")}}
+	lookup := &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "found"}}
+	a := newAgent(m, lookup)
+	asked := 0
+	a.Cancel = func(context.Context) (bool, error) {
+		asked++
+		return asked > 1, nil // asked after the tool batch
+	}
+	_, rec := start(t, session.KindChat)
+	out, _, err := agent.Run(context.Background(), a, rec, nil, "look it up", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Cancelled || out.Turns != 1 || len(m.reqs) != 1 || lookup.calls != 1 {
+		t.Fatalf("stopped %+v after %d turns and %d calls", out, len(m.reqs), lookup.calls)
+	}
+
+	a.Cancel = func(context.Context) (bool, error) { return false, errors.New("the store is down") }
+	_, rec = start(t, session.KindChat)
+	if _, _, err := agent.Run(context.Background(), a, rec, nil, "again", nil); err == nil || len(m.reqs) != 1 {
+		t.Fatalf("a checkpoint that failed: %v, with %d model turns", err, len(m.reqs))
+	}
+}

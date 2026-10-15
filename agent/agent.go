@@ -42,6 +42,13 @@ type Agent struct {
 	MaxCost int64
 	// MaxTurns bounds the model turns of one run; 0 means DefaultMaxTurns.
 	MaxTurns int
+
+	// Cancel, when set, says whether the run was asked to stop. The loop asks
+	// at each checkpoint, before a model turn (so after each tool batch), and
+	// a run asked to stop stops there, Cancelled. A turn in which KIFF held a
+	// call pauses the run instead: its held calls are withdrawn in KIFF
+	// before a paused run is cancelled.
+	Cancel func(ctx context.Context) (bool, error)
 }
 
 // Check refuses an agent that can't run safely: no model or id, no cost cap,
@@ -108,11 +115,12 @@ type Event struct {
 type Stop string
 
 const (
-	Answered Stop = "answered"  // the agent answered and called nothing more
-	Paused   Stop = "paused"    // KIFF holds at least one call for the owner; the run waits for it
-	CostCap  Stop = "cost_cap"  // the run reached its cost cap
-	TurnCap  Stop = "turn_cap"  // the run reached its turn limit
-	TooLong  Stop = "max_token" // the model ran out of room mid-answer
+	Answered  Stop = "answered"  // the agent answered and called nothing more
+	Paused    Stop = "paused"    // KIFF holds at least one call for the owner; the run waits for it
+	CostCap   Stop = "cost_cap"  // the run reached its cost cap
+	TurnCap   Stop = "turn_cap"  // the run reached its turn limit
+	TooLong   Stop = "max_token" // the model ran out of room mid-answer
+	Cancelled Stop = "cancelled" // the run was asked to stop, and stopped at a checkpoint
 )
 
 // Outcome is how a run stopped. Cost and Turns count the whole run, across
@@ -253,6 +261,16 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		if stop := a.capped(out); stop != "" {
 			out.Stop = stop
 			return out, msgs, nil
+		}
+		if a.Cancel != nil {
+			stop, err := a.Cancel(ctx)
+			if err != nil {
+				return out, msgs, err
+			}
+			if stop {
+				out.Stop = Cancelled
+				return out, msgs, nil
+			}
 		}
 		reply, err := a.turn(ctx, rec, msgs, specs, &out, emit)
 		if err != nil {
