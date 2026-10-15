@@ -227,6 +227,9 @@ func untilEndIsDroppedWhenItsRunEnds(t *testing.T, b Backend, c *clock) {
 	if want := []string{"r1:3", "r2:1", "r2:2", "r2:3"}; !slices.Equal(order(after), want) {
 		t.Fatalf("after r1 ends: %v, want %v", order(after), want)
 	}
+	if _, own, err := b.ReadRun(ctx, "t1", s.ID, "r2"); err != nil || !slices.Equal(order(own), []string{"r2:1", "r2:2", "r2:3"}) {
+		t.Fatalf("r2's own events: %v, err = %v", order(own), err)
+	}
 	check(t, second.End(ctx))
 	_, after = read(t, b, second)
 	if want := []string{"r1:3", "r2:3"}; !slices.Equal(order(after), want) {
