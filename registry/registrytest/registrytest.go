@@ -28,6 +28,20 @@ func Definition(tenant, id string) registry.Definition {
 	}
 }
 
+// Largest returns the largest definition Check accepts for tenant and id,
+// its instructions made of what encoding makes longest: control characters,
+// six bytes each once stored.
+func Largest(tenant, id string) registry.Definition {
+	d := Definition(tenant, id)
+	d.Instructions = ""
+	b, err := registry.Encode(d)
+	if err != nil {
+		panic(err)
+	}
+	d.Instructions = strings.Repeat("\x01", (registry.MaxSize-len(b))/6)
+	return d
+}
+
 // Run runs every check against the stores newStore returns, one per check.
 func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 	ctx := context.Background()
@@ -48,6 +62,37 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v\nwant %+v", got, want)
+		}
+	})
+
+	t.Run("TheLargestDefinitionFits", func(t *testing.T) {
+		s := newStore(t)
+		want := Largest("t1", "payouts")
+		if err := want.Check(); err != nil {
+			t.Fatalf("Largest is refused: %v", err)
+		}
+		put(t, s, want)
+		got, err := s.Get(ctx, "t1", "payouts")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Instructions != want.Instructions {
+			t.Fatalf("got %d bytes of instructions back, want %d", len(got.Instructions), len(want.Instructions))
+		}
+	})
+
+	// Instructions are full of '<', '>' and '&'; a store that escapes them
+	// stores six bytes for each.
+	t.Run("MarkupIsStoredAsIs", func(t *testing.T) {
+		s := newStore(t)
+		want := Largest("t1", "payouts")
+		want.Instructions = strings.Repeat("<", len(want.Instructions)*5)
+		if err := want.Check(); err != nil {
+			t.Fatalf("refused: %v", err)
+		}
+		put(t, s, want)
+		if got, err := s.Get(ctx, "t1", "payouts"); err != nil || got.Instructions != want.Instructions {
+			t.Fatalf("got %d bytes of instructions back (err %v), want %d", len(got.Instructions), err, len(want.Instructions))
 		}
 	})
 

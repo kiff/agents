@@ -8,7 +8,9 @@
 package registry
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -20,12 +22,15 @@ import (
 	"github.com/kiff/agents/tool"
 )
 
-// MaxInstructions bounds a definition's instructions, in bytes, so a
-// definition always fits one stored item.
-const MaxInstructions = 200_000
+// MaxSize bounds a definition as stored (Encode), in bytes, so it always fits
+// one item, with room for its keys: DynamoDB's limit is 400 KB.
+const MaxSize = 300_000
 
-// maxID bounds an agent's ID.
-const maxID = 128
+// maxID bounds an agent's ID, and maxTenant a tenant.
+const (
+	maxID     = 128
+	maxTenant = 256
+)
 
 // Definition is a stored agent: what it is told, which model at which price,
 // where its tools are, what is kept of its runs, and what a run may spend.
@@ -62,12 +67,10 @@ type Definition struct {
 // Check refuses a definition that can't be stored or run safely.
 func (d Definition) Check() error {
 	switch {
-	case d.Tenant == "":
-		return errors.New("registry: a tenant is required")
+	case d.Tenant == "" || len(d.Tenant) > maxTenant:
+		return fmt.Errorf("registry: a tenant is 1 to %d bytes", maxTenant)
 	case !validID(d.ID):
 		return fmt.Errorf("registry: an id is 1 to %d letters, digits, '-', '_' or '.'", maxID)
-	case len(d.Instructions) > MaxInstructions:
-		return fmt.Errorf("registry: instructions are longer than %d bytes", MaxInstructions)
 	case d.Model == "":
 		return errors.New("registry: a model is required")
 	case d.Price.Input <= 0 || d.Price.Output <= 0 || d.Price.CacheRead < 0 || d.Price.CacheWrite < 0:
@@ -87,7 +90,28 @@ func (d Definition) Check() error {
 	if err := d.Keep.Check(); err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
+	// Bound what is stored, not the raw text: encoding can make a string
+	// several times longer (a control character becomes six bytes).
+	b, err := Encode(d)
+	if err != nil {
+		return err
+	}
+	if len(b) > MaxSize {
+		return fmt.Errorf("registry: the definition is %d bytes stored, more than %d; shorten its instructions", len(b), MaxSize)
+	}
 	return nil
+}
+
+// Encode is a definition as stores keep it: JSON, without escaping '<', '>'
+// and '&', which instructions are full of. Check bounds its size.
+func Encode(d Definition) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(d); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 func validID(id string) bool {

@@ -29,7 +29,7 @@ var _ registry.Agents = (*Agents)(nil)
 func agentsPK(tenant string) string { return key("G", tenant) }
 
 func (a *Agents) Put(ctx context.Context, d registry.Definition) error {
-	b, err := json.Marshal(d)
+	b, err := registry.Encode(d)
 	if err != nil {
 		return err
 	}
