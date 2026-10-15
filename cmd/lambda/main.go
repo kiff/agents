@@ -123,8 +123,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Start: func(context.Context, schedule.Firing) error { return errNoRuns },
 	}
 	return &function{
+		// No Runner yet: starting runs arrives with the loop that executes
+		// them (#12). Reading, cancelling and following runs work now.
 		http: (&server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Gateways: gateways, Log: log}).Handler(),
+			Runs: dynamodb.NewRuns(db, table), Gateways: gateways, Log: log}).Handler(),
 		schedules: schedules,
 		log:       log,
 	}, nil
