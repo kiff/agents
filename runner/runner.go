@@ -292,25 +292,18 @@ func (x *execution) cancelled(ctx context.Context) (bool, error) {
 	return r.Cancel, nil
 }
 
-// save stores change on the run while this invocation holds it. The run is
-// read again first: a cancel may have changed it since the claim.
+// save stores change on the run while this invocation holds it. The
+// execution keeps no copy of the run, so it reads it first; run.Save then
+// reads it again if a cancel changes it before the write.
 func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.Run, error) {
-	var r run.Run
-	var err error
-	for range 3 {
-		if r, err = x.rn.Runs.Get(ctx, x.tenant, x.id); err != nil {
-			return r, err
-		}
-		if r.Claim != x.claim {
-			return r, run.ErrLeaseLost
-		}
-		var next run.Run
-		if next, err = run.Save(ctx, x.rn.Runs, r, x.rn.now(), change); !errors.Is(err, run.ErrConflict) {
-			return next, err
-		}
-		// It changed between the read and the write: read it again.
+	r, err := x.rn.Runs.Get(ctx, x.tenant, x.id)
+	if err != nil {
+		return r, err
 	}
-	return r, err
+	if r.Claim != x.claim {
+		return r, run.ErrLeaseLost
+	}
+	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), change)
 }
 
 // stop stores where the loop stopped. The recording is paused or ended first:
