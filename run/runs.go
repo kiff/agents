@@ -24,7 +24,8 @@ const PendingTimeout = 5 * time.Minute
 // one; ErrConflict, that the run changed since it was read (read it again);
 // ErrTransition, that its status can't move as asked; ErrLeaseLost, that the
 // invocation's lease ran out, so it may write nothing more; ErrNotReady, that a
-// paused run still waits for a requirement.
+// paused run still waits for a requirement; ErrCancelled, that a pending run
+// was asked to stop, so it never starts (it is also ErrTransition).
 var (
 	ErrNotFound   = errors.New("run: not found")
 	ErrExists     = errors.New("run: already exists")
@@ -33,6 +34,7 @@ var (
 	ErrLeaseLost  = errors.New("run: lease ran out")
 	ErrNotReady   = errors.New("run: a requirement is still unresolved")
 	ErrFixed      = errors.New("run: what it is can't change")
+	ErrCancelled  = errors.New("run: asked to stop")
 )
 
 // Same reports whether two versions of a run are the same run: the same
@@ -193,8 +195,13 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 	if r.Status != Pending && r.Status != Paused {
 		return r, fmt.Errorf("%w: claiming a %s run", ErrTransition, r.Status)
 	}
-	if r.Cancel {
-		return r, fmt.Errorf("%w: the run was cancelled", ErrTransition)
+	// A pending run asked to stop never starts. A paused one still goes on
+	// once KIFF has resolved it: its held calls' outcomes are recorded (a call
+	// KIFF forwards always has a record here), and it stops at its first
+	// checkpoint. Otherwise a run cancelled while KIFF came to hold one of its
+	// calls could never move again.
+	if r.Cancel && r.Status == Pending {
+		return r, fmt.Errorf("%w: %w", ErrTransition, ErrCancelled)
 	}
 	return Change(ctx, runs, r, now, func(n *Run) error {
 		n.Status, n.Claim, n.Lease = Running, claim, deadline.UTC().Add(LeaseGrace)
@@ -202,18 +209,44 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 	})
 }
 
+// SaveTries bounds how many times Save writes a run that keeps changing
+// under it while its claim still holds.
+const SaveTries = 5
+
 // Save is Change for the invocation that claimed r: it writes only while it
 // holds the lease. A change it makes after its lease ran out, or after the run
-// moved on without it, writes nothing.
+// moved on without it, writes nothing (ErrLeaseLost).
+//
+// A run that changed since r was read but is still this invocation's is read
+// again and change applied to it as stored, so change may run more than once,
+// each time on the run as stored. Today the only writer that changes a RUNNING
+// run under its claimant is a cancel (answers are recorded on PAUSED runs,
+// which hold no claim). The run Save returns shows what changed meanwhile: a
+// claimant that finds Cancel set ends the run CANCELLED at its next
+// checkpoint. A pause onto a run asked to stop is stored, Cancel set: KIFF
+// holds a call, so the run waits for it, is claimed again once KIFF has
+// resolved it (see Claim), records the call's outcome, and ends CANCELLED.
+// A run that still changes after SaveTries writes is ErrConflict.
 func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run) error) (Run, error) {
-	if r.Status != Running || r.Claim == "" || !now.Before(r.Lease) {
-		return r, ErrLeaseLost
+	for try := 1; ; try++ {
+		if r.Status != Running || r.Claim == "" || !now.Before(r.Lease) {
+			return r, ErrLeaseLost
+		}
+		next, err := Change(ctx, runs, r, now, change)
+		if !errors.Is(err, ErrConflict) || try == SaveTries {
+			return next, err
+		}
+		stored, gerr := runs.Get(ctx, r.Tenant, r.ID)
+		switch {
+		case errors.Is(gerr, ErrNotFound):
+			return r, fmt.Errorf("%w: the run is gone", ErrLeaseLost)
+		case gerr != nil:
+			return r, gerr
+		case stored.Claim != r.Claim:
+			return r, fmt.Errorf("%w: %w", ErrLeaseLost, err)
+		}
+		r = stored
 	}
-	next, err := Change(ctx, runs, r, now, change)
-	if errors.Is(err, ErrConflict) {
-		return r, fmt.Errorf("%w: %w", ErrLeaseLost, err)
-	}
-	return next, err
 }
 
 // Sweeper marks ended the runs nobody is left to end: a RUNNING run whose

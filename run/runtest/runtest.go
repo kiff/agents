@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -35,6 +36,10 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"OneClaimWins", oneClaimWins},
 		{"AStaleWriteIsRefused", aStaleWriteIsRefused},
 		{"NoWriteAfterTheLease", noWriteAfterTheLease},
+		{"ACancelKeepsTheClaimantsSave", aCancelKeepsTheClaimantsSave},
+		{"ASaveAfterAnotherClaimIsRefused", aSaveAfterAnotherClaimIsRefused},
+		{"ARunCancelledWhileHeldEndsOnceResolved", aRunCancelledWhileHeldEndsOnceResolved},
+		{"ASaveGivesUpOnARunThatKeepsChanging", aSaveGivesUpOnARunThatKeepsChanging},
 		{"APausedRunContinuesWhenResolved", aPausedRunContinuesWhenResolved},
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
 		{"SweepMarksWhatIsDue", sweepMarksWhatIsDue},
@@ -219,6 +224,131 @@ func noWriteAfterTheLease(t *testing.T, s run.Runs, c *clock) {
 	}
 	if got := get(t, s, r); got.Status != run.Error || got.Claim != "" || !got.Lease.IsZero() || !strings.Contains(got.Error, "lease") {
 		t.Fatalf("stored %+v", got)
+	}
+}
+
+// A cancel set while the claimant works doesn't cost the claimant its save:
+// Save reads the run again, keeps the cancel, writes the claimant's change,
+// and hands back a run that shows the cancel.
+func aCancelKeepsTheClaimantsSave(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	if _, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	applied := 0
+	saved, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error { applied++; n.Cost += 100; return nil })
+	check(t, err)
+	if !saved.Cancel || saved.Cost != 100 || saved.Status != run.Running || saved.Claim != "i1" {
+		t.Fatalf("saved %+v", saved)
+	}
+	if applied != 2 {
+		t.Fatalf("change ran %d times, want once on the stale run and once on the stored one", applied)
+	}
+	if got := get(t, s, r); !reflect.DeepEqual(got, saved) {
+		t.Fatalf("stored %+v\nreturned %+v", got, saved)
+	}
+	done, err := run.Save(ctx, s, saved, c.now(), set(run.Cancelled))
+	check(t, err)
+	if done.Status != run.Cancelled || done.Cost != 100 {
+		t.Fatalf("ended %+v", done)
+	}
+}
+
+// A run cancelled while KIFF holds one of its calls pauses, Cancel set, and
+// waits for KIFF. Once KIFF has resolved it, it is claimed again, still asked
+// to stop, so its claimant records the outcomes and ends it CANCELLED. A
+// pending run asked to stop is never claimed.
+func aRunCancelledWhileHeldEndsOnceResolved(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	if _, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error { // from the stale copy
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund"}}
+		return nil
+	})
+	check(t, err)
+	if paused.Status != run.Paused || !paused.Cancel || paused.Claim != "" {
+		t.Fatalf("paused %+v, want PAUSED, Cancel set", paused)
+	}
+	if _, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now()); !errors.Is(err, run.ErrNotReady) {
+		t.Fatalf("claiming it before KIFF answered: err = %v, want ErrNotReady", err)
+	}
+	_, err = run.Change(ctx, s, paused, c.now(), func(n *run.Run) error { n.Requirements[0].Answered = c.now(); return nil })
+	check(t, err)
+	again, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	if again.Status != run.Running || !again.Cancel || again.Claim != "i2" {
+		t.Fatalf("claimed %+v, want RUNNING, still asked to stop", again)
+	}
+	done, err := run.Save(ctx, s, again, c.now(), set(run.Cancelled))
+	check(t, err)
+	if done.Status != run.Cancelled {
+		t.Fatalf("ended %+v", done)
+	}
+
+	pending := created(t, s, c, "t1", "refunds")
+	pending, err = run.Change(ctx, s, pending, c.now(), func(n *run.Run) error { n.Cancel = true; return nil })
+	check(t, err)
+	if _, err := run.Claim(ctx, s, "t1", pending.ID, "i3", c.now().Add(time.Minute), c.now()); !errors.Is(err, run.ErrCancelled) {
+		t.Fatalf("claiming a pending run asked to stop: err = %v, want ErrCancelled", err)
+	}
+}
+
+// A run that paused and was claimed by another invocation is no longer the
+// first claimant's: its stale save writes nothing.
+func aSaveAfterAnotherClaimIsRefused(t *testing.T, s run.Runs, c *clock) {
+	first := claimed(t, s, c)
+	paused, err := run.Save(ctx, s, first, c.now(), func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Answered: c.now()}}
+		return nil
+	})
+	check(t, err)
+	second, err := run.Claim(ctx, s, "t1", paused.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	if _, err := run.Save(ctx, s, first, c.now(), func(n *run.Run) error { n.Cost = 999; return nil }); !errors.Is(err, run.ErrLeaseLost) {
+		t.Fatalf("the first claimant's stale save: err = %v, want ErrLeaseLost", err)
+	}
+	if got := get(t, s, first); got.Claim != "i2" || got.Cost != 0 || got.Version != second.Version {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+// churning is a store whose run changes under every write: each Put first
+// bumps the stored run, as a busy server might.
+type churning struct {
+	run.Runs
+	puts int
+}
+
+func (c *churning) Put(cx context.Context, prev, next run.Run) error {
+	c.puts++
+	stored, err := c.Runs.Get(cx, prev.Tenant, prev.ID)
+	if err != nil {
+		return err
+	}
+	bumped := stored
+	bumped.Version++
+	bumped.Output = fmt.Sprintf("bump %d", c.puts)
+	if err := c.Runs.Put(cx, stored, bumped); err != nil {
+		return err
+	}
+	return c.Runs.Put(cx, prev, next)
+}
+
+// Save gives up on a run that changes under every write, rather than trying
+// forever, and says it was a conflict, not a lost lease.
+func aSaveGivesUpOnARunThatKeepsChanging(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	busy := &churning{Runs: s}
+	_, err := run.Save(ctx, busy, r, c.now(), func(n *run.Run) error { n.Cost = 1; return nil })
+	if !errors.Is(err, run.ErrConflict) || errors.Is(err, run.ErrLeaseLost) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	if busy.puts != run.SaveTries {
+		t.Fatalf("%d writes, want %d", busy.puts, run.SaveTries)
 	}
 }
 
