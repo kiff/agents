@@ -19,6 +19,27 @@ For AI assistants working on this repository. Read this first, then the README.
   saves real work, and pin it exactly. Hot paths (the run loop, recording an
   event) keep a benchmark.
 
+## Layout
+
+Ports and adapters. The core packages hold types, the interfaces they need
+(ports) and the logic that uses them. They never import an adapter, an SDK or
+a database driver; adapters import the core.
+
+```
+session/            sessions, events, keep rules, Recorder; ports Store, Notes
+session/sessiontest the checks every Store must pass
+store/memory        adapter: in memory, for tests and local runs
+store/<name>        one package per store (sqlite, dynamodb)
+```
+
+Model, tools, the run loop and evals follow the same shape: a core package
+with its port, and one package per adapter (for example `model/anthropic`).
+Wiring happens in `cmd/`.
+
+Goroutines where they save waiting: one writer per recording, so the run loop
+never waits on the store, and tool calls in parallel. Every goroutine has an
+owner that ends it (`Recording.End`), and every error it hits reaches a caller.
+
 ## How sessions work together
 
 Several assistants build this in parallel, and they don't talk to each other.
