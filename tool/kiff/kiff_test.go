@@ -21,8 +21,12 @@ const testKey = "kiff_test_agent_key"
 // gateway is a fake KIFF gateway: it checks the bearer key and the session
 // header, lists two tools, and holds every refund. With sse set, it answers
 // requests as an event stream.
+// calls are the arguments of each tools/call the fake gateway received.
+var calls []string
+
 func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 	t.Helper()
+	calls = nil
 	var mu sync.Mutex
 	var methods []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +73,22 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			_ = json.Unmarshal(msg.Params, &p)
 			var args map[string]any
 			_ = json.Unmarshal(p.Arguments, &args)
-			if p.Name == "stripe_refund" && args["odd"] == true {
+			mu.Lock()
+			calls = append(calls, string(p.Arguments))
+			mu.Unlock()
+			// A repeat with an operation ID collects the call: KIFF knows the
+			// owner's answer by it.
+			op, _ := args["kiff_operation_id"].(string)
+			if op == "op-approved" || op == "op-refund-42" { // the hold below, answered
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_1"}},
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "sent": "yes", "retry": "none"}}}
+			} else if op == "op-expired" {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "The owner did not answer before the hold expired."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "refused", "sent": "no", "retry": "new_call"}}}
+			} else if op == "op-error" {
+				http.Error(w, "gateway down", http.StatusBadGateway)
+				return
+			} else if p.Name == "stripe_refund" && args["odd"] == true {
 				// KIFF's hold fields in a shape this client doesn't expect.
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{

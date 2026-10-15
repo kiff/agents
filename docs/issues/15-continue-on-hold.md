@@ -1,7 +1,7 @@
 # Continue on a hold: what #15 delivers
 
 **Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
-**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs)
+**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect)
 
 ## What it's for
 
@@ -52,13 +52,43 @@ requirement:
 | a hold field in another shape keeps the call held | `TestAHoldStaysHeldWhenAFieldDoesntParse` |
 | the loop copies operation, exception and expiry | `agent` `TestAHeldCallPausesTheRun` |
 
+**Collecting a held call's outcome (#45).** `kiff.Collect` is
+`Runner.Collect`: for each requirement it repeats the call as the model made
+it, with its operation ID.
+
+```json
+{"name": "stripe_refund",
+ "arguments": {"order": 42, "kiff_operation_id": "op-refund-42"}}
+```
+
+The gateway answers by what the owner decided. An approved call is sent once
+and its result comes back:
+
+```json
+{"content": [{"type": "text", "text": "refunded re_1"}],
+ "_meta": {"dev.kiff/call": {"state": "forwarded", "sent": "yes"}}}
+```
+
+A refused, expired or withdrawn one comes back refused. Repeating a call
+already collected returns the same outcome without sending it again, so a
+retry is safe. A call KIFF still holds is `kiff.ErrStillHeld`, and the
+runner puts the run back to PAUSED.
+
+```go
+rn := &runner.Runner{Runs: runs, Sessions: sessions, Builder: builder, Collect: kiff.Collect}
+r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
+```
+
+| Rule | Guarded by |
+|---|---|
+| each call is repeated with its operation ID and its own arguments | `tool/kiff` `TestCollectRepeatsEachCallByItsOperation` |
+| an approved call's result and an expired hold's refusal come back in order | the same |
+| a call still held is `ErrStillHeld`, and nothing is returned | `TestCollectLeavesAStillHeldCall` |
+| no operation ID, or a tool the agent lacks, is refused before the gateway | `TestCollectRefuses` |
+| held, answered, collected and continued, end to end through the gateway | `TestAHeldRunContinuesThroughTheGateway` |
+
 ## Still to deliver
 
-- **`Runner.Collect`**: one outcome per requirement, none still held. An
-  approved call is forwarded by KIFF once; a refused or expired one comes
-  back refused. The runner already calls it
-  (`func(ctx, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error)`)
-  and already handles its failure by pausing again.
 - **`POST /kiff/alerts`**: verifies KIFF's HMAC signature, records the answer
   on the requirement, and answers 200 once it's recorded, whatever the run's
   state, so KIFF stops redelivering. When every requirement is resolved, the
