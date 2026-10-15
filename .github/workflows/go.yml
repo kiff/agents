@@ -36,4 +36,4 @@ jobs:
       - name: DynamoDB store tests
         env:
           DYNAMODB_ENDPOINT: http://localhost:8000
-        run: go test -race -count=1 -v ./store/dynamodb/ 2>&1 | grep -E -- "^(=== RUN|--- |PASS|FAIL|ok|panic)|_test.go" | grep -v "=== RUN"; exit ${PIPESTATUS[0]}
+        run: go test -race -count=1 -v ./store/dynamodb/ 2>&1 | grep -E -- "^ *(--- |PASS|FAIL|ok|panic)|_test.go" | grep -v "=== RUN"; exit ${PIPESTATUS[0]}
