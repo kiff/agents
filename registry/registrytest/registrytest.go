@@ -99,7 +99,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 
 	t.Run("ListIsTheTenantsByID", func(t *testing.T) {
 		s := newStore(t)
-		for _, id := range []string{"refunds", "chargebacks", "payouts"} {
+		// Enough agents that a store returning them unsorted is caught.
+		for _, id := range []string{"refunds", "chargebacks", "payouts", "e-invoices", "disputes", "tax", "billing", "vendors"} {
 			put(t, s, Definition("t1", id))
 		}
 		put(t, s, Definition("t2", "other"))
@@ -114,8 +115,9 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 			}
 			ids = append(ids, d.ID)
 		}
-		if got := strings.Join(ids, ","); got != "chargebacks,payouts,refunds" {
-			t.Fatalf("listed %s, want chargebacks,payouts,refunds", got)
+		const want = "billing,chargebacks,disputes,e-invoices,payouts,refunds,tax,vendors"
+		if got := strings.Join(ids, ","); got != want {
+			t.Fatalf("listed %s, want %s", got, want)
 		}
 		if list[0].Keep == nil || list[0].Price != Definition("t1", "x").Price {
 			t.Fatalf("a listed definition is incomplete: %+v", list[0])
