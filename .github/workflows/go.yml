@@ -19,6 +19,24 @@ jobs:
       - run: go test -race ./...
       - name: Benchmarks still run
         run: go test -run '^$' -bench . -benchtime 1000x ./...
+  bench:
+    # A pull request's benchmarks against its base branch's, in turns on one
+    # runner: fails on a clear slowdown (see .github/bench.sh).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install benchstat
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260813145340-fd4a688df892
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Compare with the base branch
+        run: .github/bench.sh "origin/$GITHUB_BASE_REF"
   dynamodb:
     # The DynamoDB store against DynamoDB Local: tests never touch AWS, and
     # each one deletes the table it made.
