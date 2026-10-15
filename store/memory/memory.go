@@ -24,7 +24,7 @@ type Store struct {
 type memSession struct {
 	s      session.Session
 	events []session.Event
-	seq    int64 // the last Seq stored, even if its event is gone since
+	runs   map[string]*session.RunState // every run begun, ended ones included: the last Seq stored, even if its event is gone since
 }
 
 // New returns an empty store on the system clock.
@@ -45,7 +45,8 @@ func expired(at, now time.Time) bool { return !at.IsZero() && at.Before(now) }
 func (m *Store) Create(_ context.Context, s session.Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[s.ID] = &memSession{s: s}
+	s.Held = nil
+	m.sessions[s.ID] = &memSession{s: s, runs: map[string]*session.RunState{}}
 	return nil
 }
 
@@ -53,33 +54,60 @@ func (m *Store) Create(_ context.Context, s session.Session) error {
 // expired one, is not found.
 func (m *Store) get(tenant, id string) *memSession {
 	ms := m.sessions[id]
-	if ms == nil || ms.s.Tenant != tenant || expired(ms.s.Expires, m.now()) {
+	if ms == nil || ms.s.Tenant != tenant || ms.s.Expired(m.now()) {
 		return nil
 	}
 	return ms
 }
 
-func (m *Store) Append(_ context.Context, tenant, id string, events []session.Event) error {
+// open returns an open run's state, or nil.
+func (ms *memSession) open(id string) *session.RunState {
+	if r := ms.runs[id]; r != nil && r.Open {
+		return r
+	}
+	return nil
+}
+
+func (m *Store) Begin(_ context.Context, tenant, id, run string, created time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	switch {
+	case ms == nil:
+		return session.ErrNotFound
+	case ms.runs[run] != nil && ms.runs[run].Open:
+		return nil
+	case ms.runs[run] != nil:
+		return session.ErrEnded
+	case m.now().Sub(created) > session.MaxStartDelay:
+		return session.ErrLate
+	}
+	ms.runs[run] = &session.RunState{Open: true}
+	return nil
+}
+
+func (m *Store) Append(_ context.Context, tenant, id, run string, events []session.Event) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ms := m.get(tenant, id)
 	if ms == nil {
 		return session.ErrNotFound
 	}
-	if ms.s.Status != session.Running {
+	r := ms.open(run)
+	if r == nil {
 		return session.ErrEnded
 	}
-	next, s := ms.seq, ms.s
+	next, s := r.Seq, ms.s
 	var add []session.Event
 	for _, e := range events {
-		if e.Seq <= ms.seq {
+		if e.Seq <= r.Seq {
 			continue // stored by an earlier attempt
 		}
 		if e.Seq != next+1 {
 			return session.ErrGap
 		}
 		next = e.Seq
-		e.Session, e.Body = id, bytes.Clone(e.Body)
+		e.Session, e.Run, e.Body = id, run, bytes.Clone(e.Body)
 		add = append(add, e)
 		s.Updated = e.Time
 		if !s.Expires.IsZero() && e.Expires.After(s.Expires) {
@@ -87,8 +115,22 @@ func (m *Store) Append(_ context.Context, tenant, id string, events []session.Ev
 		}
 	}
 	ms.events = append(ms.events, add...)
-	ms.seq, ms.s = next, s
+	r.Seq, ms.s = next, s
 	return nil
+}
+
+// live returns copies of the events that pass keep, unexpired as of now, in
+// SortEvents order.
+func live(events []session.Event, now time.Time, keep func(session.Event) bool) []session.Event {
+	var out []session.Event
+	for _, e := range events {
+		if !expired(e.Expires, now) && keep(e) {
+			e.Body = bytes.Clone(e.Body)
+			out = append(out, e)
+		}
+	}
+	session.SortEvents(out)
+	return out
 }
 
 func (m *Store) Read(_ context.Context, tenant, id string) (session.Session, []session.Event, error) {
@@ -98,15 +140,36 @@ func (m *Store) Read(_ context.Context, tenant, id string) (session.Session, []s
 	if ms == nil {
 		return session.Session{}, nil, session.ErrNotFound
 	}
-	now := m.now()
-	var out []session.Event
-	for _, e := range ms.events {
-		if !expired(e.Expires, now) {
-			e.Body = bytes.Clone(e.Body)
-			out = append(out, e)
-		}
+	s := ms.s
+	s.Held = slices.Clone(s.Held)
+	return s, live(ms.events, m.now(), func(session.Event) bool { return true }), nil
+}
+
+func (m *Store) ReadRun(_ context.Context, tenant, id, run string) (session.RunState, []session.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return session.RunState{}, nil, session.ErrNotFound
 	}
-	return ms.s, out, nil
+	var state session.RunState
+	if r := ms.runs[run]; r != nil {
+		state = *r
+	}
+	return state, live(ms.events, m.now(), func(e session.Event) bool { return e.Run == run }), nil
+}
+
+func (m *Store) State(_ context.Context, tenant, id, run string) (session.RunState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return session.RunState{}, session.ErrNotFound
+	}
+	if r := ms.runs[run]; r != nil {
+		return *r, nil
+	}
+	return session.RunState{}, nil
 }
 
 func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]session.Session, error) {
@@ -115,7 +178,9 @@ func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]sess
 	var out []session.Session
 	for id, ms := range m.sessions {
 		if ms.s.Agent == agent && m.get(tenant, id) != nil {
-			out = append(out, ms.s)
+			s := ms.s
+			s.Held = slices.Clone(s.Held)
+			out = append(out, s)
 		}
 	}
 	slices.SortFunc(out, func(a, b session.Session) int { return cmp.Or(b.Updated.Compare(a.Updated), cmp.Compare(a.ID, b.ID)) })
@@ -125,18 +190,45 @@ func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]sess
 	return out, nil
 }
 
-func (m *Store) End(_ context.Context, tenant, id string, status session.Status) error {
+func (m *Store) Hold(_ context.Context, tenant, id, run string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ms := m.get(tenant, id)
 	if ms == nil {
 		return session.ErrNotFound
 	}
-	if ms.s.Status != session.Running {
+	r := ms.open(run)
+	if r == nil {
 		return session.ErrEnded
 	}
-	ms.s.Status = status
-	ms.events = slices.DeleteFunc(ms.events, func(e session.Event) bool { return e.UntilEnd })
+	if !r.Held {
+		r.Held = true
+		ms.s.Held = append(ms.s.Held, run)
+		slices.Sort(ms.s.Held)
+	}
+	return nil
+}
+
+func (m *Store) EndRun(_ context.Context, tenant, id, run string, expires time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return session.ErrNotFound
+	}
+	r := ms.open(run)
+	if r == nil {
+		return session.ErrEnded
+	}
+	r.Open, r.Ended, r.Held = false, true, false
+	ms.s.Held = slices.DeleteFunc(ms.s.Held, func(h string) bool { return h == run })
+	if len(ms.s.Held) == 0 {
+		ms.s.Held = nil
+	}
+	if !ms.s.Expires.IsZero() && expires.After(ms.s.Expires) {
+		ms.s.Expires = expires
+	}
+	ms.events = slices.DeleteFunc(ms.events, func(e session.Event) bool { return e.Run == run && e.UntilEnd })
 	return nil
 }
 
@@ -166,7 +258,7 @@ func (m *Store) Purge(_ context.Context, now time.Time) (int, error) {
 	defer m.mu.Unlock()
 	n := 0
 	for id, ms := range m.sessions {
-		if expired(ms.s.Expires, now) {
+		if ms.s.Expired(now) {
 			n += len(ms.events)
 			delete(m.sessions, id)
 			continue

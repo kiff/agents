@@ -11,6 +11,7 @@ import (
 
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/managed"
+	agentrun "github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
 
@@ -86,7 +87,7 @@ func TestRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := run.Session
-	if s.ID != "sesn_1" || s.Agent != "refunds" || s.Kind != session.KindRun || s.Status != session.Ended || s.Tenant != "" {
+	if s.ID != "sesn_1" || s.Agent != "refunds" || s.Kind != session.KindRun || run.Status != agentrun.Completed || s.Tenant != "" {
 		t.Errorf("session %+v", s)
 	}
 	var kinds []session.EventKind
@@ -177,7 +178,7 @@ func TestMapChatUsageFromEventsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Session.Kind != session.KindChat || run.Session.Status != session.Failed {
+	if run.Session.Kind != session.KindChat || run.Status != agentrun.Error {
 		t.Errorf("session %+v", run.Session)
 	}
 	if run.Events[0].Kind != session.AgentMessage {

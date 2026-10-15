@@ -85,7 +85,11 @@ func start(t *testing.T, kind session.Kind) (*memory.Store, *session.Recording) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := rec.Start(context.Background(), "t1", "rae", kind)
+	s, err := rec.Open(context.Background(), "t1", "rae", kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := rec.Start(context.Background(), s, "r1", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,16 +133,16 @@ func TestAFullTurnIsRecordedAndStreamed(t *testing.T) {
 	if len(msgs) != 4 || msgs[3].Role != model.Assistant {
 		t.Fatalf("conversation = %+v", msgs)
 	}
-	if err := r.End(context.Background(), session.Ended); err != nil {
+	if err := r.End(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The tool result is dropped when the run ends (the default keep rule);
-	// a run's last answer is its report.
-	want := []session.EventKind{session.OwnerMessage, session.Usage, session.ToolCall, session.Usage, session.Report}
+	// The tool call and its result are dropped when the run ends (the default
+	// keep rule); a run's last answer is its report.
+	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Usage, session.Report}
 	if got := kinds(events); !equal(got, want) {
 		t.Fatalf("recorded %v, want %v", got, want)
 	}
@@ -258,14 +262,18 @@ func BenchmarkTurn(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		m := &script{replies: []model.Reply{use("c1", "stripe_get", `{}`), say("Done.")}}
-		r, err := rec.Start(ctx, "t1", "rae", session.KindRun)
+		s, err := rec.Open(ctx, "t1", "rae", session.KindRun)
+		if err != nil {
+			b.Fatal(err)
+		}
+		r, err := rec.Start(ctx, s, "r1", time.Now())
 		if err != nil {
 			b.Fatal(err)
 		}
 		if _, _, err := agent.Run(ctx, newAgent(m, lookup), r, nil, "Go.", nil); err != nil {
 			b.Fatal(err)
 		}
-		if err := r.End(ctx, session.Ended); err != nil {
+		if err := r.End(ctx); err != nil {
 			b.Fatal(err)
 		}
 	}

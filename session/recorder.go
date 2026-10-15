@@ -18,9 +18,9 @@ const (
 	MaxBatchBytes = 2 << 20
 )
 
-// Recorder starts sessions on a Store and records them under a Policy. The rule
-// is applied when an event is recorded: a Never kind doesn't reach the Store,
-// so it can't outlive a crash either.
+// Recorder opens sessions on a Store and records their runs under a Policy.
+// The rule is applied when an event is recorded: a Never kind doesn't reach
+// the Store, so it can't outlive a crash either.
 type Recorder struct {
 	store  Store
 	policy Policy
@@ -40,59 +40,103 @@ func NewRecorderAt(store Store, policy Policy, now func() time.Time) (*Recorder,
 	return &Recorder{store: store, policy: policy, now: now}, nil
 }
 
-// Start creates a running session and returns the Recording that records it.
-// The caller must End it: that is what stops its writer.
-func (r *Recorder) Start(ctx context.Context, tenant, agent string, kind Kind) (*Recording, error) {
-	now := r.now().UTC()
-	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Status: Running, Started: now, Updated: now}
+// expires is when a session last touched at now may go, under the policy
+// (zero: kept until deleted).
+func (r *Recorder) expires(now time.Time) time.Time {
 	if keep := r.policy.SessionRetention(); keep > 0 {
-		s.Expires = now.Add(keep)
+		return now.Add(keep)
 	}
-	if err := r.store.Create(ctx, s); err != nil {
-		return nil, err
-	}
-	rec := &Recording{r: r, s: s, wake: make(chan struct{}, 1), changed: make(chan struct{}), ending: make(chan struct{}, 1)}
-	go rec.write(context.WithoutCancel(ctx))
-	return rec, nil
+	return time.Time{}
 }
 
-// Recording records one session, and is its only writer.
+// Open creates a session, a thread for an agent's runs.
+func (r *Recorder) Open(ctx context.Context, tenant, agent string, kind Kind) (Session, error) {
+	now := r.now().UTC()
+	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Started: now, Updated: now, Expires: r.expires(now)}
+	if err := r.store.Create(ctx, s); err != nil {
+		return Session{}, err
+	}
+	return s, nil
+}
+
+// Start opens a new run in s and records it. created is when the run was
+// made (see MaxStartDelay). The caller must End or Pause the Recording: that
+// is what stops its writer.
+func (r *Recorder) Start(ctx context.Context, s Session, run string, created time.Time) (*Recording, error) {
+	if err := r.store.Begin(ctx, s.Tenant, s.ID, run, created); err != nil {
+		return nil, err
+	}
+	return r.recording(s, run, 0), nil
+}
+
+// Resume carries on recording a run that paused, from its last Seq: in this
+// process or a fresh one. Only a held run resumes: an ended run is ErrEnded,
+// and one that never paused is ErrNotPaused, since its own Recording is still
+// its writer. Two resumes of one paused run would both get through, so the
+// caller must have claimed the run first (its compare-and-set from PAUSED to
+// RUNNING): one writer at a time.
+func (r *Recorder) Resume(ctx context.Context, s Session, run string) (*Recording, error) {
+	state, err := r.store.State(ctx, s.Tenant, s.ID, run)
+	switch {
+	case err != nil:
+		return nil, err
+	case state.Ended:
+		return nil, ErrEnded
+	case !state.Held:
+		return nil, ErrNotPaused
+	}
+	return r.recording(s, run, state.Seq), nil
+}
+
+func (r *Recorder) recording(s Session, run string, seq int64) *Recording {
+	rec := &Recording{r: r, s: s, run: run, queued: seq, stored: seq,
+		wake: make(chan struct{}, 1), changed: make(chan struct{}), ending: make(chan struct{}, 1)}
+	go rec.write()
+	return rec
+}
+
+// Recording records one run, and is its only writer.
 //
 // Record never waits: it numbers and queues the event, and one goroutine per
 // recording writes the queue to the Store in order, in batches of what queued
-// during the last write. Flush and End wait for it, and every wait honours its
-// context.
+// during the last write. Flush, Pause and End wait for it, and every wait
+// honours its context.
 //
-// A failed write loses nothing: its events stay queued, Flush and End return
-// the error, and the next Record, Flush or End tries again. A retry can't store
-// an event twice, because the Store skips a Seq it already has. End can
-// likewise be called again after a timeout or a failed Store.End.
+// A failed write loses nothing: its events stay queued, Flush, Pause and End
+// return the error, and the next Record, Flush, Pause or End tries again. A
+// retry can't store an event twice, because the Store skips a Seq it already
+// has. Pause and End can likewise be called again after a timeout or a failed
+// Store call.
 //
 // All methods are safe to call from several goroutines (for example, tool
 // calls running in parallel); events keep the order Record saw them in.
 type Recording struct {
 	r    *Recorder
 	s    Session
+	run  string
 	wake chan struct{} // pokes the writer; holds at most one poke
 
 	mu       sync.Mutex
 	pending  []Event       // recorded, not yet stored, in order
-	queued   int64         // events recorded so far, and the last Seq given
-	stored   int64         // events the Store has accepted
+	queued   int64         // the last Seq given
+	stored   int64         // the last Seq the Store has accepted
 	failed   error         // the last write's error, until the next attempt
-	closed   bool          // End was called: no more Record
-	finished bool          // the Store has ended the session
+	closed   bool          // Pause or End was called: no more Record
+	finished bool          // the Store has held or ended the run
 	changed  chan struct{} // closed and replaced whenever stored or failed changes
 
-	ending chan struct{} // holds one token while an End runs: one End at a time
+	ending chan struct{} // holds one token while a Pause or End runs: one at a time
 }
 
-// Session is the session this recording records.
+// Session is the session the run is recorded in.
 func (rec *Recording) Session() Session { return rec.s }
 
+// Run is the ID of the run this recording records.
+func (rec *Recording) Run() string { return rec.run }
+
 // Record queues one event as its kind's rule says. A body over MaxBody is
-// recorded as an OmittedBody. Record fails only after End, or when body can't
-// be encoded; write errors come from Flush and End.
+// recorded as an OmittedBody. Record fails only after Pause or End, or when
+// body can't be encoded; write errors come from Flush, Pause and End.
 func (rec *Recording) Record(kind EventKind, body any) error {
 	rule := rec.r.policy[kind]
 	raw, err := json.Marshal(body)
@@ -103,7 +147,7 @@ func (rec *Recording) Record(kind EventKind, body any) error {
 		raw, _ = json.Marshal(OmittedBody{Omitted: "over MaxBody", Bytes: len(raw)})
 	}
 	now := rec.r.now().UTC()
-	e := Event{Session: rec.s.ID, Time: now, Kind: kind, Body: raw, UntilEnd: rule.Keep == UntilEnd}
+	e := Event{Session: rec.s.ID, Run: rec.run, Time: now, Kind: kind, Body: raw, UntilEnd: rule.Keep == UntilEnd}
 	if rule.Keep == Kept && rule.Retention > 0 {
 		e.Expires = now.Add(rule.Retention)
 	}
@@ -134,12 +178,36 @@ func (rec *Recording) Flush(ctx context.Context) error {
 	return rec.flush(ctx)
 }
 
-// End stores what's queued and ends the session; events kept only until the
-// end are dropped with it. After an error (a timeout, a failed write, a failed
-// Store.End) nothing more can be recorded, and End can be called again to
-// finish. Once it has succeeded, End returns ErrEnded.
-func (rec *Recording) End(ctx context.Context, status Status) error {
-	select { // wait for another End, as long as ctx allows
+// Pause stores what's queued and holds the run: its session doesn't expire
+// until the run ends, and what it recorded stays as it is. The run carries on
+// in a Recording from Resume. After an error nothing more can be recorded
+// here, and Pause (or End) can be called again to finish. Once it has
+// succeeded, Pause and End return ErrEnded.
+func (rec *Recording) Pause(ctx context.Context) error {
+	return rec.close(ctx, func() error {
+		return rec.r.store.Hold(ctx, rec.s.Tenant, rec.s.ID, rec.run)
+	})
+}
+
+// End stores what's queued and ends the run; events kept only until the end
+// are dropped with it, and the session's retention starts again. After an
+// error (a timeout, a failed write, a failed Store.EndRun) nothing more can be
+// recorded, and End can be called again to finish. Once it has succeeded, End
+// returns ErrEnded.
+func (rec *Recording) End(ctx context.Context) error {
+	return rec.close(ctx, func() error {
+		err := rec.r.store.EndRun(ctx, rec.s.Tenant, rec.s.ID, rec.run, rec.r.expires(rec.r.now().UTC()))
+		if errors.Is(err, ErrEnded) { // an earlier attempt got through
+			return nil
+		}
+		return err
+	})
+}
+
+// close stops recording, stores what's queued, then runs finish: the Store's
+// Hold or EndRun.
+func (rec *Recording) close(ctx context.Context, finish func() error) error {
+	select { // wait for another Pause or End, as long as ctx allows
 	case rec.ending <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
@@ -156,8 +224,7 @@ func (rec *Recording) End(ctx context.Context, status Status) error {
 	if err := rec.flush(ctx); err != nil {
 		return err
 	}
-	err := rec.r.store.End(ctx, rec.s.Tenant, rec.s.ID, status)
-	if err != nil && !errors.Is(err, ErrEnded) { // ErrEnded: an earlier attempt got through
+	if err := finish(); err != nil {
 		return err
 	}
 	rec.mu.Lock()
@@ -210,7 +277,8 @@ func (rec *Recording) broadcast() {
 // write is the recording's writer. When poked, it appends what's pending, a
 // batch at a time, until nothing is left or a write fails; then it waits for
 // the next poke. It stops once the recording is closed and nothing is pending.
-func (rec *Recording) write(ctx context.Context) {
+func (rec *Recording) write() {
+	ctx := context.Background() // a write outlives any one caller; Flush, Pause and End bound the waits
 	for range rec.wake {
 		for {
 			rec.mu.Lock()
@@ -232,7 +300,7 @@ func (rec *Recording) write(ctx context.Context) {
 			batch := rec.pending[:n:n] // Record appends after it, never into it
 			rec.mu.Unlock()
 
-			err := rec.r.store.Append(ctx, rec.s.Tenant, rec.s.ID, batch)
+			err := rec.r.store.Append(ctx, rec.s.Tenant, rec.s.ID, rec.run, batch)
 
 			rec.mu.Lock()
 			if err != nil {
@@ -242,14 +310,14 @@ func (rec *Recording) write(ctx context.Context) {
 				break // the batch stays pending; the next poke retries it
 			}
 			rec.pending = rec.pending[n:]
-			rec.stored += int64(n)
+			rec.stored = batch[n-1].Seq
 			rec.broadcast()
 			rec.mu.Unlock()
 		}
 	}
 }
 
-// Cost sums the cost of a session's Usage events, in millionths of a dollar.
+// Cost sums the cost of Usage events, in millionths of a dollar.
 func Cost(events []Event) (int64, error) {
 	var total int64
 	for _, e := range events {

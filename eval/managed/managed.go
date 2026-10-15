@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/eval"
+	agentrun "github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
 
@@ -208,14 +209,14 @@ func Map(s Session, events []Event) (eval.Run, error) {
 	if s.DeploymentID != "" {
 		kind = session.KindRun
 	}
-	status := session.Running
+	status := agentrun.Running
 	if s.Status == "idle" || s.Status == "terminated" {
-		status = session.Ended
+		status = agentrun.Completed
 	}
 	run := eval.Run{Session: session.Session{
-		ID: s.ID, Agent: s.Metadata["tafs_job"], Kind: kind, Status: status,
+		ID: s.ID, Agent: s.Metadata["tafs_job"], Kind: kind,
 		Started: s.CreatedAt.UTC(), Updated: s.UpdatedAt.UTC(),
-	}}
+	}, Status: status}
 
 	at := s.CreatedAt.UTC()
 	tools := map[string]string{} // tool use id → tool name
@@ -227,7 +228,7 @@ func Map(s Session, events []Event) (eval.Run, error) {
 			return err
 		}
 		run.Events = append(run.Events, session.Event{
-			Session: s.ID, Seq: int64(len(run.Events) + 1), Time: at, Kind: k, Body: raw,
+			Session: s.ID, Run: s.ID, Seq: int64(len(run.Events) + 1), Time: at, Kind: k, Body: raw,
 		})
 		return nil
 	}
@@ -259,7 +260,7 @@ func Map(s Session, events []Event) (eval.Run, error) {
 					msg = e.Error.Type // their messages can name the account or a vault
 				}
 			}
-			run.Session.Status = session.Failed
+			run.Status = agentrun.Error
 			err = add(session.Error, eval.ErrorBody{Message: msg})
 		case "session.usage":
 			if e.Usage != nil {

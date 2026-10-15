@@ -11,8 +11,8 @@ type Keep int
 const (
 	// Never: the event is not written at all.
 	Never Keep = iota
-	// UntilEnd: written while the session runs, so the agent can use it, and
-	// dropped when the session ends.
+	// UntilEnd: written while its run goes on, so the agent can use it, and
+	// dropped when that run ends: one run's events don't stay for the next.
 	UntilEnd
 	// Kept: kept for the rule's Retention, or as long as the session if zero.
 	Kept
@@ -25,7 +25,9 @@ type Rule struct {
 }
 
 // Policy is the keep rule for every kind of event. A policy that leaves a kind
-// out is refused, so a new kind is never recorded by accident.
+// out is refused, so a new kind is never recorded by accident. A tool call and
+// its result share one rule: what is kept of a run never holds one without the
+// other.
 type Policy map[EventKind]Rule
 
 // Check reports a kind the policy has no rule for, or a nonsense rule.
@@ -42,16 +44,21 @@ func (p Policy) Check() error {
 			return fmt.Errorf("session: rule for %q: retention applies only to kept events, and is never negative", k)
 		}
 	}
+	if p[ToolCall] != p[ToolResult] {
+		return fmt.Errorf("session: %q and %q must share one rule", ToolCall, ToolResult)
+	}
 	return nil
 }
 
-// DefaultPolicy keeps what tools return only while the run needs it, since it
-// can carry a company's customer data, and everything else for retention.
+// DefaultPolicy keeps tool calls and what they return only while the run
+// needs them, since they can carry a company's customer data, and everything
+// else for retention.
 func DefaultPolicy(retention time.Duration) Policy {
 	p := Policy{}
 	for _, k := range EventKinds {
 		p[k] = Rule{Keep: Kept, Retention: retention}
 	}
+	p[ToolCall] = Rule{Keep: UntilEnd}
 	p[ToolResult] = Rule{Keep: UntilEnd}
 	return p
 }
