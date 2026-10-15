@@ -1,5 +1,7 @@
 // Command lambda is the server on AWS Lambda: one function behind a function
-// URL with AWS_IAM auth, which also takes EventBridge Scheduler's firings.
+// URL with AWS_IAM auth and invoke mode RESPONSE_STREAM, so server-sent
+// events reach the client as they happen, which also takes EventBridge
+// Scheduler's firings.
 //
 // Everything account-specific comes from the environment, never from code:
 //

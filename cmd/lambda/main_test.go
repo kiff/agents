@@ -83,12 +83,13 @@ func TestURLRequestsReachTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := out.(events.LambdaFunctionURLResponse)
-	if resp.StatusCode != 200 || !strings.Contains(resp.Body, `"id":"payouts"`) {
-		t.Fatalf("got %d %s", resp.StatusCode, resp.Body)
+	resp := out.(*events.LambdaFunctionURLStreamingResponse)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"id":"payouts"`) {
+		t.Fatalf("got %d %s", resp.StatusCode, body)
 	}
 	out, _ = f.handle(ctx, urlEvent(t, "GET", "/agents/payouts", "arn:aws:sts::000000000000:assumed-role/other/fn", "t1"))
-	if resp := out.(events.LambdaFunctionURLResponse); resp.StatusCode != 401 {
+	if resp := out.(*events.LambdaFunctionURLStreamingResponse); resp.StatusCode != 401 {
 		t.Fatalf("another role got %d", resp.StatusCode)
 	}
 }

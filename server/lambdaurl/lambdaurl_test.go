@@ -1,12 +1,14 @@
 package lambdaurl_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -53,21 +55,29 @@ func TestServeReturnsTheResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Add("Set-Cookie", "a=1")
 		w.WriteHeader(http.StatusCreated)
+		w.Header().Set("X-Late", "too late") // after the header is sent: not sent
 		_, _ = w.Write([]byte(`{"path":"` + r.URL.Path + `"}`))
 	})
 	out, err := lambdaurl.Serve(ctx, h, event("POST", "/schedules", "", nil, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.StatusCode != 201 || out.Body != `{"path":"/schedules"}` || out.IsBase64Encoded ||
-		out.Headers["Content-Type"] != "application/json" || len(out.Cookies) != 1 || out.Cookies[0] != "a=1" {
-		t.Fatalf("got %+v", out)
+	body, _ := io.ReadAll(out.Body)
+	if out.StatusCode != 201 || string(body) != `{"path":"/schedules"}` || out.Headers["Content-Type"] != "application/json" ||
+		len(out.Cookies) != 1 || out.Cookies[0] != "a=1" || out.Headers["X-Late"] != "" {
+		t.Fatalf("got %d %q %+v %v", out.StatusCode, body, out.Headers, out.Cookies)
 	}
 
 	binary := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte{0xff, 0x00}) })
 	out, _ = lambdaurl.Serve(ctx, binary, event("GET", "/", "", nil, ""))
-	if out.StatusCode != 200 || !out.IsBase64Encoded || out.Body != base64.StdEncoding.EncodeToString([]byte{0xff, 0x00}) {
-		t.Fatalf("binary body: %+v", out)
+	if body, _ := io.ReadAll(out.Body); out.StatusCode != 200 || !bytes.Equal(body, []byte{0xff, 0x00}) {
+		t.Fatalf("binary body: %d %v", out.StatusCode, body)
+	}
+
+	silent := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	out, _ = lambdaurl.Serve(ctx, silent, event("GET", "/", "", nil, ""))
+	if body, _ := io.ReadAll(out.Body); out.StatusCode != 200 || len(body) != 0 {
+		t.Fatalf("a handler that writes nothing: %d %q", out.StatusCode, body)
 	}
 
 	bad := event("GET", "/", "", nil, "")
@@ -75,6 +85,92 @@ func TestServeReturnsTheResponse(t *testing.T) {
 	out, err = lambdaurl.Serve(ctx, h, bad)
 	if err != nil || out.StatusCode != 400 {
 		t.Fatalf("an unreadable request: %+v, %v", out, err)
+	}
+}
+
+// What the handler writes can be read before the handler is done: a server-
+// sent event reaches the client when it happens.
+func TestServeStreams(t *testing.T) {
+	more := make(chan struct{})
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: text\n\n"))
+		w.(http.Flusher).Flush()
+		<-more // the handler is still running while the client reads
+		_, _ = w.Write([]byte("event: end\n\n"))
+	})
+	out, err := lambdaurl.Serve(ctx, h, event("POST", "/agents/a/runs", "", nil, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Headers["Content-Type"] != "text/event-stream" {
+		t.Fatalf("headers %v", out.Headers)
+	}
+	first := make([]byte, len("event: text\n\n"))
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadFull(out.Body, first); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil || string(first) != "event: text\n\n" {
+			t.Fatalf("read %q: %v", first, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first event didn't arrive while the handler ran")
+	}
+	close(more)
+	if rest, _ := io.ReadAll(out.Body); string(rest) != "event: end\n\n" {
+		t.Fatalf("rest %q", rest)
+	}
+}
+
+// When the runtime closes the response, the handler's next write fails, so
+// the handler ends rather than block for good.
+func TestServeEndsTheHandlerWhenClosed(t *testing.T) {
+	ended := make(chan error, 1)
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for {
+			if _, err := w.Write([]byte("x")); err != nil {
+				ended <- err
+				return
+			}
+		}
+	})
+	out, err := lambdaurl.Serve(ctx, h, event("GET", "/", "", nil, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = out.Body.Read(make([]byte, 1))
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-ended:
+		if err == nil {
+			t.Fatal("no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler is still writing after the response was closed")
+	}
+}
+
+func TestServeAHandlerThatPanics(t *testing.T) {
+	early := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
+	out, err := lambdaurl.Serve(ctx, early, event("GET", "/", "", nil, ""))
+	if err != nil || out.StatusCode != 500 {
+		t.Fatalf("a panic before any header: %d, %v", out.StatusCode, err)
+	}
+	if _, err := io.ReadAll(out.Body); err == nil {
+		t.Fatal("the body ended cleanly after a panic")
+	}
+
+	late := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("part"))
+		panic("boom")
+	})
+	out, _ = lambdaurl.Serve(ctx, late, event("GET", "/", "", nil, ""))
+	body, err := io.ReadAll(out.Body)
+	if out.StatusCode != 200 || string(body) != "part" || err == nil {
+		t.Fatalf("a panic mid-body: %d %q %v; want the part sent, then an error", out.StatusCode, body, err)
 	}
 }
 
