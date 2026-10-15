@@ -130,11 +130,13 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if !ok {
 		deadline = rn.now().Add(MaxRun)
 	}
-	// The loop stops StopTimeout short of the deadline, so storing where it
-	// stopped has time before the invocation is gone. The lease runs to the
-	// deadline itself.
-	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline.Add(-StopTimeout))
+	// Claiming and preparing the run have the whole deadline, as does the
+	// lease. Only the loop stops StopTimeout short of it, so storing where it
+	// stopped has time before the invocation is gone.
+	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	defer cancel()
+	loop, cancelLoop := context.WithDeadline(ctx, deadline.Add(-StopTimeout))
+	defer cancelLoop()
 
 	r, err := rn.Runs.Get(ctx, tenant, id)
 	if err != nil {
@@ -172,7 +174,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		if err != nil {
 			return x.notRun(ctx, r, false, d.Keep, FailedStart, fmt.Errorf("starting its recording: %w", err))
 		}
-		out, _, err := agent.Run(ctx, a, recording, history, r.Input, emit)
+		out, _, err := agent.Run(loop, a, recording, history, r.Input, emit)
 		return x.stop(ctx, recording, d.Keep, out, err)
 	}
 	// The recording resumes before KIFF is asked: collecting forwards an
@@ -186,7 +188,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.repause(ctx, recording, r, fmt.Errorf("collecting its held calls: %w", err))
 	}
-	out, _, err := agent.Continue(ctx, a, recording, history, r, held, emit)
+	out, _, err := agent.Continue(loop, a, recording, history, r, held, emit)
 	return x.stop(ctx, recording, d.Keep, out, err)
 }
 

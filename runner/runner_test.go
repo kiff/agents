@@ -903,10 +903,29 @@ func TestACancelDuringAHeldBatchEndsOnceResolved(t *testing.T) {
 	}
 }
 
+// ctxRuns refuses a call whose context is done, as a real store's client does.
+type ctxRuns struct{ *memory.Runs }
+
+func (c ctxRuns) Get(ctx context.Context, tenant, id string) (run.Run, error) {
+	if err := ctx.Err(); err != nil {
+		return run.Run{}, err
+	}
+	return c.Runs.Get(ctx, tenant, id)
+}
+
+func (c ctxRuns) Put(ctx context.Context, prev, next run.Run) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.Runs.Put(ctx, prev, next)
+}
+
 // The loop stops StopTimeout before the caller's deadline, so where the run
-// stopped is stored in time.
+// stopped is stored in time. Only the loop does: the claim has the whole
+// deadline, so a run is claimed and stored even with little time left.
 func TestTheLoopLeavesTimeToStoreTheStop(t *testing.T) {
 	f := newFixture(t, say("too late"))
+	f.r.Runs = ctxRuns{f.runs}
 	r := f.start(server.Start{Input: "go"})
 	dctx, cancel := context.WithDeadline(ctx, time.Now().Add(runner.StopTimeout/2))
 	defer cancel()
