@@ -43,6 +43,7 @@ chat/               the owner talking to an agent: each message a run in the con
 runner/             executes runs, as the server's Runner: start in a session, claim, build, record, run, store the stop; continue a paused run
 registry/           stored agent definitions, built per request for their tenant; ports Agents, Secrets
 registry/registrytest the checks every Agents store must pass
+registry/secretsmanager adapter: Secrets on AWS Secrets Manager, each key under its tenant's name
 schedule/           schedules: cron in a time zone, kept in step with what fires them; ports Schedules, Scheduler
 schedule/scheduletest the checks every Schedules store must pass
 schedule/eventbridge adapter: the Scheduler on EventBridge Scheduler
