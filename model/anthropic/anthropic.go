@@ -109,6 +109,9 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		}
 		p.Tools = append(p.Tools, sdk.ToolUnionParam{OfTool: &tp})
 	}
+	if req.NoToolUse && len(p.Tools) > 0 { // with no tools there's nothing to forbid, and the API refuses a choice alone
+		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
+	}
 	return p, nil
 }
 

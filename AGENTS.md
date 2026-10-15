@@ -78,5 +78,9 @@ Issues and PRs are the shared record.
 gofmt -l . && go vet ./... && go test ./...
 ```
 
+On a pull request, CI also runs the benchmarks against the base branch's and
+fails on a clear slowdown; `.github/bench.sh main` does the same locally (it
+needs `benchstat`).
+
 New behaviour gets tests. Work on feature branches only; never push to `main`.
 Merge only when the PR is approved at its current head.

@@ -41,6 +41,15 @@ func TestARequirementIsResolvedByAnAnswerOrExpiry(t *testing.T) {
 	if !r.Resolved(at.Add(time.Minute)) {
 		t.Fatal("not resolved once answered")
 	}
+	// No expiry recorded: never resolved by time, only by an answer.
+	unknown := run.Requirement{CallID: "c1", Tool: "stripe_refund"}
+	if unknown.Resolved(at.Add(365 * 24 * time.Hour)) {
+		t.Fatal("a requirement with no expiry and no answer counts as resolved")
+	}
+	unknown.Answered = at
+	if !unknown.Resolved(at) {
+		t.Fatal("a requirement with no expiry isn't resolved by an answer")
+	}
 }
 
 // A paused run stores and reads back whole: it continues from what it stored.

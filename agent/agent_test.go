@@ -211,8 +211,11 @@ func TestAHeldCallPausesTheRun(t *testing.T) {
 	if refund.calls != 1 || lookup.calls != 1 || len(m.reqs) != 2 {
 		t.Fatalf("calls %d and %d, model turns %d", refund.calls, lookup.calls, len(m.reqs))
 	}
-	if len(m.reqs[1].Tools) != 0 {
-		t.Fatal("the turn after a hold offered tools")
+	if say := m.reqs[1]; !say.NoToolUse || len(say.Tools) != 2 {
+		t.Fatalf("the turn after a hold: NoToolUse %v, %d tools; want the same tools, use forbidden", say.NoToolUse, len(say.Tools))
+	}
+	if m.reqs[0].NoToolUse {
+		t.Fatal("a working turn forbade tool use")
 	}
 }
 
@@ -342,6 +345,7 @@ func TestContinueTakesExactlyTheHeldCalls(t *testing.T) {
 	extra := append(approved(), agent.ToolResultBody{CallID: "c1", Tool: "stripe_get", Result: tool.Result{Text: "{}"}})
 	still := []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "Held.", State: tool.StateHeld}}}
 	twice := append(approved(), approved()...)
+	wrongTool := []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_get", Result: tool.Result{Text: "refunded re_1"}}}
 	noTurn := stored
 	noTurn.Paused = nil
 	cases := map[string]struct {
@@ -352,6 +356,7 @@ func TestContinueTakesExactlyTheHeldCalls(t *testing.T) {
 		"extra":     {stored, extra},
 		"twice":     {stored, twice},
 		"stillHeld": {stored, still},
+		"wrongTool": {stored, wrongTool},
 		"noTurn":    {noTurn, approved()},
 	}
 	for name, c := range cases {
