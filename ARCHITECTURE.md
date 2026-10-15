@@ -105,12 +105,12 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
 | `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). To add in step 4: `tool/kiff` sends and records KIFF's operation ID for each call, and collects a held call's outcome by it |
 | `hook` | Before a run (input checks), around each tool call, after a run (output checks); background hooks for notifications | To build, when a check needs it |
-| `registry` | Stored agent definitions; port `Agents` | To build |
-| `schedule` | Schedules; port `Scheduler`, EventBridge Scheduler as the adapter | To build |
+| `registry` | Stored agent definitions, each bounded as stored; built per request for their tenant, with its gateway on the server's list and its KIFF key by reference; ports `Agents`, `Secrets` | Built (#16): definitions, `Build`, memory and DynamoDB stores. Still to come: the routes (step 2), removing an agent and what is kept for it, the Secrets Manager adapter |
+| `schedule` | Schedules: five-field cron in a time zone, at most every 15 minutes, on or off; ports `Schedules`, `Scheduler` (EventBridge Scheduler, `schedule/eventbridge`). A firing reads the stored schedule and heals the Scheduler when the two disagree | Built (#17): the core, memory and DynamoDB stores, the EventBridge adapter. Still to come: the routes and the wiring (step 2), triggers |
 | `server` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud | To build |
 | `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3). Reads runs once they exist; stores eval runs through a port |
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
-| `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions; grow with each port |
+| `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, agents and schedules; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
 | `cmd/lambda` | The server on Lambda | To build |
 
