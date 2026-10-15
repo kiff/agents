@@ -1,5 +1,7 @@
 // Command lambda is the server on AWS Lambda: one function behind a function
-// URL with AWS_IAM auth, which also takes EventBridge Scheduler's firings.
+// URL with AWS_IAM auth and invoke mode RESPONSE_STREAM, so server-sent
+// events reach the client as they happen, which also takes EventBridge
+// Scheduler's firings.
 //
 // Everything account-specific comes from the environment, never from code:
 //
@@ -161,7 +163,7 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return nil, err
 		}
-		return lambdaurl.Serve(ctx, f.http, e)
+		return lambdaurl.Serve(ctx, f.http, e, f.log)
 	case shape.Schedule != "" && shape.Due != "":
 		tenant, id, due, err := eventbridge.ParseEvent(raw)
 		if err != nil {

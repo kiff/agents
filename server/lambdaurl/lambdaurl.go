@@ -1,5 +1,5 @@
 // Package lambdaurl serves an http.Handler behind a Lambda function URL whose
-// auth type is AWS_IAM: Lambda refuses any request not signed by a principal
+// auth type is AWS_IAM and invoke mode RESPONSE_STREAM: Lambda refuses any request not signed by a principal
 // allowed to invoke the URL, and tells the function who signed it.
 //
 // Auth trusts a request's tenant header only from the callers it is given
@@ -13,9 +13,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
-	"unicode/utf8"
+	"sync"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -66,57 +68,87 @@ func Request(ctx context.Context, e events.LambdaFunctionURLRequest) (*http.Requ
 	return r, nil
 }
 
-// Serve runs h on the event and returns its response.
-func Serve(ctx context.Context, h http.Handler, e events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+// Serve runs h on the event for a function URL whose invoke mode is
+// RESPONSE_STREAM: what h writes reaches the client as it writes it, so a
+// server-sent event stream is live.
+//
+// h runs in its own goroutine, which Serve hands over to the returned
+// response: it ends when h returns, or when the runtime closes the response
+// (h's next write then fails). Serve returns once h has written or flushed
+// its header, or has returned without one.
+//
+// A panic in h is logged to log (nil logs nothing) and ends the body with
+// errFailed: the runtime sends a body's error to the client as the stream's
+// error, so what the panic said stays here.
+func Serve(ctx context.Context, h http.Handler, e events.LambdaFunctionURLRequest, log *slog.Logger) (*events.LambdaFunctionURLStreamingResponse, error) {
 	r, err := Request(ctx, e)
 	if err != nil {
-		return events.LambdaFunctionURLResponse{StatusCode: http.StatusBadRequest,
-			Headers: map[string]string{"Content-Type": "application/json"}, Body: `{"error":"the request could not be read"}`}, nil
+		return &events.LambdaFunctionURLStreamingResponse{StatusCode: http.StatusBadRequest,
+			Headers: map[string]string{"Content-Type": "application/json"},
+			Body:    strings.NewReader(`{"error":"the request could not be read"}`)}, nil
 	}
-	w := &response{header: http.Header{}}
-	h.ServeHTTP(w, r)
-	out := events.LambdaFunctionURLResponse{StatusCode: w.status(), Headers: map[string]string{}}
-	for k, v := range w.header {
+	pr, pw := io.Pipe()
+	w := &streamWriter{header: http.Header{}, pipe: pw, ready: make(chan struct{})}
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				if log != nil {
+					log.ErrorContext(ctx, "handler panicked", "path", r.URL.Path, "panic", fmt.Sprint(p))
+				}
+				w.WriteHeader(http.StatusInternalServerError) // if nothing was sent yet
+				_ = pw.CloseWithError(errFailed)
+				return
+			}
+			w.WriteHeader(http.StatusOK) // a handler that wrote nothing
+			_ = pw.Close()
+		}()
+		h.ServeHTTP(w, r)
+	}()
+	<-w.ready
+	out := &events.LambdaFunctionURLStreamingResponse{StatusCode: w.code, Headers: map[string]string{}, Body: pr}
+	for k, v := range w.sent {
 		if k == "Set-Cookie" {
 			out.Cookies = append(out.Cookies, v...)
 			continue
 		}
 		out.Headers[k] = strings.Join(v, ", ")
 	}
-	if utf8.Valid(w.body.Bytes()) {
-		out.Body = w.body.String()
-	} else {
-		out.Body, out.IsBase64Encoded = base64.StdEncoding.EncodeToString(w.body.Bytes()), true
-	}
 	return out, nil
 }
 
-// response collects what a handler writes.
-type response struct {
+// errFailed ends a body whose handler failed. It is all the client learns:
+// the runtime forwards a body's error to it.
+var errFailed = errors.New("the response failed")
+
+// streamWriter is an http.ResponseWriter whose body goes down a pipe. Its
+// status and header are fixed when first written, as on any connection.
+type streamWriter struct {
 	header http.Header
-	body   bytes.Buffer
-	code   int
+	pipe   *io.PipeWriter
+
+	once  sync.Once
+	ready chan struct{} // closed once the status and header are fixed
+	code  int
+	sent  http.Header // the header as it was when fixed
 }
 
-func (w *response) Header() http.Header { return w.header }
+func (w *streamWriter) Header() http.Header { return w.header }
 
-func (w *response) WriteHeader(code int) {
-	if w.code == 0 {
-		w.code = code
-	}
+func (w *streamWriter) WriteHeader(code int) {
+	w.once.Do(func() {
+		w.code, w.sent = code, w.header.Clone()
+		close(w.ready)
+	})
 }
 
-func (w *response) Write(b []byte) (int, error) {
+func (w *streamWriter) Write(b []byte) (int, error) {
 	w.WriteHeader(http.StatusOK)
-	return w.body.Write(b)
+	return w.pipe.Write(b)
 }
 
-func (w *response) status() int {
-	if w.code == 0 {
-		return http.StatusOK
-	}
-	return w.code
-}
+// Flush commits the status and header, as on any connection; the body needs
+// nothing more, since every Write already goes down the pipe as it is made.
+func (w *streamWriter) Flush() { w.WriteHeader(http.StatusOK) }
 
 // Auth returns a server's Auth that accepts a request signed by one of
 // roles, for the tenant in its TenantHeader. Each role is an assumed-role ARN
