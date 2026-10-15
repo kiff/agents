@@ -158,12 +158,20 @@ func (c conflictError) Error() string { return c.msg }
 
 func conflict(msg string) error { return conflictError{msg} }
 
+// unavailableError is a request this server isn't set up to serve.
+type unavailableError struct{ msg string }
+
+func (u unavailableError) Error() string { return u.msg }
+
+func unavailable(msg string) error { return unavailableError{msg} }
+
 // fail writes err as a status and a message. Only errors the caller can act
 // on say what went wrong; anything else is logged, and the caller reads
 // "internal error".
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var br badRequest
 	var cf conflictError
+	var un unavailableError
 	var tooBig *http.MaxBytesError
 	status, msg := http.StatusInternalServerError, "internal error"
 	switch {
@@ -176,6 +184,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
 	case errors.As(err, &tooBig):
 		status, msg = http.StatusRequestEntityTooLarge, "the body is too large"
+	case errors.As(err, &un):
+		status, msg = http.StatusServiceUnavailable, un.Error()
 	case errors.As(err, &cf):
 		status, msg = http.StatusConflict, cf.Error()
 	case errors.As(err, &br):

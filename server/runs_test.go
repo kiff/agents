@@ -23,7 +23,8 @@ import (
 )
 
 // runner is a server.Runner on the memory stores, as the loop's will be: it
-// stores the run and its session, and an Execute that answers "done".
+// stores the run and its session, and an Execute that records what it does
+// and answers "done".
 type runner struct {
 	runs  *memory.Runs
 	store *memory.Store
@@ -31,7 +32,8 @@ type runner struct {
 	mu      sync.Mutex
 	starts  []server.Start
 	execs   []string
-	failing error // Execute fails with it, after the run started
+	failing error         // Execute fails with it, after the run started
+	hold    chan struct{} // when set, Execute waits on it after its first event
 }
 
 func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
@@ -43,18 +45,23 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now}); err != nil {
 			return run.Run{}, err
 		}
-	} else if _, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil {
-		return run.Run{}, err
+	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent {
+		return run.Run{}, session.ErrNotFound // the contract: another tenant's or agent's session isn't found
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
 	r.Source = s.Source
 	return r, rr.runs.Create(ctx, r)
 }
 
+// Execute records the owner's message, says "do", "ne" as it goes, records
+// its answer and completes. The client going away doesn't stop it: a run
+// outlives its stream.
 func (rr *runner) Execute(ctx context.Context, tenant, id string, emit func(agent.Event)) (run.Run, error) {
 	rr.mu.Lock()
 	rr.execs = append(rr.execs, id)
+	hold := rr.hold
 	rr.mu.Unlock()
+	ctx = context.WithoutCancel(ctx)
 	if emit == nil {
 		emit = func(agent.Event) {}
 	}
@@ -65,12 +72,22 @@ func (rr *runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if r, err = run.Change(ctx, rr.runs, r, now, func(n *run.Run) error { n.Status = run.Running; return nil }); err != nil {
 		return r, err
 	}
+	record := func(seq int64, kind session.EventKind, text string) {
+		ev := session.Event{Session: r.Session, Run: r.ID, Seq: seq, Time: now, Kind: kind, Body: json.RawMessage(fmt.Sprintf(`{"text":%q}`, text))}
+		_ = rr.store.Append(ctx, tenant, r.Session, r.ID, []session.Event{ev})
+	}
+	_ = rr.store.Begin(ctx, tenant, r.Session, r.ID, now)
+	record(1, session.OwnerMessage, r.Input)
+	if hold != nil {
+		<-hold
+	}
 	emit(agent.Event{Kind: agent.TextDelta, Text: "do"})
 	emit(agent.Event{Kind: agent.TextDelta, Text: "ne"})
 	if rr.failing != nil {
 		_, _ = run.Change(ctx, rr.runs, r, now, func(n *run.Run) error { n.Status, n.Error = run.Error, "the model failed"; return nil })
 		return run.Run{}, rr.failing
 	}
+	record(2, session.AgentMessage, "done")
 	return run.Change(ctx, rr.runs, r, now, func(n *run.Run) error {
 		n.Status, n.Stop, n.Output = run.Completed, "answered", "done"
 		return nil
@@ -79,6 +96,7 @@ func (rr *runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 
 type runFixture struct {
 	*fixture
+	server     *server.Server
 	runs       *memory.Runs
 	runner     *runner
 	background []string
@@ -110,10 +128,19 @@ func newRunFixture(t *testing.T) *runFixture {
 		Gateways: []string{"https://gateway.test/mcp"}, Now: func() time.Time { return now },
 		Log: slog.New(slog.NewTextHandler(base.logs, nil)),
 	}
+	f.server = s
 	base.srv.Close()
 	base.srv = httptest.NewServer(s.Handler())
 	t.Cleanup(base.srv.Close)
 	return f
+}
+
+// noBackground serves the API with no background dispatcher.
+func (f *runFixture) noBackground() {
+	f.server.Background = nil
+	f.srv.Close()
+	f.srv = httptest.NewServer(f.server.Handler())
+	f.t.Cleanup(f.srv.Close)
 }
 
 // sse is one server-sent event.
@@ -176,17 +203,41 @@ func names(events []sse) string {
 	return strings.Join(n, ",")
 }
 
+// kinds splits a stream into its deltas' texts and its recorded events' ids.
+func kinds(t *testing.T, events []sse) (deltas, ids []string) {
+	t.Helper()
+	for _, e := range events {
+		switch e.name {
+		case "delta":
+			if e.id != "" {
+				t.Fatalf("a delta has an id: %q", e.id)
+			}
+			deltas = append(deltas, fmt.Sprint(e.data["text"]))
+		case "event":
+			if e.id == "" || fmt.Sprint(e.data["seq"]) != e.id {
+				t.Fatalf("a recorded event's id %q isn't its seq %v", e.id, e.data["seq"])
+			}
+			ids = append(ids, e.id)
+		}
+	}
+	return deltas, ids
+}
+
 func TestStartStreamsTheRun(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
 	code, events := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"Pay the vendors"}`)
-	if code != 200 || names(events) != "run,text,text,end" {
+	if code != 200 || len(events) < 2 || events[0].name != "run" || events[len(events)-1].name != "end" {
 		t.Fatalf("got %d %s", code, names(events))
 	}
-	if events[0].data["status"] != string(run.Pending) || events[1].data["text"] != "do" {
-		t.Fatalf("first events %v %v", events[0].data, events[1].data)
+	if events[0].data["status"] != string(run.Pending) {
+		t.Fatalf("first event %v", events[0].data)
 	}
-	end := events[3].data
+	deltas, ids := kinds(t, events)
+	if strings.Join(deltas, ",") != "do,ne" || strings.Join(ids, ",") != "1,2" {
+		t.Fatalf("deltas %v, recorded events %v; want do,ne and 1,2, each once", deltas, ids)
+	}
+	end := events[len(events)-1].data
 	if end["status"] != string(run.Completed) || end["output"] != "done" || end["id"] != events[0].data["id"] {
 		t.Fatalf("end %v", end)
 	}
@@ -196,6 +247,105 @@ func TestStartStreamsTheRun(t *testing.T) {
 	}
 	if len(f.background) != 0 {
 		t.Fatal("a streamed run was also sent to the background")
+	}
+}
+
+// A client that loses the start stream resumes after the last id it got,
+// and sees each recorded event once.
+func TestStartThenResumeFromTheLastCursor(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.runner.hold = make(chan struct{})
+
+	// Read the start stream until its first recorded event, then go away.
+	sctx, cancel := context.WithCancel(ctx)
+	req, _ := http.NewRequestWithContext(sctx, "POST", f.srv.URL+"/agents/payouts/runs", strings.NewReader(`{"input":"x"}`))
+	req.Header.Set("X-Test-Tenant", "t1")
+	resp, err := f.srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runID, cursor string
+	sc := bufio.NewScanner(resp.Body)
+	var name string
+	timeout := time.AfterFunc(10*time.Second, cancel)
+	for cursor == "" && sc.Scan() {
+		line := sc.Text()
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			name = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "id: ") && name == "":
+			cursor = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "data: ") && name == "run":
+			var v map[string]any
+			_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &v)
+			runID = fmt.Sprint(v["id"])
+		case line == "":
+			name = ""
+		}
+	}
+	timeout.Stop()
+	cancel()
+	resp.Body.Close()
+	if cursor != "1" || runID == "" {
+		t.Fatalf("got cursor %q for run %q before going away", cursor, runID)
+	}
+
+	// The run goes on without the client, and ends.
+	close(f.runner.hold)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, _ := f.runs.Get(ctx, "t1", runID)
+		if got.Status == run.Completed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run is %s", got.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+runID+"/resume?after="+cursor, "")
+	_, ids := kinds(t, events)
+	if code != 200 || strings.Join(ids, ",") != "2" || events[len(events)-1].name != "end" {
+		t.Fatalf("resumed after %s: %d %s, ids %v; want only 2, then end", cursor, code, names(events), ids)
+	}
+}
+
+func TestStartInTheBackgroundWithNoDispatcher(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.noBackground()
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "background": true})
+	f.want(503, code, body, "a background start on a server with no dispatcher")
+	if list, _ := f.runs.List(ctx, "t1", "payouts", 10); len(list) != 0 || len(f.runner.starts) != 0 {
+		t.Fatalf("stored %d runs, started %d", len(list), len(f.runner.starts))
+	}
+}
+
+// A session is one agent's thread: a run of another agent can't join it.
+func TestStartRefusesAnotherAgentsSession(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "refunds")
+	f.session("t1", "refunds-thread", "refunds")
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "session_id": "refunds-thread", "background": true})
+	f.want(404, code, body, "a payouts run in the refunds thread")
+	if len(f.runner.starts) != 0 {
+		t.Fatal("the Runner was asked to start it")
+	}
+	// The same session for its own agent is fine.
+	code, body = f.do("t1", "POST", "/agents/refunds/runs", map[string]any{"input": "x", "session_id": "refunds-thread", "background": true})
+	f.want(202, code, body, "a refunds run in the refunds thread")
+}
+
+// The Runner's contract refuses another agent's session too, whoever calls it.
+func TestRunnerContractRefusesAnotherAgentsSession(t *testing.T) {
+	f := newRunFixture(t)
+	f.session("t1", "refunds-thread", "refunds")
+	_, err := f.runner.Start(ctx, server.Start{Tenant: "t1", Agent: "payouts", Session: "refunds-thread", Trigger: run.ByOwner, Input: "x"})
+	if !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("got %v, want session.ErrNotFound", err)
 	}
 }
 
@@ -257,7 +407,7 @@ func TestStartThatFailsEndsWithTheStoredRun(t *testing.T) {
 	f.putAgent("t1", "payouts")
 	f.runner.failing = errors.New("model down: secret detail")
 	code, events := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
-	if code != 200 || len(events) == 0 {
+	if code != 200 || len(events) == 0 || events[0].name != "run" {
 		t.Fatalf("got %d %s", code, names(events))
 	}
 	end := events[len(events)-1]
