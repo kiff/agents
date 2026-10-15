@@ -15,8 +15,8 @@ import (
 type Kind string
 
 const (
-	Run  Kind = "run"  // started by a schedule, a trigger or the owner, to do the job
-	Chat Kind = "chat" // the owner talking to the agent
+	KindRun  Kind = "run"  // started by a schedule, a trigger or the owner, to do the job
+	KindChat Kind = "chat" // the owner talking to the agent
 )
 
 // Status is where a session is. A session that has ended takes no more events.
@@ -59,7 +59,8 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 // Event is one thing that happened in a session. Seq orders a session's events
 // and is set by the Store. Expires is when the event may be purged (zero: it
 // lives as long as its session); UntilEnd events are dropped when the session
-// ends.
+// ends. Events are written by one goroutine per session (see Recording), so a Store
+// sees each session's appends one at a time.
 type Event struct {
 	Session  string          `json:"session"`
 	Seq      int64           `json:"seq"`
@@ -94,8 +95,9 @@ var (
 type Store interface {
 	// Create stores a new session.
 	Create(ctx context.Context, s Session) error
-	// Append adds an event to a running session, sets its Seq and returns it.
-	Append(ctx context.Context, tenant string, e Event) (Event, error)
+	// Append adds events to a running session, in order and all or none,
+	// numbering them on from the session's last Seq.
+	Append(ctx context.Context, tenant, id string, events []Event) error
 	// Read returns a session and its events in order.
 	Read(ctx context.Context, tenant, id string) (Session, []Event, error)
 	// List returns an agent's sessions, most recently updated first, at most limit.

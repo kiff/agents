@@ -45,9 +45,9 @@ func (p Policy) Check() error {
 	return nil
 }
 
-// TafsDefault is tafs' policy: what tools return is kept only while the run
-// needs it; everything else is kept for retention.
-func TafsDefault(retention time.Duration) Policy {
+// DefaultPolicy keeps what tools return only while the run needs it, since it
+// can carry a company's customer data, and everything else for retention.
+func DefaultPolicy(retention time.Duration) Policy {
 	p := Policy{}
 	for _, k := range EventKinds {
 		p[k] = Rule{Keep: Kept, Retention: retention}
