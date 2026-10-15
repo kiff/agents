@@ -8,8 +8,8 @@ ARCHITECTURE.md is the plan; these pages are what was built against it.
 issue's page in the same PR: what it adds, the tests that guard it, and what
 is left.
 
-As of `main` at de07a55 (2026-10-16). For runs, the runner, chat and evals
-by example, see [runs.md](runs.md).
+As of `main` at 9c1ba7e (2026-10-16). By example: [runs.md](runs.md) (runs,
+the runner, chat and evals) and [registry.md](registry.md).
 
 | Issue | Step | Status | Page |
 |---|---|---|---|
@@ -20,22 +20,22 @@ by example, see [runs.md](runs.md).
 | [#13](https://github.com/kiff/agents/issues/13) Server on Lambda | 2 | Routes, auth, streaming built; runner, background runs and the sweep not wired; not deployed | [13-server.md](issues/13-server.md) |
 | [#14](https://github.com/kiff/agents/issues/14) Console | 3 | Not started | [14-console.md](issues/14-console.md) |
 | [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | Not started; KIFF's side has shipped | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
-| [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Mostly delivered; Secrets Manager adapter to do | [16-registry.md](issues/16-registry.md) |
+| [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Mostly delivered, the Secrets Manager adapter included; withdrawing holds on removal to do (#15) | [16-registry.md](issues/16-registry.md) |
 | [#17](https://github.com/kiff/agents/issues/17) Schedules | 6 | Built up to firing; firings don't start runs yet; triggers to do | [17-schedules.md](issues/17-schedules.md) |
 | [kiff/tafs#42](https://github.com/kiff/tafs/issues/42) tafs switches over | 7 | Waits on #13, #15, #16 | — |
 
 ## What blocks what
 
 ```
-#16 Secrets Manager adapter ──► #13 runner in cmd/lambda ──► #17 firings start runs
-                                        │                    └► #3 grading this runtime (can run locally before)
-#15 IDs, Collect, /kiff/alerts ─────────┴──► paused runs continue ──► kiff/tafs#42
+#13 runner in cmd/lambda (with #16's Secrets Manager adapter) ──► #17 firings start runs
+        │                                                       └► #3 grading this runtime (can run locally before)
+#15 IDs, Collect, /kiff/alerts ──┴──► paused runs continue ──► kiff/tafs#42
 #14 console: needs a cross-tenant run listing and usage, which no store has yet
 ```
 
-The shortest path to tafs switching over: the Secrets Manager adapter (#16),
-then the runner, background runs and the sweep in `cmd/lambda` (#13), then
-#15. #14 is independent of that path.
+The shortest path to tafs switching over: the runner, background runs and
+the sweep in `cmd/lambda` (#13, with the Secrets Manager adapter #42 added),
+then #15. #14 is independent of that path.
 
 ## The older issues still open
 

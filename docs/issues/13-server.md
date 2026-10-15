@@ -144,9 +144,9 @@ Tests drive the routes against `store/memory`. No test touches AWS.
 
 ## Not delivered yet
 
-- **The runner in `cmd/lambda`.** It needs the agents' KIFF keys through a
-  Secrets Manager adapter ([#16](16-registry.md), not written) and a model
-  key. Until then `POST /agents/{id}/runs` isn't served on Lambda, and a
+- **The runner in `cmd/lambda`.** It builds agents with their KIFF keys
+  through `registry/secretsmanager` ([#16](16-registry.md), built, not yet
+  wired here), and needs a model key. Until then `POST /agents/{id}/runs` isn't served on Lambda, and a
   schedule firing logs `errNoRuns` and starts nothing.
 - **Background runs** as an async invocation of the same function, with
   Lambda's retries off and an on-failure destination that marks the run
