@@ -207,8 +207,24 @@ func (st *Store) Create(ctx context.Context, se session.Session) error {
 	return err
 }
 
-// meta reads the tenant's live session and its last Seq.
+// deleting is the status of a session being deleted: Append and End require
+// a running session, so nothing new lands in it, and callers no longer find
+// it. It stays in the table until its events are gone, so a retried Delete or
+// DeleteAgent can finish the job.
+const deleting session.Status = "deleting"
+
+// meta reads the tenant's live session and its last Seq. A session being
+// deleted is not found.
 func (st *Store) meta(ctx context.Context, tenant, id string) (session.Session, int64, error) {
+	se, seq, err := st.metaAny(ctx, tenant, id)
+	if err == nil && se.Status == deleting {
+		return session.Session{}, 0, session.ErrNotFound
+	}
+	return se, seq, err
+}
+
+// metaAny is meta, including a session being deleted.
+func (st *Store) metaAny(ctx context.Context, tenant, id string) (session.Session, int64, error) {
 	out, err := st.db.GetItem(ctx, &ddb.GetItemInput{TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK), ConsistentRead: aws.Bool(true)})
 	if err != nil {
 		return session.Session{}, 0, err
@@ -345,7 +361,7 @@ func (st *Store) Read(ctx context.Context, tenant, id string) (session.Session, 
 			events = append(events, e)
 		}
 	}
-	if !found || expired(se.Expires, now) {
+	if !found || se.Status == deleting || expired(se.Expires, now) {
 		return session.Session{}, nil, session.ErrNotFound
 	}
 	return se, events, nil
@@ -367,7 +383,7 @@ func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]s
 	now := st.now()
 	var out []session.Session
 	for _, item := range metas {
-		if se := sessionOf(tenant, item); !expired(se.Expires, now) {
+		if se := sessionOf(tenant, item); se.Status != deleting && !expired(se.Expires, now) {
 			out = append(out, se)
 		}
 	}
@@ -474,16 +490,30 @@ func (st *Store) End(ctx context.Context, tenant, id string, status session.Stat
 }
 
 func (st *Store) Delete(ctx context.Context, tenant, id string) error {
-	se, _, err := st.meta(ctx, tenant, id)
+	se, _, err := st.metaAny(ctx, tenant, id) // a session already being deleted: finish the job
 	if err != nil {
 		return err
 	}
 	return st.deleteSession(ctx, tenant, se.Agent, id)
 }
 
-// deleteSession deletes a session's events, then its index entry, then the
-// session itself, so a failure part way leaves it findable for a retry.
+// deleteSession marks the session deleting, then deletes its events, then
+// the session, then its index entry. Once marked, nothing more can be
+// appended, so no event is left behind; and whichever step fails, a retry
+// still finds the session, through Delete (the session item) or DeleteAgent
+// (the index entry), and carries on.
 func (st *Store) deleteSession(ctx context.Context, tenant, agent, id string) error {
+	_, err := st.db.UpdateItem(ctx, &ddb.UpdateItemInput{
+		TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK),
+		UpdateExpression:          aws.String("SET #status = :deleting"),
+		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ExpressionAttributeNames:  map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":deleting": s(string(deleting))},
+	})
+	var gone *types.ConditionalCheckFailedException
+	if err != nil && !errors.As(err, &gone) { // gone: an earlier attempt deleted the session item
+		return err
+	}
 	items, err := st.partition(ctx, sessionPK(tenant, id), func(item map[string]types.AttributeValue) bool {
 		return getS(item, "sk") != metaSK
 	})
@@ -493,11 +523,10 @@ func (st *Store) deleteSession(ctx context.Context, tenant, agent, id string) er
 	if err := st.deleteKeys(ctx, keysOf(items)); err != nil {
 		return err
 	}
-	if err := st.deleteKeys(ctx, []map[string]types.AttributeValue{pkey(indexPK(tenant, agent), id)}); err != nil {
+	if _, err := st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK)}); err != nil {
 		return err
 	}
-	_, err = st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(sessionPK(tenant, id), metaSK)})
-	return err
+	return st.deleteKeys(ctx, []map[string]types.AttributeValue{pkey(indexPK(tenant, agent), id)})
 }
 
 func (st *Store) DeleteAgent(ctx context.Context, tenant, agent string) error {
