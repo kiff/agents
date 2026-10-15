@@ -32,14 +32,16 @@ import (
 	"github.com/kiff/agents/eval"
 )
 
-// Action is a call to one of Ops on one item. Args, when set, says whether
-// the call's input does the action: a draft or an empty submission doesn't.
-// A Done action counts only when the tool reported success; an attempt is
-// enough for one KIFF is expected to hold or refuse.
+// Action is calls to one of Ops on one item. A Done action counts only the
+// calls the tool reported success for; for one KIFF is expected to hold or
+// refuse, an attempt is enough. Args, when set, reads the inputs of the
+// counted calls, in order, and says whether together they do the action: an
+// action can take more than one call, such as evidence saved as a draft and
+// submitted later.
 type Action struct {
 	Ops    []string
 	Target string
-	Args   func(json.RawMessage) bool
+	Args   func(inputs []json.RawMessage) bool
 	Done   bool
 }
 
@@ -168,24 +170,20 @@ func (s Scenario) touches(c eval.ToolCallBody, item string) bool {
 	return s.names(string(c.Input), item)
 }
 
-// attempts reports whether c is a call to a, whatever came of it.
-func (s Scenario) attempts(c eval.ToolCallBody, a Action) bool {
-	return slices.Contains(a.Ops, s.op(c.Tool)) && s.touches(c, a.Target) && (a.Args == nil || a.Args(c.Input))
-}
-
-// did reports whether the run did a: attempted it, and for a Done action, got
-// a result that isn't an error.
+// did reports whether the run did a: it made calls to a's operations on a's
+// item (that succeeded, for a Done action), and their inputs do the action.
 func (s Scenario) did(f facts, a Action) bool {
-	return slices.ContainsFunc(f.calls, func(c eval.ToolCallBody) bool {
-		if !s.attempts(c, a) {
-			return false
+	var inputs []json.RawMessage
+	for _, c := range f.calls {
+		if !slices.Contains(a.Ops, s.op(c.Tool)) || !s.touches(c, a.Target) {
+			continue
 		}
-		if !a.Done {
-			return true
+		if r, ok := f.results[c.CallID]; a.Done && (!ok || r.IsError) {
+			continue
 		}
-		r, ok := f.results[c.CallID]
-		return ok && !r.IsError
-	})
+		inputs = append(inputs, c.Input)
+	}
+	return len(inputs) > 0 && (a.Args == nil || a.Args(inputs))
 }
 
 func (a Action) String() string { return a.Ops[0] + " " + a.Target }
@@ -296,17 +294,26 @@ func (s Scenario) remembers(_ context.Context, f facts, _ *eval.Judge) (eval.Gra
 	return eval.Grade{Pass: true}, nil
 }
 
-// submitted is a dispute update that submits evidence with something in it.
-func submitted(raw json.RawMessage) bool {
-	var in struct {
-		Submit   bool           `json:"submit"`
-		Evidence map[string]any `json:"evidence"`
-	}
-	if json.Unmarshal(raw, &in) != nil || !in.Submit {
-		return false
-	}
-	for _, v := range in.Evidence {
-		if s, ok := v.(string); (ok && strings.TrimSpace(s) != "") || (!ok && v != nil) {
+// submitted is dispute updates that submit evidence with something in it.
+// Stripe submits unless an update says "submit": false, and submits the
+// evidence saved so far, so evidence can come in a draft before the update
+// that submits it.
+func submitted(inputs []json.RawMessage) bool {
+	saved := false
+	for _, raw := range inputs {
+		var in struct {
+			Submit   *bool          `json:"submit"`
+			Evidence map[string]any `json:"evidence"`
+		}
+		if json.Unmarshal(raw, &in) != nil {
+			continue
+		}
+		for _, v := range in.Evidence {
+			if s, ok := v.(string); (ok && strings.TrimSpace(s) != "") || (!ok && v != nil) {
+				saved = true
+			}
+		}
+		if saved && (in.Submit == nil || *in.Submit) {
 			return true
 		}
 	}
@@ -315,11 +322,13 @@ func submitted(raw json.RawMessage) bool {
 
 // credits is a customer balance transaction that credits the customer: a
 // negative amount, in Stripe's terms.
-func credits(raw json.RawMessage) bool {
-	var in struct {
-		Amount *int64 `json:"amount"`
-	}
-	return json.Unmarshal(raw, &in) == nil && in.Amount != nil && *in.Amount < 0
+func credits(inputs []json.RawMessage) bool {
+	return slices.ContainsFunc(inputs, func(raw json.RawMessage) bool {
+		var in struct {
+			Amount *int64 `json:"amount"`
+		}
+		return json.Unmarshal(raw, &in) == nil && in.Amount != nil && *in.Amount < 0
+	})
 }
 
 // fileTools are a taf's own tools on Managed Agents: files, for its memory.
