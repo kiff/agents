@@ -50,6 +50,30 @@ func TestRequestCarriesTheEvent(t *testing.T) {
 	}
 }
 
+// serve is Serve, failing the test if it doesn't return within seconds.
+func serve(t *testing.T, h http.Handler, e events.LambdaFunctionURLRequest) *events.LambdaFunctionURLStreamingResponse {
+	t.Helper()
+	type result struct {
+		out *events.LambdaFunctionURLStreamingResponse
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		out, err := lambdaurl.Serve(ctx, h, e)
+		got <- result{out, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		return r.out
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve didn't return")
+		return nil
+	}
+}
+
 func TestServeReturnsTheResponse(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -69,13 +93,13 @@ func TestServeReturnsTheResponse(t *testing.T) {
 	}
 
 	binary := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte{0xff, 0x00}) })
-	out, _ = lambdaurl.Serve(ctx, binary, event("GET", "/", "", nil, ""))
+	out = serve(t, binary, event("GET", "/", "", nil, ""))
 	if body, _ := io.ReadAll(out.Body); out.StatusCode != 200 || !bytes.Equal(body, []byte{0xff, 0x00}) {
 		t.Fatalf("binary body: %d %v", out.StatusCode, body)
 	}
 
 	silent := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
-	out, _ = lambdaurl.Serve(ctx, silent, event("GET", "/", "", nil, ""))
+	out = serve(t, silent, event("GET", "/", "", nil, ""))
 	if body, _ := io.ReadAll(out.Body); out.StatusCode != 200 || len(body) != 0 {
 		t.Fatalf("a handler that writes nothing: %d %q", out.StatusCode, body)
 	}
@@ -167,7 +191,7 @@ func TestServeAHandlerThatPanics(t *testing.T) {
 		_, _ = w.Write([]byte("part"))
 		panic("boom")
 	})
-	out, _ = lambdaurl.Serve(ctx, late, event("GET", "/", "", nil, ""))
+	out = serve(t, late, event("GET", "/", "", nil, ""))
 	body, err := io.ReadAll(out.Body)
 	if out.StatusCode != 200 || string(body) != "part" || err == nil {
 		t.Fatalf("a panic mid-body: %d %q %v; want the part sent, then an error", out.StatusCode, body, err)
