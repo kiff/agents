@@ -79,7 +79,8 @@ func (passing) Turn(context.Context, model.Request, func(string)) (model.Reply, 
 func TestRunWithAJudge(t *testing.T) {
 	r := emptyRun("sesn_r")
 	raw, _ := json.Marshal(eval.ToolCallBody{CallID: "1", Tool: "send_email", Server: "kiff", Input: json.RawMessage(`{"customer": "x"}`)})
-	r.Events = append(r.Events, session.Event{Seq: 2, Kind: session.ToolCall, Body: raw})
+	ok, _ := json.Marshal(eval.ToolResultBody{CallID: "1", Tool: "send_email", Text: "sent"})
+	r.Events = append(r.Events, session.Event{Seq: 2, Kind: session.ToolCall, Body: raw}, session.Event{Seq: 3, Kind: session.ToolResult, Body: ok})
 	withReader(t, fakeReader{"sesn_r": r})
 	old := newModel
 	newModel = func(key string) model.Model {
