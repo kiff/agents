@@ -328,6 +328,10 @@ func TestFireReportsWhatShouldBeRetried(t *testing.T) {
 			_ = f.store.Put(ctx, s)
 			f.sched.fail = errors.New("throttled")
 		},
+		"deleting a gone agent's schedule": func(f *fixture) {
+			delete(f.agents, [2]string{"t1", "payouts"})
+			f.sched.fail = errors.New("throttled")
+		},
 		"removing an orphan": func(f *fixture) {
 			_ = f.store.Delete(ctx, "t1", "morning")
 			f.sched.fail = errors.New("throttled")
