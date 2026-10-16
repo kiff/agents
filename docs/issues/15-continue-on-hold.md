@@ -1,7 +1,7 @@
 # Continue on a hold: what #15 delivers
 
 **Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
-**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers)
+**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers), [#50](https://github.com/kiff/agents/pull/50) (the alerts handler)
 
 ## What it's for
 
@@ -134,14 +134,58 @@ TTL when it ends, and go when it is deleted.
 | a run paused twice is found by both holds; an answer on a running run changes nothing | `ARunPausedTwiceKeepsBothHolds` |
 | every hold item, both pauses', takes the run's TTL and is deleted with it | `store/dynamodb` `TestHoldItems` |
 
+**`POST /kiff/alerts`: the handler (#50).** `server/kiffalert.Handler` takes
+KIFF's `hold_answered` alert, as KIFF's dispatcher sends it:
+
+```http
+POST /kiff/alerts
+Content-Type: application/json
+KIFF-Signature: t=1760605800,v1=626c49dffc5af165d8bf32513062d95528a2cf37b7904511c5e5bdedaa803211
+
+{"schema_version":"1","tenant_id":"kiff-acct-1","outcome":"hold_answered",
+ "hold":{"id":"exc_1","status":"approved"},"event_id":"evt_1","decided_at":"2026-10-16T09:03:12Z"}
+```
+
+`v1` is the hex HMAC-SHA256 of `"<t>.<body>"` with the alert target's secret;
+`t` must be within 5 minutes. It records the answer (`run.Answer`), and when
+the paused run waits for nothing more, calls `Continue`.
+
+```go
+h := &kiffalert.Handler{
+	Accounts: accounts, // KIFF account -> tenant here, and the target's secret
+	Runs:     runs,
+	Continue: func(ctx context.Context, tenant, runID string) error { /* execute in the background */ },
+}
+mux.Handle("POST /kiff/alerts", h) // its own URL: KIFF can't sign with AWS
+```
+
+KIFF delivers again until it gets a 2xx:
+
+| Response | When |
+|---|---|
+| 200 | answer recorded (or nothing to record it on: the run went on or ended; a repeat); another outcome, ignored |
+| 404 | no run has paused on that hold yet: deliver again |
+| 401 | no signature, a wrong one, too old or new, an unknown account, an account with no secret |
+| 503 | the account couldn't be read, or continuing the run failed (the answer stays recorded) |
+| 400, 405, 413 | not a KIFF alert, not POST, body over 64 KB |
+
+| Rule | Guarded by |
+|---|---|
+| each answer recorded; the run continues once all are, not before | `server/kiffalert` `TestAnswersAreRecordedAndTheRunContinuesOnceAllAre` |
+| what doesn't check is 401 and records nothing | `TestAnAlertThatDoesntCheckIsRefused` |
+| KIFF's own signature checks, byte for byte | `TestKIFFsOwnSignatureChecks` (vector from `alert.SignatureHeader`) |
+| an account with no secret is refused | `TestAnAccountWithNoSecretIsRefused` |
+| 404 before the pause; 200 for a run that went on | `TestTheStatusSaysWhetherKIFFShouldDeliverAgain` |
+| a failed continue is 503, then continued on redelivery | `TestAFailedContinueIsDeliveredAgain` |
+
+Wiring it in `cmd/lambda` (its own URL, `Accounts`, `Continue` as a background
+invoke) is #13's.
+
 ## Still to deliver
 
-- **`POST /kiff/alerts`**: verifies KIFF's HMAC signature, records the answer
-  on the requirement, and answers 200 once it's recorded, whatever the run's
-  state, so KIFF stops redelivering. When every requirement is resolved, the
-  run continues in the background under the same ID. KIFF can't sign with
-  AWS, so this needs its own URL, not the IAM function URL
-  ([#13](13-server.md)).
+- **Wiring `/kiff/alerts`** in `cmd/lambda` ([#13](13-server.md)): its own
+  URL, the KIFF account → tenant and secret lookup, and `Continue` as a
+  background invoke.
 - **`POST /agents/{id}/runs/{run_id}/continue`**: a repeat of a continue
   already applied gets 200; any other continue on a run that isn't PAUSED
   gets 409. A held call is never collected twice.
