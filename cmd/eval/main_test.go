@@ -482,3 +482,43 @@ func TestARunsHeldCallsAreWithdrawn(t *testing.T) {
 		t.Fatalf("log %q", log.String())
 	}
 }
+
+// With -definitions, a case runs as its job's agent as kiff/tafs defines
+// it: model, price, effort, max tokens and instructions, with the eval's
+// own gateway, key and cost cap (#78). A field this runtime doesn't know
+// fails the run, as the server would refuse it.
+func TestACaseRunsAsTafsDefinesIt(t *testing.T) {
+	m := &script{replies: agentTurns()}
+	withAgent(t, m)
+	defs := t.TempDir()
+	def := `{"instructions": "You handle refund requests. The kiff skill: …", "model": "claude-opus-5-5",
+		"price": {"Input": 4000000, "Output": 20000000, "CacheRead": 200000, "CacheWrite": 5000000},
+		"max_tokens": 16000, "effort": "high", "gateway": "https://mcp.kiff.dev/mcp", "key_ref": "kiff/taf-1",
+		"keep": {}, "max_cost_micro_usd": 200000000, "history": 10}`
+	_ = os.WriteFile(filepath.Join(defs, "refunds.json"), []byte(def), 0o644)
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-max-cost", "1", "refunds"},
+		&stdout, &stderr, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	first := m.asked[0]
+	if first.Model != "claude-opus-5-5" || first.Effort != "high" || first.MaxTokens != 16000 || !first.Cache ||
+		first.System != "You handle refund requests. The kiff skill: …" {
+		t.Fatalf("asked %+v", first)
+	}
+
+	_ = os.WriteFile(filepath.Join(defs, "refunds.json"), []byte(`{"model": "m", "temperature": 1}`), 0o644)
+	m = &script{replies: agentTurns()}
+	withAgent(t, m)
+	err = run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "refunds"},
+		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
+	if err == nil || !strings.Contains(err.Error(), `unknown field "temperature"`) {
+		t.Fatalf("an unknown field: %v", err)
+	}
+	err = run(context.Background(), []string{"-run", "-definitions", defs, "-model", "m", "refunds"},
+		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
+	if err == nil || !strings.Contains(err.Error(), "one or the other") {
+		t.Fatalf("-definitions with -model: %v", err)
+	}
+}

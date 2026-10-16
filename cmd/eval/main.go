@@ -3,6 +3,7 @@
 //
 //	eval [-judge-model id -judge-price in,out] [-ids seed.json] [-baseline base.json] [-out results.json] case=session...
 //	eval -run -model id -price in,out[,cache-read,cache-write] -jobs dir [-skill file] [-notes dir] [-gateway url] [-max-cost usd] [...] case...
+//	eval -run -definitions dir [-notes dir] [-gateway url] [-max-cost usd] [...] case...
 //
 // In the first form, each argument names a case (refunds, chargebacks) and the
 // Managed Agents session of the run to grade, read with ANTHROPIC_API_KEY from
@@ -16,6 +17,12 @@
 // memory. With -notes, <notes>/<case>.md is the owner's note in the agent's
 // memory before the run. A run KIFF holds a call of stops PAUSED, and is
 // graded there.
+//
+// With -definitions instead of -model, -price, -jobs and -skill, each job's
+// agent is <definitions>/<job>.json: the agent as kiff/tafs defines it
+// (infra/eval-definitions.sh writes them from a tafs commit), so the eval
+// runs the model, price, effort and instructions tafs runs. The eval keeps
+// its own tenant, gateway, key, cost cap and keep rules.
 //
 // With -baseline, a case that scores lower than it did there fails the
 // command. -ids is the seed's Stripe ids by item reference.
@@ -34,6 +41,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,6 +117,7 @@ type runtime struct {
 	rn       *runner.Runner
 	base     registry.Definition
 	jobs     string // the directory of the jobs' instructions
+	defs     string // the directory of the agents' definitions, <job>.json each; empty: base, jobs and skill
 	notes    string // the directory of the owner's notes, <case>.md each; empty: none
 	skill    string // added to every job's instructions
 	kiffKey  string // the agent's KIFF key
@@ -149,6 +158,41 @@ func (rt *runtime) note(ctx context.Context, name string) error {
 		Text: strings.TrimSpace(string(b)), Updated: time.Now().UTC()})
 }
 
+// definition is the agent a case runs as. From -definitions, it is the
+// job's agent as kiff/tafs defines it: its model, price, effort, max tokens,
+// history and instructions (with KIFF's skill). Otherwise it is the base
+// with the job's instructions and the skill. Either way the eval keeps its
+// own tenant, gateway, key, cost cap and keep rules: the checks read tool
+// calls and results.
+func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
+	d := rt.base
+	if rt.defs != "" {
+		b, err := os.ReadFile(filepath.Join(rt.defs, s.Job+".json"))
+		if err != nil {
+			return d, fmt.Errorf("%s: the job's definition: %w", s.Name, err)
+		}
+		var t registry.Definition
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields() // as the server reads it: a field this runtime doesn't know fails here, not quietly
+		if err := dec.Decode(&t); err != nil {
+			return d, fmt.Errorf("%s: the job's definition: %w", s.Name, err)
+		}
+		d.Model, d.Price, d.Effort, d.MaxTokens, d.History, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.History, t.Instructions
+	} else {
+		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
+		if err != nil {
+			return d, fmt.Errorf("%s: the job's instructions: %w", s.Name, err)
+		}
+		d.Instructions = strings.TrimSpace(string(job))
+		if rt.skill != "" {
+			d.Instructions += "\n\n" + rt.skill
+		}
+	}
+	d.ID = s.Name
+	d.Keep = eval.Policy(evalKeep)
+	return d, nil
+}
+
 // cancel asks a run to stop, re-reading it if it changed meanwhile.
 func (rt *runtime) cancel(tenant, id string) {
 	ctx := context.Background()
@@ -169,15 +213,9 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err := ctx.Err(); err != nil { // interrupted: start nothing more
 		return eval.Run{}, fmt.Errorf("%s: not started: %w", s.Name, err)
 	}
-	job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
+	d, err := rt.definition(s)
 	if err != nil {
-		return eval.Run{}, fmt.Errorf("%s: the job's instructions: %w", s.Name, err)
-	}
-	d := rt.base
-	d.ID, d.Instructions = s.Name, strings.TrimSpace(string(job))
-	d.Keep = eval.Policy(evalKeep) // the checks read tool calls and results
-	if rt.skill != "" {
-		d.Instructions += "\n\n" + rt.skill
+		return eval.Run{}, err
 	}
 	if err := rt.agents.Put(ctx, d); err != nil {
 		return eval.Run{}, err
@@ -259,6 +297,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	price := fs.String("price", "", "-run: the agent's input,output[,cache-read,cache-write] price in millionths of a dollar per million tokens; with cache prices, turns use the prompt cache")
 	jobs := fs.String("jobs", "", "-run: the directory of the jobs' instructions, <job>.md each")
 	skillPath := fs.String("skill", "", "-run: a file with KIFF's skill, added to every job's instructions")
+	defsDir := fs.String("definitions", "", "-run: the directory of the agents' definitions, <job>.json each, as kiff/tafs builds them (infra/eval-definitions.sh); instead of -model, -price, -jobs and -skill")
 	notesDir := fs.String("notes", "", "-run: the directory of the owner's notes, <case>.md each, put in the agent's memory first")
 	gateway := fs.String("gateway", kiff.URL, "-run: KIFF's gateway")
 	kiffAPI := fs.String("kiff-api", kiff.APIURL, "-run: KIFF's API, where the calls a run left held are withdrawn")
@@ -288,29 +327,38 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	var rt *runtime
 	if *runHere {
 		kiffKey := env("KIFF_AGENT_KEY")
-		switch {
-		case kiffKey == "":
+		if kiffKey == "" {
 			return errors.New("set KIFF_AGENT_KEY to the agent's KIFF key for -run")
-		case *modelID == "":
-			return errors.New("-run needs -model")
-		case *jobs == "":
-			return errors.New("-run needs -jobs, the directory of the jobs' instructions")
 		}
-		p, err := parsePrice(*price)
-		if err != nil {
-			return fmt.Errorf("-price: %w", err)
-		}
-		var skill string
-		if *skillPath != "" {
-			b, err := os.ReadFile(*skillPath)
-			if err != nil {
-				return err
+		base := registry.Definition{Tenant: evalTenant, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY", MaxCost: int64(*maxCost * 1_000_000)}
+		if *defsDir != "" {
+			if *modelID != "" || *price != "" || *jobs != "" || *skillPath != "" {
+				return errors.New("-definitions replaces -model, -price, -jobs and -skill: give one or the other")
 			}
-			skill = strings.TrimSpace(string(b))
+			rt = newRuntime(newModel(key), kiffKey, base, "", "", stderr)
+			rt.defs = *defsDir
+		} else {
+			switch {
+			case *modelID == "":
+				return errors.New("-run needs -model, or -definitions")
+			case *jobs == "":
+				return errors.New("-run needs -jobs, the directory of the jobs' instructions, or -definitions")
+			}
+			p, err := parsePrice(*price)
+			if err != nil {
+				return fmt.Errorf("-price: %w", err)
+			}
+			var skill string
+			if *skillPath != "" {
+				b, err := os.ReadFile(*skillPath)
+				if err != nil {
+					return err
+				}
+				skill = strings.TrimSpace(string(b))
+			}
+			base.Model, base.Price, base.MaxTokens, base.History = *modelID, p, 8192, 20
+			rt = newRuntime(newModel(key), kiffKey, base, *jobs, skill, stderr)
 		}
-		rt = newRuntime(newModel(key), kiffKey, registry.Definition{Tenant: evalTenant, Model: *modelID, Price: p,
-			MaxTokens: 8192, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY",
-			MaxCost: int64(*maxCost * 1_000_000), History: 20}, *jobs, skill, stderr)
 		rt.notes = *notesDir
 		if u, err := url.Parse(*kiffAPI); err != nil || u.Scheme != "https" || u.Host == "" {
 			return errors.New("-kiff-api is an https URL: the agent's key goes there")
