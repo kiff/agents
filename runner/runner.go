@@ -77,10 +77,19 @@ func (rn *Runner) now() time.Time {
 // Start stores a PENDING run of the tenant's agent: in s.Session, which must
 // be one of the agent's sessions (session.ErrNotFound otherwise), or in a new
 // session when it is empty: a chat for the owner's runs, a job session for
-// the others.
+// the others. A run named by s.ID that exists already is returned as stored,
+// with run.ErrExists, and nothing new is stored.
 func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	if s.Tenant == "" || s.Agent == "" || s.Input == "" || s.Trigger == "" {
 		return run.Run{}, errors.New("runner: a run needs a tenant, an agent, a trigger and an input")
+	}
+	if s.ID != "" { // named: started already, by an earlier delivery?
+		switch r, err := rn.Runs.Get(ctx, s.Tenant, s.ID); {
+		case err == nil:
+			return r, run.ErrExists
+		case !errors.Is(err, run.ErrNotFound):
+			return run.Run{}, err
+		}
 	}
 	d, err := rn.Builder.Agents.Get(ctx, s.Tenant, s.Agent)
 	if err != nil {
@@ -112,10 +121,18 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
+	if s.ID != "" {
+		r.ID = s.ID
+	}
 	if err := rn.Runs.Create(ctx, r); err != nil {
 		if opened {
 			if derr := rn.Sessions.Delete(context.WithoutCancel(ctx), s.Tenant, s.Session); derr != nil {
 				err = errors.Join(err, fmt.Errorf("runner: removing the session it opened: %w", derr))
+			}
+		}
+		if s.ID != "" && errors.Is(err, run.ErrExists) { // another delivery stored it meanwhile
+			if stored, gerr := rn.Runs.Get(ctx, s.Tenant, s.ID); gerr == nil {
+				return stored, err
 			}
 		}
 		return run.Run{}, err

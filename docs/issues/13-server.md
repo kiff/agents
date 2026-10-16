@@ -1,6 +1,6 @@
 # The server on Lambda: what #13 delivers
 
-**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule. Still to do: firings starting runs, the 429 cap. Nothing is deployed.
+**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule, and schedule firings start runs. Still to do: the 429 cap. Nothing is deployed.
 **PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), this page's PR (runs on Lambda)
 
 ## What it's for
@@ -29,6 +29,7 @@ only tafs cloud may call it.
 | `GET /sessions?agent_id=&limit=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their events |
 | `POST /schedules`, `GET /schedules?agent_id=`, `GET`/`PUT`/`DELETE /schedules/{id}`, `POST /schedules/{id}/enable`, `/disable` | Schedules, each with its `next` firing in UTC |
 | `GET /schedules/{id}/runs` | The runs one schedule started, newest first |
+| `POST /schedules/{id}/trigger` | Fire the schedule now, by hand: an ordinary run of its agent with its input, tagged with the schedule, in the background. Answers 202 with the run. The schedule needn't be on. **Only served when a `Runner` is set** |
 | `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams the run as SSE (below). With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
 | `GET /agents/{id}/runs/{run_id}` | The run: status, stop, output, error, cost, turns, requirements. Never its paused turn, claim, lease or version |
 | `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED is 409 until [#15](15-continue-on-hold.md) can withdraw its held calls |
@@ -134,6 +135,26 @@ ended and does nothing. That invocation never fails on what the runner
 stored: a failed run is already ERROR, and a run that couldn't be claimed
 stays PENDING until the sweep marks it.
 
+### Schedule firings
+
+EventBridge Scheduler invokes the function for each firing
+([#17](17-schedules.md)). `schedule.Service.Fire` reads the schedule as it is
+now, and starts its run through `Runner.Start`: `Trigger: run.BySchedule`,
+`Source` the schedule's ID, the schedule's input.
+
+- **The run's ID is the firing's key** (`Firing.Key()`: tenant, schedule and
+  due time). EventBridge delivers at least once; a repeated delivery finds
+  the run stored (`run.ErrExists`) and starts no other.
+- **The run executes in the firing's own invocation**, which is already in
+  the background, so a firing costs one invocation. A repeated delivery
+  executes it too: `Execute` claims it once, so a run already going or ended
+  is left as it is, and one whose first invocation died before claiming it
+  gets run.
+- A run that pauses is stored PAUSED, like any run, not as a failure.
+- **Known limit:** if storing the run fails, that firing is lost. The
+  invocation fails and is logged, but asynchronous retries are off, and the
+  schedule fires again at its next time.
+
 ### The sweep
 
 An EventBridge Scheduler schedule invokes the function every minute with
@@ -211,6 +232,11 @@ function is the only guard on who the caller is:
 | A run that can't be queued is stored ERROR | `TestARunThatCantBeQueuedIsAnError` |
 | A sweep event ends an unclaimed run and a crashed one, ends the crashed run's recording, gives both the agent's expiry, and leaves a run in its lease | `TestTheSweepEndsWhatNobodyElseWill` |
 | A sweep that can't read fails its invocation | `TestAFailedSweepShows` |
+| A firing starts its schedule's run, named by its key, and runs it to its stop; a repeated delivery starts and runs nothing more | `TestFiringsReachTheSchedule` |
+| A repeated firing runs what the first left PENDING | `TestARepeatedFiringRunsWhatTheFirstLeftPending` |
+| A named run starts once, even when two deliveries race | `TestANamedRunStartsOnce`, `TestANamedRunStartedMeanwhileIsReturned` (runner) |
+| A schedule fired by hand is a background run of its agent, tagged with it, in the tenant only; one that can't go to the background is ERROR | `TestTriggerASchedule` |
+| Without a Runner there is no trigger route | `TestNoRunnerNoStart` |
 | A run event must name a run; a missing run doesn't fail the invocation | `TestARunEventMustNameARun` |
 | The model key is read when a turn needs it, once, and again after a failed read | `TestTheModelKeyIsReadWhenATurnNeedsIt` |
 | The model key's secret can't be one an agent's key reference names | `TestTheModelKeyIsOutsideTheAgentsKeys`, `TestSetupNeedsItsConfiguration` |
@@ -219,16 +245,12 @@ Tests drive the routes against `store/memory`. No test touches AWS.
 
 ## Not delivered yet
 
-- **Schedule firings starting runs.** A firing logs `errNoRuns` and starts
-  nothing until it starts a `BySchedule` run, once per `Firing.Key()`
-  ([#17](17-schedules.md)).
 - **An on-failure destination** for background invocations. Not built: a
   crash or a timeout leaves the run PENDING or RUNNING, and the sweep ends it
   (a PENDING run after 5 minutes, a RUNNING one once its lease runs out).
   A destination would only end it sooner.
 - **429 at the tenant's concurrency cap.** The run store can't count a
   tenant's running runs yet.
-- **`POST /schedules/{id}/trigger`** (ARCHITECTURE.md lists it).
 - **`continue` and `/kiff/alerts`** are [#15](15-continue-on-hold.md)'s;
   `/evals`, `/usage` and `/ops/*` are [#14](14-console.md)'s.
 - **The deploy:** the function, its URL, the table (in an EU region), the

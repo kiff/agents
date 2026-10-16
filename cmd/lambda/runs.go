@@ -16,6 +16,8 @@ import (
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
+	"github.com/kiff/agents/schedule"
+	"github.com/kiff/agents/server"
 )
 
 // runEvent is what a background invocation is sent: the run to execute. The
@@ -67,8 +69,7 @@ func background(api invoker, function string) func(ctx context.Context, tenant, 
 //   - A run that failed is stored ERROR by the runner; its cause is logged.
 //   - A run that couldn't be claimed at all stays PENDING, and the sweep marks
 //     it ERROR once nobody has claimed it in time.
-func (f *function) execute(ctx context.Context, e runEvent) error {
-	tenant, id := e.Run.Tenant, e.Run.ID
+func (f *function) execute(ctx context.Context, tenant, id string) error {
 	if tenant == "" || id == "" {
 		return errors.New("lambda: a run event names no run")
 	}
@@ -84,6 +85,21 @@ func (f *function) execute(ctx context.Context, e runEvent) error {
 		f.log.ErrorContext(ctx, "run", "tenant", tenant, "run", id, "status", r.Status, "err", err)
 	}
 	return nil
+}
+
+// fire starts the run a schedule's firing asks for, and executes it in this
+// invocation, which EventBridge Scheduler already started in the background.
+// The run's ID is the firing's key, so a repeated delivery finds the run
+// stored (run.ErrExists) and starts no other. It executes the run either way:
+// Execute claims it once, so a run already going or ended is left as it is,
+// and one whose first invocation died before claiming it gets run.
+func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
+	r, err := f.runner.Start(ctx, server.Start{Tenant: fi.Tenant, Agent: fi.Agent, Trigger: run.BySchedule,
+		Source: fi.Schedule, Input: fi.Input, ID: fi.Key()})
+	if err != nil && !errors.Is(err, run.ErrExists) {
+		return err
+	}
+	return f.execute(ctx, r.Tenant, r.ID)
 }
 
 // sweepLimit bounds the runs one sweep reads. The sweep runs every minute, so

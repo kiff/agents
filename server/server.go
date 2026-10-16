@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 
 	if s.Runner != nil { // until runs can be executed, there is no starting one
 		mux.HandleFunc("POST /agents/{id}/runs", s.startRun)
+		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 	}
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)

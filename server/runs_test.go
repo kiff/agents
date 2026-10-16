@@ -607,12 +607,62 @@ func TestDeleteAgentDeletesItsRuns(t *testing.T) {
 	}
 }
 
-// Without a Runner, runs can't be started: the route isn't there.
+// Without a Runner, runs can't be started: the routes aren't there.
 func TestNoRunnerNoStart(t *testing.T) {
 	f := newFixture(t) // a server with Runs and no Runner
 	f.putAgent("t1", "payouts")
 	code, body := f.do("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
 	f.want(404, code, body, "starting a run with no Runner")
+	code, body = f.do("t1", "POST", "/schedules", scheduleBody("morning"))
+	f.want(201, code, body, "create schedule")
+	code, body = f.do("t1", "POST", "/schedules/morning/trigger", nil)
+	f.want(404, code, body, "triggering a schedule with no Runner")
+}
+
+// A schedule fired by hand starts an ordinary run of its agent with its input,
+// tagged with the schedule, in the background.
+func TestTriggerASchedule(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	sc := scheduleBody("morning")
+	code, body := f.do("t1", "POST", "/schedules", sc)
+	f.want(201, code, body, "create schedule")
+
+	code, body = f.do("t1", "POST", "/schedules/morning/trigger", nil)
+	f.want(202, code, body, "trigger")
+	if body["status"] != string(run.Pending) || body["trigger"] != string(run.BySchedule) || body["source"] != "morning" ||
+		body["agent"] != sc.Agent {
+		t.Fatalf("got %v", body)
+	}
+	if len(f.background) != 1 || f.background[0] != "t1/"+body["id"].(string) || len(f.runner.execs) != 0 {
+		t.Fatalf("background %v, executed in the request %d", f.background, len(f.runner.execs))
+	}
+	stored, err := f.runs.Get(ctx, "t1", body["id"].(string))
+	if err != nil || stored.Input != sc.Input {
+		t.Fatalf("stored %+v (%v), want the schedule's input", stored, err)
+	}
+	code, body = f.do("t1", "GET", "/schedules/morning/runs", nil)
+	f.want(200, code, body, "its runs")
+	if list := body["runs"].([]any); len(list) != 1 {
+		t.Fatalf("listed %v", list)
+	}
+
+	code, body = f.do("t2", "POST", "/schedules/morning/trigger", nil)
+	f.want(404, code, body, "another tenant's schedule")
+	code, body = f.do("t1", "POST", "/schedules/evening/trigger", nil)
+	f.want(404, code, body, "a schedule that doesn't exist")
+
+	f.bgFail = errors.New("throttled")
+	code, body = f.do("t1", "POST", "/schedules/morning/trigger", nil)
+	f.want(500, code, body, "a trigger that can't go to the background")
+	list, _ := f.runs.ListSource(ctx, "t1", run.BySchedule, "morning", 10)
+	statuses := map[run.Status]int{}
+	for _, rn := range list {
+		statuses[rn.Status]++
+	}
+	if len(list) != 2 || statuses[run.Pending] != 1 || statuses[run.Error] != 1 {
+		t.Fatalf("runs %+v, want the first PENDING and the second ERROR", list)
+	}
 }
 
 // keepFor is how long registrytest's agent keeps a session after its last

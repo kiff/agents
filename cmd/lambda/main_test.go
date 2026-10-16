@@ -3,17 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/registry/secretsmanager"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/schedule/scheduletest"
@@ -61,7 +63,6 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 			_, err := agents.Get(ctx, tenant, agent)
 			return err == nil, nil
 		},
-		Start: func(context.Context, schedule.Firing) error { return errNoRuns },
 	}
 	auth, err := lambdaurl.Auth([]string{role})
 	if err != nil {
@@ -74,8 +75,10 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 	}}
 	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
 		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
-	return &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn),
-		log: slog.New(slog.NewTextHandler(io.Discard, nil))}, sched, agents, runs
+	f := &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn),
+		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	svc.Start = f.fire
+	return f, sched, agents, runs
 }
 
 func urlEvent(t *testing.T, method, path, signer, tenant string) json.RawMessage {
@@ -112,7 +115,8 @@ func TestURLRequestsReachTheServer(t *testing.T) {
 }
 
 func TestFiringsReachTheSchedule(t *testing.T) {
-	f, sched, agents := newFunction(t)
+	m := &replies{next: []model.Reply{answer("Payouts are reconciled.")}}
+	f, sched, agents, runs := newFunctionWith(t, m, &invocations{})
 	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
 	if err := f.schedules.Put(ctx, scheduletest.Schedule("t1", "morning")); err != nil {
 		t.Fatal(err)
@@ -121,9 +125,27 @@ func TestFiringsReachTheSchedule(t *testing.T) {
 		b, _ := json.Marshal(map[string]string{"tenant": "t1", "schedule": id, "due": due})
 		return b
 	}
-	// Due when the stored schedule fires: the run would start, and can't yet.
-	if _, err := f.handle(ctx, firing("morning", "2026-10-19T07:00:00Z")); !errors.Is(err, errNoRuns) {
-		t.Fatalf("got %v, want errNoRuns", err)
+	// Due when the stored schedule fires: its run starts, named by the
+	// firing's key, and runs to its stop in this invocation.
+	if _, err := f.handle(ctx, firing("morning", "2026-10-19T07:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	sc := scheduletest.Schedule("t1", "morning")
+	key := schedule.Firing{Tenant: "t1", Schedule: "morning", Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}.Key()
+	r, err := runs.Get(ctx, "t1", key)
+	if err != nil || r.Status != run.Completed || r.Trigger != run.BySchedule || r.Source != "morning" ||
+		r.Agent != sc.Agent || r.Input != sc.Input || r.Output != "Payouts are reconciled." {
+		t.Fatalf("got %+v (%v)", r, err)
+	}
+	if list, _ := runs.ListSource(ctx, "t1", run.BySchedule, "morning", 10); len(list) != 1 {
+		t.Fatalf("the schedule lists %d runs", len(list))
+	}
+	// Delivered again: no other run, and it isn't run again.
+	if _, err := f.handle(ctx, firing("morning", "2026-10-19T07:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := runs.ListSource(ctx, "t1", run.BySchedule, "morning", 10); len(list) != 1 || m.turns != 1 {
+		t.Fatalf("a repeated firing: %d runs, %d model turns", len(list), m.turns)
 	}
 	// A schedule that is gone: removed from the Scheduler, and no error.
 	if _, err := f.handle(ctx, firing("evening", "2026-10-19T07:00:00Z")); err != nil {
@@ -201,6 +223,9 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	}
 	if f.sweeper == nil {
 		t.Error("no sweep")
+	}
+	if f.schedules.Start == nil {
+		t.Error("firings start nothing")
 	}
 	if status, body := startRun(t, f, "rae", `not json`); status != 400 {
 		t.Errorf("start route: got %d %s", status, body)

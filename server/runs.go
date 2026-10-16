@@ -62,6 +62,11 @@ type Start struct {
 	// Source is what started it within its trigger (run.Run.Source).
 	Source string
 	Input  string
+	// ID is the run's ID, when the caller names it; empty, a new one. A
+	// caller that may start the same run more than once (a schedule's firing,
+	// delivered at least once) names it, and the second Start returns the run
+	// as stored with run.ErrExists. Never taken from a request.
+	ID string
 }
 
 // runView is a run as the API shows it: no paused turn (it holds what tools
@@ -230,17 +235,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Background {
-		if err := s.Background(ctx, c.Tenant, rn.ID); err != nil {
-			// Nothing will claim it: end it now rather than leave it to the
-			// sweep, and say so.
-			expires, eerr := s.endedExpires(ctx, rn)
-			if _, cerr := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
-				n.Status, n.Error, n.Expires = run.Error, "it could not be started in the background", expires
-				return nil
-			}); cerr != nil || eerr != nil {
-				cerr = errors.Join(eerr, cerr)
-				err = errors.Join(err, cerr)
-			}
+		if err := s.toBackground(ctx, rn); err != nil {
 			s.fail(w, r, err)
 			return
 		}
@@ -465,6 +460,45 @@ func (s *stream) event(name, id string, v any) {
 
 // scheduleRuns lists the runs one of the tenant's schedules started, newest
 // first.
+// toBackground has another invocation execute rn. If it can't, nothing will
+// claim the run: it is ended now, ERROR, rather than left to the sweep.
+func (s *Server) toBackground(ctx context.Context, rn run.Run) error {
+	err := s.Background(ctx, rn.Tenant, rn.ID)
+	if err == nil {
+		return nil
+	}
+	expires, eerr := s.endedExpires(ctx, rn)
+	if _, cerr := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
+		n.Status, n.Error, n.Expires = run.Error, "it could not be started in the background", expires
+		return nil
+	}); cerr != nil || eerr != nil {
+		err = errors.Join(err, eerr, cerr)
+	}
+	return err
+}
+
+// triggerSchedule fires a schedule now, by hand: an ordinary run of its agent
+// with its input, tagged with the schedule like any firing, executed in the
+// background. It answers 202 with the run. The schedule needn't be on.
+func (s *Server) triggerSchedule(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	if s.Background == nil {
+		return 0, nil, unavailable("this server doesn't run runs in the background")
+	}
+	id := r.PathValue("id")
+	sc, err := s.Schedules.Store.Get(ctx, c.Tenant, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	rn, err := s.Runner.Start(ctx, Start{Tenant: c.Tenant, Agent: sc.Agent, Trigger: run.BySchedule, Source: id, Input: sc.Input})
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := s.toBackground(ctx, rn); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusAccepted, viewRun(rn), nil
+}
+
 func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
 	if _, err := s.Schedules.Store.Get(ctx, c.Tenant, id); err != nil {
