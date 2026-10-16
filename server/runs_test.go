@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -496,7 +497,7 @@ func TestCancelRun(t *testing.T) {
 	}{
 		{run.Pending, 200, run.Cancelled},
 		{run.Running, 200, run.Running}, // stops at its next checkpoint
-		{run.Paused, 409, run.Paused},   // its held calls must be withdrawn first (#15)
+		{run.Paused, 409, run.Paused},   // nothing here withdraws its held calls (no Withdraw)
 		{run.Completed, 409, run.Completed},
 	}
 	for _, c := range cases {
@@ -512,6 +513,118 @@ func TestCancelRun(t *testing.T) {
 		if c.status == run.Running && (!got.Cancel || body["cancel_requested"] != true) {
 			t.Errorf("a running run wasn't asked to stop: %+v %v", got, body)
 		}
+	}
+}
+
+// heldOn puts a run of t1's payouts PAUSED on one held call per exception.
+func (f *runFixture) heldOn(exceptions ...string) run.Run {
+	f.t.Helper()
+	r := f.stored(run.Paused)
+	r, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error {
+		n.Requirements = nil
+		for _, ex := range exceptions {
+			n.Requirements = append(n.Requirements, run.Requirement{CallID: "c-" + ex, Tool: "stripe_refund",
+				Operation: "op-" + ex, Exception: ex, Expires: now.Add(time.Hour)})
+		}
+		return nil
+	})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return r
+}
+
+// withdrawals is a fake KIFF withdraw: what it was asked, and its answers by
+// exception ("" with fail set: an error).
+type withdrawals struct {
+	asked   []string
+	answers map[string]string
+	fail    error
+}
+
+func (w *withdrawals) withdraw(_ context.Context, r run.Run, exception string) (string, error) {
+	w.asked = append(w.asked, r.Tenant+"/"+r.ID+"/"+exception)
+	if st, ok := w.answers[exception]; ok {
+		return st, nil
+	}
+	return "", w.fail
+}
+
+// Cancelling a paused run withdraws each call KIFF holds, records what
+// became of it, asks the run to stop and hands it on: it is resolved, so
+// it is continued, and ends CANCELLED there.
+func TestCancelAPausedRunWithdrawsItsHeldCalls(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	w := &withdrawals{answers: map[string]string{"exc_1": "invalidated", "exc_2": "approved"}}
+	f.server.Withdraw = w.withdraw
+	f.restart()
+	r := f.heldOn("exc_1", "exc_2")
+
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel a paused run")
+	if body["status"] != string(run.Paused) || body["cancel_requested"] != true {
+		t.Fatalf("answered %v", body)
+	}
+	if want := []string{"t1/" + r.ID + "/exc_1", "t1/" + r.ID + "/exc_2"}; !slices.Equal(w.asked, want) {
+		t.Fatalf("withdrew %v, want %v", w.asked, want)
+	}
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if !got.Cancel || got.Requirements[0].Answer != "invalidated" || got.Requirements[1].Answer != "approved" ||
+		!got.Requirements[0].Answered.Equal(now) {
+		t.Fatalf("stored %+v", got)
+	}
+	if !slices.Equal(f.background, []string{"t1/" + r.ID}) {
+		t.Fatalf("handed on %v, want the run once", f.background)
+	}
+
+	// Asked again, KIFF is asked again (it answers the same), and the run
+	// stays as it is but for the answers' repeat.
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel it again")
+}
+
+// A paused run is not cancelled, and nothing is recorded, when KIFF can't be
+// asked: no Withdraw, a held call with no exception ID, or KIFF failing.
+// Background failing doesn't fail the cancel: the sweep continues the run.
+func TestCancelAPausedRunNeedsKIFF(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.heldOn("exc_1")
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(409, code, body, "no Withdraw")
+
+	w := &withdrawals{answers: map[string]string{"exc_1": "invalidated"}, fail: errors.New("KIFF down: secret detail")}
+	f.server.Withdraw = w.withdraw
+	f.restart()
+	noID := f.stored(run.Paused) // its requirement has no exception
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+noID.ID+"/cancel", nil)
+	f.want(409, code, body, "a held call with no exception ID")
+	if len(w.asked) != 0 {
+		t.Fatalf("withdrew %v before knowing every call could be", w.asked)
+	}
+
+	two := f.heldOn("exc_1", "exc_2")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+two.ID+"/cancel", nil)
+	if code != 500 || strings.Contains(fmt.Sprint(body), "secret detail") {
+		t.Fatalf("KIFF failing: %d %v", code, body)
+	}
+	for _, id := range []string{r.ID, noID.ID, two.ID} {
+		if got, _ := f.runs.Get(ctx, "t1", id); got.Cancel || !got.Requirements[0].Answered.IsZero() {
+			t.Fatalf("a cancel that failed changed the run: %+v", got)
+		}
+	}
+
+	w.fail = nil
+	w.answers["exc_2"] = "refused"
+	f.bgFail = errors.New("invoke failed")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+two.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel once KIFF is back, with Background failing")
+	if got, _ := f.runs.Get(ctx, "t1", two.ID); !got.Cancel {
+		t.Fatalf("stored %+v", got)
+	}
+	if !strings.Contains(f.logs.String(), "invoke failed") {
+		t.Fatal("the failed hand-on wasn't logged")
 	}
 }
 
@@ -604,6 +717,39 @@ func TestDeleteAgentDeletesItsRuns(t *testing.T) {
 	}
 	if _, err := f.runs.Get(ctx, "t1", other.ID); err != nil {
 		t.Fatal("another agent's run was deleted")
+	}
+}
+
+// Removing an agent withdraws the calls KIFF holds for its paused runs
+// first, with the agent still there for its key; if KIFF can't be asked,
+// nothing of the agent's is deleted.
+func TestDeleteAgentWithdrawsItsHeldCalls(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	w := &withdrawals{answers: map[string]string{"exc_2": "invalidated"}, fail: errors.New("KIFF down")}
+	f.server.Withdraw = func(ctx context.Context, r run.Run, ex string) (string, error) {
+		if _, err := f.server.Agents.Get(ctx, r.Tenant, r.Agent); err != nil {
+			t.Errorf("withdrawing after the agent was deleted: %v", err)
+		}
+		return w.withdraw(ctx, r, ex)
+	}
+	f.restart()
+	r := f.heldOn("exc_1", "exc_2")
+	f.stored(run.Completed)
+	code, body := f.do("t1", "DELETE", "/agents/payouts", nil)
+	f.want(500, code, body, "delete while KIFF is down")
+	if _, err := f.runs.Get(ctx, "t1", r.ID); err != nil {
+		t.Fatal("the paused run was deleted although its calls weren't withdrawn")
+	}
+	w.answers["exc_1"] = "invalidated"
+	w.asked = nil
+	code, body = f.do("t1", "DELETE", "/agents/payouts", nil)
+	f.want(204, code, body, "delete")
+	if want := []string{"t1/" + r.ID + "/exc_1", "t1/" + r.ID + "/exc_2"}; !slices.Equal(w.asked, want) {
+		t.Fatalf("withdrew %v, want %v", w.asked, want)
+	}
+	if _, err := f.runs.Get(ctx, "t1", r.ID); !errors.Is(err, run.ErrNotFound) {
+		t.Fatal("the paused run is still stored")
 	}
 }
 

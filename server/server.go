@@ -58,6 +58,12 @@ type Server struct {
 	// Background has the run executed by another invocation, and returns
 	// once that invocation is on its way.
 	Background func(ctx context.Context, tenant, id string) error
+	// Withdraw takes back a call KIFF holds for run r, by its exception ID,
+	// and returns what became of the call: "invalidated" when it was
+	// withdrawn, or KIFF's status for one it had already answered
+	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
+	// can't be cancelled (409).
+	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
 	// Gateways are the gateways a stored agent may name, as in
 	// registry.Builder.
 	Gateways []string
@@ -333,6 +339,9 @@ func (s *Server) deleteAgent(ctx context.Context, c Caller, r *http.Request) (in
 	if err := s.Schedules.DeleteAgent(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
+	if err := s.withdrawAll(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
 	if err := s.Runs.DeleteAgent(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
@@ -343,6 +352,34 @@ func (s *Server) deleteAgent(ctx context.Context, c Caller, r *http.Request) (in
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// withdrawAll withdraws every call KIFF holds for the agent's paused runs,
+// before they are deleted: an answer that comes later sends nothing for a
+// run that is gone. It needs the agent, for its KIFF key, so it runs before
+// the agent is deleted. Without Withdraw, nothing is withdrawn.
+func (s *Server) withdrawAll(ctx context.Context, tenant, agent string) error {
+	if s.Withdraw == nil {
+		return nil
+	}
+	runs, err := s.Runs.List(ctx, tenant, agent, 0)
+	if err != nil {
+		return err
+	}
+	for _, r := range runs {
+		if r.Status != run.Paused {
+			continue
+		}
+		for _, q := range r.Requirements {
+			if q.Exception == "" {
+				continue // KIFF gave it no ID to withdraw it by
+			}
+			if _, err := s.Withdraw(ctx, r, q.Exception); err != nil {
+				return fmt.Errorf("withdrawing held call %s of run %s: %w", q.CallID, r.ID, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Memory.

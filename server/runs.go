@@ -117,10 +117,10 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 }
 
 // cancelRun asks a run to stop. A PENDING run is cancelled now; a RUNNING
-// one stops at its next checkpoint. A PAUSED run waits on calls KIFF holds,
-// and those must be withdrawn first: until that is built (#15), it is a
-// conflict. A run saved meanwhile (a running run's checkpoint) is read again,
-// so the caller doesn't get a conflict it didn't cause.
+// one stops at its next checkpoint. A PAUSED run's held calls are withdrawn
+// in KIFF first (cancelPaused). A run saved meanwhile (a running run's
+// checkpoint, an answer recorded) is read again, so the caller doesn't get a
+// conflict it didn't cause.
 func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	for try := 1; ; try++ {
 		rn, err := s.agentRun(ctx, c, r)
@@ -129,7 +129,14 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 		}
 		switch rn.Status {
 		case run.Paused:
-			return 0, nil, conflict("a paused run can't be cancelled yet: KIFF still holds its calls")
+			next, err := s.cancelPaused(ctx, rn)
+			if errors.Is(err, run.ErrConflict) && try < cancelTries {
+				continue
+			}
+			if err != nil {
+				return 0, nil, err
+			}
+			return http.StatusOK, viewRun(next), nil
 		case run.Completed, run.Error, run.Cancelled:
 			return 0, nil, conflict("the run has ended")
 		}
@@ -154,6 +161,63 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 		}
 		return http.StatusOK, viewRun(next), nil
 	}
+}
+
+// cancelPaused withdraws every call KIFF holds for a paused run, so an
+// answer that comes later sends nothing, records what KIFF says became of
+// each, and sets Cancel. The run is then resolved: it is handed to
+// Background, which claims it, collects the outcomes (a withdrawn call comes
+// back refused; one KIFF had already sent, its result) and ends it CANCELLED
+// at its first checkpoint. If Background fails, the sweep continues it.
+func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) {
+	if s.Withdraw == nil {
+		return run.Run{}, conflict("a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
+	}
+	for _, q := range rn.Requirements {
+		if q.Exception == "" {
+			return run.Run{}, conflict("a paused run can't be cancelled: KIFF holds a call it gave no ID to withdraw it by")
+		}
+	}
+	got := map[string]string{}
+	for _, q := range rn.Requirements {
+		status, err := s.Withdraw(ctx, rn, q.Exception)
+		if err != nil {
+			return run.Run{}, fmt.Errorf("withdrawing held call %s: %w", q.CallID, err)
+		}
+		got[q.Exception] = status
+	}
+	next, err := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
+		n.Cancel = true
+		for i := range n.Requirements {
+			q := &n.Requirements[i]
+			if st, ok := got[q.Exception]; ok && st != "" {
+				q.Answer = st
+				if q.Answered.IsZero() {
+					q.Answered = s.now()
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return run.Run{}, err
+	}
+	if s.Background != nil && resolved(next, s.now()) {
+		if err := s.Background(context.WithoutCancel(ctx), next.Tenant, next.ID); err != nil && s.Log != nil {
+			s.Log.ErrorContext(ctx, "continuing a cancelled paused run; the sweep will", "run", next.ID, "err", err)
+		}
+	}
+	return next, nil
+}
+
+// resolved reports whether every requirement of r is resolved.
+func resolved(r run.Run, now time.Time) bool {
+	for _, q := range r.Requirements {
+		if !q.Resolved(now) {
+			return false
+		}
+	}
+	return true
 }
 
 // endedExpires is when a run the server ends may go: its agent's keep rules,

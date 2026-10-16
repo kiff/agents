@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kiff/agents/registry"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/tool/kiff"
 )
 
@@ -91,5 +93,44 @@ func TestWithdrawFailures(t *testing.T) {
 	}
 	if _, err := kiff.Withdraw(context.Background(), srv.Client(), srv.URL, testKey, ""); err == nil {
 		t.Fatal("no exception: no error")
+	}
+}
+
+// oneAgent is t1's agent "rae", whose KIFF key is under "rae-key".
+type oneAgent struct{ registry.Agents }
+
+func (oneAgent) Get(_ context.Context, tenant, id string) (registry.Definition, error) {
+	if tenant != "t1" || id != "rae" {
+		return registry.Definition{}, registry.ErrNotFound
+	}
+	return registry.Definition{Tenant: tenant, ID: id, KeyRef: "rae-key"}, nil
+}
+
+type keys struct{}
+
+func (keys) Key(_ context.Context, tenant, ref string) (string, error) {
+	if tenant != "t1" || ref != "rae-key" {
+		return "", errors.New("no such key")
+	}
+	return testKey, nil
+}
+
+// Withdrawer withdraws with the run's own agent's key, and says what became
+// of the call.
+func TestWithdrawerUsesTheRunsAgentsKey(t *testing.T) {
+	srv := api(t)
+	withdraw := kiff.Withdrawer(oneAgent{}, keys{}, srv.Client(), srv.URL)
+	r := run.Run{Tenant: "t1", Agent: "rae", ID: "r1"}
+	for ex, want := range map[string]string{"exc_held": "invalidated", "exc_sent": "approved"} {
+		if got, err := withdraw(context.Background(), r, ex); err != nil || got != want {
+			t.Fatalf("%s: %q, %v; want %q", ex, got, err, want)
+		}
+	}
+	if _, err := withdraw(context.Background(), r, "exc_other"); !errors.Is(err, kiff.ErrNoHold) {
+		t.Fatalf("an unknown hold: %v", err)
+	}
+	if _, err := withdraw(context.Background(), run.Run{Tenant: "t2", Agent: "rae", ID: "r1"}, "exc_held"); err == nil ||
+		errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("another tenant's agent: %v, want an error that isn't the API's 404", err)
 	}
 }
