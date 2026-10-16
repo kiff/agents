@@ -484,17 +484,18 @@ func TestARunsHeldCallsAreWithdrawn(t *testing.T) {
 }
 
 // With -definitions, a case runs as its job's agent as kiff/tafs defines
-// it: model, price, effort, max tokens and instructions, with the eval's
-// own gateway, key and cost cap (#78). A field this runtime doesn't know
-// fails the run, as the server would refuse it.
+// it: model, price, effort, max tokens, max turns, history and
+// instructions, with the eval's own gateway, key and cost cap (#78). A field
+// this runtime doesn't know fails the run, as the server would refuse it.
 func TestACaseRunsAsTafsDefinesIt(t *testing.T) {
-	m := &script{replies: agentTurns()}
+	// Turns that cost next to nothing, so the cost cap doesn't stop the run first.
+	m := &script{replies: []model.Reply{calls(call("c1", "create_refund", `{"charge":"ch_1"}`)), agentTurns()[1]}}
 	withAgent(t, m)
 	defs := t.TempDir()
 	def := `{"instructions": "You handle refund requests. The kiff skill: …", "model": "claude-opus-5-5",
 		"price": {"Input": 4000000, "Output": 20000000, "CacheRead": 200000, "CacheWrite": 5000000},
 		"max_tokens": 16000, "effort": "high", "gateway": "https://mcp.kiff.dev/mcp", "key_ref": "kiff/taf-1",
-		"keep": {}, "max_cost_micro_usd": 200000000, "history": 10}`
+		"keep": {}, "max_cost_micro_usd": 200000000, "max_turns": 1, "history": 10}`
 	_ = os.WriteFile(filepath.Join(defs, "refunds.json"), []byte(def), 0o644)
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-max-cost", "1", "refunds"},
@@ -506,6 +507,9 @@ func TestACaseRunsAsTafsDefinesIt(t *testing.T) {
 	if first.Model != "claude-opus-5-5" || first.Effort != "high" || first.MaxTokens != 16000 || !first.Cache ||
 		first.System != "You handle refund requests. The kiff skill: …" {
 		t.Fatalf("asked %+v", first)
+	}
+	if len(m.asked) != 1 { // the definition's one turn: the server would stop it there too
+		t.Fatalf("%d model turns with max_turns 1", len(m.asked))
 	}
 
 	_ = os.WriteFile(filepath.Join(defs, "refunds.json"), []byte(`{"model": "m", "temperature": 1}`), 0o644)

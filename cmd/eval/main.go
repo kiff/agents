@@ -160,7 +160,7 @@ func (rt *runtime) note(ctx context.Context, name string) error {
 
 // definition is the agent a case runs as. From -definitions, it is the
 // job's agent as kiff/tafs defines it: its model, price, effort, max tokens,
-// history and instructions (with KIFF's skill). Otherwise it is the base
+// max turns, history and instructions (with KIFF's skill). Otherwise it is the base
 // with the job's instructions and the skill. Either way the eval keeps its
 // own tenant, gateway, key, cost cap and keep rules: the checks read tool
 // calls and results.
@@ -177,7 +177,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		if err := dec.Decode(&t); err != nil {
 			return d, fmt.Errorf("%s: the job's definition: %w", s.Name, err)
 		}
-		d.Model, d.Price, d.Effort, d.MaxTokens, d.History, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.History, t.Instructions
+		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.Instructions
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
 		if err != nil {

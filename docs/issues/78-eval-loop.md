@@ -36,7 +36,7 @@ eval: chargebacks: couldn't withdraw update_dispute (exc_…): …: refuse it in
 **The eval runs what tafs runs.** `eval -run -definitions dir` takes each
 job's agent from `<dir>/<job>.json`, written by `infra/eval-definitions.sh`
 from kiff/tafs at the commit in `eval/tafs.ref`. Model, price (with cache
-prices), effort, max tokens, history and instructions (job, notes rules,
+prices), effort, max tokens, max turns, history and instructions (job, notes rules,
 KIFF's skill) come from tafs. The eval keeps its own tenant, gateway, key,
 cost cap and keep rules. A field this runtime doesn't know fails the run,
 as the server would refuse it.
