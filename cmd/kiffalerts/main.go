@@ -17,7 +17,12 @@
 //
 // Its role must hold no more than this:
 //
-//   - Read and write on AGENTS_TABLE.
+//   - On AGENTS_TABLE, only the run items an answer touches: GetItem, Query,
+//     PutItem, UpdateItem, DeleteItem and ConditionCheckItem, under the
+//     condition dynamodb:LeadingKeys is one of R|*, H|*, L|*, O|*, W, WP (a
+//     run and its turns, its holds, its two list items, the sweep's queues).
+//     The table also holds every tenant's agents, sessions, notes and
+//     schedules: this role must reach none of them.
 //   - secretsmanager:GetSecretValue on KIFF_ACCOUNTS_PREFIX only.
 //   - No lambda:InvokeFunction on the agents function. A direct invoke there
 //     can send any event, a made-up function URL request for any tenant
