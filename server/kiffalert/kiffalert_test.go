@@ -78,8 +78,13 @@ func setup(t *testing.T) *env {
 
 // payload is a hold_answered alert as KIFF's dispatcher sends it.
 func payload(account, outcome, hold, status string) string {
+	return payloadAt(account, outcome, hold, status, "2026-10-16T09:03:12Z")
+}
+
+// payloadAt is payload with the time KIFF decided the hold.
+func payloadAt(account, outcome, hold, status, decided string) string {
 	return fmt.Sprintf(`{"schema_version":"1","type":"decision","tenant_id":%q,"action":"stripe.refund","entity_id":"ch_big",`+
-		`"outcome":%q,"hold":{"id":%q,"status":%q},"decided_at":"2026-10-16T09:03:12Z","event_id":"evt_1"}`, account, outcome, hold, status)
+		`"outcome":%q,"hold":{"id":%q,"status":%q},"decided_at":%q,"event_id":"evt_1"}`, account, outcome, hold, status, decided)
 }
 
 // signed is KIFF's KIFF-Signature for body at t.
@@ -155,8 +160,12 @@ func TestAnAlertThatDoesntCheckIsRefused(t *testing.T) {
 		"another body":    {body, signed(strings.Replace(body, "approved", "refused", 1), e.now)},
 		"unknown account": {stranger, signed(stranger, e.now)},
 	} {
-		if w := e.post(c.body, c.sig); w.Code != http.StatusUnauthorized {
+		w := e.post(c.body, c.sig)
+		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("%s: %d, want 401", name, w.Code)
+		}
+		if got := strings.TrimSpace(w.Body.String()); got != "the alert doesn't check" {
+			t.Fatalf("%s: %q, want one answer for every alert that doesn't check", name, got)
 		}
 	}
 	if q := e.stored(t).Requirements[0]; !q.Answered.IsZero() {
@@ -175,13 +184,31 @@ func TestASignatureMayCarrySeveralValues(t *testing.T) {
 	}
 }
 
-// An alert for a hold no run has paused on yet is 404, so KIFF delivers it
-// again; one for a run that went on is 200, and continues nothing.
+// An alert for a hold no run has paused on yet is 404 while the answer is
+// recent, so KIFF delivers it again; past PauseWindow, or with no time, it is
+// 200, so a hold that isn't ours never switches KIFF's target off. One for a
+// run that went on is 200, and continues nothing.
 func TestTheStatusSaysWhetherKIFFShouldDeliverAgain(t *testing.T) {
 	e := setup(t)
-	body := payload("kiff-acct-1", kiffalert.HoldAnswered, "exc_9", "approved")
-	if w := e.post(body, signed(body, e.now)); w.Code != http.StatusNotFound {
-		t.Fatalf("an unknown hold: %d, want 404", w.Code)
+	before := e.stored(t)
+	for name, c := range map[string]struct {
+		decided string
+		want    int
+	}{
+		"just decided":        {e.now.Add(-time.Minute).Format(time.RFC3339), http.StatusNotFound},
+		"inside the window":   {e.now.Add(-kiffalert.PauseWindow + time.Second).Format(time.RFC3339), http.StatusNotFound},
+		"decided an hour ago": {e.now.Add(-time.Hour).Format(time.RFC3339), http.StatusOK},
+		"at the window":       {e.now.Add(-kiffalert.PauseWindow).Format(time.RFC3339), http.StatusOK},
+		"no time":             {"", http.StatusOK},
+		"not a time":          {"yesterday", http.StatusOK},
+	} {
+		body := payloadAt("kiff-acct-1", kiffalert.HoldAnswered, "exc_9", "approved", c.decided)
+		if w := e.post(body, signed(body, e.now)); w.Code != c.want {
+			t.Fatalf("an unknown hold, %s: %d, want %d", name, w.Code, c.want)
+		}
+	}
+	if after := e.stored(t); after.Version != before.Version || len(e.continued) != 0 {
+		t.Fatalf("an unknown hold changed the run, or continued %v", e.continued)
 	}
 	r, err := run.Claim(ctx, e.runs, "t1", e.run.ID, "i2", e.now.Add(time.Hour), e.now.Add(11*time.Minute)) // both expired
 	if err != nil {
@@ -193,7 +220,7 @@ func TestTheStatusSaysWhetherKIFFShouldDeliverAgain(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	body = payload("kiff-acct-1", kiffalert.HoldAnswered, "exc_1", "expired")
+	body := payload("kiff-acct-1", kiffalert.HoldAnswered, "exc_1", "expired")
 	if w := e.post(body, signed(body, e.now)); w.Code != http.StatusOK || len(e.continued) != 0 {
 		t.Fatalf("an ended run: %d, continued %v", w.Code, e.continued)
 	}

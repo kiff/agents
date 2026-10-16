@@ -164,18 +164,19 @@ KIFF delivers again until it gets a 2xx:
 | Response | When |
 |---|---|
 | 200 | answer recorded (or nothing to record it on: the run went on or ended; a repeat); another outcome, ignored |
-| 404 | no run has paused on that hold yet: deliver again |
-| 401 | no signature, a wrong one, too old or new, an unknown account, an account with no secret |
+| 404 | no run has paused on that hold yet, and `decided_at` is under 10 min old (`PauseWindow`): deliver again |
+| 200 | no run has paused on it, and `decided_at` is older, missing or unreadable: not ours (another client on the account, a removed agent's run); logged |
+| 401 | no signature, a wrong one, too old or new, an unknown account, an account with no secret; one body for all, `the alert doesn't check` |
 | 503 | the account couldn't be read, or continuing the run failed (the answer stays recorded) |
 | 400, 405, 413 | not a KIFF alert, not POST, body over 64 KB |
 
 | Rule | Guarded by |
 |---|---|
 | each answer recorded; the run continues once all are, not before | `server/kiffalert` `TestAnswersAreRecordedAndTheRunContinuesOnceAllAre` |
-| what doesn't check is 401 and records nothing | `TestAnAlertThatDoesntCheckIsRefused` |
+| what doesn't check is 401, one body for all, and records nothing | `TestAnAlertThatDoesntCheckIsRefused` |
 | KIFF's own signature checks, byte for byte | `TestKIFFsOwnSignatureChecks` (vector from `alert.SignatureHeader`) |
 | an account with no secret is refused | `TestAnAccountWithNoSecretIsRefused` |
-| 404 before the pause; 200 for a run that went on | `TestTheStatusSaysWhetherKIFFShouldDeliverAgain` |
+| 404 before the pause while recent; 200 once older or with no time, so KIFF never switches the target off; 200 for a run that went on | `TestTheStatusSaysWhetherKIFFShouldDeliverAgain` |
 | a failed continue is 503, then continued on redelivery | `TestAFailedContinueIsDeliveredAgain` |
 
 Wiring it in `cmd/lambda` (its own URL, `Accounts`, `Continue` as a background

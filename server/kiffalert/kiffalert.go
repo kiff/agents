@@ -6,8 +6,9 @@
 //
 // KIFF delivers an alert again until it gets a 2xx, so the status says
 // whether it should: 200 once the answer is recorded (or there was nothing to
-// record it on), 404 while no run has paused on the hold yet, 401 for a
-// signature that doesn't check, 503 when continuing the run failed.
+// record it on), 404 while no run has paused on the hold yet and the answer
+// is recent (PauseWindow), 401 for an alert that doesn't check, 503 when
+// continuing the run failed.
 package kiffalert
 
 import (
@@ -37,6 +38,13 @@ const SignatureHeader = "KIFF-Signature"
 
 // Tolerance is how far an alert's signed time may be from now.
 const Tolerance = 5 * time.Minute
+
+// PauseWindow is how long after the owner decided an alert for a hold no
+// run has paused on is 404, so KIFF delivers it again: the owner may answer
+// before the run's pause is stored, which takes seconds. Past it the hold is
+// not ours (another client on the KIFF account, or a removed agent's run),
+// and the alert is 200: KIFF switches off a target that keeps failing.
+const PauseWindow = 10 * time.Minute
 
 // MaxBody bounds an alert's body.
 const MaxBody = 64 << 10
@@ -68,7 +76,9 @@ type Alert struct {
 	TenantID string `json:"tenant_id"`
 	Outcome  string `json:"outcome"`
 	EventID  string `json:"event_id"`
-	Hold     *struct {
+	// DecidedAt is when KIFF resolved the hold, RFC 3339.
+	DecidedAt string `json:"decided_at"`
+	Hold      *struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	} `json:"hold"`
@@ -108,7 +118,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tenant, secret, err := h.Accounts.Account(ctx, a.TenantID)
 	switch {
 	case errors.Is(err, ErrUnknownAccount):
-		http.Error(w, "unknown account", http.StatusUnauthorized)
+		// The same answer as a bad signature: an unsigned post can't learn
+		// which KIFF accounts have a tenant here.
+		h.log().Info("kiffalert: an alert from an unknown KIFF account")
+		http.Error(w, "the alert doesn't check", http.StatusUnauthorized)
 		return
 	case err != nil:
 		h.log().Error("kiffalert: reading the account", "err", err)
@@ -116,7 +129,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !Verify(secret, r.Header.Get(SignatureHeader), body, h.now()) {
-		http.Error(w, "the signature doesn't check", http.StatusUnauthorized)
+		h.log().Info("kiffalert: an alert whose signature doesn't check", "tenant", tenant)
+		http.Error(w, "the alert doesn't check", http.StatusUnauthorized)
 		return
 	}
 	if a.Outcome != HoldAnswered {
@@ -129,8 +143,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rn, err := run.Answer(ctx, h.Runs, tenant, a.Hold.ID, a.Hold.Status, h.now())
 	switch {
-	case errors.Is(err, run.ErrNotFound):
+	case errors.Is(err, run.ErrNotFound) && h.recent(a.DecidedAt):
 		http.Error(w, "no run has paused on this hold yet", http.StatusNotFound)
+		return
+	case errors.Is(err, run.ErrNotFound):
+		h.log().Info("kiffalert: no run paused on the hold", "tenant", tenant, "hold", a.Hold.ID)
+		w.WriteHeader(http.StatusOK)
 		return
 	case err != nil:
 		h.log().Error("kiffalert: recording the answer", "hold", a.Hold.ID, "err", err)
@@ -146,6 +164,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// recent reports whether KIFF decided the hold within PauseWindow of now. A
+// missing or unreadable time is not recent.
+func (h *Handler) recent(decidedAt string) bool {
+	at, err := time.Parse(time.RFC3339Nano, decidedAt)
+	return err == nil && h.now().Sub(at) < PauseWindow
 }
 
 // ready reports whether r is paused and waits for nothing more.
