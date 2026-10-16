@@ -177,6 +177,9 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		if err := dec.Decode(&t); err != nil {
 			return d, fmt.Errorf("%s: the job's definition: %w", s.Name, err)
 		}
+		if t.Workspace { // the eval's runner has none: refused, not run without it
+			return d, fmt.Errorf("%s: the job's agent has a workspace, and the eval gives none yet", s.Name)
+		}
 		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.Instructions
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))

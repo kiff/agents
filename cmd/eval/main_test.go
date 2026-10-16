@@ -520,6 +520,13 @@ func TestACaseRunsAsTafsDefinesIt(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unknown field "temperature"`) {
 		t.Fatalf("an unknown field: %v", err)
 	}
+	// A workspace the eval can't give is refused, not dropped (#86).
+	_ = os.WriteFile(filepath.Join(defs, "refunds.json"), []byte(`{"model": "m", "workspace": true}`), 0o644)
+	err = run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "refunds"},
+		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
+	if err == nil || !strings.Contains(err.Error(), "has a workspace") {
+		t.Fatalf("a workspace: %v", err)
+	}
 	err = run(context.Background(), []string{"-run", "-definitions", defs, "-model", "m", "refunds"},
 		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
 	if err == nil || !strings.Contains(err.Error(), "one or the other") {
