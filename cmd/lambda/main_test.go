@@ -229,6 +229,9 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if f.sweeper == nil || f.cont == nil {
 		t.Error("no sweep, or one that continues no paused run")
 	}
+	if f.api == nil || f.api.Withdraw == nil {
+		t.Error("a paused run can't be cancelled: nothing withdraws its held calls from KIFF")
+	}
 	if f.schedules.Start == nil {
 		t.Error("firings start nothing")
 	}

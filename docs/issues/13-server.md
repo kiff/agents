@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
 **Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), this page's PR (`cmd/kiffalerts`)
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), this page's PR (withdraw on Lambda)
 
 ## What it's for
 
@@ -32,7 +32,7 @@ only tafs cloud may call it.
 | `POST /schedules/{id}/trigger` | Fire the schedule now, by hand: an ordinary run of its agent with its input, tagged with the schedule, in the background. Answers 202 with the run. The schedule needn't be on. **Only served when a `Runner` is set** |
 | `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams the run as SSE (below). With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
 | `GET /agents/{id}/runs/{run_id}` | The run: status, stop, output, error, cost, turns, requirements. Never its paused turn, claim, lease or version |
-| `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED has its held calls withdrawn in KIFF, then stops ([#15](15-continue-on-hold.md)); 409 with no `Withdraw`, which `cmd/lambda` doesn't set yet |
+| `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED has its held calls withdrawn in KIFF, then stops ([#15](15-continue-on-hold.md)); 409 on a server with no `Withdraw` |
 | `POST /agents/{id}/runs/{run_id}/continue` | `{background?}`, or no body. A PAUSED run KIFF has resolved: streams like a start, or with `background` answers 202. 409 for a run not paused, or still waiting for KIFF ([#15](15-continue-on-hold.md)). **Only served when a `Runner` is set** |
 | `POST /agents/{id}/runs/{run_id}/resume?after=N` | Replays the run's recorded events after `Seq` N, then follows the run until it's final or paused, then `end` (below) |
 
@@ -119,6 +119,10 @@ stores, with the registry's `Builder`:
 - **Paused runs:** `kiff.Collect` ([#15](15-continue-on-hold.md)) collects
   the outcome of each held call when a paused run is executed again. Without
   it, `Execute` refuses a paused run with `runner.ErrNoCollect`.
+- **Cancelling a paused run**, or removing an agent with paused runs:
+  `kiff.Withdrawer` takes back each held call at `api.kiff.dev` with the
+  run's agent's own key, from the same Secrets Manager adapter. Each
+  withdrawal waits at most 15 seconds.
 
 **Background runs.** `POST /agents/{id}/runs` with `background` stores the
 run PENDING, then invokes this same function asynchronously (Lambda's
@@ -318,7 +322,7 @@ function is the only guard on who the caller is:
 | A wrong method is 405 with `Allow`; an unknown path is JSON 404 | `TestWrongMethodAndUnknownPath` |
 | Without a Runner there is no start route | `TestNoRunnerNoStart` |
 | `cmd/lambda` refuses events it doesn't know, and needs its configuration | `TestOtherEventsAreRefused`, `TestSetupNeedsItsConfiguration` |
-| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, held calls collected through `kiff.Collect`, the start route served | `TestSetupNeedsItsConfiguration` |
+| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, held calls collected through `kiff.Collect`, withdrawn through `kiff.Withdrawer`, the start route served | `TestSetupNeedsItsConfiguration` |
 | A run streams through the function URL on Lambda | `TestARunStreamsOnLambda` |
 | A background run is one asynchronous invoke naming only the run, executed by that invocation, once however often it's delivered | `TestABackgroundRunIsExecutedByAnotherInvocation` |
 | A run that can't be queued is stored ERROR | `TestARunThatCantBeQueuedIsAnError` |

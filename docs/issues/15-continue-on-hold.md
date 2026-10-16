@@ -330,8 +330,9 @@ the caller reads the run.
 
 ## Still to deliver
 
-- **Wiring `Server.Withdraw`** in `cmd/lambda` ([#13](13-server.md)):
-  `kiff.Withdrawer(agents, secrets, hc, kiff.APIURL)`.
+Nothing in code. What's left is the deploy ([#13](13-server.md)), and an
+end-to-end check there: a real hold, answered on the phone, continued on
+Lambda.
 
 ## What KIFF now offers (from kiff/kiff-cloud#1245)
 
