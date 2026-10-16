@@ -106,6 +106,42 @@ refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
   …
 ```
 
+### The cases' Stripe tools behind KIFF (`eval/stripemcp`)
+
+KIFF reaches Stripe through `mcp.stripe.com`, whose generic `stripe_read`
+and `stripe_write` neither name the operations the cases grade nor carry an
+amount a Card can limit. `cmd/stripemcp` is a remote MCP server, for evals
+only, over a Stripe test-mode account:
+
+| Tool | Does | Card limits |
+|---|---|---|
+| `list_disputes` | open disputes with amount (cents), status, deadline, order reference | calls |
+| `retrieve_dispute` | one dispute, with the payment's metadata (delivery, the customer's message) | calls |
+| `update_dispute` | evidence (Stripe's text fields), submitted unless `submit` is false (Stripe's default, as the cases grade it) | `amount`, USD cents |
+| `close_dispute` | accepts the dispute | `amount`, USD cents |
+
+A write is refused unless `amount` is the dispute's own, so an agent can't
+understate it to slip under a Card. Live keys are refused; a caller needs
+its bearer token, the key KIFF holds for the connection.
+
+```sh
+STRIPE_API_KEY=sk_test_… STRIPEMCP_TOKEN=$(openssl rand -hex 24) infra/eval-stripemcp.sh up   # prints the URL; secrets reach the CLI by file
+infra/eval-stripemcp.sh down
+```
+
+**Setting up KIFF for Chargebacks** (a test account):
+1. Connect each tool from that URL, with the token as the credential:
+   `update_dispute` and `close_dispute` with amount `amount` in US cents and
+   each call on `dispute`; `list_disputes` and `retrieve_dispute` read-only.
+2. Add an agent, and give it a **gateway key** ("Claude Code or Codex"); a
+   kiff-guard key is refused by the gateway (`permission_denied`).
+3. Cards: `update_dispute` up to $500 a call, held above; `close_dispute`
+   up to $100 a call, refused above; the two reads by call count.
+4. Seed (`eval seed chargebacks`, #10) and run `eval -run … chargebacks`.
+   Refuse or let expire any hold an earlier run left: the agent reads
+   `kiff_pending` first, and an earlier held call on an item makes it leave
+   that item alone.
+
 ## What holds, and the test that guards it
 
 | Rule | Test |
@@ -119,6 +155,8 @@ refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
 | A lower score is reported | `TestLower`, `TestRunGradesAndComparesWithTheBaseline` |
 | The reader's errors never carry the key | `TestReadErrorsNeverCarryTheKey` |
 | A run of this runtime loads with only its own events and its status | `TestARunLoadsWithWhatItDid` |
+| The Stripe tools speak MCP to their bearer only; a write needs the dispute's own amount and sends nothing otherwise; only text evidence fields; live keys refused; Stripe's errors never carry the key | `eval/stripemcp` `TestSpeaksMCPToItsCallerOnly`, `TestAWriteNeedsTheDisputesAmount`, `TestRefuses`, `TestKeys` |
+| `submit` left out submits, as Stripe and the cases have it; false saves a draft | `TestSubmitDefaultsToStripes` |
 | Under the default keep rules there'd be nothing to grade | `TestTheDefaultPolicyLeavesNothingToGrade` |
 | Another tenant's run doesn't load | `TestLoadIsTheTenants` |
 | `-run` runs the case as an eval run of its job's agent (job text + skill, the case's input, KIFF's key and gateway), then grades it | `cmd/eval` `TestRunACaseOnThisRuntime` |
