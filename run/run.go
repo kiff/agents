@@ -92,6 +92,14 @@ type Run struct {
 	Claim string    `json:"claim,omitempty"`
 	Lease time.Time `json:"lease,omitzero"`
 
+	// Retries counts the sweep's continues of a resolved PAUSED run, and
+	// Retry is when the sweep looks at the run again: each continue doubles
+	// the wait from ResolvedGrace, up to MaxRetryWait, so a run that stays
+	// paused backs off and leaves the front of the sweep. A new pause starts
+	// both from zero.
+	Retries int       `json:"retries,omitempty"`
+	Retry   time.Time `json:"retry,omitzero"`
+
 	Created time.Time `json:"created"`
 	Updated time.Time `json:"updated"`
 	// Expires is when a run that has ended may be removed (zero: kept until

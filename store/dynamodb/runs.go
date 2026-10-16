@@ -63,7 +63,21 @@ const (
 	MaxTurn  = 3 << 20
 )
 
-const duePK = "W"
+// Runs due for the sweep: RUNNING and PENDING ones under duePK, PAUSED ones
+// under pausedPK, so the sweep reads each queue apart.
+const (
+	duePK    = "W"
+	pausedPK = "WP"
+)
+
+// dueKey is r's entry in its due queue.
+func dueKey(r run.Run) map[string]types.AttributeValue {
+	pk := duePK
+	if r.Status == run.Paused {
+		pk = pausedPK
+	}
+	return pkey(pk, dueSK(r))
+}
 
 func runPK(tenant, id string) string         { return key("R", tenant, id) }
 func runListPK(tenant, agent string) string  { return key("L", tenant, agent) }
@@ -194,7 +208,7 @@ func (rs *Runs) listItems(r run.Run, t types.AttributeValue) []types.TransactWri
 }
 
 func (rs *Runs) dueItem(r run.Run) map[string]types.AttributeValue {
-	item := pkey(duePK, dueSK(r))
+	item := dueKey(r)
 	item["tenant"], item["id"] = s(r.Tenant), s(r.ID)
 	return item
 }
@@ -353,9 +367,9 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 		holds = slices.DeleteFunc(holds, func(ex string) bool { return slices.Contains(had, ex) })
 	}
 	items = append(items, rs.holdItems(next, holds, now.ttl)...)
-	if !prev.Due().Equal(next.Due()) {
+	if !prev.Due().Equal(next.Due()) || (prev.Status == run.Paused) != (next.Status == run.Paused) {
 		if !prev.Due().IsZero() {
-			items = append(items, rs.del(pkey(duePK, dueSK(prev))))
+			items = append(items, rs.del(dueKey(prev)))
 		}
 		if !next.Due().IsZero() {
 			items = append(items, rs.put(rs.dueItem(next), ""))
@@ -478,10 +492,19 @@ func (rs *Runs) list(ctx context.Context, tenant, pk string, limit int) ([]run.R
 
 // Due leaves out the runs' paused turns: the runs it returns have none.
 func (rs *Runs) Due(ctx context.Context, now time.Time, limit int) ([]run.Run, error) {
+	return rs.due(ctx, duePK, now, limit)
+}
+
+// DuePaused leaves out the runs' paused turns, as Due does.
+func (rs *Runs) DuePaused(ctx context.Context, now time.Time, limit int) ([]run.Run, error) {
+	return rs.due(ctx, pausedPK, now, limit)
+}
+
+func (rs *Runs) due(ctx context.Context, pk string, now time.Time, limit int) ([]run.Run, error) {
 	var out []run.Run
 	in := &ddb.QueryInput{
 		KeyConditionExpression:    aws.String("pk = :pk AND sk < :now"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(duePK), ":now": s(fmt.Sprintf("%020d", now.UnixNano()))},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(pk), ":now": s(fmt.Sprintf("%020d", now.UnixNano()))},
 	}
 	if limit > 0 {
 		in.Limit = aws.Int32(int32(min(limit, 100)))
@@ -499,10 +522,11 @@ func (rs *Runs) Due(ctx context.Context, now time.Time, limit int) ([]run.Run, e
 		for i, item := range items {
 			r, ok := byKey[keys[i]]
 			switch {
-			case !ok || r.Due().IsZero() || dueSK(r) != getS(item, "sk"):
-				// its run is gone, or due at another time: an entry left
-				// behind (read after the run's own write, which is newer)
-				stale = append(stale, pkey(duePK, getS(item, "sk")))
+			case !ok || r.Due().IsZero() || dueSK(r) != getS(item, "sk") || getS(dueKey(r), "pk") != pk:
+				// its run is gone, or due at another time or in the other
+				// queue: an entry left behind (read after the run's own
+				// write, which is newer)
+				stale = append(stale, pkey(pk, getS(item, "sk")))
 			case !rs.gone(r) && r.Due().Before(now):
 				out = append(out, r)
 			}
@@ -568,7 +592,7 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 		items = append(items, rs.del(pkey(runPK(r.Tenant, r.ID), turnSK(i))))
 	}
 	if !r.Due().IsZero() {
-		items = append(items, rs.del(pkey(duePK, dueSK(r))))
+		items = append(items, rs.del(dueKey(r)))
 	}
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	return err

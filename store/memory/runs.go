@@ -170,14 +170,25 @@ func (m *Runs) ListSource(_ context.Context, tenant string, trigger run.Trigger,
 }
 
 func (m *Runs) Due(_ context.Context, now time.Time, limit int) ([]run.Run, error) {
+	return m.due(now, false, limit), nil
+}
+
+func (m *Runs) DuePaused(_ context.Context, now time.Time, limit int) ([]run.Run, error) {
+	return m.due(now, true, limit), nil
+}
+
+func (m *Runs) due(now time.Time, paused bool, limit int) []run.Run {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := m.all(func(r run.Run) bool { d := r.Due(); return !d.IsZero() && d.Before(now) })
+	out := m.all(func(r run.Run) bool {
+		d := r.Due()
+		return !d.IsZero() && d.Before(now) && (r.Status == run.Paused) == paused
+	})
 	slices.SortFunc(out, func(a, b run.Run) int { return cmp.Or(a.Due().Compare(b.Due()), cmp.Compare(a.ID, b.ID)) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
-	return out, nil
+	return out
 }
 
 func (m *Runs) Delete(_ context.Context, tenant, id string) error {

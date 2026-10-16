@@ -636,6 +636,91 @@ func TestAFailedCollectPausesAgain(t *testing.T) {
 	}
 }
 
+// A hold that expires with no alert: the sweep continues the run, which
+// collects the refusal and carries on. A run that can't continue is marked
+// ERROR a day later, and its recording ends.
+func TestTheSweepContinuesARunWhoseHoldExpired(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Waiting."))
+	r := f.start(server.Start{Input: "refund"})
+	f.refund.result = tool.Result{Text: "held", State: tool.StateHeld,
+		Hold: &tool.Hold{Operation: "op_1", Exception: "exc_1", Expires: f.clock.now().Add(time.Hour)}}
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "expired: refused", IsError: true}}}, nil
+	}
+	f.model.add(say("The refund expired unanswered."))
+	sw := run.Sweeper{Runs: f.runs, Ended: f.r.Ended, Continue: func(ctx context.Context, tenant, id string) error {
+		_, err := f.r.Execute(ctx, tenant, id, nil)
+		return err
+	}}
+	if n, err := sw.Sweep(ctx, f.clock.now().Add(time.Hour), 10); err != nil || n != 0 {
+		t.Fatalf("swept %d at expiry, err = %v: want the grace first", n, err)
+	}
+	f.clock.add(time.Hour + run.ResolvedGrace + time.Second)
+	if n, err := sw.Sweep(ctx, f.clock.now(), 10); err != nil || n != 1 {
+		t.Fatalf("swept %d, err = %v", n, err)
+	}
+	if got := f.get(r.ID); got.Status != run.Completed || got.Output != "The refund expired unanswered." {
+		t.Fatalf("after the sweep: %+v", got)
+	}
+
+	gone := f.start(server.Start{Input: "refund again"})
+	f.model.add(use("c2", "stripe_refund", `{}`), say("Waiting."))
+	f.refund.result.Hold.Expires = f.clock.now().Add(time.Hour)
+	if _, err := f.r.Execute(ctx, "t1", gone.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return nil, errors.New("KIFF is down")
+	}
+	f.clock.add(time.Hour + run.ResolvedGrace + time.Second)
+	if n, err := sw.Sweep(ctx, f.clock.now(), 10); n != 0 || err == nil {
+		t.Fatalf("swept %d, err = %v: want KIFF's failure", n, err)
+	}
+	f.clock.add(run.PausedGiveUp)
+	if n, err := sw.Sweep(ctx, f.clock.now(), 10); err != nil || n != 1 {
+		t.Fatalf("swept %d, err = %v", n, err)
+	}
+	if got := f.get(gone.ID); got.Status != run.Error || !f.state(gone).Ended {
+		t.Fatalf("given up: %s, recording %+v", got.Status, f.state(gone))
+	}
+}
+
+// The sweep's backoff belongs to one pause: a continue that pauses again on
+// KIFF's failure keeps it, and a new held call starts it again.
+func TestANewPauseResetsTheSweepsBackoff(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Waiting."))
+	r := f.start(server.Start{Input: "refund"})
+	f.pause(r)
+	f.answer(r)
+	if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error {
+		n.Retries, n.Retry = 3, f.clock.now().Add(8*time.Minute)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return nil, errors.New("KIFF is down")
+	}
+	if got, _ := f.r.Execute(ctx, "t1", r.ID, nil); got.Status != run.Paused || got.Retries != 3 {
+		t.Fatalf("paused again on KIFF's failure: %s, retries %d, want 3 kept", got.Status, got.Retries)
+	}
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded"}}}, nil
+	}
+	f.model.add(use("c2", "stripe_refund", `{}`), say("Waiting again."))
+	f.refund.result = tool.Result{Text: "held", State: tool.StateHeld}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Paused || got.Requirements[0].CallID != "c2" || got.Retries != 0 || !got.Retry.IsZero() {
+		t.Fatalf("a new pause: %s on %+v, retries %d, retry %v", got.Status, got.Requirements, got.Retries, got.Retry)
+	}
+}
+
 // A run asked to stop stops at its next checkpoint, after the tool batch.
 func TestCancelStopsAtTheNextCheckpoint(t *testing.T) {
 	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("never said"))
