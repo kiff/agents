@@ -81,7 +81,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	c := chat.Chat{Runner: &runner.Runner{Runs: memory.NewRuns(), Sessions: store, Builder: builder}, Tenant: d.Tenant, Agent: d.ID}
+	c := chat.Chat{Runner: &runner.Runner{Runs: memory.NewRuns(), Sessions: store, Builder: builder, Collect: kiff.Collect},
+		Tenant: d.Tenant, Agent: d.ID}
 	fmt.Fprintf(os.Stderr, "%d tools through KIFF. Type a message; Ctrl-D ends.\n", len(a.Tools)-1)
 	in := bufio.NewScanner(os.Stdin)
 	for fmt.Print("> "); in.Scan(); fmt.Print("> ") {
