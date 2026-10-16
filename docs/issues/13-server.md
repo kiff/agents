@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
 **Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule, and schedule firings start runs. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), this page's PR (KIFF accounts)
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts)
 
 ## What it's for
 
@@ -287,8 +287,8 @@ Tests drive the routes against `store/memory`. No test touches AWS.
 - **429 at the tenant's concurrency cap.** The run store can't count a
   tenant's running runs yet.
 - **`cmd/kiffalerts`**, the function and URL that serve `/kiff/alerts`, and
-  the sweep's `Continue` for paused runs, once [#15](15-continue-on-hold.md)'s
-  expiry PR (#52) lands. The `continue` route is #15's;
+  wiring the sweep's `Continue` into `cmd/lambda` (#52 is on `main`). The
+  `continue` route is [#15](15-continue-on-hold.md)'s;
   `/evals`, `/usage` and `/ops/*` are [#14](14-console.md)'s.
 - **The deploy:** the function, its URL, the table (in an EU region), the
   schedule group and role, and the IAM above. Nothing has been created on
