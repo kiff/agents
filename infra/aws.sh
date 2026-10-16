@@ -35,6 +35,9 @@
 # Nothing account-specific is written here: the account comes from the
 # caller's credentials, and ARNs are built from it at run time.
 #
+# No AGENTS_GATEWAYS or AGENTS_KIFF_API: KIFF's gateway and API are the
+# defaults, and they come as a pair (cmd/lambda's kiffAPIFor).
+#
 # Usage: infra/aws.sh            (from the repository root)
 # Config: AGENTS_REGION (eu-west-1), AGENTS_CALLER_ROLE (tafs-cloud-lambda), the
 # IAM role whose sessions may call the API.
@@ -53,7 +56,6 @@ SWEEP=agents-sweep
 SECRETS_PREFIX=agents/
 ACCOUNTS_PREFIX=agents-accounts/
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
-GATEWAYS=https://mcp.kiff.dev/mcp
 
 aws() { command aws --region "$REGION" --output text "$@"; }
 say() { echo "• $*" >&2; }
@@ -86,7 +88,8 @@ if ! aws secretsmanager describe-secret --secret-id "$MODEL_SECRET" >/dev/null 2
   fi
   KEY=$(tr -d '[:space:]')
   [ -n "$KEY" ] || { echo "no model key on stdin" >&2; exit 1; }
-  aws secretsmanager create-secret --name "$MODEL_SECRET" --secret-string "$KEY" >/dev/null
+  # printf is a builtin: the key reaches the CLI on its stdin, never in an argv.
+  printf %s "$KEY" | aws secretsmanager create-secret --name "$MODEL_SECRET" --secret-string file:///dev/stdin >/dev/null
   unset KEY
   say "stored the model key in $MODEL_SECRET"
 fi
@@ -164,7 +167,7 @@ say "built cmd/lambda and cmd/kiffalerts at $(git rev-parse --short HEAD)"
 sleep_for_new_role() { for _ in 1 2 3 4 5 6; do "$@" && return 0; sleep 10; done; "$@"; }
 
 ENV_FN=$(cat <<EOF
-{"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_GATEWAYS":"$GATEWAYS",
+{"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET"}}
 EOF
