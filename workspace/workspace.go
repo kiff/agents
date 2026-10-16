@@ -84,7 +84,9 @@ type Workspaces interface {
 	List(ctx context.Context, k Key) ([]File, error)
 	// Exec runs a shell command in the run's workspace, stopping it at
 	// timeout. A command that fails is an Output with its exit code, not an
-	// error; an error means it couldn't be run.
+	// error; an error means it couldn't be run. Its effect on the files
+	// keeps the same limits and paths as Put, and never overwrites a Put or
+	// Delete made while it ran.
 	Exec(ctx context.Context, k Key, command string, timeout time.Duration) (Output, error)
 	// Delete removes the run's workspace. Already gone counts as done.
 	Delete(ctx context.Context, k Key) error
