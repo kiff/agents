@@ -189,6 +189,21 @@ func (m *Runs) Due(_ context.Context, now time.Time, limit int) ([]run.Run, erro
 	return m.due(now, false, limit), nil
 }
 
+func (m *Runs) CountActive(_ context.Context, tenant string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for k := range m.runs {
+		if k[0] != tenant {
+			continue // another tenant's: not decoded
+		}
+		if r, ok := m.get(k[0], k[1]); ok && r.Active() {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *Runs) DuePaused(_ context.Context, now time.Time, limit int) ([]run.Run, error) {
 	return m.due(now, true, limit), nil
 }

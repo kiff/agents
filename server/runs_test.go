@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1356,4 +1357,77 @@ func TestAnEventThatCantBeEncodedDoesntEndTheStream(t *testing.T) {
 	if !fallback || strings.Join(texts, ",") != "do,ne" {
 		t.Fatalf("events %s: fallback sent %v, texts after it %v; want the fallback, then do,ne", names(events), fallback, texts)
 	}
+}
+
+// A tenant's active runs are capped: what would start one more is 429, with
+// Retry-After, and starts nothing. Another tenant isn't held up; a run that
+// ends frees its place; a delivery of an event already started still gets its
+// run.
+func TestATenantsActiveRunsAreCapped(t *testing.T) {
+	f := newRunFixture(t)
+	f.server.MaxActive = 2
+	f.restart()
+	f.putAgent("t1", "payouts")
+	f.putAgent("t2", "payouts")
+	code, body := f.do("t1", "POST", "/schedules", scheduleBody("morning"))
+	f.want(201, code, body, "create schedule")
+	paused := f.stored(run.Paused)
+	f.answered(paused)
+
+	ev := map[string]any{"key": "evt_1", "source": "stripe", "input": "A dispute was opened on ch_1."}
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(202, code, body, "an event, the first active run")
+	first := body["id"].(string)
+	start := map[string]any{"input": "Reconcile payouts.", "background": true}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", start)
+	f.want(202, code, body, "a run, the second")
+
+	before, _ := f.runs.List(ctx, "t1", "payouts", 0)
+	for _, c := range []struct {
+		path string
+		body any
+	}{
+		{"/agents/payouts/runs", start},
+		{"/agents/payouts/runs", map[string]any{"input": "Reconcile payouts."}},
+		{"/schedules/morning/trigger", nil},
+		{"/agents/payouts/events", map[string]any{"key": "evt_2", "source": "stripe", "input": "Another dispute."}},
+		{"/agents/payouts/runs/" + paused.ID + "/continue", map[string]any{"background": true}},
+	} {
+		code, body := f.do("t1", "POST", c.path, c.body)
+		f.want(429, code, body, "at the cap: POST "+c.path)
+		if msg, _ := body["error"].(string); !strings.Contains(msg, "2 runs going") {
+			t.Errorf("POST %s: %q, want what to do", c.path, msg)
+		}
+	}
+	if after, _ := f.runs.List(ctx, "t1", "payouts", 0); len(after) != len(before) {
+		t.Fatalf("%d runs, then %d: a request at the cap started one", len(before), len(after))
+	}
+	if got, _ := f.runs.Get(ctx, "t1", paused.ID); got.Status != run.Paused {
+		t.Fatalf("the paused run is %s: a continue at the cap went on", got.Status)
+	}
+
+	req, _ := http.NewRequest("POST", f.srv.URL+"/agents/payouts/runs", strings.NewReader(`{"input":"x","background":true}`))
+	req.Header.Set("X-Test-Tenant", "t1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 429 || res.Header.Get("Retry-After") != strconv.Itoa(server.RetryAfter) {
+		t.Fatalf("%d, Retry-After %q", res.StatusCode, res.Header.Get("Retry-After"))
+	}
+
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(202, code, body, "the started event delivered again, at the cap")
+	if body["id"] != first {
+		t.Fatalf("got %v, want the event's own run", body["id"])
+	}
+	code, body = f.do("t2", "POST", "/agents/payouts/runs", start)
+	f.want(202, code, body, "another tenant")
+
+	if _, err := f.runner.Execute(ctx, "t1", first, nil); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+paused.ID+"/continue", map[string]any{"background": true})
+	f.want(202, code, body, "a place freed")
 }

@@ -9,6 +9,8 @@
 //	AGENTS_TABLE      the DynamoDB table (store/dynamodb's)
 //	AGENTS_CALLERS    assumed-role ARN prefixes allowed to call, comma-separated (lambdaurl.Auth)
 //	AGENTS_GATEWAYS   the gateways an agent may name, comma-separated; KIFF's by default
+//	AGENTS_TENANT_RUNS  how many runs a tenant may have going at once (PENDING or RUNNING);
+//	                  10 by default. A request over it is 429.
 //	AGENTS_KIFF_API   the KIFF API held calls are withdrawn from; KIFF's by default, and
 //	                  required when AGENTS_GATEWAYS is set, so the two name the same KIFF
 //	SCHEDULE_GROUP    EventBridge Scheduler's schedule group
@@ -57,6 +59,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,6 +144,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	if v := strings.TrimSpace(os.Getenv("AGENTS_GATEWAYS")); v != "" {
 		gateways = split(v)
 	}
+	maxActive, err := tenantRuns(os.Getenv("AGENTS_TENANT_RUNS"))
+	if err != nil {
+		return nil, err
+	}
 	kiffAPI, err := kiffAPIFor(os.Getenv("AGENTS_GATEWAYS"), os.Getenv("AGENTS_KIFF_API"))
 	if err != nil {
 		return nil, err
@@ -187,7 +194,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log},
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,
@@ -202,6 +209,23 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
 	return f, nil
+}
+
+// defaultTenantRuns is how many runs a tenant may have going at once when
+// AGENTS_TENANT_RUNS isn't set.
+const defaultTenantRuns = 10
+
+// tenantRuns reads AGENTS_TENANT_RUNS: a whole number, 1 or more.
+func tenantRuns(v string) (int, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return defaultTenantRuns, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("AGENTS_TENANT_RUNS %q: a whole number, 1 or more", v)
+	}
+	return n, nil
 }
 
 // kiffAPIFor is the KIFF API held calls are withdrawn from: api, or KIFF's
