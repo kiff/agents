@@ -458,8 +458,6 @@ func (s *stream) event(name, id string, v any) {
 	}
 }
 
-// scheduleRuns lists the runs one of the tenant's schedules started, newest
-// first.
 // toBackground has another invocation execute rn. If it can't, nothing will
 // claim the run: it is ended now, ERROR, rather than left to the sweep.
 func (s *Server) toBackground(ctx context.Context, rn run.Run) error {
@@ -499,6 +497,8 @@ func (s *Server) triggerSchedule(ctx context.Context, c Caller, r *http.Request)
 	return http.StatusAccepted, viewRun(rn), nil
 }
 
+// scheduleRuns lists the runs one of the tenant's schedules started, newest
+// first.
 func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
 	if _, err := s.Schedules.Store.Get(ctx, c.Tenant, id); err != nil {

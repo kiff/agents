@@ -15,6 +15,7 @@ import (
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
+	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
@@ -331,5 +332,35 @@ func TestARepeatedFiringRunsWhatTheFirstLeftPending(t *testing.T) {
 	}
 	if r, err := runs.Get(ctx, "t1", fi.Key()); err != nil || r.Status != run.Completed {
 		t.Fatalf("got %+v (%v)", r, err)
+	}
+}
+
+func TestARepeatedFiringLeavesAPausedRunToItsAnswer(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	collected := 0
+	f.runner.(*runner.Runner).Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		collected++
+		return nil, errors.New("not answered")
+	}
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	r, err := f.runner.Start(ctx, server.Start{Tenant: "t1", Agent: "payouts", Trigger: run.BySchedule,
+		Source: "morning", Input: fi.Input, ID: fi.Key()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused := r
+	paused.Status, paused.Version = run.Paused, r.Version+1
+	paused.Requirements = []run.Requirement{{CallID: "c1", Answered: fi.Due}} // answered: claimable
+	if err := runs.Put(ctx, r, paused); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.fire(ctx, fi); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runs.Get(ctx, "t1", fi.Key())
+	if err != nil || got.Status != run.Paused || got.Version != paused.Version || collected != 0 {
+		t.Fatalf("got %+v (%v), collected %d: a repeated firing must leave a paused run alone", got, err, collected)
 	}
 }
