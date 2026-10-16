@@ -57,8 +57,10 @@ COMPLETED, ERROR and CANCELLED are final.
 - **Completed** means the agent answered, or a cap stopped it (cost, turns,
   output length); the stop reason says which. **Error** means it failed.
 - **Paused** means KIFF holds at least one of its calls. The run records one
-  requirement per held call: KIFF's operation ID and the call itself (its
-  tool-use ID, tool name and input). It also keeps the turn it paused in: the
+  requirement per held call: the call itself (its tool-use ID, tool name and
+  input), its `kiff_operation_id` (the outcome is collected by repeating the
+  call with it), KIFF's exception ID (what alerts name and withdraw takes) and
+  the hold's expiry. It also keeps the turn it paused in: the
   model's message and the results of the calls KIFF didn't hold. Requirements
   and that turn belong to the run, not to its events, so the keep rules never
   drop them before the run ends: continuing never depends on what was kept.
@@ -108,7 +110,7 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `runner` | Executing runs, as the server's `Runner`: a run started in its session (the conversation's, or a new one), claimed under a lease, its agent built for its tenant, recorded, run, and its stop stored (answered or capped, paused with its requirements, cancelled, failed). The history it sends is the session's last finished runs before it. A paused run continues here, in any process, once KIFF has resolved it | Built (#12). Continuing needs `Collect`, KIFF's outcome for each held call, from step 4 |
 | `chat` | A conversation: one chat session, each message a run through `server.Runner`; `Conversation` turns finished runs into history | Built (#2, #12): a thin layer over the runner (`Start` in the conversation's session, then `Execute`); `cmd/chat` runs on the same runner |
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
-| `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). To add in step 4: `tool/kiff` sends and records KIFF's operation ID for each call, and collects a held call's outcome by it |
+| `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). Step 4: `tool/kiff` records a held call's operation ID, exception ID and expiry (#44); collecting the outcome by the operation ID is next |
 | `hook` | Before a run (input checks), around each tool call, after a run (output checks); background hooks for notifications | To build, when a check needs it |
 | `registry` | Stored agent definitions, each bounded as stored; built per request for their tenant, with its gateway on the server's list and its KIFF key by reference; ports `Agents`, `Secrets` | Built (#16): definitions, `Build`, memory and DynamoDB stores, the routes, removing an agent and what is kept for it, the Secrets Manager adapter (`registry/secretsmanager`; by example in [docs/registry.md](docs/registry.md)). Still to come: withdrawing an agent's holds when it is removed (#15) |
 | `schedule` | Schedules: five-field cron in a time zone, at most every 15 minutes, on or off; ports `Schedules`, `Scheduler` (EventBridge Scheduler, `schedule/eventbridge`). A firing reads the stored schedule and heals the Scheduler when the two disagree | Built (#17): the core, memory and DynamoDB stores, the EventBridge adapter, the routes (#13), firings starting runs (one per firing, named by its key), `/schedules/{id}/trigger`. Still to come: triggers |
