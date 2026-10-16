@@ -16,7 +16,9 @@
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
 //
 // An EventBridge Scheduler schedule sends {"sweep":{}} every minute, through
-// SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end.
+// SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end, and
+// sends paused runs whose held calls KIFF resolved to the background to
+// continue (cmd/kiffalerts records the answers).
 //
 // Lambda sets AWS_LAMBDA_FUNCTION_NAME itself: a background run is an
 // asynchronous invoke of this same function, with a run event (runs.go).
@@ -95,6 +97,9 @@ type function struct {
 	schedules *schedule.Service
 	runner    server.Runner
 	sweeper   func(ctx context.Context, now time.Time) (int, error)
+	// cont is how the sweep continues a resolved paused run; setup keeps it
+	// so its wiring can be read.
+	cont func(ctx context.Context, tenant, id string) error
 	// now is the clock; nil is time.Now.
 	now func() time.Time
 	log *slog.Logger
@@ -166,15 +171,16 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			return err == nil, err
 		},
 	}
+	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		http: (&server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: background(lambdasvc.NewFromConfig(cfg), self),
-			Gateways: gateways, Log: log}).Handler(),
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log}).Handler(),
 		schedules: schedules,
 		runner:    rn,
-		sweeper:   sweeping(runs, rn),
+		cont:      bg,
 		log:       log,
 	}
+	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
 	return f, nil

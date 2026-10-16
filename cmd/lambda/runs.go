@@ -109,17 +109,22 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	return f.execute(ctx, r.Tenant, r.ID)
 }
 
-// sweepLimit bounds the runs one sweep reads. The sweep runs every minute, so
-// this ends up to 100 runs a minute that nobody else is left to end.
+// sweepLimit bounds the runs one sweep reads, of each kind. The sweep runs
+// every minute, so this ends up to 100 runs a minute that nobody else is left
+// to end, and continues up to 100 paused ones.
 const sweepLimit = 100
 
 // sweeping is the sweep the function runs on each sweep event: across tenants,
 // it marks ended the runs nobody is left to end (run.Sweeper). Each run's
 // recording is ended by the runner first, and its expiry comes from its
 // agent's keep rules, read under the sweep's own context.
-func sweeping(runs run.Runs, rn *runner.Runner) func(ctx context.Context, now time.Time) (int, error) {
+//
+// A paused run whose held calls KIFF has all resolved (cmd/kiffalerts records
+// the answers) is sent to cont, another invocation, as a background run is:
+// one sweep doesn't wait on a hundred runs.
+func sweeping(runs run.Runs, rn *runner.Runner, cont func(ctx context.Context, tenant, id string) error) func(ctx context.Context, now time.Time) (int, error) {
 	return func(ctx context.Context, now time.Time) (int, error) {
-		sw := run.Sweeper{Runs: runs, Ended: rn.Ended,
+		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont,
 			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
 		return sw.Sweep(ctx, now, sweepLimit)
 	}

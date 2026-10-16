@@ -179,8 +179,12 @@ KIFF delivers again until it gets a 2xx:
 | 404 before the pause while recent; 200 once older or with no time, so KIFF never switches the target off; 200 for a run that went on | `TestTheStatusSaysWhetherKIFFShouldDeliverAgain` |
 | a failed continue is 503, then continued on redelivery | `TestAFailedContinueIsDeliveredAgain` |
 
-Wiring it in `cmd/lambda` (its own URL, `Accounts`, `Continue` as a background
-invoke) is #13's.
+On Lambda it runs as its own function, `cmd/kiffalerts`, behind a URL with no
+IAM auth that serves this route only. `Accounts` reads Secrets Manager. It
+sets no `Continue`, so it only records the answer: the function anyone can
+post to holds no power to execute anything, and the sweep continues the run
+about a minute later (#13: [KIFF's alerts](13-server.md#kiffs-alerts)).
+`TestWithoutContinueTheSweepContinues` covers the handler without one.
 
 **The sweep continues a resolved run (#52).** A PAUSED run is due one
 minute (`run.ResolvedGrace`) after its last requirement is answered or
@@ -326,11 +330,6 @@ the caller reads the run.
 
 ## Still to deliver
 
-- **Wiring `/kiff/alerts`** in `cmd/lambda` ([#13](13-server.md)): its own
-  URL, the KIFF account → tenant and secret lookup, and `Continue` as a
-  background invoke.
-- **Wiring the sweep's `Continue`** in `cmd/lambda` (#13's lane): the same
-  background invoke the alerts route uses.
 - **Wiring `Server.Withdraw`** in `cmd/lambda` ([#13](13-server.md)):
   `kiff.Withdrawer(agents, secrets, hc, kiff.APIURL)`.
 

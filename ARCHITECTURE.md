@@ -119,7 +119,8 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
 | `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents and schedules; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
-| `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode; the runner, with agents' keys and the model key from Secrets Manager; background runs as asynchronous invocations of the same function; the sweep every minute; schedule firings, each starting one run and executing it in its own invocation. Still to come: the deploy |
+| `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode; the runner, with agents' keys and the model key from Secrets Manager; background runs as asynchronous invocations of the same function; the sweep every minute, which also continues resolved paused runs; schedule firings, each starting one run and executing it in its own invocation. Still to come: the deploy |
+| `cmd/kiffalerts` | KIFF's alerts on Lambda | Built (#13): its own function behind a URL with no IAM auth, serving only `POST /kiff/alerts`; KIFF accounts from Secrets Manager; it records answers only, and `cmd/lambda`'s sweep continues the resolved runs. Still to come: the deploy |
 
 ## The API
 

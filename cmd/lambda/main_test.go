@@ -77,7 +77,7 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 	}}
 	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
 		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
-	f := &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn),
+	f := &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn, background(inv, "agents-fn")),
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	svc.Start = f.fire
 	return f, sched, agents, runs
@@ -226,8 +226,8 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if rn.Collect == nil || reflect.ValueOf(rn.Collect).Pointer() != reflect.ValueOf(kiff.Collect).Pointer() {
 		t.Error("a paused run must be continued by collecting its held calls from KIFF")
 	}
-	if f.sweeper == nil {
-		t.Error("no sweep")
+	if f.sweeper == nil || f.cont == nil {
+		t.Error("no sweep, or one that continues no paused run")
 	}
 	if f.schedules.Start == nil {
 		t.Error("firings start nothing")

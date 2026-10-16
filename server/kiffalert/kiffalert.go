@@ -2,7 +2,9 @@
 // a call KIFF held for a run (approved or refused), its hold expired, or it
 // was withdrawn. The handler checks KIFF's signature, records the answer on
 // the run that paused on that hold, and hands a run that no longer waits for
-// anything to Continue, which executes it in the background.
+// anything to Continue, which executes it in the background. Without
+// Continue, the answer is only recorded: the run is due ResolvedGrace later,
+// and the sweep continues it (run.Sweeper.Continue).
 //
 // KIFF delivers an alert again until it gets a 2xx, so the status says
 // whether it should: 200 once the answer is recorded (or there was nothing to
@@ -64,7 +66,8 @@ type Handler struct {
 	Runs     run.Runs
 	// Continue executes the tenant's run in the background: every call it
 	// waited for is resolved. It may be called again for the same run (a
-	// repeated alert); the run is claimed once.
+	// repeated alert); the run is claimed once. Nil leaves it to the sweep,
+	// so the handler needs no power to execute anything.
 	Continue func(ctx context.Context, tenant, runID string) error
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
@@ -155,7 +158,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "try again", http.StatusServiceUnavailable)
 		return
 	}
-	if ready(rn, h.now()) {
+	if h.Continue != nil && ready(rn, h.now()) {
 		if err := h.Continue(ctx, tenant, rn.ID); err != nil {
 			// The answer is recorded; a later delivery continues the run.
 			h.log().Error("kiffalert: continuing the run", "run", rn.ID, "err", err)
