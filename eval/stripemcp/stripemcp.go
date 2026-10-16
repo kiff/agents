@@ -35,10 +35,12 @@ const (
 )
 
 // EvidenceFields are the dispute evidence fields update_dispute takes: the
-// text ones Stripe accepts, so the agent can't send files or anything else.
+// ones Stripe takes as text. Its file fields (customer_communication,
+// receipt, shipping_documentation, …) take an uploaded file's ID, which an
+// agent here has none of, so they aren't offered.
 var EvidenceFields = []string{
 	"access_activity_log", "billing_address", "cancellation_policy_disclosure", "cancellation_rebuttal",
-	"customer_communication", "customer_email_address", "customer_name", "customer_purchase_ip",
+	"customer_email_address", "customer_name", "customer_purchase_ip",
 	"duplicate_charge_explanation", "duplicate_charge_id", "product_description", "refund_policy_disclosure",
 	"refund_refusal_explanation", "service_date", "shipping_address", "shipping_carrier", "shipping_date",
 	"shipping_tracking_number", "uncategorized_text",

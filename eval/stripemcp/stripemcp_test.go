@@ -199,6 +199,7 @@ func TestRefuses(t *testing.T) {
 		want string
 	}{
 		"evidence it doesn't take": {"update_dispute", map[string]any{"dispute": "du_1", "amount": 12000, "evidence": map[string]string{"receipt": "file_1"}}, "no field"},
+		"a file field":             {"update_dispute", map[string]any{"dispute": "du_1", "amount": 12000, "evidence": map[string]string{"customer_communication": "I never got it."}}, "no field"},
 		"not a dispute id":         {"retrieve_dispute", map[string]any{"dispute": "../charges/ch_1"}, "dispute id"},
 		"an unknown dispute":       {"retrieve_dispute", map[string]any{"dispute": "du_9"}, "No such dispute"},
 		"an unknown tool":          {"create_payout", map[string]any{}, "no tool"},
