@@ -44,6 +44,9 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
 		{"SweepMarksWhatIsDue", sweepMarksWhatIsDue},
 		{"SweepLeavesWhatMovedOn", sweepLeavesWhatMovedOn},
+		{"SweepContinuesAResolvedPausedRun", sweepContinuesAResolvedPausedRun},
+		{"PausedRunsNeverHoldUpCrashRecovery", pausedRunsNeverHoldUpCrashRecovery},
+		{"AGiveUpNeverEndsAContinuedRun", aGiveUpNeverEndsAContinuedRun},
 		{"AContinuedRunThatCrashesIsSwept", aContinuedRunThatCrashesIsSwept},
 		{"AFinishedRunKeepsNoTurn", aFinishedRunKeepsNoTurn},
 		{"AnEditInPlaceIsStored", anEditInPlaceIsStored},
@@ -449,6 +452,176 @@ func sweepMarksWhatIsDue(t *testing.T, s run.Runs, c *clock) {
 	}
 	if due, _ := s.Due(ctx, c.now(), 10); len(due) != 0 {
 		t.Fatalf("still due after the sweep: %v", ids(due))
+	}
+}
+
+// A paused run is due once every requirement is answered or has expired:
+// the sweep continues it, and while it stays paused, again after a wait that
+// doubles each time, so runs due after it are still swept. It is marked ERROR
+// PausedGiveUp later. A requirement that never expires keeps its run waiting
+// for the answer.
+func sweepContinuesAResolvedPausedRun(t *testing.T, s run.Runs, c *clock) {
+	pause := func(held ...run.Requirement) run.Run {
+		t.Helper()
+		r, err := run.Save(ctx, s, claimed(t, s, c), c.now(), func(n *run.Run) error {
+			n.Status, n.Requirements = run.Paused, held
+			return nil
+		})
+		check(t, err)
+		return r
+	}
+	r := pause(run.Requirement{CallID: "c1", Tool: "stripe_refund", Operation: "op_1", Expires: c.now().Add(time.Hour)},
+		run.Requirement{CallID: "c2", Tool: "stripe_refund", Operation: "op_2", Expires: c.now().Add(2 * time.Hour)})
+	waits := pause(run.Requirement{CallID: "c1", Tool: "stripe_refund", Operation: "op_3"})
+	var continued, ended []string
+	var fail error
+	sw := run.Sweeper{Runs: s,
+		Continue: func(_ context.Context, tenant, id string) error {
+			continued = append(continued, tenant+"/"+id)
+			return fail
+		},
+		Ended: func(_ context.Context, r run.Run) error { ended = append(ended, r.ID); return nil },
+	}
+	sweep := func(limit, want int) {
+		t.Helper()
+		if n, err := sw.Sweep(ctx, c.now(), limit); n != want || !errors.Is(err, fail) {
+			t.Fatalf("swept %d, want %d; err = %v", n, want, err)
+		}
+	}
+
+	c.add(time.Hour + run.ResolvedGrace + time.Second) // c1 expired; c2 waits
+	sweep(10, 0)
+	r, err := run.Change(ctx, s, get(t, s, r), c.now(), func(n *run.Run) error { n.Requirements[1].Answered = c.now(); return nil })
+	check(t, err)
+	sweep(10, 0) // answered just now: the alert's own continue goes first
+	c.add(run.ResolvedGrace - 4*time.Minute + time.Minute)
+	late := created(t, s, c, "t1", "refunds") // due a minute after r
+	c.add(4*time.Minute + time.Second)
+	sweep(1, 1)
+	if got := get(t, s, r); got.Retries != 1 || !got.Retry.Equal(c.now().Add(2*run.ResolvedGrace)) {
+		t.Fatalf("after one continue: retries %d, retry %v", got.Retries, got.Retry)
+	}
+	c.add(time.Minute)
+	sweep(1, 1) // r waits; late is next
+	if got := get(t, s, late); got.Status != run.Error {
+		t.Fatalf("a run due after a paused one wasn't swept: %s", got.Status)
+	}
+	c.add(time.Minute + time.Second)
+	fail = errors.New("invoke failed")
+	sweep(10, 0) // still paused, so due again; a continue that fails is an error
+	fail = nil
+	sweep(10, 0) // and it waits 4 minutes more
+	if want := []string{"t1/" + r.ID, "t1/" + r.ID}; !slices.Equal(continued, want) || len(ended) != 0 {
+		t.Fatalf("continued %v, ended %v; want %v", continued, ended, want)
+	}
+	if got := get(t, s, r); got.Status != run.Paused || got.Retries != 2 {
+		t.Fatalf("a continued run was marked: %+v", got)
+	}
+
+	c.add(run.PausedGiveUp)
+	sweep(10, 1)
+	if got := get(t, s, r); got.Status != run.Error || !strings.Contains(got.Error, "KIFF resolved") || !slices.Equal(ended, []string{r.ID}) {
+		t.Fatalf("given up: %s %q, ended %v", got.Status, got.Error, ended)
+	}
+	if len(continued) != 2 {
+		t.Fatalf("continued after giving up: %v", continued)
+	}
+	if got := get(t, s, waits); got.Status != run.Paused {
+		t.Fatalf("a run waiting for an answer was swept: %+v", got)
+	}
+	if due, _ := s.Due(ctx, c.now(), 10); len(due) != 0 {
+		t.Fatalf("still due: %v", ids(due))
+	}
+}
+
+// More resolved paused runs than the sweep's limit, all due before a
+// PENDING run nobody claimed and a RUNNING run whose lease ran out: one sweep
+// still marks both, with nothing to continue the paused ones. Each paused run
+// it looked at waits longer before its next look.
+func pausedRunsNeverHoldUpCrashRecovery(t *testing.T, s run.Runs, c *clock) {
+	var paused []run.Run
+	for i := range 3 {
+		r, err := run.Save(ctx, s, claimed(t, s, c), c.now(), func(n *run.Run) error {
+			n.Status = run.Paused
+			n.Requirements = []run.Requirement{{CallID: fmt.Sprint("c", i), Tool: "stripe_refund", Operation: fmt.Sprint("op_", i), Expires: c.now()}}
+			return nil
+		})
+		check(t, err)
+		paused = append(paused, r)
+	}
+	c.add(run.ResolvedGrace + time.Second)
+	running := claimed(t, s, c)
+	pending := created(t, s, c, "t1", "refunds")
+	c.add(16*time.Minute + run.LeaseGrace)
+	if n, err := (run.Sweeper{Runs: s}).Sweep(ctx, c.now(), 2); err != nil || n != 2 {
+		t.Fatalf("swept %d, err = %v; want the pending and the running run marked", n, err)
+	}
+	for _, r := range []run.Run{running, pending} {
+		if got := get(t, s, r); got.Status != run.Error {
+			t.Fatalf("crash recovery waited on paused runs: %s", got.Status)
+		}
+	}
+	retried := 0
+	for _, r := range paused {
+		if got := get(t, s, r); got.Status != run.Paused {
+			t.Fatalf("a paused run was marked: %s", got.Status)
+		} else if got.Retries == 1 && got.Retry.After(c.now()) {
+			retried++
+		}
+	}
+	if retried != 2 {
+		t.Fatalf("%d paused runs backed off, want the 2 the limit allows", retried)
+	}
+	due, err := s.DuePaused(ctx, c.now(), 10)
+	if check(t, err); len(due) != 1 {
+		t.Fatalf("paused runs still due: %v, want the one past the limit", ids(due))
+	}
+	if due, _ := s.Due(ctx, c.now(), 10); len(due) != 0 {
+		t.Fatalf("a paused run in the crash queue: %v", ids(due))
+	}
+}
+
+// stalePaused is a store whose DuePaused, and first Get of the run, answer
+// with the run as it was before a continue claimed it.
+type stalePaused struct {
+	run.Runs
+	r    run.Run
+	read *bool
+}
+
+func (s stalePaused) DuePaused(context.Context, time.Time, int) ([]run.Run, error) {
+	return []run.Run{s.r}, nil
+}
+
+func (s stalePaused) Get(_ context.Context, tenant, id string) (run.Run, error) {
+	if tenant == s.r.Tenant && id == s.r.ID && !*s.read {
+		*s.read = true
+		return s.r, nil
+	}
+	return s.Runs.Get(ctx, tenant, id)
+}
+
+// A continue that claims a paused run between the sweep's read and its
+// give-up wins: the sweep claims nothing, ends no recording and marks
+// nothing.
+func aGiveUpNeverEndsAContinuedRun(t *testing.T, s run.Runs, c *clock) {
+	r, err := run.Save(ctx, s, claimed(t, s, c), c.now(), func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Operation: "op_1", Expires: c.now()}}
+		return nil
+	})
+	check(t, err)
+	c.add(run.ResolvedGrace + run.PausedGiveUp + time.Second)
+	before := get(t, s, r)
+	_, err = run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	ended := 0
+	sw := run.Sweeper{Runs: stalePaused{s, before, new(bool)}, Ended: func(context.Context, run.Run) error { ended++; return nil }}
+	if n, err := sw.Sweep(ctx, c.now(), 10); err != nil || n != 0 || ended != 0 {
+		t.Fatalf("swept %d, ended %d, err = %v: the continue had claimed it", n, ended, err)
+	}
+	if got := get(t, s, r); got.Status != run.Running || got.Claim != "i2" {
+		t.Fatalf("after the sweep: %s, claim %q; want the continue's", got.Status, got.Claim)
 	}
 }
 
