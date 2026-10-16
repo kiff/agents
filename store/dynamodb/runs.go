@@ -511,27 +511,21 @@ func (rs *Runs) Due(ctx context.Context, now time.Time, limit int) ([]run.Run, e
 	return rs.due(ctx, duePK, now, limit)
 }
 
-// CountActive counts the tenant's active items, a page at a time. It reads
-// keys only: an active item holds nothing else.
+// CountActive counts the tenant's active items, through query, so the read
+// is consistent: a run that just started is counted, and one that just ended
+// isn't. It reads keys only: an active item holds nothing else.
 func (rs *Runs) CountActive(ctx context.Context, tenant string) (int, error) {
 	in := &ddb.QueryInput{
-		TableName:                 &rs.table,
 		KeyConditionExpression:    aws.String("pk = :pk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(key("X", tenant))},
-		Select:                    types.SelectCount,
+		ProjectionExpression:      aws.String("pk, sk"),
 	}
 	n := 0
-	for {
-		out, err := rs.db.Query(ctx, in)
-		if err != nil {
-			return 0, err
-		}
-		n += int(out.Count)
-		if len(out.LastEvaluatedKey) == 0 {
-			return n, nil
-		}
-		in.ExclusiveStartKey = out.LastEvaluatedKey
-	}
+	err := rs.query(ctx, in, func(items []map[string]types.AttributeValue) (bool, error) {
+		n += len(items)
+		return false, nil
+	})
+	return n, err
 }
 
 // DuePaused leaves out the runs' paused turns, as Due does.

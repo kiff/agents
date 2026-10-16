@@ -95,7 +95,7 @@ when to try again:
 POST /agents/payouts/runs
 
 429 Retry-After: 30
-{"error":"the tenant has 10 runs going, its most: wait for one to end, then try again"}
+{"error":"the tenant has 10 runs going and may have 10: wait for one to end, then try again"}
 ```
 
 - **Capped:** `POST /agents/{id}/runs`, `POST /schedules/{id}/trigger`,
@@ -104,10 +104,18 @@ POST /agents/payouts/runs
 - **Not capped:** an event delivered again, which gets the run it started;
   a schedule's firing and the sweep's continue, which have nobody to answer
   and go on.
+- **One way in.** Every route starts its runs through `Server.start`, which
+  holds the cap; `TestEveryStartIsCapped` fails if a route calls
+  `Runner.Start` itself. A continue doesn't start a run, and checks the cap
+  on its own.
 - **The count** is `run.Runs.CountActive`. In DynamoDB, an active run has an
   item under `X|<tenant>`, written and removed in the same transaction as
   the status that makes it active or not, so the count is one key-only
-  query.
+  query. It reads consistently, so a run that just started is counted and
+  one that just ended isn't.
+- **No backfill.** The items arrive with this change, before the first
+  deploy, so no stored run lacks one. A table that already held active runs
+  would undercount until they ended.
 - **It's a soft cap.** Requests in flight at once may each see room, so the
   cap can be overrun by as many requests as arrive together.
 
@@ -348,6 +356,8 @@ function is the only guard on who the caller is:
 | A tenant's active runs are capped: start, trigger, a new event and continue are 429 with `Retry-After`; another tenant, an event delivered again and a freed place go on | `TestATenantsActiveRunsAreCapped` |
 | A tenant's PENDING and RUNNING runs are counted, in that tenant only, through start, claim, pause, continue, end, sweep and delete | `ActiveRunsAreCounted` (runtest, both stores) |
 | `AGENTS_TENANT_RUNS` is 10 by default, and a whole number from 1 | `TestSetupNeedsItsConfiguration` |
+| Every route starts runs through the capped `Server.start` | `TestEveryStartIsCapped` |
+| The count reads consistently, on every page | `TestTheActiveCountReadsConsistently` (store/dynamodb) |
 | Internal errors and private causes stay inside | `TestInternalErrorsStayInside`, `TestServeKeepsAPanicPrivate` |
 | Removing an agent removes what's kept for it, runs included | `TestDeleteAgentRemovesWhatIsKeptForIt`, `TestDeleteAgentDeletesItsRuns` |
 | A run streams `run`, `delta`, `event` (with its `Seq` as `id`) and `end`, and resumes from the last cursor | `TestStartStreamsTheRun`, `TestStartThenResumeFromTheLastCursor`, `TestResumeReplaysThenFollows` |

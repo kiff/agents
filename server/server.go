@@ -213,10 +213,10 @@ func (c conflictError) Error() string { return c.msg }
 func conflict(msg string) error { return conflictError{msg} }
 
 // tooManyError is a request over the tenant's cap on active runs.
-type tooManyError struct{ max int }
+type tooManyError struct{ n, max int }
 
 func (t tooManyError) Error() string {
-	return fmt.Sprintf("the tenant has %d runs going, its most: wait for one to end, then try again", t.max)
+	return fmt.Sprintf("the tenant has %d runs going and may have %d: wait for one to end, then try again", t.n, t.max)
 }
 
 // RetryAfter is how long a 429 asks the caller to wait, in seconds.

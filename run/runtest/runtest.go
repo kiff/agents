@@ -1159,7 +1159,7 @@ func activeRunsAreCounted(t *testing.T, s run.Runs, c *clock) {
 		}
 	}
 	count("t1", 0, "an empty store")
-	pending := created(t, s, c, "t1", "refunds")
+	created(t, s, c, "t1", "refunds")
 	running := claimed(t, s, c)
 	created(t, s, c, "t2", "refunds")
 	count("t1", 2, "one PENDING, one RUNNING")
@@ -1181,7 +1181,7 @@ func activeRunsAreCounted(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	count("t1", 1, "a run completed")
 
-	crashed := claimed(t, s, c)
+	claimed(t, s, c)
 	count("t1", 2, "another claimed")
 	c.add(16*time.Minute + run.LeaseGrace + run.PendingTimeout)
 	_, err = run.Sweeper{Runs: s}.Sweep(ctx, c.now(), 10)
@@ -1198,5 +1198,4 @@ func activeRunsAreCounted(t *testing.T, s run.Runs, c *clock) {
 	count("t1", 2, "two more")
 	check(t, s.DeleteAgent(ctx, "t1", "refunds"))
 	count("t1", 0, "the agent removed")
-	_, _ = pending, crashed
 }

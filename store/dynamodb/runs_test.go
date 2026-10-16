@@ -327,3 +327,38 @@ func TestHoldItems(t *testing.T) {
 		t.Fatalf("%d hold items after deleting a run paused twice, want the 3 of the ended runs", n)
 	}
 }
+
+// pagedQueries is a client whose Query answers in pages of active items and
+// records what it was asked. Nothing else is called.
+type pagedQueries struct {
+	dynamodb.API
+	asked []*ddb.QueryInput
+}
+
+func (p *pagedQueries) Query(_ context.Context, in *ddb.QueryInput, _ ...func(*ddb.Options)) (*ddb.QueryOutput, error) {
+	cp := *in
+	p.asked = append(p.asked, &cp)
+	item := func(id string) map[string]types.AttributeValue {
+		return map[string]types.AttributeValue{"pk": &types.AttributeValueMemberS{Value: "X"}, "sk": &types.AttributeValueMemberS{Value: id}}
+	}
+	if in.ExclusiveStartKey == nil {
+		return &ddb.QueryOutput{Items: []map[string]types.AttributeValue{item("a"), item("b")}, LastEvaluatedKey: item("b")}, nil
+	}
+	return &ddb.QueryOutput{Items: []map[string]types.AttributeValue{item("c")}}, nil
+}
+
+// The count reads consistently, every page: a run that just started counts,
+// one that just ended doesn't. DynamoDB Local reads consistently whatever is
+// asked, so only the request shows it.
+func TestTheActiveCountReadsConsistently(t *testing.T) {
+	db := &pagedQueries{}
+	n, err := dynamodb.NewRuns(db, "agents").CountActive(context.Background(), "t1")
+	if err != nil || n != 3 {
+		t.Fatalf("%d (%v), want 3 over two pages", n, err)
+	}
+	for i, in := range db.asked {
+		if in.ConsistentRead == nil || !*in.ConsistentRead || in.TableName == nil || *in.TableName != "agents" {
+			t.Errorf("page %d asked %+v, want a consistent read of the table", i, in)
+		}
+	}
+}
