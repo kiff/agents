@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
-**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), #59 (withdraw on Lambda), this page's PR (`AGENTS_KIFF_API`)
+**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. `infra/aws.sh` creates everything on AWS; it hasn't been run yet.
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), #59 (withdraw on Lambda), #63 (`AGENTS_KIFF_API`), #64 (the deploy)
 
 ## What it's for
 
@@ -361,6 +361,12 @@ Tests drive the routes against `store/memory`. No test touches AWS.
 - **The `continue` route and cancelling a paused run** are
   [#15](15-continue-on-hold.md)'s; `/evals`, `/usage` and `/ops/*` are
   [#14](14-console.md)'s.
-- **The deploy:** both functions and their URLs, the table (in an EU
-  region), the schedule group and role, the secrets, and the IAM above.
-  Nothing has been created on AWS.
+- **The deploy** is scripted, not yet run: `infra/aws.sh` makes both
+  functions and their URLs, the table, the schedule group, the sweep, the
+  three roles with the IAM above, and the model key's secret, in eu-west-1.
+  It is safe to run again, and builds every ARN from the caller's account at
+  run time. The agents' keys (`agents/<tenant>/<key_ref>`) and the KIFF
+  accounts (`agents-accounts/<account>`) are written by tafs cloud, whose
+  role gets that permission in kiff/tafs's own `infra/aws.sh`.
+  Still to check at the first run: `TransactWriteItems` under the alerts
+  role's leading-keys condition, against a real answer.
