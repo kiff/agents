@@ -1,7 +1,7 @@
 # Evals as the development loop: what #78 delivers
 
 **Issue:** [#78](https://github.com/kiff/agents/issues/78) · **Status:** in progress.
-**PRs:** #82, #84
+**PRs:** #82, #84, #85
 
 ## What it's for
 
@@ -72,7 +72,45 @@ After KIFF refused `close_dispute` on T-2005, the agent wrote T-2005 again
 with another tool: a retry around a refusal. That's for tafs' job text or
 KIFF's skill, not the eval.
 
+**Repeats, a fresh seed each, a report and a baseline.** One run says
+little: the same case has scored 2/6 and 4/6 on the same day. So:
+
+- `-repeat N` runs each case N times, and `-baseline` compares each
+  case's **mean** score (`eval.Means`) with the baseline's mean, so a
+  `-out` file from repeated runs works as a baseline.
+- Each run starts with only the owner's note in the agent's memory: what
+  an earlier run wrote is forgotten.
+- `-seed` seeds the case in Stripe test mode before each of its runs
+  (`STRIPE_API_KEY`, test keys only), instead of `-ids`. The seed's owner
+  note goes in the agent's memory unless `-notes` has one. Only
+  Chargebacks has a seeder: `-seed refunds` is refused before anything
+  runs.
+- `-report file.md`: each job's configuration (definition source, model,
+  effort, max tokens, price, instructions' size and digest, the tools KIFF
+  listed), each case over its runs, and each run's checks with why.
+- `eval/baseline.json`: Chargebacks **0.60**. Four runs on tafs@1d1ed42
+  scored 4/6 each (0.67). 0.60 passes a mean with one run at 3/6, and fails
+  when two of three drop.
+
+```sh
+eval -run -definitions defs -seed -repeat 3 -baseline eval/baseline.json \
+  -judge-model claude-opus-5-5 -judge-price 4000000,20000000 -report report.md chargebacks
+```
+
+```
+| Case | Runs | Score | Range | $ / run | $ / item | Turns | From cache | Failed checks |
+|---|---:|---:|---|---:|---:|---:|---:|---|
+| chargebacks | 3 | 0.67 | 0.67–0.67 | 0.2588 | 0.0370 | 6.3 | 79% | does the job (3), stops on held and refused (3) |
+```
+
+The two failures in every run: the agent never writes T-2004 ($800, over
+the $500 Card, so KIFF would hold it), so it never meets KIFF's answer.
+
+**The judge has room to think.** Opus 5.5 always thinks, and thinking spends
+output tokens: at 300 max tokens a verdict was cut off mid-sentence and
+stopped the eval. The judge now asks with 4,096 at effort `low`, and a
+verdict cut short says so.
+
 ## Next
 
-- The report and a baseline in the repo.
 - `.github/workflows/eval.yml`, nightly and by hand.

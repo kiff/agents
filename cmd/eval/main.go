@@ -43,6 +43,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -52,6 +53,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -116,12 +118,16 @@ type runtime struct {
 	runs     *memory.Runs
 	rn       *runner.Runner
 	base     registry.Definition
-	jobs     string // the directory of the jobs' instructions
-	defs     string // the directory of the agents' definitions, <job>.json each; empty: base, jobs and skill
-	notes    string // the directory of the owner's notes, <case>.md each; empty: none
-	skill    string // added to every job's instructions
-	kiffKey  string // the agent's KIFF key
-	kiffAPI  string // KIFF's API, where held calls are withdrawn
+	jobs     string            // the directory of the jobs' instructions
+	defs     string            // the directory of the agents' definitions, <job>.json each; empty: base, jobs and skill
+	notes    string            // the directory of the owner's notes, <case>.md each; empty: none
+	skill    string            // added to every job's instructions
+	source   string            // where the definitions came from, for the report
+	tools    []string          // the tools KIFF's gateway listed, last time
+	configs  []eval.Config     // what each job's agent ran as, in the order jobs first ran
+	notesFor map[string]string // the owner's note for a case, when no -notes file gives one
+	kiffKey  string            // the agent's KIFF key
+	kiffAPI  string            // KIFF's API, where held calls are withdrawn
 	log      io.Writer
 }
 
@@ -134,28 +140,64 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill,
 		kiffKey: kiffKey, kiffAPI: kiff.APIURL, log: log}
 	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
-		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: connect,
+		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect,
 		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent)} },
 	}}
 	return rt
 }
 
-// note puts the owner's note for the case, <notes>/<case>.md, in the agent's
-// memory, as the owner would have left it: the agent reads it with its
-// memory tool. A case with no note file starts with none.
+// connect lists the agent's tools, and keeps their names for the report.
+func (rt *runtime) connect(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+	ts, err := connect(ctx, gateway, key)
+	if err == nil {
+		rt.tools = rt.tools[:0]
+		for _, t := range ts {
+			rt.tools = append(rt.tools, t.Spec().Name)
+		}
+	}
+	return ts, err
+}
+
+// config records what the job's agent ran as, the first time it runs.
+func (rt *runtime) config(job string, d registry.Definition) {
+	for _, c := range rt.configs {
+		if c.Job == job {
+			return
+		}
+	}
+	p := d.Price
+	price := fmt.Sprintf("%d,%d", p.Input, p.Output)
+	if p.Caches() {
+		price += fmt.Sprintf(",%d,%d", p.CacheRead, p.CacheWrite)
+	}
+	sum := sha256.Sum256([]byte(d.Instructions))
+	rt.configs = append(rt.configs, eval.Config{Job: job, Source: rt.source, Model: d.Model, Effort: d.Effort, MaxTokens: d.MaxTokens,
+		Price: price, Instructions: fmt.Sprintf("%d bytes, sha256 %x", len(d.Instructions), sum[:6]), Tools: slices.Clone(rt.tools)})
+}
+
+// note starts the agent's memory over with only the owner's note for the
+// case, <notes>/<case>.md, as the owner would have left it: the agent reads
+// it with its memory tool. A case with no note file starts with none. What an
+// earlier run wrote is forgotten, so each run starts from the same fixture.
 func (rt *runtime) note(ctx context.Context, name string) error {
-	if rt.notes == "" {
-		return nil
+	if err := rt.sessions.DeleteNotes(ctx, evalTenant, name); err != nil {
+		return fmt.Errorf("%s: the agent's memory: %w", name, err)
 	}
-	b, err := os.ReadFile(filepath.Join(rt.notes, name+".md"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	text := rt.notesFor[name]
+	if rt.notes != "" {
+		b, err := os.ReadFile(filepath.Join(rt.notes, name+".md"))
+		switch {
+		case err == nil:
+			text = string(b)
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("%s: the owner's note: %w", name, err)
+		}
 	}
-	if err != nil {
-		return fmt.Errorf("%s: the owner's note: %w", name, err)
+	if strings.TrimSpace(text) == "" {
+		return nil
 	}
 	return rt.sessions.PutNote(ctx, session.Note{Tenant: evalTenant, Agent: name, Name: "owner",
-		Text: strings.TrimSpace(string(b)), Updated: time.Now().UTC()})
+		Text: strings.TrimSpace(text), Updated: time.Now().UTC()})
 }
 
 // definition is the agent a case runs as. From -definitions, it is the
@@ -220,6 +262,7 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err := rt.agents.Put(ctx, d); err != nil {
 		return eval.Run{}, err
 	}
+	defer func() { rt.config(s.Job, d) }() // after the run connected, so the tools are known
 	if err := rt.note(ctx, s.Name); err != nil {
 		return eval.Run{}, err
 	}
@@ -301,6 +344,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	notesDir := fs.String("notes", "", "-run: the directory of the owner's notes, <case>.md each, put in the agent's memory first")
 	gateway := fs.String("gateway", kiff.URL, "-run: KIFF's gateway")
 	kiffAPI := fs.String("kiff-api", kiff.APIURL, "-run: KIFF's API, where the calls a run left held are withdrawn")
+	repeat := fs.Int("repeat", 1, "-run: how many times to run each case; the baseline holds against its mean score")
+	seedEach := fs.Bool("seed", false, "-run: seed the case in Stripe test mode (STRIPE_API_KEY) before each of its runs, instead of -ids")
+	reportPath := fs.String("report", "", "write a Markdown report here: the configuration, each case over its runs, and each run's checks")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -327,8 +373,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	var rt *runtime
 	if *runHere {
 		kiffKey := env("KIFF_AGENT_KEY")
-		if kiffKey == "" {
+		switch {
+		case kiffKey == "":
 			return errors.New("set KIFF_AGENT_KEY to the agent's KIFF key for -run")
+		case *repeat < 1:
+			return errors.New("-repeat is at least 1")
+		case *seedEach && *idsPath != "":
+			return errors.New("-seed makes the ids: give -seed or -ids")
+		case *seedEach && env("STRIPE_API_KEY") == "":
+			return errors.New("set STRIPE_API_KEY to a test-mode key for -seed")
+		}
+		for _, arg := range fs.Args() { // before anything runs
+			switch _, known := scenarios[arg]; {
+			case !known:
+				return fmt.Errorf("%q: want a case, refunds or chargebacks", arg)
+			case *seedEach && arg != "chargebacks":
+				return fmt.Errorf("-seed: %s has no seeder yet: give -ids", arg)
+			}
 		}
 		base := registry.Definition{Tenant: evalTenant, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY", MaxCost: int64(*maxCost * 1_000_000)}
 		if *defsDir != "" {
@@ -337,6 +398,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			}
 			rt = newRuntime(newModel(key), kiffKey, base, "", "", stderr)
 			rt.defs = *defsDir
+			rt.source = *defsDir
+			var src struct{ Repo, Commit string }
+			if readJSON(filepath.Join(*defsDir, "source.json"), &src) == nil && src.Repo != "" && len(src.Commit) >= 12 {
+				rt.source = src.Repo + "@" + src.Commit[:12]
+			}
 		} else {
 			switch {
 			case *modelID == "":
@@ -358,6 +424,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			}
 			base.Model, base.Price, base.MaxTokens, base.History = *modelID, p, 8192, 20
 			rt = newRuntime(newModel(key), kiffKey, base, *jobs, skill, stderr)
+			rt.source = "flags"
+		}
+		if *seedEach {
+			rt.notesFor = map[string]string{"chargebacks": seed.ChargebacksNote}
 		}
 		rt.notes = *notesDir
 		if u, err := url.Parse(*kiffAPI); err != nil || u.Scheme != "https" || u.Host == "" {
@@ -381,58 +451,49 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			skipped = fs.Args()[i:]
 			break
 		}
-		var r eval.Run
-		var s cases.Scenario
 		if rt != nil {
-			known := false
-			if s, known = scenarios[arg]; !known {
-				return fmt.Errorf("%q: want a case, refunds or chargebacks", arg)
+			s := scenarios[arg] // checked above
+			for rep := range *repeat {
+				if rep > 0 && ctx.Err() != nil {
+					skipped = append(skipped, fmt.Sprintf("%s (runs %d to %d)", arg, rep+1, *repeat))
+					break
+				}
+				s := s.WithIDs(ids)
+				if *seedEach {
+					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
+					if err != nil {
+						return fmt.Errorf("%s: seed: %w", s.Name, err)
+					}
+					s = s.WithIDs(seeded)
+				}
+				r, err := rt.Run(ctx, s)
+				if err != nil {
+					return err
+				}
+				res, err := s.Case().Grade(ctx, r, judge)
+				if err != nil {
+					return err
+				}
+				results = append(results, res)
+				printResult(stderr, res)
 			}
-			var err error
-			if r, err = rt.Run(ctx, s.WithIDs(ids)); err != nil {
-				return err
-			}
-		} else {
-			name, id, ok := strings.Cut(arg, "=")
-			known := false
-			s, known = scenarios[name]
-			if !ok || !known || id == "" {
-				return fmt.Errorf("%q: want case=session, with a case of refunds or chargebacks", arg)
-			}
-			var err error
-			if r, err = src.Read(ctx, id); err != nil {
-				return err
-			}
+			continue
+		}
+		name, id, ok := strings.Cut(arg, "=")
+		s, known := scenarios[name]
+		if !ok || !known || id == "" {
+			return fmt.Errorf("%q: want case=session, with a case of refunds or chargebacks", arg)
+		}
+		r, err := src.Read(ctx, id)
+		if err != nil {
+			return err
 		}
 		res, err := s.WithIDs(ids).Case().Grade(ctx, r, judge)
 		if err != nil {
 			return err
 		}
 		results = append(results, res)
-		fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
-			res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), res.Session)
-		if cx := res.Context; cx.Turns > 0 {
-			room := "unknown"
-			if cx.LeastRoomTokens >= 0 {
-				room = fmt.Sprintf("%d", cx.LeastRoomTokens)
-			}
-			fmt.Fprintf(stderr, "  context: %d turns, %d input tokens, %.0f%% from the cache, peak turn %d, least room %s\n",
-				cx.Turns, cx.PromptTokens, 100*cx.CacheShare, cx.PeakPromptTokens, room)
-		}
-		for _, c := range res.Checks {
-			mark := "pass"
-			switch {
-			case c.Skipped:
-				mark = "skip"
-			case !c.Pass:
-				mark = "FAIL"
-			}
-			fmt.Fprintf(stderr, "  %s  %s", mark, c.Name)
-			if c.Why != "" {
-				fmt.Fprintf(stderr, ": %s", c.Why)
-			}
-			fmt.Fprintln(stderr)
-		}
+		printResult(stderr, res)
 	}
 
 	out, err := json.MarshalIndent(results, "", "  ")
@@ -451,16 +512,59 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	if len(skipped) > 0 {
 		return fmt.Errorf("interrupted: not started: %s", strings.Join(skipped, ", "))
 	}
+	var lower []string
 	if *basePath != "" {
 		var base []eval.Result
 		if err := readJSON(*basePath, &base); err != nil {
 			return err
 		}
-		if lower := eval.Lower(base, results); len(lower) > 0 {
-			return fmt.Errorf("lower than the baseline: %s", strings.Join(lower, "; "))
+		lower = eval.Lower(eval.Means(base), eval.Means(results)) // a baseline from -repeat holds its mean too
+	}
+	if *reportPath != "" {
+		var cfgs []eval.Config
+		if rt != nil {
+			cfgs = rt.configs
+		}
+		var b bytes.Buffer
+		if err := eval.WriteReport(&b, cfgs, results, lower); err != nil {
+			return err
+		}
+		if err := os.WriteFile(*reportPath, b.Bytes(), 0o644); err != nil {
+			return err
 		}
 	}
+	if len(lower) > 0 {
+		return fmt.Errorf("lower than the baseline: %s", strings.Join(lower, "; "))
+	}
 	return nil
+}
+
+// printResult says how one run graded.
+func printResult(stderr io.Writer, res eval.Result) {
+	fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
+		res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), res.Session)
+	if cx := res.Context; cx.Turns > 0 {
+		room := "unknown"
+		if cx.LeastRoomTokens >= 0 {
+			room = fmt.Sprintf("%d", cx.LeastRoomTokens)
+		}
+		fmt.Fprintf(stderr, "  context: %d turns, %d input tokens, %.0f%% from the cache, peak turn %d, least room %s\n",
+			cx.Turns, cx.PromptTokens, 100*cx.CacheShare, cx.PeakPromptTokens, room)
+	}
+	for _, c := range res.Checks {
+		mark := "pass"
+		switch {
+		case c.Skipped:
+			mark = "skip"
+		case !c.Pass:
+			mark = "FAIL"
+		}
+		fmt.Fprintf(stderr, "  %s  %s", mark, c.Name)
+		if c.Why != "" {
+			fmt.Fprintf(stderr, ": %s", c.Why)
+		}
+		fmt.Fprintln(stderr)
+	}
 }
 
 func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
@@ -473,15 +577,7 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env f
 	if fs.NArg() != 1 || fs.Arg(0) != "chargebacks" {
 		return errors.New("eval seed: name one case to seed: chargebacks")
 	}
-	c, err := seed.New(stripeURL, env("STRIPE_API_KEY"), nil)
-	if err != nil {
-		return err
-	}
-	closed, err := c.Close(ctx, "chargebacks")
-	if err != nil {
-		return err
-	}
-	ids, err := c.Disputes(ctx, "chargebacks", seed.Chargebacks)
+	ids, closed, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
 	if err != nil {
 		return err
 	}
@@ -500,6 +596,22 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env f
 	}
 	fmt.Fprintf(stderr, "seeded %d disputes for chargebacks (closed %d left open)\nthe taf's owner note: %s\n", len(ids), closed, seed.ChargebacksNote)
 	return nil
+}
+
+// seedChargebacks closes what an earlier seed left open, seeds the
+// Chargebacks case again, and returns its Stripe ids by reference and how
+// many it closed.
+func seedChargebacks(ctx context.Context, key string) (map[string][]string, int, error) {
+	c, err := seed.New(stripeURL, key, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	closed, err := c.Close(ctx, "chargebacks")
+	if err != nil {
+		return nil, closed, err
+	}
+	ids, err := c.Disputes(ctx, "chargebacks", seed.Chargebacks)
+	return ids, closed, err
 }
 
 func readJSON(path string, v any) error {
