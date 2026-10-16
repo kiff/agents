@@ -79,6 +79,13 @@ func dueKey(r run.Run) map[string]types.AttributeValue {
 	return pkey(pk, dueSK(r))
 }
 
+// activeKey is r's place among its tenant's active runs (run.Run.Active),
+// which CountActive counts. It is written and removed in the same
+// transaction as the status that makes the run active or not.
+func activeKey(r run.Run) map[string]types.AttributeValue {
+	return pkey(key("X", r.Tenant), r.ID)
+}
+
 func runPK(tenant, id string) string         { return key("R", tenant, id) }
 func runListPK(tenant, agent string) string  { return key("L", tenant, agent) }
 func holdPK(tenant, exception string) string { return key("H", tenant, exception) }
@@ -225,6 +232,9 @@ func (rs *Runs) Create(ctx context.Context, r run.Run) error {
 	}
 	if !r.Due().IsZero() {
 		items = append(items, rs.put(rs.dueItem(r), ""))
+	}
+	if r.Active() {
+		items = append(items, rs.put(activeKey(r), ""))
 	}
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
@@ -375,6 +385,12 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 			items = append(items, rs.put(rs.dueItem(next), ""))
 		}
 	}
+	switch {
+	case !prev.Active() && next.Active():
+		items = append(items, rs.put(activeKey(next), ""))
+	case prev.Active() && !next.Active():
+		items = append(items, rs.del(activeKey(prev)))
+	}
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	var cancelled *types.TransactionCanceledException
 	if errors.As(err, &cancelled) {
@@ -495,6 +511,29 @@ func (rs *Runs) Due(ctx context.Context, now time.Time, limit int) ([]run.Run, e
 	return rs.due(ctx, duePK, now, limit)
 }
 
+// CountActive counts the tenant's active items, a page at a time. It reads
+// keys only: an active item holds nothing else.
+func (rs *Runs) CountActive(ctx context.Context, tenant string) (int, error) {
+	in := &ddb.QueryInput{
+		TableName:                 &rs.table,
+		KeyConditionExpression:    aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(key("X", tenant))},
+		Select:                    types.SelectCount,
+	}
+	n := 0
+	for {
+		out, err := rs.db.Query(ctx, in)
+		if err != nil {
+			return 0, err
+		}
+		n += int(out.Count)
+		if len(out.LastEvaluatedKey) == 0 {
+			return n, nil
+		}
+		in.ExclusiveStartKey = out.LastEvaluatedKey
+	}
+}
+
 // DuePaused leaves out the runs' paused turns, as Due does.
 func (rs *Runs) DuePaused(ctx context.Context, now time.Time, limit int) ([]run.Run, error) {
 	return rs.due(ctx, pausedPK, now, limit)
@@ -593,6 +632,9 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 	}
 	if !r.Due().IsZero() {
 		items = append(items, rs.del(dueKey(r)))
+	}
+	if r.Active() {
+		items = append(items, rs.del(activeKey(r)))
 	}
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	return err

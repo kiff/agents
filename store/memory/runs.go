@@ -173,6 +173,12 @@ func (m *Runs) Due(_ context.Context, now time.Time, limit int) ([]run.Run, erro
 	return m.due(now, false, limit), nil
 }
 
+func (m *Runs) CountActive(_ context.Context, tenant string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.all(func(r run.Run) bool { return r.Tenant == tenant && r.Active() })), nil
+}
+
 func (m *Runs) DuePaused(_ context.Context, now time.Time, limit int) ([]run.Run, error) {
 	return m.due(now, true, limit), nil
 }

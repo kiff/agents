@@ -234,6 +234,20 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if f.api == nil || f.api.Withdraw == nil {
 		t.Error("a paused run can't be cancelled: nothing withdraws its held calls from KIFF")
 	}
+	if f.api.MaxActive != defaultTenantRuns {
+		t.Errorf("a tenant may have %d runs going, want %d by default", f.api.MaxActive, defaultTenantRuns)
+	}
+	for _, bad := range []string{"0", "-1", "ten", "2.5"} {
+		t.Setenv("AGENTS_TENANT_RUNS", bad)
+		if _, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil || !strings.Contains(err.Error(), "AGENTS_TENANT_RUNS") {
+			t.Errorf("set up with AGENTS_TENANT_RUNS %q: %v", bad, err)
+		}
+	}
+	t.Setenv("AGENTS_TENANT_RUNS", "25")
+	if f, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil || f.api.MaxActive != 25 {
+		t.Errorf("AGENTS_TENANT_RUNS 25: %v", err)
+	}
+	t.Setenv("AGENTS_TENANT_RUNS", "")
 	if f.kiffAPI != kiff.APIURL {
 		t.Errorf("held calls are withdrawn from %q, want KIFF's own %q", f.kiffAPI, kiff.APIURL)
 	}

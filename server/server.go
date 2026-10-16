@@ -64,6 +64,12 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// MaxActive caps a tenant's active runs (run.Run.Active: PENDING or
+	// RUNNING): a request that would start one more is 429. Zero: no cap.
+	// Only requests are capped; a schedule's firing and the sweep's continue
+	// have nobody to answer, and go on. Two requests at once may both pass
+	// the count, so the cap can be overrun by the requests in flight.
+	MaxActive int
 	// Gateways are the gateways a stored agent may name, as in
 	// registry.Builder.
 	Gateways []string
@@ -206,6 +212,16 @@ func (c conflictError) Error() string { return c.msg }
 
 func conflict(msg string) error { return conflictError{msg} }
 
+// tooManyError is a request over the tenant's cap on active runs.
+type tooManyError struct{ max int }
+
+func (t tooManyError) Error() string {
+	return fmt.Sprintf("the tenant has %d runs going, its most: wait for one to end, then try again", t.max)
+}
+
+// RetryAfter is how long a 429 asks the caller to wait, in seconds.
+const RetryAfter = 30
+
 // unavailableError is a request this server isn't set up to serve.
 type unavailableError struct{ msg string }
 
@@ -220,6 +236,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var br badRequest
 	var cf conflictError
 	var un unavailableError
+	var tm tooManyError
 	var tooBig *http.MaxBytesError
 	status, msg := http.StatusInternalServerError, "internal error"
 	switch {
@@ -232,6 +249,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
 	case errors.As(err, &tooBig):
 		status, msg = http.StatusRequestEntityTooLarge, "the body is too large"
+	case errors.As(err, &tm):
+		status, msg = http.StatusTooManyRequests, tm.Error()
+		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
 	case errors.As(err, &un):
 		status, msg = http.StatusServiceUnavailable, un.Error()
 	case errors.As(err, &cf):
