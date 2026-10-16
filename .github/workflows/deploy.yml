@@ -14,11 +14,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: deploy
-  cancel-in-progress: false
 jobs:
-  deploy:
+  # Before the deploy queue, so an older commit never takes a place in it:
+  # GitHub keeps one pending run per group and cancels it when another
+  # queues, so a stale run queuing late would cancel main's newest deploy and
+  # then skip itself.
+  fresh:
     # Only main, as pushed to this repository: for workflow_run, github.ref is
     # always the default branch, so the upstream run's own event, branch and
     # repository are what tell a push to main from a pull request (a fork's
@@ -33,6 +34,30 @@ jobs:
          github.event.workflow_run.head_repository.full_name == github.repository)
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - name: Still main's head
+        id: head
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$REPO/commits/main" --jq .sha)
+          if [ "$head" = "$SHA" ]; then
+            echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now; its own run deploys it" >> "$GITHUB_STEP_SUMMARY"
+          fi
+  deploy:
+    needs: fresh
+    if: needs.fresh.outputs.sha != ''
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       id-token: write
@@ -41,11 +66,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # The commit the Go workflow passed, not whatever main is by now.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.fresh.outputs.sha }}
       - name: Still main's head
-        # Runs finish out of order: an older commit whose checks end late must
-        # not roll the functions back. Inside the deploy concurrency group, so
-        # no newer deploy can start between this check and the update.
+        # Again inside the deploy queue: a newer commit may have landed while
+        # this one waited, and must not be rolled back.
         id: fresh
         run: |
           head=$(git ls-remote origin refs/heads/main | cut -f1)
