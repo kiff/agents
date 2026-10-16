@@ -93,7 +93,9 @@ func main() {
 
 // function is what each invocation runs.
 type function struct {
-	http      http.Handler
+	http http.Handler
+	// api is the server http serves; setup keeps it so its wiring can be read.
+	api       *server.Server
 	schedules *schedule.Service
 	runner    server.Runner
 	sweeper   func(ctx context.Context, now time.Time) (int, error)
@@ -147,8 +149,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		key:  func(ctx context.Context) (string, error) { return modelKey(ctx, secrets, keySecret) },
 		make: func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) },
 	}
+	keys := secretsmanager.New(secrets, prefix)
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
-		Agents: agents, Secrets: secretsmanager.New(secrets, prefix),
+		Agents: agents, Secrets: keys,
 		Model: llm, Gateways: gateways,
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
@@ -170,17 +173,25 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	}
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
-		http: (&server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log}).Handler(),
+		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log,
+			// Cancelling a paused run, or removing an agent with paused runs,
+			// takes back its held calls in KIFF with the agent's own key.
+			Withdraw: kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, kiff.APIURL)},
 		schedules: schedules,
 		runner:    rn,
 		sweeper:   sweeping(runs, rn, bg),
 		log:       log,
 	}
+	f.http = f.api.Handler()
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
 	return f, nil
 }
+
+// withdrawTimeout bounds one withdrawal from KIFF: a cancel waits on each of
+// its run's held calls in turn.
+const withdrawTimeout = 15 * time.Second
 
 func split(s string) []string {
 	var out []string

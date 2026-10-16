@@ -299,8 +299,6 @@ Guarded by `tool/kiff` `TestWithdrawAHeldCall`,
 - **`POST /agents/{id}/runs/{run_id}/continue`**: a repeat of a continue
   already applied gets 200; any other continue on a run that isn't PAUSED
   gets 409. A held call is never collected twice.
-- **Wiring `Server.Withdraw`** in `cmd/lambda` ([#13](13-server.md)):
-  `kiff.Withdrawer(agents, secrets, hc, kiff.APIURL)`.
 
 ## What KIFF now offers (from kiff/kiff-cloud#1245)
 
