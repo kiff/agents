@@ -107,6 +107,34 @@ type UsageBody struct {
 	CacheRead    int64  `json:"cache_read_tokens,omitempty"`
 	CacheWrite   int64  `json:"cache_write_tokens,omitempty"`
 	CostMicroUSD int64  `json:"cost_micro_usd"`
+	// Context is what the call's input was made of, when the caller knew.
+	Context *ContextBody `json:"context,omitempty"`
+}
+
+// Prompt is the call's whole input, in tokens: what it sent fresh, what the
+// cache served and what it wrote to the cache.
+func (u UsageBody) Prompt() int64 { return u.InputTokens + u.CacheRead + u.CacheWrite }
+
+// Room is what the model's context window had left after the call's input,
+// in tokens; ok is false when the window isn't known.
+func (u UsageBody) Room() (room int64, ok bool) {
+	if u.Context == nil || u.Context.WindowTokens <= 0 {
+		return 0, false
+	}
+	return u.Context.WindowTokens - u.Prompt(), true
+}
+
+// ContextBody is what one model call's input was made of: each part's size
+// in bytes (ToolResultsBytes is the part of MessagesBytes that tool results
+// take), how many messages it held, and the model's context window in
+// tokens, 0 when unknown. Its tokens are the UsageBody's.
+type ContextBody struct {
+	SystemBytes      int   `json:"system_bytes"`
+	ToolsBytes       int   `json:"tools_bytes"`
+	MessagesBytes    int   `json:"messages_bytes"`
+	ToolResultsBytes int   `json:"tool_results_bytes"`
+	Messages         int   `json:"messages"`
+	WindowTokens     int64 `json:"window_tokens,omitempty"`
 }
 
 // MaxBody is the largest event body, encoded. A bigger one is recorded as an

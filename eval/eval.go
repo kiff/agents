@@ -74,6 +74,50 @@ type Result struct {
 	CostMicroUSD  int64         `json:"cost_micro_usd"`
 	PerItemMicro  int64         `json:"cost_per_item_micro_usd"`
 	JudgeMicroUSD int64         `json:"judge_cost_micro_usd"`
+	Context       Context       `json:"context"`
+}
+
+// Context is what the run's turns read, from its Usage events: the tokens
+// they took as input in all, the share the cache served, the largest turn
+// and its tool results, and the least room any turn left in the model's
+// window (-1 when no turn knew its window).
+type Context struct {
+	Turns            int     `json:"turns"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CacheReadTokens  int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
+	CacheShare       float64 `json:"cache_share"`
+	PeakPromptTokens int64   `json:"peak_prompt_tokens"`
+	PeakResultsBytes int     `json:"peak_tool_results_bytes"`
+	LeastRoomTokens  int64   `json:"least_room_tokens"`
+}
+
+func contextOf(events []session.Event) (Context, error) {
+	c := Context{LeastRoomTokens: -1}
+	for _, e := range events {
+		if e.Kind != session.Usage {
+			continue
+		}
+		var u session.UsageBody
+		if err := json.Unmarshal(e.Body, &u); err != nil {
+			return c, err
+		}
+		c.Turns++
+		c.PromptTokens += u.Prompt()
+		c.CacheReadTokens += u.CacheRead
+		c.CacheWriteTokens += u.CacheWrite
+		c.PeakPromptTokens = max(c.PeakPromptTokens, u.Prompt())
+		if u.Context != nil {
+			c.PeakResultsBytes = max(c.PeakResultsBytes, u.Context.ToolResultsBytes)
+		}
+		if room, ok := u.Room(); ok && (c.LeastRoomTokens < 0 || room < c.LeastRoomTokens) {
+			c.LeastRoomTokens = room
+		}
+	}
+	if c.PromptTokens > 0 {
+		c.CacheShare = float64(c.CacheReadTokens) / float64(c.PromptTokens)
+	}
+	return c, nil
 }
 
 // Grade runs every check of c over r. A check's error stops grading: a
@@ -84,6 +128,9 @@ func (c Case) Grade(ctx context.Context, r Run, j *Judge) (Result, error) {
 		return Result{}, fmt.Errorf("eval: %s: cost: %w", c.Name, err)
 	}
 	res := Result{Case: c.Name, Session: r.Session.ID, CostMicroUSD: cost}
+	if res.Context, err = contextOf(r.Events); err != nil {
+		return Result{}, fmt.Errorf("eval: %s: context: %w", c.Name, err)
+	}
 	if c.Items > 0 {
 		res.PerItemMicro = (cost + int64(c.Items) - 1) / int64(c.Items)
 	}

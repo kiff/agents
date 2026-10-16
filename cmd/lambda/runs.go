@@ -179,19 +179,39 @@ type keyedModel struct {
 }
 
 func (k *keyedModel) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
+	m, err := k.model(ctx)
+	if err != nil {
+		return model.Reply{}, err
+	}
+	return m.Turn(ctx, req, onText)
+}
+
+// Window is the model's context window, for the run's context report
+// (model.Windower), when the model knows it.
+func (k *keyedModel) Window(ctx context.Context, id string) (int64, error) {
+	m, err := k.model(ctx)
+	if err != nil {
+		return 0, err
+	}
+	w, ok := m.(model.Windower)
+	if !ok {
+		return 0, errors.New("lambda: the model knows no context window")
+	}
+	return w.Window(ctx, id)
+}
+
+// model is the model, made with its key on first use.
+func (k *keyedModel) model(ctx context.Context) (model.Model, error) {
 	k.mu.Lock()
-	m := k.m
-	if m == nil {
+	defer k.mu.Unlock()
+	if k.m == nil {
 		key, err := k.key(ctx)
 		if err != nil {
-			k.mu.Unlock()
-			return model.Reply{}, err
+			return nil, err
 		}
 		k.m = k.make(key)
-		m = k.m
 	}
-	k.mu.Unlock()
-	return m.Turn(ctx, req, onText)
+	return k.m, nil
 }
 
 // outsidePrefix refuses a model key secret that an agent's key reference

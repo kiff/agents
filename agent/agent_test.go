@@ -725,3 +725,39 @@ func TestARefusalDiscardsWhatStreamedBeforeIt(t *testing.T) {
 		}
 	}
 }
+
+// windowed is a script that knows its model's context window.
+type windowed struct{ *script }
+
+func (windowed) Window(context.Context, string) (int64, error) { return 1_000_000, nil }
+
+// Each turn's usage says what its input was made of, and the window it had
+// (#77): the second turn's messages hold the tool call and its result.
+func TestEachTurnRecordsWhatItsInputWasMadeOf(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	m := windowed{&script{replies: []model.Reply{use("c1", "stripe_refund", `{"charge":"ch_1"}`), say("Refunded ch_1.")}}}
+	store, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund), r, nil, "Work the refund queue.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []session.ContextBody
+	for _, e := range events {
+		var u session.UsageBody
+		if e.Kind == session.Usage && json.Unmarshal(e.Body, &u) == nil && u.Context != nil {
+			got = append(got, *u.Context)
+		}
+	}
+	size := m.reqs[1].Size()
+	if len(got) != 2 || got[0].Messages != 1 || got[1].Messages != 3 || got[1].WindowTokens != 1_000_000 ||
+		got[1].SystemBytes != len("You refund orders.") || got[1].ToolsBytes == 0 || got[1].MessagesBytes != size.Messages ||
+		got[1].ToolResultsBytes != len("refunded re_1") || got[0].ToolResultsBytes != 0 {
+		t.Fatalf("context %+v", got)
+	}
+}
