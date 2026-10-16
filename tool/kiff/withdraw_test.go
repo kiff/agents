@@ -116,7 +116,7 @@ func (keys) Key(_ context.Context, tenant, ref string) (string, error) {
 }
 
 // Withdrawer withdraws with the run's own agent's key, and says what became
-// of the call.
+// of the call; a hold KIFF doesn't know for that key is nothing to withdraw.
 func TestWithdrawerUsesTheRunsAgentsKey(t *testing.T) {
 	srv := api(t)
 	withdraw := kiff.Withdrawer(oneAgent{}, keys{}, srv.Client(), srv.URL)
@@ -126,8 +126,11 @@ func TestWithdrawerUsesTheRunsAgentsKey(t *testing.T) {
 			t.Fatalf("%s: %q, %v; want %q", ex, got, err, want)
 		}
 	}
-	if _, err := withdraw(context.Background(), r, "exc_other"); !errors.Is(err, kiff.ErrNoHold) {
-		t.Fatalf("an unknown hold: %v", err)
+	if got, err := withdraw(context.Background(), r, "exc_other"); err != nil || got != "" {
+		t.Fatalf("an unknown hold: %q, %v; want nothing to withdraw", got, err)
+	}
+	if _, err := withdraw(context.Background(), r, "exc_down"); err == nil {
+		t.Fatal("KIFF failing: no error")
 	}
 	if _, err := withdraw(context.Background(), run.Run{Tenant: "t2", Agent: "rae", ID: "r1"}, "exc_held"); err == nil ||
 		errors.Is(err, registry.ErrNotFound) {

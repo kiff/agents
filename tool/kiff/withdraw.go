@@ -90,7 +90,10 @@ func Withdraw(ctx context.Context, hc *http.Client, apiURL, key, exception strin
 
 // Withdrawer is server.Server's Withdraw: it withdraws a run's held call
 // with the KIFF key of the run's own agent, and returns what became of the
-// call ("invalidated" when withdrawn, else KIFF's status for it).
+// call ("invalidated" when withdrawn, else KIFF's status for it). A hold
+// KIFF doesn't know for this key (ErrNoHold: purged, or the agent's key now
+// names another KIFF agent) is "" with no error: there is nothing to take
+// back. A key that can't be read is an error, since the hold may be live.
 func Withdrawer(agents registry.Agents, secrets registry.Secrets, hc *http.Client, apiURL string) func(ctx context.Context, r run.Run, exception string) (string, error) {
 	return func(ctx context.Context, r run.Run, exception string) (string, error) {
 		d, err := agents.Get(ctx, r.Tenant, r.Agent)
@@ -103,6 +106,8 @@ func Withdrawer(agents registry.Agents, secrets registry.Secrets, hc *http.Clien
 		}
 		w, err := Withdraw(ctx, hc, apiURL, key, exception)
 		switch {
+		case errors.Is(err, ErrNoHold):
+			return "", nil // nothing held for this key: nothing to withdraw
 		case err != nil:
 			return "", err
 		case w.Withdrawn && w.Status == "":

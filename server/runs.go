@@ -163,12 +163,17 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 	}
 }
 
-// cancelPaused withdraws every call KIFF holds for a paused run, so an
-// answer that comes later sends nothing, records what KIFF says became of
-// each, and sets Cancel. The run is then resolved: it is handed to
-// Background, which claims it, collects the outcomes (a withdrawn call comes
-// back refused; one KIFF had already sent, its result) and ends it CANCELLED
-// at its first checkpoint. If Background fails, the sweep continues it.
+// cancelPaused records the cancel on a paused run first, then withdraws
+// every call KIFF holds for it, so an answer that comes later sends nothing.
+// The cancel comes first because each withdrawal makes KIFF announce the
+// hold invalidated, and the alert may continue the run before this returns:
+// a paused run with Cancel set can only end CANCELLED. What became of each
+// call is then recorded (the alerts record the same), and once the run is
+// resolved it is handed to Background: it is claimed, collects the outcomes
+// (a withdrawn call comes back refused; one KIFF had already sent, its
+// result) and ends CANCELLED at its first checkpoint. If Background fails,
+// the sweep continues it. A withdrawal that fails leaves the cancel
+// recorded; repeating it withdraws the rest.
 func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) {
 	if s.Withdraw == nil {
 		return run.Run{}, conflict("a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
@@ -178,31 +183,29 @@ func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) 
 			return run.Run{}, conflict("a paused run can't be cancelled: KIFF holds a call it gave no ID to withdraw it by")
 		}
 	}
-	got := map[string]string{}
+	if !rn.Cancel {
+		var err error
+		if rn, err = run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+			return run.Run{}, err
+		}
+	}
 	for _, q := range rn.Requirements {
 		status, err := s.Withdraw(ctx, rn, q.Exception)
 		if err != nil {
 			return run.Run{}, fmt.Errorf("withdrawing held call %s: %w", q.CallID, err)
 		}
-		got[q.Exception] = status
-	}
-	next, err := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
-		n.Cancel = true
-		for i := range n.Requirements {
-			q := &n.Requirements[i]
-			if st, ok := got[q.Exception]; ok && st != "" {
-				q.Answer = st
-				if q.Answered.IsZero() {
-					q.Answered = s.now()
-				}
-			}
+		if status == "" {
+			continue // KIFF holds nothing for this key to withdraw: its answer is KIFF's to send
 		}
-		return nil
-	})
+		if _, err := run.Answer(ctx, s.Runs, rn.Tenant, q.Exception, status, s.now()); err != nil {
+			return run.Run{}, fmt.Errorf("recording held call %s withdrawn: %w", q.CallID, err)
+		}
+	}
+	next, err := s.Runs.Get(ctx, rn.Tenant, rn.ID)
 	if err != nil {
 		return run.Run{}, err
 	}
-	if s.Background != nil && resolved(next, s.now()) {
+	if s.Background != nil && next.Status == run.Paused && resolved(next, s.now()) {
 		if err := s.Background(context.WithoutCancel(ctx), next.Tenant, next.ID); err != nil && s.Log != nil {
 			s.Log.ErrorContext(ctx, "continuing a cancelled paused run; the sweep will", "run", next.ID, "err", err)
 		}

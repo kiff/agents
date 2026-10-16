@@ -585,7 +585,8 @@ func TestCancelAPausedRunWithdrawsItsHeldCalls(t *testing.T) {
 }
 
 // A paused run is not cancelled, and nothing is recorded, when KIFF can't be
-// asked: no Withdraw, a held call with no exception ID, or KIFF failing.
+// asked: no Withdraw, or a held call with no exception ID. KIFF failing
+// partway is 500 with the cancel recorded; repeating it withdraws the rest.
 // Background failing doesn't fail the cancel: the sweep continues the run.
 func TestCancelAPausedRunNeedsKIFF(t *testing.T) {
 	f := newRunFixture(t)
@@ -609,10 +610,15 @@ func TestCancelAPausedRunNeedsKIFF(t *testing.T) {
 	if code != 500 || strings.Contains(fmt.Sprint(body), "secret detail") {
 		t.Fatalf("KIFF failing: %d %v", code, body)
 	}
-	for _, id := range []string{r.ID, noID.ID, two.ID} {
+	for _, id := range []string{r.ID, noID.ID} {
 		if got, _ := f.runs.Get(ctx, "t1", id); got.Cancel || !got.Requirements[0].Answered.IsZero() {
-			t.Fatalf("a cancel that failed changed the run: %+v", got)
+			t.Fatalf("a refused cancel changed the run: %+v", got)
 		}
+	}
+	// KIFF failing partway: the cancel is recorded first, and what was
+	// withdrawn is recorded, so the run can only end CANCELLED.
+	if got, _ := f.runs.Get(ctx, "t1", two.ID); !got.Cancel || got.Requirements[0].Answer != "invalidated" || !got.Requirements[1].Answered.IsZero() {
+		t.Fatalf("after a withdrawal failed partway: %+v", got)
 	}
 
 	w.fail = nil
@@ -626,6 +632,54 @@ func TestCancelAPausedRunNeedsKIFF(t *testing.T) {
 	if !strings.Contains(f.logs.String(), "invoke failed") {
 		t.Fatal("the failed hand-on wasn't logged")
 	}
+}
+
+// A withdrawal makes KIFF announce the hold invalidated, and the alert may
+// record it and continue the run before the cancel returns: by then the run
+// already carries Cancel, so it ends CANCELLED and takes no turn as if the
+// owner had refused.
+func TestACancelIsRecordedBeforeItsWithdrawals(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.heldOn("exc_1", "exc_2")
+	alerted := 0
+	f.server.Withdraw = func(ctx context.Context, rn run.Run, ex string) (string, error) {
+		got, err := run.Answer(ctx, f.runs, rn.Tenant, ex, "invalidated", now) // KIFF's alert, landing first
+		if err != nil {
+			return "", err
+		}
+		if !got.Cancel {
+			t.Errorf("KIFF's alert for %s found the run without Cancel: it would continue as a refusal", ex)
+		}
+		alerted++
+		return "invalidated", nil
+	}
+	f.restart()
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel")
+	if alerted != 2 || !slices.Equal(f.background, []string{"t1/" + r.ID}) {
+		t.Fatalf("alerted %d, handed on %v", alerted, f.background)
+	}
+}
+
+// A hold KIFF doesn't know for the agent's key (Withdraw's "", as for
+// kiff.ErrNoHold) doesn't block the cancel or the agent's removal: there is
+// nothing to take back, and its answer is KIFF's to send.
+func TestAHoldKIFFDoesntKnowIsNothingToWithdraw(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	w := &withdrawals{answers: map[string]string{"exc_1": "invalidated", "exc_gone": ""}}
+	f.server.Withdraw = w.withdraw
+	f.restart()
+	r := f.heldOn("exc_1", "exc_gone")
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel")
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if !got.Cancel || got.Requirements[0].Answer != "invalidated" || !got.Requirements[1].Answered.IsZero() || len(f.background) != 0 {
+		t.Fatalf("stored %+v, handed on %v: want the unknown hold left to KIFF, and the run still waiting", got, f.background)
+	}
+	code, body = f.do("t1", "DELETE", "/agents/payouts", nil)
+	f.want(204, code, body, "delete")
 }
 
 // record appends events 1..n to run r.

@@ -229,10 +229,13 @@ still paused    looked at again 09:14, 09:18, 09:26 … then hourly
 | an expired hold, swept: collected, continued, COMPLETED; KIFF down for a day: ERROR | `runner` `TestTheSweepContinuesARunWhoseHoldExpired` |
 
 **Cancelling a paused run (#55).** `POST /agents/{id}/runs/{run_id}/cancel`
-on a PAUSED run withdraws each held call in KIFF, records what became of
-it, sets `cancel`, and hands the run to `Background`. The run is claimed,
-collects the outcomes (a withdrawn call comes back refused; one KIFF had
-already sent, its result) and ends CANCELLED at its first checkpoint.
+on a PAUSED run sets `cancel` first, then withdraws each held call in KIFF,
+records what became of it, and hands the run to `Background`. The run is
+claimed, collects the outcomes (a withdrawn call comes back refused; one
+KIFF had already sent, its result) and ends CANCELLED at its first
+checkpoint. `cancel` comes first because each withdrawal makes KIFF send an
+`invalidated` alert, which may continue the run before the cancel returns; a
+paused run with `cancel` set can only end CANCELLED.
 
 ```http
 POST /agents/rae/runs/5c4c…/cancel
@@ -251,12 +254,14 @@ srv := &server.Server{ /* … */
 |---|---|
 | every held call withdrawn or already answered | 200, `cancel_requested`; each requirement's `answer` is `invalidated` or KIFF's status |
 | no `Withdraw` set, or a held call with no `exception` | 409, nothing withdrawn |
-| KIFF fails | 500, the run unchanged (calls withdrawn before the failure stay withdrawn; repeat the cancel) |
+| KIFF fails | 500; `cancel` is already recorded, and so is each call withdrawn before the failure; repeat the cancel to withdraw the rest |
+| KIFF doesn't know a hold for the agent's key (404: purged, or `key_ref` now names another KIFF agent) | nothing to withdraw: carries on, and that requirement waits for KIFF's own answer |
 | `Background` fails | 200; the sweep continues the run (#52) |
 
 `DELETE /agents/{id}` withdraws every held call of the agent's paused runs
-first, while the agent (and its key) is still there. If KIFF fails, none
-of the agent's runs are deleted (500); repeat it.
+first, while the agent (and its key) is still there. A hold KIFF doesn't
+know is nothing to withdraw. If KIFF fails, none of the agent's runs are
+deleted (500); repeat it.
 
 **The withdraw client (#51):** `kiff.Withdraw(ctx, hc, kiff.APIURL, key, exception)`.
 
@@ -279,9 +284,11 @@ Guarded by `tool/kiff` `TestWithdrawAHeldCall`,
 | Rule | Guarded by |
 |---|---|
 | a paused run's calls are withdrawn, answers recorded, `cancel` set, the run handed on | `server` `TestCancelAPausedRunWithdrawsItsHeldCalls` |
-| no `Withdraw`, no exception ID, KIFF failing: nothing recorded; `Background` failing: still 200 | `TestCancelAPausedRunNeedsKIFF` |
+| no `Withdraw` or no exception ID: 409, nothing recorded; KIFF failing partway: 500, `cancel` recorded; `Background` failing: still 200 | `TestCancelAPausedRunNeedsKIFF` |
+| `cancel` is stored before the first withdrawal, so KIFF's alert finds it | `TestACancelIsRecordedBeforeItsWithdrawals` |
+| a hold KIFF doesn't know blocks neither the cancel nor the agent's removal | `TestAHoldKIFFDoesntKnowIsNothingToWithdraw` |
 | removing an agent withdraws first, with the agent still there; KIFF failing deletes nothing | `TestDeleteAgentWithdrawsItsHeldCalls` |
-| `Withdrawer` uses the run's agent's own key | `tool/kiff` `TestWithdrawerUsesTheRunsAgentsKey` |
+| `Withdrawer` uses the run's agent's own key; `ErrNoHold` is nothing to withdraw | `tool/kiff` `TestWithdrawerUsesTheRunsAgentsKey` |
 
 ## Still to deliver
 
