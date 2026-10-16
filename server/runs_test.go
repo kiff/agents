@@ -57,6 +57,12 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
 	r.Source = s.Source
+	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
+		r.ID = s.ID
+		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {
+			return got, run.ErrExists
+		}
+	}
 	return r, rr.runs.Create(ctx, r)
 }
 
@@ -773,6 +779,97 @@ func TestContinueInTheBackground(t *testing.T) {
 	f.want(503, code, body, "no background dispatcher")
 }
 
+// Work that came in starts one background run per event key: tagged as an
+// event with its source, and started once however often it is delivered.
+func TestAnEventStartsOneRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "refunds")
+	ev := map[string]any{"key": "evt_1", "source": "stripe", "input": "A dispute was opened on ch_1."}
+	code, body := f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(202, code, body, "an event")
+	id := server.EventRunID("t1", "payouts", "evt_1")
+	if body["id"] != id || body["trigger"] != string(run.ByEvent) || body["source"] != "stripe" || body["status"] != string(run.Pending) {
+		t.Fatalf("started %v", body)
+	}
+	if !slices.Equal(f.background, []string{"t1/" + id}) {
+		t.Fatalf("handed on %v", f.background)
+	}
+	if got := f.runner.starts[len(f.runner.starts)-1]; got.Trigger != run.ByEvent || got.Session != "" || got.Input != ev["input"] {
+		t.Fatalf("started with %+v: want an event run in a session of its own", got)
+	}
+
+	// Delivered again while it is still PENDING: handed on once more.
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(202, code, body, "the same event, still pending")
+	if body["id"] != id || len(f.background) != 2 {
+		t.Fatalf("got %v, handed on %v", body["id"], f.background)
+	}
+	// Once it went on: 200 with it, nothing started or handed on.
+	if _, err := f.runner.Execute(ctx, "t1", id, nil); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(200, code, body, "the same event, its run gone on")
+	if body["id"] != id || body["status"] != string(run.Completed) || len(f.background) != 2 {
+		t.Fatalf("got %v, handed on %v", body, f.background)
+	}
+
+	ev["key"] = "evt_2"
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(202, code, body, "another event")
+	if body["id"] == id {
+		t.Fatal("another key started the same run")
+	}
+	code, body = f.do("t1", "POST", "/agents/refunds/events", ev)
+	f.want(202, code, body, "the same key for another agent")
+	if body["id"] == server.EventRunID("t1", "payouts", "evt_2") {
+		t.Fatal("another agent's event is the same run")
+	}
+	code, body = f.do("t2", "POST", "/agents/payouts/events", ev)
+	f.want(404, code, body, "another tenant's agent")
+}
+
+// An event the route can't take is 400, and nothing starts; with no
+// background dispatcher it is 503; a failed hand-off is 500 and leaves the
+// run PENDING for a redelivery.
+func TestEventsThatDontStart(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	long := strings.Repeat("k", server.MaxEventKey+1)
+	for name, ev := range map[string]map[string]any{
+		"no key":            {"source": "stripe", "input": "x"},
+		"a key too long":    {"key": long, "source": "stripe", "input": "x"},
+		"no source":         {"key": "k", "input": "x"},
+		"a source's case":   {"key": "k", "source": "Stripe", "input": "x"},
+		"a source path":     {"key": "k", "source": "stripe/../x", "input": "x"},
+		"no input":          {"key": "k", "source": "stripe"},
+		"an input too long": {"key": "k", "source": "stripe", "input": strings.Repeat("x", server.MaxInput+1)},
+		"another field":     {"key": "k", "source": "stripe", "input": "x", "session_id": "s1"},
+	} {
+		code, body := f.do("t1", "POST", "/agents/payouts/events", ev)
+		f.want(400, code, body, name)
+	}
+	if len(f.runner.starts) != 0 {
+		t.Fatalf("started %v", f.runner.starts)
+	}
+
+	ev := map[string]any{"key": "evt_1", "source": "stripe", "input": "x"}
+	f.bgFail = errors.New("invoke failed")
+	code, body := f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(500, code, body, "the hand-off failing")
+	if got, _ := f.runs.Get(ctx, "t1", server.EventRunID("t1", "payouts", "evt_1")); got.Status != run.Pending {
+		t.Fatalf("after a failed hand-off: %s, want PENDING for a redelivery", got.Status)
+	}
+	f.bgFail = nil
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(202, code, body, "redelivered")
+
+	f.noBackground()
+	code, body = f.do("t1", "POST", "/agents/payouts/events", ev)
+	f.want(503, code, body, "no background dispatcher")
+}
+
 // record appends events 1..n to run r.
 func (f *runFixture) record(r run.Run, from, to int64) {
 	f.t.Helper()
@@ -904,6 +1001,8 @@ func TestNoRunnerNoStart(t *testing.T) {
 	f.putAgent("t1", "payouts")
 	code, body := f.do("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
 	f.want(404, code, body, "starting a run with no Runner")
+	code, body = f.do("t1", "POST", "/agents/payouts/events", map[string]any{"key": "k", "source": "stripe", "input": "x"})
+	f.want(404, code, body, "an event with no Runner")
 	code, body = f.do("t1", "POST", "/schedules", scheduleBody("morning"))
 	f.want(201, code, body, "create schedule")
 	code, body = f.do("t1", "POST", "/schedules/morning/trigger", nil)

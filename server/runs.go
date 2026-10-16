@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,7 +67,8 @@ type Start struct {
 	// ID is the run's ID, when the caller names it; empty, a new one. A
 	// caller that may start the same run more than once (a schedule's firing,
 	// delivered at least once) names it, and the second Start returns the run
-	// as stored with run.ErrExists. Never taken from a request.
+	// as stored with run.ErrExists. Never taken from a request as is: an
+	// event's run ID is derived from its key (EventRunID).
 	ID string
 }
 
@@ -641,6 +644,86 @@ func (s *Server) triggerSchedule(ctx context.Context, c Caller, r *http.Request)
 		return 0, nil, err
 	}
 	return http.StatusAccepted, viewRun(rn), nil
+}
+
+// Event limits: an event's key and its source's name.
+const (
+	MaxEventKey    = 256
+	MaxEventSource = 64
+)
+
+// eventBody is what POST /agents/{id}/events takes: work that came in for
+// the agent, as the caller verified it.
+type eventBody struct {
+	// Key names the event at its origin (Stripe's event ID, an e-invoice's
+	// number): one key starts one run, however often it is delivered.
+	Key string `json:"key"`
+	// Source is where it came from ("stripe", "einvoice"): the run's Source.
+	Source string `json:"source"`
+	// Input is what the agent is asked to do with it.
+	Input string `json:"input"`
+}
+
+// EventRunID is the ID of the run an event starts: one per tenant, agent and
+// event key.
+func EventRunID(tenant, agent, key string) string {
+	h := sha256.Sum256(fmt.Appendf(nil, "event|%d:%s|%d:%s|%d:%s", len(tenant), tenant, len(agent), agent, len(key), key))
+	return hex.EncodeToString(h[:16])
+}
+
+// startEvent starts the agent's run for work that came in, in the
+// background: 202 with the run. The same event delivered again starts
+// nothing: 200 with the run it started, or 202 again if that run is still
+// PENDING and is handed on once more.
+func (s *Server) startEvent(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	if s.Background == nil {
+		return 0, nil, unavailable("this server doesn't run runs in the background")
+	}
+	var body eventBody
+	if err := decode(r, &body); err != nil {
+		return 0, nil, err
+	}
+	switch {
+	case body.Key == "" || len(body.Key) > MaxEventKey:
+		return 0, nil, bad("the key is 1 to %d bytes", MaxEventKey)
+	case !sourceName(body.Source):
+		return 0, nil, bad("the source is 1 to %d of a-z, 0-9, '.', '_' and '-'", MaxEventSource)
+	case body.Input == "" || len(body.Input) > MaxInput:
+		return 0, nil, bad("the input is 1 to %d bytes", MaxInput)
+	}
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	rn, err := s.Runner.Start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByEvent, Source: body.Source,
+		Input: body.Input, ID: EventRunID(c.Tenant, id, body.Key)})
+	switch {
+	case errors.Is(err, run.ErrExists) && rn.Status != run.Pending:
+		return http.StatusOK, viewRun(rn), nil // delivered again: the run it started
+	case err != nil && !errors.Is(err, run.ErrExists):
+		return 0, nil, err
+	}
+	// A new run, or one delivered again still PENDING (its hand-off may have
+	// failed): hand it on. It is claimed once, so a second hand-off is
+	// harmless. If this one fails, the run stays PENDING for a redelivery;
+	// the sweep ends it if none comes.
+	if err := s.Background(ctx, rn.Tenant, rn.ID); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusAccepted, viewRun(rn), nil
+}
+
+// sourceName reports whether name is an event source's name.
+func sourceName(name string) bool {
+	if name == "" || len(name) > MaxEventSource {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // scheduleRuns lists the runs one of the tenant's schedules started, newest
