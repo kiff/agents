@@ -38,7 +38,10 @@ came with. Dropping them "breaks the turn" on Opus 5.5. The paused turn
 ```
 
 **Refusals are their own stop.** `stop_reason: "refusal"` is `model.Refused`
-with `stop_details.category`. The run ends COMPLETED with `stop: "refused"`
+with `stop_details.category`. A refusal can come after part of the turn
+streamed; that part is discarded before anything else happens: its text is
+no answer or report, a tool call in it is never made, and it isn't replayed.
+Its usage still counts. The run ends COMPLETED with `stop: "refused"`
 and `refusal`: the category (`cyber`, `bio`, `reasoning_extraction`, …), or
 empty when the API names none.
 
@@ -55,6 +58,7 @@ GET /agents/rae/runs/5c4c…
 | the loop replays the thinking with its tool call | `agent` `TestThinkingGoesBackInPlace` |
 | a paused turn keeps its thinking through the run store | `TestAPausedTurnKeepsItsThinking` |
 | a refused turn stops the run as refused, with its category; effort on every turn | `TestARefusedTurnStopsTheRun`, `TestEffortGoesOnEveryTurn` |
+| what streamed before a refusal is discarded: no text, no tool call, nothing recorded; its usage counts | `TestARefusalDiscardsWhatStreamedBeforeIt` |
 | effort is empty or one of the levels; the built agent has it | `registry` `TestCheckRefuses`, `TestBuildMakesTheAgentFromItsDefinition` |
 | the stored run and the API show `stop: refused` and `refusal` | `runner` `TestARefusedRunRecordsWhy`, `server` `TestARefusedRunShowsWhy` |
 

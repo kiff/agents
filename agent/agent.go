@@ -301,6 +301,10 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		if err != nil {
 			return out, msgs, err
 		}
+		if reply.Stop == model.Refused { // before anything of the turn is kept or run
+			out.Stop, out.Refusal = Refused, reply.Refusal
+			return out, msgs, nil
+		}
 		msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 		var calls []model.Block
 		for _, b := range reply.Blocks {
@@ -313,11 +317,8 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		}
 		if len(calls) == 0 {
 			out.Stop = Answered
-			switch reply.Stop {
-			case model.MaxTokens:
+			if reply.Stop == model.MaxTokens {
 				out.Stop = TooLong
-			case model.Refused:
-				out.Stop, out.Refusal = Refused, reply.Refusal
 			}
 			return out, msgs, nil
 		}
@@ -407,6 +408,12 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
 		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CostMicroUSD: cost}); err != nil {
 		return reply, err
+	}
+	if reply.Stop == model.Refused {
+		// A refusal can come after part of the turn streamed: that part is
+		// discarded, never recorded, replayed or acted on. Its usage counts.
+		reply.Blocks, out.Text = nil, ""
+		return reply, nil
 	}
 	var text []string
 	for _, b := range reply.Blocks {

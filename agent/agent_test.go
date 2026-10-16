@@ -664,3 +664,35 @@ func TestEffortGoesOnEveryTurn(t *testing.T) {
 		t.Fatalf("effort %q", m.reqs[0].Effort)
 	}
 }
+
+// A refusal that comes after part of the turn streamed discards that part:
+// its text is no report and no answer, and a tool call in it is never made.
+// The turn's usage still counts (#68).
+func TestARefusalDiscardsWhatStreamedBeforeIt(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	partial := model.Reply{Blocks: []model.Block{
+		{Kind: model.Text, Text: "Here is how to"},
+		{Kind: model.ToolUse, CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`)},
+	}, Stop: model.Refused, Refusal: "cyber", Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}}
+	m := &script{replies: []model.Reply{partial}}
+	store, r := start(t, session.KindRun)
+	out, msgs, err := agent.Run(context.Background(), newAgent(m, refund), r, nil, "x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Refused || out.Refusal != "cyber" || out.Text != "" || refund.calls != 0 || out.Cost == 0 {
+		t.Fatalf("outcome %+v, tool calls %d", out, refund.calls)
+	}
+	if len(msgs) != 1 { // the owner's message only: nothing of the refused turn
+		t.Fatalf("conversation %+v", msgs)
+	}
+	if err := r.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, _ := store.Read(context.Background(), "t1", r.Session().ID)
+	for _, e := range events {
+		if e.Kind == session.Report || e.Kind == session.AgentMessage || e.Kind == session.ToolCall {
+			t.Fatalf("recorded %s from a refused turn", e.Kind)
+		}
+	}
+}
