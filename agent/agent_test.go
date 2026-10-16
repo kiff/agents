@@ -569,3 +569,36 @@ func TestCancelStopsAtACheckpoint(t *testing.T) {
 		t.Fatalf("a checkpoint that failed: %v, with %d model turns", err, len(m.reqs))
 	}
 }
+
+// A call through KIFF's gateway is recorded under GatewayServer, and one of
+// the agent's own tools under no server: evals grade where each call went.
+func TestAToolCallRecordsWhereItWent(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	notes := &fakeTool{name: "memory", access: tool.Read, result: tool.Result{Text: "no notes"}}
+	turn := model.Reply{Blocks: []model.Block{
+		{Kind: model.ToolUse, CallID: "c1", Tool: "memory", Input: json.RawMessage(`{"action":"list"}`)},
+		{Kind: model.ToolUse, CallID: "c2", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`)},
+	}, Stop: model.CallTools}
+	m := &script{replies: []model.Reply{turn, say("Done.")}}
+	store, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund, notes), r, nil, "Go.", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID) // before the run ends drops them
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers := map[string]string{}
+	for _, e := range events {
+		if e.Kind == session.ToolCall {
+			var b agent.ToolCallBody
+			if err := json.Unmarshal(e.Body, &b); err != nil {
+				t.Fatal(err)
+			}
+			servers[b.Tool] = b.Server
+		}
+	}
+	if len(servers) != 2 || servers["stripe_refund"] != agent.GatewayServer || servers["memory"] != "" {
+		t.Fatalf("recorded servers %v", servers)
+	}
+}
