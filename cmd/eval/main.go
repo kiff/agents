@@ -1,12 +1,22 @@
-// Command eval grades recorded runs against the eval cases and prints a score
-// and cost per case.
+// Command eval grades runs against the eval cases and prints a score and cost
+// per case.
 //
 //	eval [-judge-model id -judge-price in,out] [-ids seed.json] [-baseline base.json] [-out results.json] case=session...
+//	eval -run -model id -price in,out -jobs dir [-skill file] [-gateway url] [-max-cost usd] [...] case...
 //
-// Each argument names a case (refunds, chargebacks) and the Managed Agents
-// session of the run to grade, read with ANTHROPIC_API_KEY from the
-// environment. With -baseline, a case that scores lower than it did there
-// fails the command. -ids is the seed's Stripe ids by item reference.
+// In the first form, each argument names a case (refunds, chargebacks) and the
+// Managed Agents session of the run to grade, read with ANTHROPIC_API_KEY from
+// the environment: the baseline.
+//
+// With -run, each argument names a case, and eval runs it on this runtime
+// first: one run (trigger eval) of an agent whose instructions are the case's
+// job, read from <jobs>/<job>.md, with -skill added, on the model given,
+// through KIFF's gateway with the key in KIFF_AGENT_KEY. Tool calls and
+// results are kept for grading (eval.Policy). Runs and sessions are kept in
+// memory. A run KIFF holds a call of stops PAUSED, and is graded there.
+//
+// With -baseline, a case that scores lower than it did there fails the
+// command. -ids is the seed's Stripe ids by item reference.
 //
 // With -judge-model, checks that need a judge ask that model on the Claude API,
 // with the same key; its price is in millionths of a dollar per million input
@@ -23,8 +33,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 
@@ -33,6 +45,14 @@ import (
 	"github.com/kiff/agents/eval/managed"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
+	"github.com/kiff/agents/registry"
+	runs "github.com/kiff/agents/run"
+	"github.com/kiff/agents/runner"
+	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/store/memory"
+	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/kiff"
+	toolmemory "github.com/kiff/agents/tool/memory"
 )
 
 func main() {
@@ -53,6 +73,72 @@ var newReader = func(base, key string) reader { return managed.New(base, key, ni
 
 var newModel = func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) }
 
+// connect lists the agent's tools through KIFF's gateway.
+var connect = func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+	return kiff.New(gateway, key, nil).Tools(ctx)
+}
+
+// evalTenant is the tenant every -run run is kept under, in memory.
+const evalTenant = "eval"
+
+// evalKeep is how long a -run run's events are kept: past the command.
+const evalKeep = 24 * time.Hour
+
+// runtime runs cases on this runtime, kept in memory.
+type runtime struct {
+	agents   *memory.Agents
+	sessions *memory.Store
+	runs     *memory.Runs
+	rn       *runner.Runner
+	base     registry.Definition
+	jobs     string // the directory of the jobs' instructions
+	skill    string // added to every job's instructions
+	log      io.Writer
+}
+
+// envKey is the agent's KIFF key, from the environment.
+type envKey string
+
+func (k envKey) Key(context.Context, string, string) (string, error) { return string(k), nil }
+
+func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, skill string, log io.Writer) *runtime {
+	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill, log: log}
+	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
+		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: connect,
+		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent)} },
+	}}
+	return rt
+}
+
+// Run runs the case once, as a run of its job's agent, and reads it back for
+// grading. A run that failed is graded as it stopped.
+func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) {
+	job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
+	if err != nil {
+		return eval.Run{}, fmt.Errorf("%s: the job's instructions: %w", s.Name, err)
+	}
+	d := rt.base
+	d.ID, d.Instructions = s.Name, strings.TrimSpace(string(job))
+	d.Keep = eval.Policy(evalKeep) // the checks read tool calls and results
+	if rt.skill != "" {
+		d.Instructions += "\n\n" + rt.skill
+	}
+	if err := rt.agents.Put(ctx, d); err != nil {
+		return eval.Run{}, err
+	}
+	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: s.Input})
+	if err != nil {
+		return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
+	}
+	if _, err := rt.rn.Execute(ctx, evalTenant, r.ID, nil); err != nil {
+		if _, gerr := rt.runs.Get(ctx, evalTenant, r.ID); gerr != nil {
+			return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
+		}
+		fmt.Fprintf(rt.log, "eval: %s: the run failed, graded as it stopped: %v\n", s.Name, err)
+	}
+	return eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
+}
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -61,10 +147,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	outPath := fs.String("out", "", "also write the results here (JSON)")
 	judgeModel := fs.String("judge-model", "", "the judge's model id; without it, judged checks are skipped")
 	judgePrice := fs.String("judge-price", "", "the judge's input,output price in millionths of a dollar per million tokens")
+	runHere := fs.Bool("run", false, "run each case on this runtime, then grade it; arguments are case names")
+	modelID := fs.String("model", "", "-run: the agent's model id")
+	price := fs.String("price", "", "-run: the agent's input,output price in millionths of a dollar per million tokens")
+	jobs := fs.String("jobs", "", "-run: the directory of the jobs' instructions, <job>.md each")
+	skillPath := fs.String("skill", "", "-run: a file with KIFF's skill, added to every job's instructions")
+	gateway := fs.String("gateway", kiff.URL, "-run: KIFF's gateway")
+	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
+		if *runHere {
+			return errors.New("name at least one case")
+		}
 		return errors.New("name at least one case=session")
 	}
 
@@ -80,6 +176,33 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		return errors.New("set ANTHROPIC_API_KEY to read the runs")
 	}
 	src := newReader(env("ANTHROPIC_BASE_URL"), key)
+	var rt *runtime
+	if *runHere {
+		kiffKey := env("KIFF_AGENT_KEY")
+		switch {
+		case kiffKey == "":
+			return errors.New("set KIFF_AGENT_KEY to the agent's KIFF key for -run")
+		case *modelID == "":
+			return errors.New("-run needs -model")
+		case *jobs == "":
+			return errors.New("-run needs -jobs, the directory of the jobs' instructions")
+		}
+		p, err := parsePrice(*price)
+		if err != nil {
+			return fmt.Errorf("-price: %w", err)
+		}
+		var skill string
+		if *skillPath != "" {
+			b, err := os.ReadFile(*skillPath)
+			if err != nil {
+				return err
+			}
+			skill = strings.TrimSpace(string(b))
+		}
+		rt = newRuntime(newModel(key), kiffKey, registry.Definition{Tenant: evalTenant, Model: *modelID, Price: p,
+			MaxTokens: 8192, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY",
+			MaxCost: int64(*maxCost * 1_000_000), History: 20}, *jobs, skill, stderr)
+	}
 	var judge *eval.Judge
 	if *judgeModel != "" {
 		p, err := parsePrice(*judgePrice)
@@ -91,14 +214,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 
 	var results []eval.Result
 	for _, arg := range fs.Args() {
-		name, id, ok := strings.Cut(arg, "=")
-		s, known := scenarios[name]
-		if !ok || !known || id == "" {
-			return fmt.Errorf("%q: want case=session, with a case of refunds or chargebacks", arg)
-		}
-		r, err := src.Read(ctx, id)
-		if err != nil {
-			return err
+		var r eval.Run
+		var s cases.Scenario
+		if rt != nil {
+			known := false
+			if s, known = scenarios[arg]; !known {
+				return fmt.Errorf("%q: want a case, refunds or chargebacks", arg)
+			}
+			var err error
+			if r, err = rt.Run(ctx, s.WithIDs(ids)); err != nil {
+				return err
+			}
+		} else {
+			name, id, ok := strings.Cut(arg, "=")
+			known := false
+			s, known = scenarios[name]
+			if !ok || !known || id == "" {
+				return fmt.Errorf("%q: want case=session, with a case of refunds or chargebacks", arg)
+			}
+			var err error
+			if r, err = src.Read(ctx, id); err != nil {
+				return err
+			}
 		}
 		res, err := s.WithIDs(ids).Case().Grade(ctx, r, judge)
 		if err != nil {

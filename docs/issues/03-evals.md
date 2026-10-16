@@ -1,7 +1,7 @@
 # Evals: what #3 delivers
 
-**Issue:** [#3](https://github.com/kiff/agents/issues/3) · **Status:** partly delivered. The harness, both cases and the baseline reader are built. The baseline numbers, the nightly run and grading this runtime are still to do.
-**PRs:** #8, #37 (under [#12](12-runs.md)); open: #9 (nightly workflow, no review yet), #10 (Stripe seed, draft)
+**Issue:** [#3](https://github.com/kiff/agents/issues/3) · **Status:** partly delivered. The harness, both cases and the baseline reader are built. `cmd/eval -run` runs each case on this runtime and grades it. The baseline numbers and the nightly run are still to do.
+**PRs:** #8, #37 (under [#12](12-runs.md)), #PR (`cmd/eval -run`); open: #9 (nightly workflow, no review yet), #10 (Stripe seed, draft)
 
 ## What it's for
 
@@ -58,6 +58,37 @@ eval [-judge-model id -judge-price in,out] [-ids seed.json] [-baseline base.json
 that scores lower than the baseline exits non-zero. Without `-judge-model`,
 the judge check is skipped and the output says so.
 
+**On this runtime.** With `-run`, each argument is a case. eval runs it
+first, as one `eval` run of an agent built from the case's job, then grades
+it:
+
+```sh
+KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… eval -run \
+  -model claude-opus-5-5 -price 5000000,25000000 \
+  -jobs ./jobs -skill ./kiff-skill.md -ids seed.json \
+  -judge-model claude-opus-5-5 -judge-price 5000000,25000000 \
+  refunds chargebacks
+```
+
+- The agent's instructions are `<jobs>/<job>.md` (`refunds.md`,
+  `chargebacks.md`: tafs's job texts) plus `-skill`. Its tools come through
+  KIFF's gateway (`-gateway`, default `https://mcp.kiff.dev/mcp`) with
+  `KIFF_AGENT_KEY`, the key whose Card has the case's limits.
+- The run's input is the case's opening instruction. Its keep rules are
+  `eval.Policy`, whatever else is set, so the checks have the tool calls and
+  results to read. Each run is capped at `-max-cost` dollars (default 2).
+- Runs and sessions live in memory for the command. A run KIFF holds a call
+  of stops PAUSED, and is graded there: the "stops when KIFF holds" check
+  reads what it did up to the hold.
+- A run that fails is graded as it stopped, and the failure is printed.
+
+```text
+refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
+  pass  does the job
+  pass  writes only through KIFF
+  …
+```
+
 ## What holds, and the test that guards it
 
 | Rule | Test |
@@ -72,6 +103,9 @@ the judge check is skipped and the output says so.
 | A run of this runtime loads with only its own events and its status | `TestARunLoadsWithWhatItDid` |
 | Under the default keep rules there'd be nothing to grade | `TestTheDefaultPolicyLeavesNothingToGrade` |
 | Another tenant's run doesn't load | `TestLoadIsTheTenants` |
+| `-run` runs the case as an eval run of its job's agent (job text + skill, the case's input, KIFF's key and gateway), then grades it | `cmd/eval` `TestRunACaseOnThisRuntime` |
+| A `-run` run keeps its tool calls and results, whatever keep rules are set | `TestARuntimeRunKeepsWhatTheChecksRead` |
+| `-run` needs `KIFF_AGENT_KEY`, `-model`, `-price`, `-jobs`, case names, and each job's file | `TestRunNeeds` |
 
 The case tests are the **smoke cases**. They run in the Go workflow on every
 PR.
@@ -83,12 +117,11 @@ PR.
   test mode, seeded as the cases describe. #10 seeds Chargebacks; the run
   itself needs a KIFF agent key whose Card has the case's limits, set up on
   the tafs side ([kiff/tafs#22](https://github.com/kiff/tafs/issues/22)).
+  With those, `eval -run refunds chargebacks` gives this runtime's numbers
+  next to the Managed Agents baseline.
 - **The nightly run.** #9 adds `.github/workflows/eval.yml` (nightly and by
   hand, never on PRs, so the key never meets PR code). It's waiting for
   review.
-- **Grading this runtime from `cmd/eval`.** `cmd/eval` still reads Managed
-  Agents sessions. The pieces exist: start each case as a `run.ByEval` run
-  through `runner.Runner` with `eval.Policy`, then `Load` and `Grade`.
 - **Stored eval runs**, `/evals` and the console's Evals page come with
   [#14](14-console.md).
 
