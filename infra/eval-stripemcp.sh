@@ -48,14 +48,19 @@ fi
 aws iam put-role-policy --role-name "$ROLE" --policy-name logs --policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["logs:CreateLogStream","logs:PutLogEvents"],"Resource":"arn:aws:logs:'"$REGION:$ACCOUNT"':log-group:/aws/lambda/'"$FN"':*"}]}'
 
-ENV=$(printf '{"Variables":{"STRIPE_API_KEY":"%s","STRIPEMCP_TOKEN":"%s"}}' "$STRIPE_API_KEY" "$STRIPEMCP_TOKEN")
+# The secrets go to the AWS CLI in a private file, never on its command
+# line, where any process could read them. Both are plain tokens (checked
+# above and here), so they need no JSON escaping.
+case "$STRIPE_API_KEY$STRIPEMCP_TOKEN" in *[!A-Za-z0-9_]*) echo "the key and token must be letters, digits and underscores" >&2; exit 1 ;; esac
+ENV="$BUILD/env.json"
+(umask 077; printf '{"Variables":{"STRIPE_API_KEY":"%s","STRIPEMCP_TOKEN":"%s"}}' "$STRIPE_API_KEY" "$STRIPEMCP_TOKEN" > "$ENV")
 if ! aws lambda get-function --function-name "$FN" >/dev/null 2>&1; then
   aws lambda create-function --function-name "$FN" --runtime provided.al2023 --architectures arm64 --handler bootstrap \
     --role "arn:aws:iam::$ACCOUNT:role/$ROLE" --zip-file "fileb://$BUILD/stripemcp.zip" \
-    --timeout 30 --memory-size 256 --environment "$ENV" >/dev/null
+    --timeout 30 --memory-size 256 --environment "file://$ENV" >/dev/null
   say "created function $FN"
 else
-  aws lambda update-function-configuration --function-name "$FN" --timeout 30 --memory-size 256 --environment "$ENV" >/dev/null
+  aws lambda update-function-configuration --function-name "$FN" --timeout 30 --memory-size 256 --environment "file://$ENV" >/dev/null
   aws lambda wait function-updated-v2 --function-name "$FN"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$BUILD/stripemcp.zip" >/dev/null
 fi

@@ -232,3 +232,34 @@ func TestKeys(t *testing.T) {
 		t.Fatalf("an error with the key: %s", text)
 	}
 }
+
+// submit left out is Stripe's default, which submits: the form leaves it
+// out too, so evidence the case grades as sent is sent. false saves a draft.
+func TestSubmitDefaultsToStripes(t *testing.T) {
+	for name, c := range map[string]struct {
+		submit any
+		want   string // the form's submit field, "-" for none
+	}{
+		"left out": {nil, "-"},
+		"true":     {true, "true"},
+		"false":    {false, "false"},
+	} {
+		f := newStripe(t)
+		srv := server(t, f)
+		args := map[string]any{"dispute": "du_1", "amount": 12000, "evidence": map[string]string{"uncategorized_text": "Signed."}}
+		if c.submit != nil {
+			args["submit"] = c.submit
+		}
+		if text, isErr := call(t, srv, "update_dispute", args); isErr || len(f.writes) != 1 {
+			t.Fatalf("%s: %s", name, text)
+		}
+		form, _ := url.ParseQuery(strings.SplitN(f.writes[0], " ", 3)[2])
+		got := "-"
+		if form.Has("submit") {
+			got = form.Get("submit")
+		}
+		if got != c.want {
+			t.Errorf("%s: submit %q, want %q", name, got, c.want)
+		}
+	}
+}

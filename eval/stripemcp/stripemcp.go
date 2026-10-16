@@ -173,7 +173,7 @@ func toolList() []tool {
 		{Name: "retrieve_dispute", Description: "One dispute in full: its evidence so far, and the disputed payment with its metadata (the order, delivery proof, the customer's messages).",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"dispute":{"type":"string","description":"the dispute id, du_…"}},"required":["dispute"]}`),
 			Annotations: map[string]any{"readOnlyHint": true}},
-		{Name: "update_dispute", Description: "Add evidence to a dispute, and submit it when submit is true. amount is the dispute's amount in cents, as list_disputes shows it; a call with another amount is refused.",
+		{Name: "update_dispute", Description: "Add evidence to a dispute. It is submitted to the bank unless submit is false (then it is saved as a draft). amount is the dispute's amount in cents, as list_disputes shows it; a call with another amount is refused.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"dispute":{"type":"string"},"amount":{"type":"integer","description":"the dispute's amount, in cents"},"evidence":{"type":"object","properties":{` + strings.Join(evidence, ",") + `},"additionalProperties":false},"submit":{"type":"boolean"}},"required":["dispute","amount","evidence"]}`)},
 		{Name: "close_dispute", Description: "Accept a dispute: the customer keeps the money, and it can't be fought any more. amount is the dispute's amount in cents; a call with another amount is refused.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"dispute":{"type":"string"},"amount":{"type":"integer","description":"the dispute's amount, in cents"}},"required":["dispute","amount"]}`)},
@@ -188,7 +188,7 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (s
 		Dispute  string            `json:"dispute"`
 		Amount   *int64            `json:"amount"`
 		Evidence map[string]string `json:"evidence"`
-		Submit   bool              `json:"submit"`
+		Submit   *bool             `json:"submit"` // omitted: Stripe's default, which submits
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &a); err != nil {
@@ -219,7 +219,9 @@ func (s *Server) call(ctx context.Context, name string, args json.RawMessage) (s
 			}
 			form.Set("evidence["+k+"]", v)
 		}
-		form.Set("submit", strconv.FormatBool(a.Submit))
+		if a.Submit != nil { // left out, Stripe submits: as the cases grade it
+			form.Set("submit", strconv.FormatBool(*a.Submit))
+		}
 		var out map[string]any
 		if err := s.stripe(ctx, http.MethodPost, "/v1/disputes/"+d.ID, form, &out); err != nil {
 			return "", err

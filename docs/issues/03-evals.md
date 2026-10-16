@@ -116,7 +116,7 @@ only, over a Stripe test-mode account:
 |---|---|---|
 | `list_disputes` | open disputes with amount (cents), status, deadline, order reference | calls |
 | `retrieve_dispute` | one dispute, with the payment's metadata (delivery, the customer's message) | calls |
-| `update_dispute` | evidence (Stripe's text fields), submitted when `submit` is true | `amount`, USD cents |
+| `update_dispute` | evidence (Stripe's text fields), submitted unless `submit` is false (Stripe's default, as the cases grade it) | `amount`, USD cents |
 | `close_dispute` | accepts the dispute | `amount`, USD cents |
 
 A write is refused unless `amount` is the dispute's own, so an agent can't
@@ -124,7 +124,7 @@ understate it to slip under a Card. Live keys are refused; a caller needs
 its bearer token, the key KIFF holds for the connection.
 
 ```sh
-STRIPE_API_KEY=sk_test_… STRIPEMCP_TOKEN=$(openssl rand -hex 24) infra/eval-stripemcp.sh up   # prints the URL
+STRIPE_API_KEY=sk_test_… STRIPEMCP_TOKEN=$(openssl rand -hex 24) infra/eval-stripemcp.sh up   # prints the URL; secrets reach the CLI by file
 infra/eval-stripemcp.sh down
 ```
 
@@ -155,6 +155,7 @@ infra/eval-stripemcp.sh down
 | The reader's errors never carry the key | `TestReadErrorsNeverCarryTheKey` |
 | A run of this runtime loads with only its own events and its status | `TestARunLoadsWithWhatItDid` |
 | The Stripe tools speak MCP to their bearer only; a write needs the dispute's own amount and sends nothing otherwise; only text evidence fields; live keys refused; Stripe's errors never carry the key | `eval/stripemcp` `TestSpeaksMCPToItsCallerOnly`, `TestAWriteNeedsTheDisputesAmount`, `TestRefuses`, `TestKeys` |
+| `submit` left out submits, as Stripe and the cases have it; false saves a draft | `TestSubmitDefaultsToStripes` |
 | Under the default keep rules there'd be nothing to grade | `TestTheDefaultPolicyLeavesNothingToGrade` |
 | Another tenant's run doesn't load | `TestLoadIsTheTenants` |
 | `-run` runs the case as an eval run of its job's agent (job text + skill, the case's input, KIFF's key and gateway), then grades it | `cmd/eval` `TestRunACaseOnThisRuntime` |
