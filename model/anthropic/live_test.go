@@ -103,7 +103,8 @@ func TestLiveTurn(t *testing.T) {
 // TestLiveCache checks the cache on the real API: the first turn writes the
 // prompt, tools and system prompt, the second, which extends the
 // conversation, reads all of it back. It runs as TestLiveTurn does. The
-// system prompt is long enough to cache on every current model (#77).
+// system prompt is long enough to cache on every current model. It also
+// reads the model's context window (#77).
 func TestLiveCache(t *testing.T) {
 	modelID := os.Getenv("AGENTS_LIVE_MODEL")
 	if os.Getenv("ANTHROPIC_API_KEY") == "" || modelID == "" {
@@ -143,5 +144,11 @@ func TestLiveCache(t *testing.T) {
 	written := first.Usage.CacheRead + first.Usage.CacheWrite
 	if written < 2000 || second.Usage.CacheRead < written {
 		t.Fatalf("the second turn read %d cached tokens; the first cached %d", second.Usage.CacheRead, written)
+	}
+	// The report's room comes from the model's window.
+	if w, err := m.Window(ctx, modelID); err != nil || w < 100_000 {
+		t.Fatalf("window %d, %v", w, err)
+	} else {
+		t.Logf("window %d tokens", w)
 	}
 }

@@ -318,6 +318,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		results = append(results, res)
 		fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
 			res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), res.Session)
+		if cx := res.Context; cx.Turns > 0 {
+			room := "unknown"
+			if cx.LeastRoomTokens >= 0 {
+				room = fmt.Sprintf("%d", cx.LeastRoomTokens)
+			}
+			fmt.Fprintf(stderr, "  context: %d turns, %d input tokens, %.0f%% from the cache, peak turn %d, least room %s\n",
+				cx.Turns, cx.PromptTokens, 100*cx.CacheShare, cx.PeakPromptTokens, room)
+		}
 		for _, c := range res.Checks {
 			mark := "pass"
 			switch {

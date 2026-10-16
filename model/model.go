@@ -143,3 +143,37 @@ func (p Price) Cost(u Usage) int64 {
 	total := u.InputTokens*p.Input + u.OutputTokens*p.Output + u.CacheRead*p.CacheRead + u.CacheWrite*p.CacheWrite
 	return (total + 999_999) / 1_000_000
 }
+
+// Size is how big each part of a Request is, in bytes of what the model
+// reads: a turn's tokens follow its bytes closely enough to say which part
+// takes the room. ToolResults is the part of Messages that tool results take.
+type Size struct {
+	System      int
+	Tools       int
+	Messages    int
+	ToolResults int
+}
+
+// Size measures r.
+func (r Request) Size() Size {
+	s := Size{System: len(r.System)}
+	for _, t := range r.Tools {
+		s.Tools += len(t.Name) + len(t.Description) + len(t.InputSchema)
+	}
+	for _, m := range r.Messages {
+		for _, b := range m.Blocks {
+			n := len(b.Text) + len(b.Tool) + len(b.Input) + len(b.Result) + len(b.Data)
+			s.Messages += n
+			if b.Kind == ToolResult {
+				s.ToolResults += n
+			}
+		}
+	}
+	return s
+}
+
+// Windower is a Model that knows a model's context window: the most input
+// tokens a turn may have.
+type Windower interface {
+	Window(ctx context.Context, model string) (int64, error)
+}

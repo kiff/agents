@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -15,7 +16,8 @@ import (
 
 // Model runs turns on the Claude API.
 type Model struct {
-	client sdk.Client
+	client  sdk.Client
+	windows sync.Map // model id → its window
 }
 
 // New returns a Model. Without options the SDK reads ANTHROPIC_API_KEY from
@@ -51,6 +53,32 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 		return model.Reply{}, fmt.Errorf("anthropic: %w", err)
 	}
 	return fromMessage(msg), nil
+}
+
+// Window is the model's context window, from the Models API. It asks once
+// per model id, without retries, and remembers a failure too: the window is
+// for the report, never worth slowing a turn for.
+func (m *Model) Window(ctx context.Context, id string) (int64, error) {
+	if w, ok := m.windows.Load(id); ok {
+		return w.(window).tokens, w.(window).err
+	}
+	var w window
+	info, err := m.client.Models.Get(ctx, id, sdk.ModelGetParams{}, option.WithMaxRetries(0))
+	switch {
+	case err != nil:
+		w.err = fmt.Errorf("anthropic: %w", err)
+	case info.MaxInputTokens <= 0:
+		w.err = fmt.Errorf("anthropic: model %s has no context window", id)
+	default:
+		w.tokens = info.MaxInputTokens
+	}
+	m.windows.Store(id, w)
+	return w.tokens, w.err
+}
+
+type window struct {
+	tokens int64
+	err    error
 }
 
 func toParams(req model.Request) (sdk.MessageNewParams, error) {
