@@ -20,6 +20,8 @@ type fakeStripe struct {
 	disputes []map[string]string // id, status, metadata[eval_seed], payment_intent
 	updates  map[string]map[string]string
 	closed   []string
+	failTag  bool                         // tagging a dispute answers 500
+	pis      map[string]map[string]string // a payment's metadata[customer] and metadata[eval_seed]
 }
 
 func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +47,7 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := fmt.Sprintf("pi_%d", f.n)
+		f.pis[id] = map[string]string{"customer": r.Form.Get("metadata[customer]"), "tag": r.Form.Get("metadata[eval_seed]")}
 		f.disputes = append(f.disputes, map[string]string{"id": fmt.Sprintf("dp_%d", f.n), "status": "needs_response",
 			"payment_intent": id, "pending": "1", "tag": ""})
 		fmt.Fprintf(w, `{"id": %q, "latest_charge": "ch_%d"}`, id, f.n)
@@ -61,7 +64,11 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			out = append(out, fmt.Sprintf(`{"id": %q, "status": %q, "metadata": {"eval_seed": %q}}`, d["id"], d["status"], d["tag"]))
+			paid := fmt.Sprintf("%q", d["payment_intent"])
+			if r.Form.Get("expand[]") == "data.payment_intent" {
+				paid = fmt.Sprintf(`{"id": %q, "metadata": {"eval_seed": %q}}`, d["payment_intent"], f.pis[d["payment_intent"]]["tag"])
+			}
+			out = append(out, fmt.Sprintf(`{"id": %q, "status": %q, "metadata": {"eval_seed": %q}, "payment_intent": %s}`, d["id"], d["status"], d["tag"], paid))
 		}
 		fmt.Fprintf(w, `{"data": [%s], "has_more": false}`, strings.Join(out, ","))
 	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/close"):
@@ -69,6 +76,11 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{}`)
 	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/disputes/"):
 		id := strings.TrimPrefix(r.URL.Path, "/v1/disputes/")
+		if f.failTag {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error": {"message": "try again"}}`)
+			return
+		}
 		f.updates[id] = map[string]string{"submit": r.Form.Get("submit"), "order": r.Form.Get("metadata[order]")}
 		for _, d := range f.disputes {
 			if d["id"] == id {
@@ -83,7 +95,7 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func client(t *testing.T, key string) (*Client, *fakeStripe) {
 	t.Helper()
-	f := &fakeStripe{looks: map[string]int{}, updates: map[string]map[string]string{}}
+	f := &fakeStripe{looks: map[string]int{}, updates: map[string]map[string]string{}, pis: map[string]map[string]string{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	c, err := New(srv.URL, key, nil)
@@ -118,6 +130,9 @@ func TestDisputes(t *testing.T) {
 			!strings.HasPrefix(got[2], "ch_") || !strings.HasPrefix(got[3], "dp_") {
 			t.Errorf("%s: ids %v", it.Ref, got)
 		}
+		if c := f.pis[got[1]]["customer"]; c != it.Customer {
+			t.Errorf("%s: the payment names customer %q, want %q: the eval's tools read the payment", it.Ref, c, it.Customer)
+		}
 		u := f.updates[got[3]]
 		if u["submit"] != "false" || u["order"] != it.Ref {
 			t.Errorf("%s: the dispute update was %v; it must tag it without submitting", it.Ref, u)
@@ -135,6 +150,23 @@ func TestDisputes(t *testing.T) {
 		if id == "dp_other" || id == "dp_done" {
 			t.Errorf("closed %s", id)
 		}
+	}
+}
+
+// A seed that fails after Stripe opened a dispute, before tagging it,
+// leaves nothing the next seed can't close: it knows the dispute by its
+// payment's tag.
+func TestCloseFindsADisputeTheSeedNeverTagged(t *testing.T) {
+	c, f := client(t, "sk_test_ok")
+	f.failTag = true
+	if _, err := c.Disputes(context.Background(), "chargebacks", Chargebacks[:1]); err == nil {
+		t.Fatal("the seed went on after tagging failed")
+	}
+	f.failTag = false
+	f.disputes = append(f.disputes, map[string]string{"id": "dp_theirs", "status": "needs_response", "payment_intent": "pi_theirs", "tag": ""})
+	n, err := c.Close(context.Background(), "chargebacks")
+	if err != nil || n != 1 || len(f.closed) != 1 || f.closed[0] == "dp_theirs" {
+		t.Fatalf("closed %d (%v), %v", n, f.closed, err)
 	}
 }
 

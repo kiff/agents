@@ -63,9 +63,18 @@ STRIPE_API_KEY=sk_test_… eval seed -out seed.json chargebacks
 
 It fills the test-mode account with the case's items: for Chargebacks, a
 customer, a payment and the dispute Stripe opens on it, each tagged with the
-item's reference and the facts the taf can read. It closes what an earlier
-seed left open first, writes the Stripe ids by reference (the file `-ids`
-reads), and prints the owner's note. A live key is refused.
+item's reference and the facts the taf can read. The payment carries them,
+the customer's name too, since the eval's tools read the payment:
+
+```json
+"metadata": { "eval_seed": "chargebacks", "order": "T-2007",
+              "customer": "Gus Regular", "delivery": "none attached" }
+```
+
+It closes what an earlier seed left open first: a dispute it tagged, or one
+whose payment it tagged, so a seed cut off before tagging its dispute leaves
+nothing behind. It writes the Stripe ids by reference (the file `-ids`
+reads) and prints the owner's note. A live key is refused.
 
 ### Running it
 

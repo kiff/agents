@@ -140,6 +140,25 @@ type object struct {
 	Status   string            `json:"status"`
 	Metadata map[string]string `json:"metadata"`
 	Charge   string            `json:"charge"`
+	// PaymentIntent is the dispute's payment: its id, or the payment itself
+	// when the request expanded it.
+	PaymentIntent json.RawMessage `json:"payment_intent"`
+}
+
+// seededBy is the seed d came from: its own tag, or, for a dispute opened
+// before the seed could tag it, its payment's (Stripe copies no metadata
+// from a payment to its dispute).
+func (d object) seededBy() string {
+	if t := d.Metadata[Tag]; t != "" {
+		return t
+	}
+	var pi struct {
+		Metadata map[string]string `json:"metadata"`
+	}
+	if json.Unmarshal(d.PaymentIntent, &pi) != nil {
+		return ""
+	}
+	return pi.Metadata[Tag]
 }
 
 type list struct {
@@ -148,11 +167,13 @@ type list struct {
 }
 
 // Close accepts every dispute an earlier seed of this case left needing a
-// response, and returns how many.
+// response, and returns how many. It knows a seed's dispute by its tag, or
+// by its payment's, so a seed interrupted before it tagged a dispute
+// leaves nothing open.
 func (c *Client) Close(ctx context.Context, name string) (int, error) {
 	closed, after := 0, ""
 	for {
-		q := url.Values{"limit": {"100"}}
+		q := url.Values{"limit": {"100"}, "expand[]": {"data.payment_intent"}}
 		if after != "" {
 			q.Set("starting_after", after)
 		}
@@ -161,7 +182,7 @@ func (c *Client) Close(ctx context.Context, name string) (int, error) {
 			return closed, err
 		}
 		for _, d := range l.Data {
-			if d.Metadata[Tag] != name || (d.Status != "needs_response" && d.Status != "warning_needs_response") {
+			if d.seededBy() != name || (d.Status != "needs_response" && d.Status != "warning_needs_response") {
 				continue
 			}
 			if err := c.do(ctx, http.MethodPost, "/v1/disputes/"+url.PathEscape(d.ID)+"/close", nil, nil); err != nil {
@@ -177,7 +198,9 @@ func (c *Client) Close(ctx context.Context, name string) (int, error) {
 }
 
 // Disputes makes each item's customer, payment and dispute, and returns the
-// ids by reference: customer, payment intent, charge, dispute.
+// ids by reference: customer, payment intent, charge, dispute. The payment
+// names its customer too: the eval's tools read the payment, not the
+// customer.
 func (c *Client) Disputes(ctx context.Context, name string, items []Item) (map[string][]string, error) {
 	ids := map[string][]string{}
 	for _, it := range items {
@@ -201,6 +224,7 @@ func (c *Client) Disputes(ctx context.Context, name string, items []Item) (map[s
 			"payment_method_types[]": {"card"},
 			"confirm":                {"true"},
 			"description":            {"Order " + it.Ref},
+			"metadata[customer]":     {it.Customer},
 		})
 		for k, v := range it.Facts {
 			pi.Set("metadata["+k+"]", v)
