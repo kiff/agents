@@ -79,8 +79,26 @@ func dueKey(r run.Run) map[string]types.AttributeValue {
 	return pkey(pk, dueSK(r))
 }
 
-func runPK(tenant, id string) string         { return key("R", tenant, id) }
-func runListPK(tenant, agent string) string  { return key("L", tenant, agent) }
+func runPK(tenant, id string) string        { return key("R", tenant, id) }
+func runListPK(tenant, agent string) string { return key("L", tenant, agent) }
+
+// Operators' lists across tenants: every run under allPK, and PAUSED runs
+// under pausedListPK while they are paused. Their sort keys carry the tenant.
+const (
+	allPK        = "A"
+	pausedListPK = "PA"
+)
+
+func allSK(r run.Run) string {
+	return fmt.Sprintf("%020d|%s", r.Created.UnixNano(), key("", r.Tenant, r.ID))
+}
+
+// pausedItem is r's entry in the paused list.
+func pausedItem(r run.Run) map[string]types.AttributeValue {
+	item := pkey(pausedListPK, allSK(r))
+	item["tenant"], item["id"] = s(r.Tenant), s(r.ID)
+	return item
+}
 func holdPK(tenant, exception string) string { return key("H", tenant, exception) }
 
 // holdItems points each of exs at r, with t. A hold item lives as long as
@@ -187,10 +205,10 @@ func (rs *Runs) partItem(r run.Run, i int, part []byte, t types.AttributeValue) 
 	return withTTL(item, t)
 }
 
-// lists returns the keys of the lists r is in: its agent's, and its
-// source's if it has one.
+// lists returns the keys of the lists r is in: its agent's, the operators'
+// list of all runs, and its source's if it has one.
 func lists(r run.Run) []map[string]types.AttributeValue {
-	out := []map[string]types.AttributeValue{pkey(runListPK(r.Tenant, r.Agent), runListSK(r))}
+	out := []map[string]types.AttributeValue{pkey(runListPK(r.Tenant, r.Agent), runListSK(r)), pkey(allPK, allSK(r))}
 	if r.Source != "" {
 		out = append(out, pkey(sourcePK(r.Tenant, r.Trigger, r.Source), runListSK(r)))
 	}
@@ -201,7 +219,7 @@ func lists(r run.Run) []map[string]types.AttributeValue {
 func (rs *Runs) listItems(r run.Run, t types.AttributeValue) []types.TransactWriteItem {
 	var out []types.TransactWriteItem
 	for _, item := range lists(r) {
-		item["id"] = s(r.ID)
+		item["tenant"], item["id"] = s(r.Tenant), s(r.ID)
 		out = append(out, rs.put(withTTL(item, t), ""))
 	}
 	return out
@@ -367,6 +385,12 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 		holds = slices.DeleteFunc(holds, func(ex string) bool { return slices.Contains(had, ex) })
 	}
 	items = append(items, rs.holdItems(next, holds, now.ttl)...)
+	switch {
+	case prev.Status != run.Paused && next.Status == run.Paused:
+		items = append(items, rs.put(pausedItem(next), ""))
+	case prev.Status == run.Paused && next.Status != run.Paused:
+		items = append(items, rs.del(pkey(pausedListPK, allSK(prev))))
+	}
 	if !prev.Due().Equal(next.Due()) || (prev.Status == run.Paused) != (next.Status == run.Paused) {
 		if !prev.Due().IsZero() {
 			items = append(items, rs.del(dueKey(prev)))
@@ -464,7 +488,18 @@ func (rs *Runs) ListSource(ctx context.Context, tenant string, trigger run.Trigg
 	return rs.list(ctx, tenant, sourcePK(tenant, trigger, source), limit)
 }
 
-// list reads the tenant's runs in a list partition, newest first.
+// ListAll leaves out the runs' paused turns: Get has them.
+func (rs *Runs) ListAll(ctx context.Context, limit int) ([]run.Run, error) {
+	return rs.list(ctx, "", allPK, limit)
+}
+
+// ListPaused leaves out the runs' paused turns: Get has them.
+func (rs *Runs) ListPaused(ctx context.Context, limit int) ([]run.Run, error) {
+	return rs.list(ctx, "", pausedListPK, limit)
+}
+
+// list reads runs in a list partition, newest first: the tenant's, or with
+// no tenant, an operators' list across tenants.
 func (rs *Runs) list(ctx context.Context, tenant, pk string, limit int) ([]run.Run, error) {
 	var out []run.Run
 	in := &ddb.QueryInput{
@@ -478,9 +513,16 @@ func (rs *Runs) list(ctx context.Context, tenant, pk string, limit int) ([]run.R
 	err := rs.query(ctx, in, func(items []map[string]types.AttributeValue) (bool, error) {
 		keys := make([][2]string, len(items))
 		for i, item := range items {
-			keys[i] = [2]string{tenant, getS(item, "id")}
+			t := tenant
+			if t == "" { // an operators' list: the item names its tenant
+				t = getS(item, "tenant")
+			}
+			keys[i] = [2]string{t, getS(item, "id")}
 		}
 		runs, err := rs.runs(ctx, keys)
+		if pk == pausedListPK {
+			runs = slices.DeleteFunc(runs, func(r run.Run) bool { return r.Status != run.Paused })
+		}
 		out = append(out, runs...)
 		return limit > 0 && len(out) >= limit, err
 	})
@@ -593,6 +635,9 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 	}
 	if !r.Due().IsZero() {
 		items = append(items, rs.del(dueKey(r)))
+	}
+	if r.Status == run.Paused {
+		items = append(items, rs.del(pkey(pausedListPK, allSK(r))))
 	}
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	return err

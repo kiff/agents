@@ -327,3 +327,54 @@ func TestHoldItems(t *testing.T) {
 		t.Fatalf("%d hold items after deleting a run paused twice, want the 3 of the ended runs", n)
 	}
 }
+
+// A run is in the operators' paused list only while it is paused: its entry
+// goes when it is claimed again, and when it is deleted. An entry left behind
+// (written outside a run's own write) never lists a run that isn't paused.
+func TestPausedListItems(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	at := now()
+	rs := dynamodb.NewRunsAt(db, name, func() time.Time { return at })
+	pause := func() run.Run {
+		t.Helper()
+		r := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+		if err := rs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		r, err := run.Claim(ctx, rs, "t1", r.ID, "i1", at.Add(15*time.Minute), at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err = run.Save(ctx, rs, r, at, func(n *run.Run) error { n.Status = run.Paused; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r := pause()
+	if by := scan(t, db, name); len(by["P"]) != 1 || len(by["A"]) != 1 {
+		t.Fatalf("a paused run: %d paused entries, %d in the list of all; want 1 and 1", len(by["P"]), len(by["A"]))
+	}
+	item := scan(t, db, name)["P"][0]
+	if _, err := run.Claim(ctx, rs, "t1", r.ID, "i2", at.Add(15*time.Minute), at); err != nil {
+		t.Fatal(err)
+	}
+	if by := scan(t, db, name); len(by["P"]) != 0 {
+		t.Fatalf("claimed again: %d paused entries, want none", len(by["P"]))
+	}
+	other := pause()
+	if err := rs.Delete(ctx, "t1", other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if by := scan(t, db, name); len(by["P"]) != 0 {
+		t.Fatalf("deleted while paused: %d paused entries, want none", len(by["P"]))
+	}
+	// An entry left behind for r, which is now RUNNING: not listed.
+	if _, err := db.PutItem(ctx, &ddb.PutItemInput{TableName: &name, Item: item}); err != nil {
+		t.Fatal(err)
+	}
+	if paused, err := rs.ListPaused(ctx, 0); err != nil || len(paused) != 0 {
+		t.Fatalf("listed %d paused runs from an entry left behind, err = %v", len(paused), err)
+	}
+}
