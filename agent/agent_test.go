@@ -168,9 +168,13 @@ func both() model.Reply {
 	}, Stop: model.CallTools, Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}}
 }
 
+// holdExpires is when heldRefund's hold stops waiting.
+var holdExpires = time.Date(2026, 10, 16, 9, 10, 0, 0, time.UTC)
+
 func heldRefund() *fakeTool {
 	return &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true,
-		result: tool.Result{Text: "Held for the owner.", IsError: true, State: tool.StateHeld}}
+		result: tool.Result{Text: "Held for the owner.", IsError: true, State: tool.StateHeld,
+			Hold: &tool.Hold{Operation: "op-refund-42", Exception: "exc_123", Expires: holdExpires}}}
 }
 
 func lookupTool() *fakeTool {
@@ -199,7 +203,8 @@ func TestAHeldCallPausesTheRun(t *testing.T) {
 	if len(out.Requirements) != 1 {
 		t.Fatalf("requirements = %+v", out.Requirements)
 	}
-	if q := out.Requirements[0]; q.CallID != "c2" || q.Tool != "stripe_refund" || string(q.Input) != `{"charge":"ch_big"}` {
+	if q := out.Requirements[0]; q.CallID != "c2" || q.Tool != "stripe_refund" || string(q.Input) != `{"charge":"ch_big"}` ||
+		q.Operation != "op-refund-42" || q.Exception != "exc_123" || !q.Expires.Equal(holdExpires) {
 		t.Fatalf("requirement = %+v", q)
 	}
 	if out.Turn == nil || !reflect.DeepEqual(out.Turn.Reply, model.Message{Role: model.Assistant, Blocks: both().Blocks}) {

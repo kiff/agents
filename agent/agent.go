@@ -340,7 +340,11 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 				input = b.Input
 			}
 		}
-		out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: input})
+		q := run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: input}
+		if r.Hold != nil {
+			q.Operation, q.Exception, q.Expires = r.Hold.Operation, r.Hold.Exception, r.Hold.Expires.UTC()
+		}
+		out.Requirements = append(out.Requirements, q)
 	}
 	out.Stop, out.Turn = Paused, &turn
 	msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})

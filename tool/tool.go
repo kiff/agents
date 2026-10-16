@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/kiff/agents/model"
 )
@@ -39,6 +40,25 @@ type Result struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"is_error,omitempty"`
 	State   string `json:"state,omitempty"`
+	// Hold names a held call in KIFF: how to collect its outcome, how its
+	// answer is announced and withdrawn, and when it stops waiting. Set only
+	// when State is StateHeld.
+	Hold *Hold `json:"hold,omitempty"`
+}
+
+// Hold is KIFF's handle on a held call. A field KIFF didn't send, or sent in
+// another shape, is empty: with no Operation the call can't be collected,
+// with no Exception it can't be withdrawn, and with no Expires the
+// requirement resolves only once answered (it fails closed).
+type Hold struct {
+	// Operation is the call's kiff_operation_id: repeating the identical
+	// call with it collects the outcome, once the owner has answered.
+	Operation string `json:"operation"`
+	// Exception is KIFF's ID for the owner's decision: what its
+	// hold_answered alert names, and what withdrawing the call takes.
+	Exception string `json:"exception"`
+	// Expires is when the hold stops waiting. Expiry means refused.
+	Expires time.Time `json:"expires"`
 }
 
 // Held reports whether KIFF holds the call for its owner.

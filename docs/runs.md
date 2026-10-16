@@ -29,8 +29,9 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
       "call_id": "toolu_01",
       "tool": "stripe_refund",
       "input": { "order": 42, "amount": 90000 },
-      "operation": "",
-      "expires": "0001-01-01T00:00:00Z"
+      "operation": "op-refund-42",
+      "exception": "exc_123",
+      "expires": "2026-10-16T09:10:00Z"
     }
   ],
   "paused": {
@@ -48,9 +49,14 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
 }
 ```
 
-- `requirements`: one per call KIFF holds. `operation` and `expires` are KIFF's,
-  filled in from step 4 (#15). Until then a requirement resolves only when
-  answered.
+- `requirements`: one per call KIFF holds, from the gateway's result `_meta`
+  (`dev.kiff/call`):
+  - `operation`: the call's `kiff_operation_id`. Repeating the identical call
+    with it collects the outcome.
+  - `exception`: KIFF's ID for the owner's decision. Its `hold_answered` alert
+    names it, and withdrawing the call takes it.
+  - `expires`: when the hold stops waiting; expiry means refused. A
+    requirement with no expiry resolves only when answered.
 - `paused`: the turn the run paused in (the model's message, and the results of
   the calls KIFF didn't hold). The API never shows it; it exists to continue.
 - `source`: set when a schedule or an event started the run (the schedule's ID).
