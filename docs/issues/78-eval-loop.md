@@ -39,7 +39,8 @@ from kiff/tafs at the commit in `eval/tafs.ref`. Model, price (with cache
 prices), effort, max tokens, max turns, history and instructions (job, notes rules,
 KIFF's skill) come from tafs. The eval keeps its own tenant, gateway, key,
 cost cap and keep rules. A field this runtime doesn't know fails the run,
-as the server would refuse it.
+as the server would refuse it. A definition with `"workspace": true` (#86)
+is refused too: the eval gives no workspace yet.
 
 ```sh
 git clone https://github.com/kiff/tafs && git -C tafs checkout "$(cat eval/tafs.ref)"
