@@ -74,7 +74,8 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 	}}
 	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
 		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
-	return &function{http: s.Handler(), schedules: svc, runner: rn, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, sched, agents, runs
+	return &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn),
+		log: slog.New(slog.NewTextHandler(io.Discard, nil))}, sched, agents, runs
 }
 
 func urlEvent(t *testing.T, method, path, signer, tenant string) json.RawMessage {
@@ -197,6 +198,9 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	}
 	if _, ok := rn.Builder.Model.(*keyedModel); !ok {
 		t.Errorf("the model is %T", rn.Builder.Model)
+	}
+	if f.sweeper == nil {
+		t.Error("no sweep")
 	}
 	if status, body := startRun(t, f, "rae", `not json`); status != 400 {
 		t.Errorf("start route: got %d %s", status, body)

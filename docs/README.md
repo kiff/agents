@@ -17,7 +17,7 @@ the runner, chat and evals) and [registry.md](registry.md).
 | [#2](https://github.com/kiff/agents/issues/2) The model, the loop, KIFF's gateway as tools | — | Closed, delivered | [02-chat-loop.md](issues/02-chat-loop.md) |
 | [#3](https://github.com/kiff/agents/issues/3) Evals | — | Harness and cases built; baseline, nightly run and grading this runtime to do | [03-evals.md](issues/03-evals.md) |
 | [#12](https://github.com/kiff/agents/issues/12) Runs | 1 | Delivered (chat on runs: #34) | [12-runs.md](issues/12-runs.md) |
-| [#13](https://github.com/kiff/agents/issues/13) Server on Lambda | 2 | Routes, auth, streaming, runs and background runs on Lambda built; the sweep and firings not wired; not deployed | [13-server.md](issues/13-server.md) |
+| [#13](https://github.com/kiff/agents/issues/13) Server on Lambda | 2 | Routes, auth, streaming, runs, background runs and the sweep on Lambda built; firings not wired; not deployed | [13-server.md](issues/13-server.md) |
 | [#14](https://github.com/kiff/agents/issues/14) Console | 3 | Not started | [14-console.md](issues/14-console.md) |
 | [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | In progress: hold IDs (#44), Collect (#45); `/kiff/alerts`, withdraw and expiry next | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
 | [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Mostly delivered, the Secrets Manager adapter included; withdrawing holds on removal to do (#15) | [16-registry.md](issues/16-registry.md) |
@@ -27,15 +27,13 @@ the runner, chat and evals) and [registry.md](registry.md).
 ## What blocks what
 
 ```
-#13 the sweep on a schedule ─────────┐
-#13 firings start runs ──► #17       │
-#15 IDs, Collect, /kiff/alerts ──────┴──► paused runs continue and end ──► kiff/tafs#42
+#13 firings start runs ──► #17
+#15 IDs, Collect, /kiff/alerts ──► paused runs continue and end ──► kiff/tafs#42
 #3 grading this runtime: unblocked (runs execute on the runner, locally or on Lambda)
 #14 console: needs a cross-tenant run listing and usage, which no store has yet
 ```
 
-The shortest path to tafs switching over: the sweep in `cmd/lambda` (#13),
-then #15. #14 is independent of that path.
+The shortest path to tafs switching over: #15, then the deploy. #14 is independent of that path.
 
 ## The older issues still open
 
@@ -53,7 +51,7 @@ then #15. #14 is independent of that path.
 - **#12 (Runs).** Its "done when" holds: the transition table is tested
   against both stores, a paused run continues in a fresh `Runner`, and the
   benchmarks exist, and chat on runs merged (#34). **Suggested:** close #12.
-  Continuing in production is #15's, and the sweep's wiring #13's.
+  Continuing in production is #15's.
 - **#16 (Registry)** and **#17 (Schedules)** are built up to what needs
   `cmd/lambda` wiring. Their remaining items move together with #13.
 - **#14 and #15** have no owner.

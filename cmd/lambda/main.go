@@ -15,6 +15,9 @@
 //	AGENTS_SECRETS_PREFIX    the name prefix of the agents' KIFF keys in Secrets Manager (registry/secretsmanager)
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
 //
+// An EventBridge Scheduler schedule sends {"sweep":{}} every minute, through
+// SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end.
+//
 // Lambda sets AWS_LAMBDA_FUNCTION_NAME itself: a background run is an
 // asynchronous invoke of this same function, with a run event (runs.go).
 //
@@ -50,6 +53,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/aws/aws-lambda-go/events"
@@ -90,7 +94,10 @@ type function struct {
 	http      http.Handler
 	schedules *schedule.Service
 	runner    server.Runner
-	log       *slog.Logger
+	sweeper   func(ctx context.Context, now time.Time) (int, error)
+	// now is the clock; nil is time.Now.
+	now func() time.Time
+	log *slog.Logger
 }
 
 // errNoRuns is what a firing gets until runs can start: the firing is
@@ -170,6 +177,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			Gateways: gateways, Log: log}).Handler(),
 		schedules: schedules,
 		runner:    rn,
+		sweeper:   sweeping(runs, rn),
 		log:       log,
 	}, nil
 }
@@ -185,13 +193,15 @@ func split(s string) []string {
 }
 
 // handle runs one invocation: a request through the function URL, a
-// background run, or a schedule's firing. Anything else is refused.
+// background run, the sweep, or a schedule's firing. Anything else is
+// refused.
 func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error) {
 	var shape struct {
 		RequestContext *struct {
 			HTTP *struct{} `json:"http"`
 		} `json:"requestContext"`
 		Run      json.RawMessage `json:"run"`
+		Sweep    json.RawMessage `json:"sweep"`
 		Schedule string          `json:"schedule"`
 		Due      string          `json:"due"`
 	}
@@ -211,6 +221,8 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 			return nil, fmt.Errorf("lambda: a run event that isn't one: %w", err)
 		}
 		return nil, f.execute(ctx, e)
+	case len(shape.Sweep) > 0:
+		return nil, f.sweep(ctx)
 	case shape.Schedule != "" && shape.Due != "":
 		tenant, id, due, err := eventbridge.ParseEvent(raw)
 		if err != nil {
