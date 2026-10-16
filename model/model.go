@@ -76,6 +76,11 @@ type Request struct {
 	// Effort is how hard the model works on the turn ("low" to "max"), for
 	// providers that take it; empty is the provider's default.
 	Effort string
+	// Cache asks the provider to cache the prompt: its stable prefix (tools
+	// and system prompt) and the conversation up to its last message, so the
+	// next turn reads them from the cache. Writing the cache costs more than
+	// plain input, so set it only when the turn's Price counts it.
+	Cache bool
 }
 
 // Efforts are the effort levels a Request may name, lowest first.
@@ -118,13 +123,19 @@ type Model interface {
 }
 
 // Price is what a model charges, in millionths of a US dollar per million
-// tokens of each kind. It's configuration, like the model id.
+// tokens of each kind. It's configuration, like the model id. A Price
+// without both cache prices Caches nothing: Cost would count cache tokens
+// as free.
 type Price struct {
 	Input      int64
 	Output     int64
 	CacheRead  int64
 	CacheWrite int64
 }
+
+// Caches says whether p counts cache tokens, so a turn at p may ask for the
+// cache (Request.Cache).
+func (p Price) Caches() bool { return p.CacheRead > 0 && p.CacheWrite > 0 }
 
 // Cost is what u costs at p, in millionths of a US dollar, rounded up so a
 // cap is never undercounted.

@@ -2,7 +2,7 @@
 // per case.
 //
 //	eval [-judge-model id -judge-price in,out] [-ids seed.json] [-baseline base.json] [-out results.json] case=session...
-//	eval -run -model id -price in,out -jobs dir [-skill file] [-notes dir] [-gateway url] [-max-cost usd] [...] case...
+//	eval -run -model id -price in,out[,cache-read,cache-write] -jobs dir [-skill file] [-notes dir] [-gateway url] [-max-cost usd] [...] case...
 //
 // In the first form, each argument names a case (refunds, chargebacks) and the
 // Managed Agents session of the run to grade, read with ANTHROPIC_API_KEY from
@@ -203,7 +203,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	judgePrice := fs.String("judge-price", "", "the judge's input,output price in millionths of a dollar per million tokens")
 	runHere := fs.Bool("run", false, "run each case on this runtime, then grade it; arguments are case names")
 	modelID := fs.String("model", "", "-run: the agent's model id")
-	price := fs.String("price", "", "-run: the agent's input,output price in millionths of a dollar per million tokens")
+	price := fs.String("price", "", "-run: the agent's input,output[,cache-read,cache-write] price in millionths of a dollar per million tokens; with cache prices, turns use the prompt cache")
 	jobs := fs.String("jobs", "", "-run: the directory of the jobs' instructions, <job>.md each")
 	skillPath := fs.String("skill", "", "-run: a file with KIFF's skill, added to every job's instructions")
 	notesDir := fs.String("notes", "", "-run: the directory of the owner's notes, <case>.md each, put in the agent's memory first")
@@ -263,7 +263,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	if *judgeModel != "" {
 		p, err := parsePrice(*judgePrice)
 		if err != nil {
-			return err
+			return fmt.Errorf("-judge-price: %w", err)
 		}
 		judge = &eval.Judge{Model: newModel(key), ModelID: *judgeModel, Price: p}
 	}
@@ -361,13 +361,23 @@ func readJSON(path string, v any) error {
 }
 
 func parsePrice(s string) (model.Price, error) {
-	in, out, ok := strings.Cut(s, ",")
-	i, err1 := strconv.ParseInt(strings.TrimSpace(in), 10, 64)
-	o, err2 := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if !ok || err1 != nil || err2 != nil || i <= 0 || o <= 0 {
-		return model.Price{}, errors.New("-judge-price is input,output in millionths of a dollar per million tokens, both positive")
+	parts := strings.Split(s, ",")
+	n := make([]int64, len(parts))
+	for i, part := range parts {
+		v, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || v <= 0 {
+			n = nil
+			break
+		}
+		n[i] = v
 	}
-	return model.Price{Input: i, Output: o}, nil
+	switch len(n) {
+	case 2:
+		return model.Price{Input: n[0], Output: n[1]}, nil
+	case 4: // with cache prices, the turns ask for the cache
+		return model.Price{Input: n[0], Output: n[1], CacheRead: n[2], CacheWrite: n[3]}, nil
+	}
+	return model.Price{}, errors.New("a price is input,output[,cache-read,cache-write] in millionths of a dollar per million tokens, all positive")
 }
 
 func dollars(micro int64) float64 { return float64(micro) / 1e6 }

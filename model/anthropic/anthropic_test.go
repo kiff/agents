@@ -264,3 +264,61 @@ func TestARefusalIsItsOwnStop(t *testing.T) {
 		t.Fatalf("stop %q, refusal %q, %v", reply.Stop, reply.Refusal, err)
 	}
 }
+
+// cached lists where body has cache_control: "system", "tool <name>", or
+// "message <i> block <j>".
+func cached(body map[string]any) []string {
+	var at []string
+	marked := func(v any) bool { m, _ := v.(map[string]any); return m["cache_control"] != nil }
+	for _, b := range asList(body["system"]) {
+		if marked(b) {
+			at = append(at, "system")
+		}
+	}
+	for _, tl := range asList(body["tools"]) {
+		if marked(tl) {
+			at = append(at, "tool "+tl.(map[string]any)["name"].(string))
+		}
+	}
+	for i, m := range asList(body["messages"]) {
+		for j, b := range asList(m.(map[string]any)["content"]) {
+			if marked(b) {
+				at = append(at, fmt.Sprintf("message %d block %d", i, j))
+			}
+		}
+	}
+	return at
+}
+
+func asList(v any) []any { l, _ := v.([]any); return l }
+
+func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
+	tools := []model.ToolSpec{
+		{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "b", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	msgs := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "go"}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Thinking, Text: "t", Signature: "s"}, {Kind: model.ToolUse, CallID: "c1", Tool: "a", Input: json.RawMessage(`{}`)}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: "ok"}}},
+	}
+	cases := map[string]struct {
+		req  model.Request
+		want string
+	}{
+		"system and the last result": {model.Request{Model: "m", MaxTokens: 1, System: "be brief", Tools: tools, Messages: msgs, Cache: true},
+			"system,message 2 block 0"},
+		"no system: the last tool": {model.Request{Model: "m", MaxTokens: 1, Tools: tools, Messages: msgs, Cache: true},
+			"tool b,message 2 block 0"},
+		"a last message ending in thinking": {model.Request{Model: "m", MaxTokens: 1, System: "s", Cache: true, Messages: []model.Message{
+			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "go"}}},
+			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "x"}, {Kind: model.Thinking, Text: "t", Signature: "s"}}},
+		}}, "system,message 1 block 0"},
+		"no cache": {model.Request{Model: "m", MaxTokens: 1, System: "s", Tools: tools, Messages: msgs}, ""},
+	}
+	for name, c := range cases {
+		if got := strings.Join(cached(sent(t, c.req)), ","); got != c.want {
+			t.Errorf("%s: cache_control at %q, want %q", name, got, c.want)
+		}
+	}
+}

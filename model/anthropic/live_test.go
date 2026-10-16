@@ -3,6 +3,7 @@ package anthropic_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -96,5 +97,51 @@ func TestLiveTurn(t *testing.T) {
 	}
 	if third.Stop != model.EndTurn || len(third.Blocks) == 0 {
 		t.Fatalf("third turn: stop %s, blocks %+v", third.Stop, third.Blocks)
+	}
+}
+
+// TestLiveCache checks the cache on the real API: the first turn writes the
+// prompt, tools and system prompt, the second, which extends the
+// conversation, reads all of it back. It runs as TestLiveTurn does. The
+// system prompt is long enough to cache on every current model (#77).
+func TestLiveCache(t *testing.T) {
+	modelID := os.Getenv("AGENTS_LIVE_MODEL")
+	if os.Getenv("ANTHROPIC_API_KEY") == "" || modelID == "" {
+		t.Skip("set ANTHROPIC_API_KEY and AGENTS_LIVE_MODEL to call the real API")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	m := anthropic.New()
+	var system strings.Builder
+	for i := range 300 {
+		fmt.Fprintf(&system, "Rule %d: answer with the amount and currency of the charge asked about, read with the tool. ", i)
+	}
+	tools := []model.ToolSpec{{Name: "get_charge", Description: "Read a card charge by its id.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"charge":{"type":"string"}},"required":["charge"]}`)}}
+	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "What is the amount of charge ch_1? Use the tool."}}}}
+	req := model.Request{Model: modelID, System: system.String(), MaxTokens: 4096, Effort: "low", Messages: msgs, Tools: tools, Cache: true}
+	first, err := m.Turn(ctx, req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var call *model.Block
+	for i, b := range first.Blocks {
+		if b.Kind == model.ToolUse {
+			call = &first.Blocks[i]
+		}
+	}
+	if call == nil {
+		t.Fatalf("first turn called no tool: stop %s", first.Stop)
+	}
+	req.Messages = append(msgs, model.Message{Role: model.Assistant, Blocks: first.Blocks},
+		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: call.CallID, Result: `{"id":"ch_1","amount":4200,"currency":"eur"}`}}})
+	second, err := m.Turn(ctx, req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("first %+v; second %+v", first.Usage, second.Usage)
+	written := first.Usage.CacheRead + first.Usage.CacheWrite
+	if written < 2000 || second.Usage.CacheRead < written {
+		t.Fatalf("the second turn read %d cached tokens; the first cached %d", second.Usage.CacheRead, written)
 	}
 }
