@@ -217,11 +217,19 @@ func kiffAPIFor(gateways, api string) (string, error) {
 		}
 		return kiff.APIURL, nil
 	}
+	// kiff.Withdraw appends its route to this as a string, so anything after
+	// the host would move it: a '?' or '#', even with nothing after it, makes
+	// the route a query or a fragment, and extra slashes another path. Its
+	// 404 would read as no hold to withdraw, and the call would stay live.
+	// So only "https://host" is taken, or with one trailing slash, and what
+	// is returned is built from the parsed host, not the spelling given.
 	u, err := url.Parse(api)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("AGENTS_KIFF_API %q: an https URL with a host and no path", api)
+	bad := err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || strings.ContainsAny(api, "?#")
+	if bad {
+		return "", fmt.Errorf("AGENTS_KIFF_API %q: https:// and a host, nothing after it", api)
 	}
-	return strings.TrimSuffix(api, "/"), nil
+	return "https://" + u.Host, nil
 }
 
 // withdrawTimeout bounds one withdrawal from KIFF: a cancel waits on each of

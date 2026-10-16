@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -274,9 +276,41 @@ func TestTheKIFFAPIWithdrawalsGoTo(t *testing.T) {
 		{"", "https://api.kiff.dev?x=1"},
 		{"", "https://api.kiff.dev#x"},
 		{"", "https://user:pw@api.kiff.dev"},
+		{"", "https://api.kiff.dev?"},
+		{"", "https://api.kiff.dev#"},
+		{"", "https://api.kiff.dev///"},
+		{"", "https://api.kiff.dev//"},
+		{"", "https://api.kiff.dev/%2F"},
+		{"", "https:api.kiff.dev"},
 	} {
 		if got, err := kiffAPIFor(c.gateways, c.api); err == nil {
 			t.Errorf("%q, %q: took %q", c.gateways, c.api, got)
+		}
+	}
+}
+
+// What kiffAPIFor takes, kiff.Withdraw reaches its route with: checked
+// against a real server, since a 404 from a wrong route would read as no
+// hold to withdraw.
+func TestAWithdrawalReachesItsRoute(t *testing.T) {
+	var paths []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hold":{"status":"invalidated"}}`))
+	}))
+	defer srv.Close()
+	for _, api := range []string{srv.URL, srv.URL + "/", " " + srv.URL + " "} {
+		paths = nil
+		base, err := kiffAPIFor("", api)
+		if err != nil {
+			t.Fatalf("%q: %v", api, err)
+		}
+		if _, err := kiff.Withdraw(ctx, srv.Client(), base, "kiff-agent-key", "exc_123"); err != nil {
+			t.Fatalf("%q: %v", api, err)
+		}
+		if len(paths) != 1 || paths[0] != "POST /v1/me/holds/exc_123/withdraw" {
+			t.Fatalf("%q reached %v", api, paths)
 		}
 	}
 }
