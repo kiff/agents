@@ -1,7 +1,7 @@
 # Prompt caching and a context report: what #77 delivers
 
 **Issue:** [#77](https://github.com/kiff/agents/issues/77) · **Status:** in progress (caching delivered; the context report and trimming are next).
-**PRs:** #PR
+**PRs:** #80
 
 ## What it's for
 
