@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
-**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built. `cmd/lambda` doesn't wire the runner yet, so on Lambda no run can start. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups)
+**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. Still to do: the sweep on a schedule, firings starting runs, the 429 cap. Nothing is deployed.
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), this page's PR (runs on Lambda)
 
 ## What it's for
 
@@ -98,6 +98,42 @@ runs the handler in its own goroutine and streams what it writes, so a run's
 events reach the client as they happen (#35). A client that goes away stops
 being followed, and the run carries on (#39).
 
+### Runs on Lambda
+
+`cmd/lambda` builds the `runner.Runner` on the DynamoDB run and session
+stores, with the registry's `Builder`:
+
+- **The agents' KIFF keys** come from Secrets Manager through
+  `registry/secretsmanager` ([#16](16-registry.md)), named
+  `AGENTS_SECRETS_PREFIX` + tenant + `/` + the agent's `key_ref`.
+- **The model's key** is the secret named `AGENTS_MODEL_KEY_SECRET`, read the
+  first time a model turn needs it and kept in memory. A failed read fails
+  that turn (the run is stored ERROR) and the next turn reads again. Setup
+  reads no secret, so a cold start that serves no run never touches it.
+- **The model key's secret must not be under `AGENTS_SECRETS_PREFIX`,** and is
+  given by name, not ARN: any name under the prefix is reachable as some
+  tenant's agent key. Setup refuses otherwise.
+- **Tools:** the agent's gateway tools through `tool/kiff`, and its memory.
+
+**Background runs.** `POST /agents/{id}/runs` with `background` stores the
+run PENDING, then invokes this same function asynchronously (Lambda's
+`Event` invocation, to `AWS_LAMBDA_FUNCTION_NAME`, which Lambda sets) with
+only the run's name:
+
+```json
+{"run": {"tenant": "t1", "id": "5c4c1b44224543331c22207410d6bc18"}}
+```
+
+It answers 202 once Lambda has queued the event. If queueing fails, or Lambda
+answers anything but 202, the run is stored ERROR and the request gets 500, so
+nothing waits on a run no invocation will claim.
+
+The invocation that gets the event calls `Runner.Execute`, which claims the
+run, so a repeated event (Lambda delivers at least once) finds it claimed or
+ended and does nothing. That invocation never fails on what the runner
+stored: a failed run is already ERROR, and a run that couldn't be claimed
+stays PENDING until the sweep marks it.
+
 ### Configuration
 
 Everything account-specific comes from the environment, never from code:
@@ -108,6 +144,9 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_CALLERS` | Assumed-role ARN prefixes allowed to call, comma-separated |
 | `AGENTS_GATEWAYS` | The gateways an agent may name; KIFF's by default |
 | `SCHEDULE_GROUP`, `SCHEDULE_TARGET`, `SCHEDULE_ROLE` | EventBridge Scheduler's group, the function each firing invokes, and the role it invokes with |
+| `AGENTS_SECRETS_PREFIX` | The name prefix of the agents' KIFF keys in Secrets Manager |
+| `AGENTS_MODEL_KEY_SECRET` | The name of the secret holding the model provider's key; not under the prefix |
+| `AWS_LAMBDA_FUNCTION_NAME` | Set by Lambda: where background runs are sent |
 
 Setup names every missing variable at once. The function builds for
 `provided.al2023` on arm64.
@@ -115,12 +154,19 @@ Setup names every missing variable at once. The function builds for
 **Before the first deploy**, IAM must hold this, because who may invoke the
 function is the only guard on who the caller is:
 
-- only `SCHEDULE_ROLE` may call `lambda:InvokeFunction` directly;
+- only `SCHEDULE_ROLE` and the function's own role may call
+  `lambda:InvokeFunction` directly. The function's role needs it, on this
+  function only, to send background runs. A direct invoke can send a run
+  event, which only executes a stored run once, as a request would;
 - tafs cloud's role gets `lambda:InvokeFunctionUrl` (plus
   `lambda:InvokeFunction` only under `lambda:InvokedViaFunctionUrl`, if the
   account needs both);
 - `iam:PassRole` on `SCHEDULE_ROLE` is limited to the operators who deploy;
-- the function URL is created with `--invoke-mode RESPONSE_STREAM`.
+- the function URL is created with `--invoke-mode RESPONSE_STREAM`;
+- the function's asynchronous retries are off (`MaximumRetryAttempts` 0):
+  the runner claims each run once, and the sweep ends what a crash leaves;
+- the function's role may `secretsmanager:GetSecretValue` on secrets under
+  `AGENTS_SECRETS_PREFIX` and on the model key's secret, nothing else.
 
 ## What holds, and the test that guards it
 
@@ -139,18 +185,25 @@ function is the only guard on who the caller is:
 | A wrong method is 405 with `Allow`; an unknown path is JSON 404 | `TestWrongMethodAndUnknownPath` |
 | Without a Runner there is no start route | `TestNoRunnerNoStart` |
 | `cmd/lambda` refuses events it doesn't know, and needs its configuration | `TestOtherEventsAreRefused`, `TestSetupNeedsItsConfiguration` |
+| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, the start route served | `TestSetupNeedsItsConfiguration` |
+| A run streams through the function URL on Lambda | `TestARunStreamsOnLambda` |
+| A background run is one asynchronous invoke naming only the run, executed by that invocation, once however often it's delivered | `TestABackgroundRunIsExecutedByAnotherInvocation` |
+| A run that can't be queued is stored ERROR | `TestARunThatCantBeQueuedIsAnError` |
+| A run event must name a run; a missing run doesn't fail the invocation | `TestARunEventMustNameARun` |
+| The model key is read when a turn needs it, once, and again after a failed read | `TestTheModelKeyIsReadWhenATurnNeedsIt` |
+| The model key's secret can't be one an agent's key reference names | `TestTheModelKeyIsOutsideTheAgentsKeys`, `TestSetupNeedsItsConfiguration` |
 
 Tests drive the routes against `store/memory`. No test touches AWS.
 
 ## Not delivered yet
 
-- **The runner in `cmd/lambda`.** It builds agents with their KIFF keys
-  through `registry/secretsmanager` ([#16](16-registry.md), built, not yet
-  wired here), and needs a model key. Until then `POST /agents/{id}/runs` isn't served on Lambda, and a
-  schedule firing logs `errNoRuns` and starts nothing.
-- **Background runs** as an async invocation of the same function, with
-  Lambda's retries off and an on-failure destination that marks the run
-  ERROR.
+- **Schedule firings starting runs.** A firing logs `errNoRuns` and starts
+  nothing until it starts a `BySchedule` run, once per `Firing.Key()`
+  ([#17](17-schedules.md)).
+- **An on-failure destination** for background invocations. Not built: a
+  crash or a timeout leaves the run PENDING or RUNNING, and the sweep ends it
+  (a PENDING run after 5 minutes, a RUNNING one once its lease runs out).
+  A destination would only end it sooner.
 - **The sweep on a schedule:** `run.Sweeper{Runs, Ended: runner.Ended,
   Expires}`, with `Expires` from the agent's keep rules.
 - **429 at the tenant's concurrency cap.** The run store can't count a

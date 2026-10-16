@@ -11,12 +11,16 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/registrytest"
+	"github.com/kiff/agents/registry/secretsmanager"
+	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/schedule/scheduletest"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/store/memory"
+	"github.com/kiff/agents/tool"
 )
 
 var ctx = context.Background()
@@ -40,10 +44,17 @@ func (s *scheduler) Remove(_ context.Context, tenant, id string) error {
 	return nil
 }
 
-// newFunction wires the function as setup does, on memory stores.
+// newFunction wires the function as setup does, on memory stores, with a
+// runner whose model says what m holds and whose background invocations go to
+// inv.
 func newFunction(t *testing.T) (*function, *scheduler, *memory.Agents) {
+	f, sched, agents, _ := newFunctionWith(t, &replies{}, &invocations{})
+	return f, sched, agents
+}
+
+func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *scheduler, *memory.Agents, *memory.Runs) {
 	t.Helper()
-	agents, store := memory.NewAgents(), memory.New()
+	agents, store, runs := memory.NewAgents(), memory.New(), memory.NewRuns()
 	sched := &scheduler{set: map[[2]string]schedule.Schedule{}}
 	svc := &schedule.Service{Store: memory.NewSchedules(), Scheduler: sched,
 		Live: func(ctx context.Context, tenant, agent string) (bool, error) {
@@ -56,9 +67,14 @@ func newFunction(t *testing.T) (*function, *scheduler, *memory.Agents) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: memory.NewRuns(),
-		Gateways: []string{"https://gateway.test/mcp"}}
-	return &function{http: s.Handler(), schedules: svc, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, sched, agents
+	gateways := []string{"https://gateway.test/mcp"}
+	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
+		Agents: agents, Secrets: keys{}, Model: m, Gateways: gateways,
+		Connect: func(context.Context, string, string) ([]tool.Tool, error) { return nil, nil },
+	}}
+	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
+		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
+	return &function{http: s.Handler(), schedules: svc, runner: rn, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, sched, agents, runs
 }
 
 func urlEvent(t *testing.T, method, path, signer, tenant string) json.RawMessage {
@@ -130,14 +146,16 @@ func TestOtherEventsAreRefused(t *testing.T) {
 }
 
 func TestSetupNeedsItsConfiguration(t *testing.T) {
-	for _, k := range []string{"AGENTS_TABLE", "AGENTS_CALLERS", "AGENTS_GATEWAYS", "SCHEDULE_GROUP", "SCHEDULE_TARGET", "SCHEDULE_ROLE"} {
+	required := []string{"AGENTS_TABLE", "AGENTS_CALLERS", "SCHEDULE_GROUP", "SCHEDULE_TARGET", "SCHEDULE_ROLE",
+		"AGENTS_SECRETS_PREFIX", "AGENTS_MODEL_KEY_SECRET", "AWS_LAMBDA_FUNCTION_NAME"}
+	for _, k := range append(required, "AGENTS_GATEWAYS") {
 		t.Setenv(k, "")
 	}
 	_, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err == nil {
 		t.Fatal("set up with no configuration")
 	}
-	for _, k := range []string{"AGENTS_TABLE", "AGENTS_CALLERS", "SCHEDULE_GROUP", "SCHEDULE_TARGET", "SCHEDULE_ROLE"} {
+	for _, k := range required {
 		if !strings.Contains(err.Error(), k) {
 			t.Errorf("the error doesn't name %s: %v", k, err)
 		}
@@ -147,13 +165,40 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	t.Setenv("SCHEDULE_GROUP", "agents")
 	t.Setenv("SCHEDULE_TARGET", "the-function")
 	t.Setenv("SCHEDULE_ROLE", "the-role")
+	t.Setenv("AGENTS_SECRETS_PREFIX", "agents/")
+	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "the-function")
+	for _, bad := range []string{"agents/models/anthropic", "arn:aws:secretsmanager:eu-west-3:000000000000:secret:model-AbCdEf"} {
+		t.Setenv("AGENTS_CALLERS", role)
+		t.Setenv("AGENTS_MODEL_KEY_SECRET", bad)
+		if _, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+			t.Fatalf("set up with the model key at %s", bad)
+		}
+	}
+	t.Setenv("AGENTS_MODEL_KEY_SECRET", "model/anthropic")
 	t.Setenv("AGENTS_CALLERS", "arn:aws:sts::000000000000:assumed-role/tafs-cloud") // no '/': would match tafs-cloud-evil
 	if _, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
 		t.Fatal("set up with a caller role that could match others")
 	}
 	t.Setenv("AGENTS_CALLERS", role)
 	t.Setenv("AWS_REGION", "eu-west-3")
-	if _, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+	f, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
 		t.Fatalf("a complete configuration: %v", err)
+	}
+	// Runs are wired: the runner builds agents with keys from Secrets Manager
+	// and a model keyed on first use, and the start route is served. A bad
+	// body is refused before anything reaches AWS.
+	rn, ok := f.runner.(*runner.Runner)
+	if !ok || rn.Builder == nil {
+		t.Fatalf("no runner: %T", f.runner)
+	}
+	if _, ok := rn.Builder.Secrets.(*secretsmanager.Secrets); !ok {
+		t.Errorf("agents' keys from %T", rn.Builder.Secrets)
+	}
+	if _, ok := rn.Builder.Model.(*keyedModel); !ok {
+		t.Errorf("the model is %T", rn.Builder.Model)
+	}
+	if status, body := startRun(t, f, "rae", `not json`); status != 400 {
+		t.Errorf("start route: got %d %s", status, body)
 	}
 }

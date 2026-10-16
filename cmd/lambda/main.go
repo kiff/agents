@@ -1,7 +1,8 @@
 // Command lambda is the server on AWS Lambda: one function behind a function
 // URL with AWS_IAM auth and invoke mode RESPONSE_STREAM, so server-sent
 // events reach the client as they happen, which also takes EventBridge
-// Scheduler's firings.
+// Scheduler's firings and executes background runs, each sent to it by an
+// asynchronous invoke of itself.
 //
 // Everything account-specific comes from the environment, never from code:
 //
@@ -11,6 +12,11 @@
 //	SCHEDULE_GROUP    EventBridge Scheduler's schedule group
 //	SCHEDULE_TARGET   the function each firing invokes: this one
 //	SCHEDULE_ROLE     the role EventBridge Scheduler invokes it with
+//	AGENTS_SECRETS_PREFIX    the name prefix of the agents' KIFF keys in Secrets Manager (registry/secretsmanager)
+//	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
+//
+// Lambda sets AWS_LAMBDA_FUNCTION_NAME itself: a background run is an
+// asynchronous invoke of this same function, with a run event (runs.go).
 //
 // Who may invoke the function is the only guard on who the caller is: the
 // function reads the signer Lambda verified from the event, and a direct
@@ -18,7 +24,12 @@
 // cloud's role and any tenant included. The code can't tell the two apart, so
 // the function's resource policy and IAM must hold this:
 //
-//   - Only SCHEDULE_ROLE may call lambda:InvokeFunction directly.
+//   - Only SCHEDULE_ROLE, and the function's own role on this function (to
+//     send background runs), may call lambda:InvokeFunction directly. A run
+//     event only executes a stored run once, as a request would.
+//   - The function's asynchronous retries are off (MaximumRetryAttempts 0).
+//   - Its role reads only secrets under AGENTS_SECRETS_PREFIX and the model
+//     key's secret.
 //   - tafs cloud's role gets lambda:InvokeFunctionUrl, plus
 //     lambda:InvokeFunction only under the lambda:InvokedViaFunctionUrl
 //     condition, if the account's function URL authorization needs both.
@@ -40,19 +51,28 @@ import (
 	"os"
 	"strings"
 
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	sch "github.com/aws/aws-sdk-go-v2/service/scheduler"
+	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
+	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
+	"github.com/kiff/agents/registry/secretsmanager"
+	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/schedule/eventbridge"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/store/dynamodb"
+	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
+	toolmemory "github.com/kiff/agents/tool/memory"
 )
 
 func main() {
@@ -69,6 +89,7 @@ func main() {
 type function struct {
 	http      http.Handler
 	schedules *schedule.Service
+	runner    server.Runner
 	log       *slog.Logger
 }
 
@@ -92,7 +113,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	}
 	table, callers := need("AGENTS_TABLE"), need("AGENTS_CALLERS")
 	group, target, role := need("SCHEDULE_GROUP"), need("SCHEDULE_TARGET"), need("SCHEDULE_ROLE")
+	prefix, keySecret := need("AGENTS_SECRETS_PREFIX"), need("AGENTS_MODEL_KEY_SECRET")
+	self := need("AWS_LAMBDA_FUNCTION_NAME")
 	if err := errors.Join(missing...); err != nil {
+		return nil, err
+	}
+	if err := outsidePrefix(keySecret, prefix); err != nil {
 		return nil, err
 	}
 	gateways := []string{kiff.URL}
@@ -110,6 +136,20 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	db := ddb.NewFromConfig(cfg)
 	store := dynamodb.New(db, table)
 	agents := dynamodb.NewAgents(db, table)
+	runs := dynamodb.NewRuns(db, table)
+	secrets := sm.NewFromConfig(cfg)
+	llm := &keyedModel{
+		key:  func(ctx context.Context) (string, error) { return modelKey(ctx, secrets, keySecret) },
+		make: func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) },
+	}
+	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
+		Agents: agents, Secrets: secretsmanager.New(secrets, prefix),
+		Model: llm, Gateways: gateways,
+		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+			return kiff.New(gateway, key, nil).Tools(ctx)
+		},
+		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
+	}}
 	schedules := &schedule.Service{
 		Store:     dynamodb.NewSchedules(db, table),
 		Scheduler: eventbridge.New(sch.NewFromConfig(cfg), group, target, role),
@@ -125,11 +165,11 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Start: func(context.Context, schedule.Firing) error { return errNoRuns },
 	}
 	return &function{
-		// No Runner yet: starting runs arrives with the loop that executes
-		// them (#12). Reading, cancelling and following runs work now.
 		http: (&server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: dynamodb.NewRuns(db, table), Gateways: gateways, Log: log}).Handler(),
+			Runs: runs, Runner: rn, Background: background(lambdasvc.NewFromConfig(cfg), self),
+			Gateways: gateways, Log: log}).Handler(),
 		schedules: schedules,
+		runner:    rn,
 		log:       log,
 	}, nil
 }
@@ -144,15 +184,16 @@ func split(s string) []string {
 	return out
 }
 
-// handle runs one invocation: a request through the function URL, or a
-// schedule's firing. Anything else is refused.
+// handle runs one invocation: a request through the function URL, a
+// background run, or a schedule's firing. Anything else is refused.
 func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error) {
 	var shape struct {
 		RequestContext *struct {
 			HTTP *struct{} `json:"http"`
 		} `json:"requestContext"`
-		Schedule string `json:"schedule"`
-		Due      string `json:"due"`
+		Run      json.RawMessage `json:"run"`
+		Schedule string          `json:"schedule"`
+		Due      string          `json:"due"`
 	}
 	if err := json.Unmarshal(raw, &shape); err != nil {
 		return nil, fmt.Errorf("lambda: the event is not JSON: %w", err)
@@ -164,6 +205,12 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 			return nil, err
 		}
 		return lambdaurl.Serve(ctx, f.http, e, f.log)
+	case len(shape.Run) > 0:
+		var e runEvent
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return nil, fmt.Errorf("lambda: a run event that isn't one: %w", err)
+		}
+		return nil, f.execute(ctx, e)
 	case shape.Schedule != "" && shape.Due != "":
 		tenant, id, due, err := eventbridge.ParseEvent(raw)
 		if err != nil {
