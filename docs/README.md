@@ -19,7 +19,7 @@ the runner, chat and evals) and [registry.md](registry.md).
 | [#12](https://github.com/kiff/agents/issues/12) Runs | 1 | Delivered (chat on runs: #34) | [12-runs.md](issues/12-runs.md) |
 | [#13](https://github.com/kiff/agents/issues/13) Server on Lambda | 2 | Routes, auth, streaming, runs and background runs on Lambda built; the sweep and firings not wired; not deployed | [13-server.md](issues/13-server.md) |
 | [#14](https://github.com/kiff/agents/issues/14) Console | 3 | Not started | [14-console.md](issues/14-console.md) |
-| [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | In progress: hold IDs (#44); Collect, `/kiff/alerts`, withdraw and expiry next | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
+| [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | In progress: hold IDs (#44), Collect (#45); `/kiff/alerts`, withdraw and expiry next | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
 | [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Mostly delivered, the Secrets Manager adapter included; withdrawing holds on removal to do (#15) | [16-registry.md](issues/16-registry.md) |
 | [#17](https://github.com/kiff/agents/issues/17) Schedules | 6 | Built up to firing; firings don't start runs yet; triggers to do | [17-schedules.md](issues/17-schedules.md) |
 | [kiff/tafs#42](https://github.com/kiff/tafs/issues/42) tafs switches over | 7 | Waits on #13, #15, #16 | — |

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,11 +19,20 @@ import (
 
 const testKey = "kiff_test_agent_key"
 
+// calls are the arguments of each tools/call the fake gateway received, and
+// slow counts the repeats of "op-slow".
+var (
+	calls []string
+	slow  atomic.Int32
+)
+
 // gateway is a fake KIFF gateway: it checks the bearer key and the session
 // header, lists two tools, and holds every refund. With sse set, it answers
 // requests as an event stream.
 func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 	t.Helper()
+	calls = nil
+	slow.Store(0)
 	var mu sync.Mutex
 	var methods []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +79,44 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			_ = json.Unmarshal(msg.Params, &p)
 			var args map[string]any
 			_ = json.Unmarshal(p.Arguments, &args)
-			if p.Name == "stripe_refund" && args["odd"] == true {
+			mu.Lock()
+			calls = append(calls, string(p.Arguments))
+			mu.Unlock()
+			// A repeat with an operation ID collects the call: KIFF knows the
+			// owner's answer by it.
+			op, _ := args["kiff_operation_id"].(string)
+			if op == "op-approved" || op == "op-refund-42" || op == "tc-77" { // the holds below, answered
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_1"}},
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "sent": "yes", "retry": "none"}}}
+			} else if op == "op-expired" {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "The owner did not answer before the hold expired."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "refused", "sent": "no", "retry": "new_call"}}}
+			} else if op == "op-deciding" || op == "op-forwarding" || (op == "op-slow" && slow.Add(1) == 1) {
+				// KIFF is still deciding or sending the call: no outcome yet.
+				// "op-slow" is deciding once, then answered.
+				state := strings.TrimPrefix(op, "op-")
+				if op == "op-slow" {
+					state = "deciding"
+				}
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "KIFF is still on this call."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": state, "sent": "no", "retry": "same_call"}}}
+			} else if op == "op-slow" {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_1"}},
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "sent": "yes", "retry": "none"}}}
+			} else if op == "op-error" {
+				http.Error(w, "gateway down", http.StatusBadGateway)
+				return
+			} else if p.Name == "stripe_refund" && args["keyless"] == true {
+				// Called without kiff_operation_id: KIFF keys it by its own
+				// "tc-…" invocation key, and sends no operation_id.
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
+						"state": "held", "invocation": "tc-77", "exception_id": "exc_789", "sent": "no", "retry": "same_call"}}}
+			} else if p.Name == "stripe_refund" && args["slow"] == true {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
+						"state": "held", "operation_id": "op-slow", "exception_id": "exc_456", "sent": "no", "retry": "same_call"}}}
+			} else if p.Name == "stripe_refund" && args["odd"] == true {
 				// KIFF's hold fields in a shape this client doesn't expect.
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
