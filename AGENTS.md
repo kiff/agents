@@ -41,6 +41,7 @@ tool/memory         adapter: the agent's notes, on session.Notes
 tool/workspace      adapter: the workspace tool, on workspace.Workspaces (an Own tool)
 workspace/          a run's workspace: files and commands, no credentials, no way out; port Workspaces
 workspace/workspacetest the checks every Workspaces must pass
+workspace/inmemory  adapter: Workspaces in memory, for tests and local runs
 agent/              the run loop: model → tools → model, recorded and streamed; pauses on a KIFF hold
 chat/               the owner talking to an agent: each message a run in the conversation's session
 runner/             executes runs, as the server's Runner: start in a session, claim, build, record, run, store the stop; continue a paused run

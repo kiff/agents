@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	toolws "github.com/kiff/agents/tool/workspace"
 	"github.com/kiff/agents/workspace"
+	"github.com/kiff/agents/workspace/inmemory"
 )
 
 var ctx = context.Background()
@@ -25,7 +25,7 @@ func call(t *testing.T, tl *toolws.Tool, input string) tool.Result {
 }
 
 func TestItIsTheAgentsOwnAndPassesCheck(t *testing.T) {
-	tl := toolws.New(memory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
+	tl := toolws.New(inmemory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
 	if tl.Access() != tool.Own || tl.Gateway() {
 		t.Fatalf("access %v, gateway %v: want Own, not through the gateway", tl.Access(), tl.Gateway())
 	}
@@ -38,7 +38,7 @@ func TestItIsTheAgentsOwnAndPassesCheck(t *testing.T) {
 }
 
 func TestWriteReadList(t *testing.T) {
-	tl := toolws.New(memory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
+	tl := toolws.New(inmemory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
 	if res := call(t, tl, `{"action":"list"}`); res.Text != "The workspace is empty." {
 		t.Fatalf("empty list: %q", res.Text)
 	}
@@ -54,7 +54,7 @@ func TestWriteReadList(t *testing.T) {
 }
 
 func TestTheModelsMistakesAreResults(t *testing.T) {
-	tl := toolws.New(memory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
+	tl := toolws.New(inmemory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
 	for input, want := range map[string]string{
 		`not json`:                                              "the input must be",
 		`{"action":"delete"}`:                                   "action is write, read, list or run",
@@ -76,7 +76,7 @@ func TestTheModelsMistakesAreResults(t *testing.T) {
 }
 
 func TestRunReportsTheCommand(t *testing.T) {
-	ws := memory.NewWorkspaces()
+	ws := inmemory.NewWorkspaces()
 	var gotTimeout time.Duration
 	ws.Commands = func(_ context.Context, files map[string][]byte, command string, timeout time.Duration) (workspace.Output, map[string][]byte, error) {
 		gotTimeout = timeout
@@ -113,7 +113,7 @@ func TestRunReportsTheCommand(t *testing.T) {
 }
 
 func TestNoCommandRunnerSaysSo(t *testing.T) {
-	tl := toolws.New(memory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
+	tl := toolws.New(inmemory.NewWorkspaces(), workspace.Key{Tenant: "t1", Run: "r1"})
 	if res := call(t, tl, `{"action":"run","command":"ls"}`); !res.IsError || !strings.Contains(res.Text, "exit 127") {
 		t.Fatalf("%+v", res)
 	}

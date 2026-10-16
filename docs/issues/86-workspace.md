@@ -42,7 +42,7 @@ PUT /agents/setup
 
 ## Tests that guard it
 
-- `workspacetest`, run by the memory adapter:
+- `workspacetest`, run by the in-memory adapter (`workspace/inmemory`):
   - files read back;
   - a write replaces;
   - lists are sorted;

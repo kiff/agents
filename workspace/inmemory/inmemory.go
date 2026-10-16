@@ -1,4 +1,7 @@
-package memory
+// Package inmemory is a workspace.Workspaces held in memory, for tests and
+// local runs. It lives apart from store/memory so the packages that link the
+// session store don't link it too (#87: doing so moved agent's benchmarks).
+package inmemory
 
 import (
 	"context"

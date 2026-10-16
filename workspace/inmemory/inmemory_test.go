@@ -1,4 +1,4 @@
-package memory_test
+package inmemory_test
 
 import (
 	"context"
@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/workspace"
+	"github.com/kiff/agents/workspace/inmemory"
 	"github.com/kiff/agents/workspace/workspacetest"
 )
 
 func TestWorkspaces(t *testing.T) {
-	workspacetest.Run(t, func(*testing.T) workspace.Workspaces { return memory.NewWorkspaces() })
+	workspacetest.Run(t, func(*testing.T) workspace.Workspaces { return inmemory.NewWorkspaces() })
 }
 
 var (
@@ -25,9 +25,9 @@ var (
 
 // blocking returns Workspaces whose command waits for release, after
 // signalling started, and leaves the files it was given unchanged.
-func blocking() (w *memory.Workspaces, started, release chan struct{}) {
+func blocking() (w *inmemory.Workspaces, started, release chan struct{}) {
 	started, release = make(chan struct{}), make(chan struct{})
-	w = memory.NewWorkspaces()
+	w = inmemory.NewWorkspaces()
 	w.Commands = func(_ context.Context, files map[string][]byte, _ string, _ time.Duration) (workspace.Output, map[string][]byte, error) {
 		close(started)
 		<-release
@@ -39,9 +39,9 @@ func blocking() (w *memory.Workspaces, started, release chan struct{}) {
 // A command's result never overwrites a change made while it ran: the
 // change waits for the command, then applies.
 func TestACommandKeepsChangesMadeWhileItRan(t *testing.T) {
-	for name, change := range map[string]func(*memory.Workspaces) error{
-		"a write":  func(w *memory.Workspaces) error { return w.Put(ctx, wk, "new.txt", []byte("written")) },
-		"a delete": func(w *memory.Workspaces) error { return w.Delete(ctx, wk) },
+	for name, change := range map[string]func(*inmemory.Workspaces) error{
+		"a write":  func(w *inmemory.Workspaces) error { return w.Put(ctx, wk, "new.txt", []byte("written")) },
+		"a delete": func(w *inmemory.Workspaces) error { return w.Delete(ctx, wk) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			w, started, release := blocking()
@@ -102,7 +102,7 @@ func TestACommandsFilesKeepTheLimits(t *testing.T) {
 		"two paths become one": {"a/b": []byte("1"), "a//b": []byte("2")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			w := memory.NewWorkspaces()
+			w := inmemory.NewWorkspaces()
 			w.Commands = func(context.Context, map[string][]byte, string, time.Duration) (workspace.Output, map[string][]byte, error) {
 				return workspace.Output{Stdout: "done"}, after, nil
 			}
@@ -126,7 +126,7 @@ func TestACommandsFilesKeepTheLimits(t *testing.T) {
 
 // A command's files are stored as Put would store them: cleaned paths.
 func TestACommandsPathsAreCleaned(t *testing.T) {
-	w := memory.NewWorkspaces()
+	w := inmemory.NewWorkspaces()
 	w.Commands = func(context.Context, map[string][]byte, string, time.Duration) (workspace.Output, map[string][]byte, error) {
 		return workspace.Output{}, map[string][]byte{"./dir//x.txt": []byte("x")}, nil
 	}
