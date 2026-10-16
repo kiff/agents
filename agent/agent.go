@@ -411,9 +411,9 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	}
 	if reply.Stop == model.Refused {
 		// A refusal can come after part of the turn streamed: that part is
-		// discarded, never recorded, replayed or acted on. Its usage counts.
-		reply.Blocks, out.Text = nil, ""
-		return reply, nil
+		// no text of the turn, and the caller keeps and runs none of it.
+		// Its usage counts.
+		return model.Reply{Stop: reply.Stop, Refusal: reply.Refusal, Usage: reply.Usage}, nil
 	}
 	var text []string
 	for _, b := range reply.Blocks {
