@@ -119,7 +119,42 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	if req.NoToolUse && len(p.Tools) > 0 { // with no tools there's nothing to forbid, and the API refuses a choice alone
 		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
 	}
+	if req.Cache {
+		markCache(&p)
+	}
 	return p, nil
+}
+
+// markCache sets two of the API's four cache breakpoints. The prompt renders
+// tools, then system, then messages, and a breakpoint caches everything
+// before it: one on the system prompt (or the last tool, without one) caches
+// the prefix every turn shares; one on the last message's last block caches
+// the conversation, which the next turn reads back and extends.
+func markCache(p *sdk.MessageNewParams) {
+	cc := sdk.NewCacheControlEphemeralParam()
+	if n := len(p.System); n > 0 {
+		p.System[n-1].CacheControl = cc
+	} else if n := len(p.Tools); n > 0 && p.Tools[n-1].OfTool != nil {
+		p.Tools[n-1].OfTool.CacheControl = cc
+	}
+	if len(p.Messages) == 0 {
+		return
+	}
+	blocks := p.Messages[len(p.Messages)-1].Content
+	for i := len(blocks) - 1; i >= 0; i-- { // thinking blocks take no breakpoint
+		b := &blocks[i]
+		switch {
+		case b.OfText != nil:
+			b.OfText.CacheControl = cc
+		case b.OfToolUse != nil:
+			b.OfToolUse.CacheControl = cc
+		case b.OfToolResult != nil:
+			b.OfToolResult.CacheControl = cc
+		default:
+			continue
+		}
+		return
+	}
 }
 
 func fromMessage(msg sdk.Message) model.Reply {

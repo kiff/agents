@@ -670,6 +670,30 @@ func TestEffortGoesOnEveryTurn(t *testing.T) {
 	}
 }
 
+// The agent asks for the cache only when its price counts cache tokens:
+// otherwise its cost cap would count them as free (#77).
+func TestTheCacheIsAskedForOnlyWhenPriced(t *testing.T) {
+	for _, c := range []struct {
+		price model.Price
+		want  bool
+	}{
+		{model.Price{Input: 1, Output: 1}, false},
+		{model.Price{Input: 1, Output: 1, CacheRead: 1}, false},
+		{model.Price{Input: 1, Output: 1, CacheRead: 1, CacheWrite: 1}, true},
+	} {
+		m := &script{replies: []model.Reply{say("Hi.")}}
+		_, r := start(t, session.KindRun)
+		a := newAgent(m)
+		a.Price = c.price
+		if _, _, err := agent.Run(context.Background(), a, r, nil, "x", nil); err != nil {
+			t.Fatal(err)
+		}
+		if m.reqs[0].Cache != c.want {
+			t.Errorf("price %+v: cache %v, want %v", c.price, m.reqs[0].Cache, c.want)
+		}
+	}
+}
+
 // A refusal that comes after part of the turn streamed discards that part:
 // its text is no report and no answer, and a tool call in it is never made.
 // The turn's usage still counts (#68).

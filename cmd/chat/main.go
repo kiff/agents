@@ -2,7 +2,7 @@
 // the runner the server uses, with its runs and sessions kept in memory. It's
 // for trying an agent against KIFF in test mode, not for production.
 //
-//	KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… go run ./cmd/chat -model <model id> -price 5000000,25000000
+//	KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… go run ./cmd/chat -model claude-opus-5-5 -price 4000000,20000000,200000,5000000
 //
 // Each line you type is one message. Keys are read from the environment only.
 package main
@@ -40,7 +40,7 @@ func main() {
 
 func run() error {
 	modelID := flag.String("model", "", "the model id (required)")
-	price := flag.String("price", "", "input,output price in millionths of a dollar per million tokens (required)")
+	price := flag.String("price", "", "input,output[,cache-read,cache-write] price in millionths of a dollar per million tokens (required); with cache prices, turns use the prompt cache")
 	maxCost := flag.Float64("max-cost", 1, "the most one message's run may cost, in US dollars")
 	gateway := flag.String("gateway", kiff.URL, "KIFF's gateway")
 	system := flag.String("system", "", "a file with the agent's instructions")
@@ -124,13 +124,23 @@ func show(e agent.Event) {
 }
 
 func parsePrice(s string) (model.Price, error) {
-	in, out, ok := strings.Cut(s, ",")
-	i, err1 := strconv.ParseInt(strings.TrimSpace(in), 10, 64)
-	o, err2 := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if !ok || err1 != nil || err2 != nil || i <= 0 || o <= 0 {
-		return model.Price{}, errors.New("-price is input,output in millionths of a dollar per million tokens, both positive")
+	parts := strings.Split(s, ",")
+	n := make([]int64, len(parts))
+	for i, part := range parts {
+		v, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || v <= 0 {
+			n = nil
+			break
+		}
+		n[i] = v
 	}
-	return model.Price{Input: i, Output: o}, nil
+	switch len(n) {
+	case 2:
+		return model.Price{Input: n[0], Output: n[1]}, nil
+	case 4: // with cache prices, the turns ask for the cache
+		return model.Price{Input: n[0], Output: n[1], CacheRead: n[2], CacheWrite: n[3]}, nil
+	}
+	return model.Price{}, errors.New("-price is input,output[,cache-read,cache-write] in millionths of a dollar per million tokens, all positive")
 }
 
 func readFiles(paths ...string) (string, error) {

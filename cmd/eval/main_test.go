@@ -406,3 +406,22 @@ func TestTheOwnersNoteIsInMemory(t *testing.T) {
 		t.Fatalf("a case with no note file has notes: %+v", got)
 	}
 }
+
+// A price is input,output, or input,output,cache-read,cache-write: with cache
+// prices, the run's turns ask for the cache (#77).
+func TestAPriceMayCarryCachePrices(t *testing.T) {
+	for s, want := range map[string]model.Price{
+		"5,25":       {Input: 5, Output: 25},
+		"4,20,1,5":   {Input: 4, Output: 20, CacheRead: 1, CacheWrite: 5},
+		" 4, 20,1,5": {Input: 4, Output: 20, CacheRead: 1, CacheWrite: 5},
+	} {
+		if p, err := parsePrice(s); err != nil || p != want {
+			t.Errorf("%q: %+v, %v", s, p, err)
+		}
+	}
+	for _, s := range []string{"", "5", "5,25,1", "5,25,0,5", "5,25,1,-5", "5,25,1,5,1", "a,b"} {
+		if _, err := parsePrice(s); err == nil {
+			t.Errorf("%q was accepted", s)
+		}
+	}
+}

@@ -20,7 +20,7 @@ of its eight kinds):
   "id": "rae",
   "instructions": "You refund orders. Every write goes through KIFF.",
   "model": "claude-opus-5-5",
-  "price": { "Input": 5000000, "Output": 25000000, "CacheRead": 0, "CacheWrite": 0 },
+  "price": { "Input": 4000000, "Output": 20000000, "CacheRead": 200000, "CacheWrite": 5000000 },
   "max_tokens": 8192,
   "effort": "high",
   "gateway": "https://mcp.kiff.dev/mcp",
@@ -34,6 +34,10 @@ of its eight kinds):
 }
 ```
 
+- `price` is per million tokens, in millionths of a dollar. With both cache
+  prices set, every turn uses the prompt cache; without them it doesn't, so
+  the cost cap never counts cache tokens as free (#77). `CacheWrite` is the
+  5-minute write price (1.25× input on Claude).
 - `tenant` and `id` come from the verified caller and the path; a body that
   says otherwise is refused.
 - `gateway` must be on the server's own list (`Server.Gateways`), so a
