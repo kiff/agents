@@ -1,7 +1,7 @@
 # Evals: what #3 delivers
 
 **Issue:** [#3](https://github.com/kiff/agents/issues/3) · **Status:** partly delivered. The harness, both cases and the baseline reader are built. `cmd/eval -run` runs each case on this runtime and grades it. The baseline numbers and the nightly run are still to do.
-**PRs:** #8, #37 (under [#12](12-runs.md)), #PR (`cmd/eval -run`); open: #9 (nightly workflow, no review yet), #10 (Stripe seed, draft)
+**PRs:** #8, #37 (under [#12](12-runs.md)), #62 (`cmd/eval -run`); open: #9 (nightly workflow, no review yet), #10 (Stripe seed, draft)
 
 ## What it's for
 
