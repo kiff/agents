@@ -30,6 +30,7 @@ only tafs cloud may call it.
 | `POST /schedules`, `GET /schedules?agent_id=`, `GET`/`PUT`/`DELETE /schedules/{id}`, `POST /schedules/{id}/enable`, `/disable` | Schedules, each with its `next` firing in UTC |
 | `GET /schedules/{id}/runs` | The runs one schedule started, newest first |
 | `POST /schedules/{id}/trigger` | Fire the schedule now, by hand: an ordinary run of its agent with its input, tagged with the schedule, in the background. Answers 202 with the run. The schedule needn't be on. **Only served when a `Runner` is set** |
+| `POST /agents/{id}/events` | `{key, source, input}`: work that came in starts one background `event` run per key. 202 with the run; 200 with it if the key already started one ([#17](17-schedules.md)). **Only served when a `Runner` is set** |
 | `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams the run as SSE (below). With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
 | `GET /agents/{id}/runs/{run_id}` | The run: status, stop, output, error, cost, turns, requirements. Never its paused turn, claim, lease or version |
 | `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED has its held calls withdrawn in KIFF, then stops ([#15](15-continue-on-hold.md)); 409 with no `Withdraw`, which `cmd/lambda` doesn't set yet |
