@@ -1,7 +1,7 @@
 # Schedules: what #17 delivers
 
 **Issue:** [#17](https://github.com/kiff/agents/issues/17) · **Status:** delivered; the deploy is [#13](13-server.md)'s. Schedules, EventBridge Scheduler, the routes, firings starting runs, firing by hand, and triggers (work starting a run; an answered hold continuing one) are built.
-**PRs:** #21 (core), #22 (EventBridge adapter); the routes came in #24 and #30 (under [#13](13-server.md)); a run's source in #26 (under [#12](12-runs.md)); triggers in #PR
+**PRs:** #21 (core), #22 (EventBridge adapter); the routes came in #24 and #30 (under [#13](13-server.md)); a run's source in #26 (under [#12](12-runs.md)); triggers in #61
 
 ## What it's for
 
