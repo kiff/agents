@@ -406,7 +406,8 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	out.Cost += cost
 	out.Turns++
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
-		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CostMicroUSD: cost}); err != nil {
+		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CostMicroUSD: cost,
+		Context: a.context(ctx, req)}); err != nil {
 		return reply, err
 	}
 	if reply.Stop == model.Refused {
@@ -423,6 +424,18 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	}
 	out.Text = strings.TrimSpace(strings.Join(text, "\n"))
 	return reply, nil
+}
+
+// context is what req's input was made of. The window is the model's, when
+// it knows it; a failure to ask leaves it unknown and fails nothing.
+func (a Agent) context(ctx context.Context, req model.Request) *session.ContextBody {
+	s := req.Size()
+	c := &session.ContextBody{SystemBytes: s.System, ToolsBytes: s.Tools, MessagesBytes: s.Messages,
+		ToolResultsBytes: s.ToolResults, Messages: len(req.Messages)}
+	if w, ok := a.Model.(model.Windower); ok {
+		c.WindowTokens, _ = w.Window(ctx, a.ModelID)
+	}
+	return c
 }
 
 // say records the turn's text: a run's last answer is its Report.

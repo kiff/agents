@@ -322,3 +322,31 @@ func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
 		}
 	}
 }
+
+// The context window comes from the Models API, asked once per model; a
+// failure, asked without retries, is remembered too.
+func TestTheWindowIsAskedOnce(t *testing.T) {
+	asked := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked[r.URL.Path]++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models/gone" {
+			http.Error(w, `{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`, http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"type":"model","id":"m","display_name":"M","created_at":"2026-01-01T00:00:00Z","max_input_tokens":1000000,"max_tokens":128000}`)
+	}))
+	defer srv.Close()
+	m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("k"))
+	for range 2 {
+		if w, err := m.Window(context.Background(), "m"); err != nil || w != 1_000_000 {
+			t.Fatalf("window %d, %v", w, err)
+		}
+		if _, err := m.Window(context.Background(), "gone"); err == nil {
+			t.Fatal("a failed ask gave a window")
+		}
+	}
+	if asked["/v1/models/m"] != 1 || asked["/v1/models/gone"] != 1 {
+		t.Fatalf("asked %v", asked)
+	}
+}

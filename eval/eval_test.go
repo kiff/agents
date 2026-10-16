@@ -131,3 +131,30 @@ func TestJudgeCostIsKeptApart(t *testing.T) {
 		t.Errorf("result %+v", res)
 	}
 }
+
+// A result says what the run's turns read: tokens in all, the cache's
+// share, the largest turn, and the least room left (#77).
+func TestGradeReportsTheContext(t *testing.T) {
+	run := eval.Run{Session: session.Session{ID: "s1"}, Events: []session.Event{
+		ev(1, session.Usage, session.UsageBody{InputTokens: 100, CacheWrite: 900,
+			Context: &session.ContextBody{ToolResultsBytes: 0, WindowTokens: 10_000}}),
+		ev(2, session.ToolResult, map[string]string{"text": "x"}),
+		ev(3, session.Usage, session.UsageBody{InputTokens: 50, CacheRead: 900, CacheWrite: 50,
+			Context: &session.ContextBody{ToolResultsBytes: 4000, WindowTokens: 10_000}}),
+	}}
+	res, err := eval.Case{Name: "c"}.Grade(context.Background(), run, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := eval.Context{Turns: 2, PromptTokens: 2000, CacheReadTokens: 900, CacheWriteTokens: 950, CacheShare: 0.45,
+		PeakPromptTokens: 1000, PeakResultsBytes: 4000, LeastRoomTokens: 9000}
+	if res.Context != want {
+		t.Fatalf("context %+v, want %+v", res.Context, want)
+	}
+	// Turns that never knew their window leave the room unknown.
+	run.Events = []session.Event{ev(1, session.Usage, session.UsageBody{InputTokens: 100}),
+		ev(2, session.Usage, session.UsageBody{InputTokens: 100, Context: &session.ContextBody{MessagesBytes: 10}})}
+	if res, _ := (eval.Case{Name: "c"}).Grade(context.Background(), run, nil); res.Context.LeastRoomTokens != -1 {
+		t.Fatalf("no window, room %d", res.Context.LeastRoomTokens)
+	}
+}
