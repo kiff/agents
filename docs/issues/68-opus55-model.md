@@ -1,7 +1,7 @@
 # Opus 5.5 in the model adapter: what #68 delivers
 
 **Issue:** [#68](https://github.com/kiff/agents/issues/68) · **Status:** delivered.
-**PRs:** #PR
+**PRs:** #74
 
 ## What it's for
 
