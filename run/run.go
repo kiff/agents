@@ -109,9 +109,12 @@ type Requirement struct {
 	CallID string          `json:"call_id"`
 	Tool   string          `json:"tool"`
 	Input  json.RawMessage `json:"input"`
-	// Operation is KIFF's operation ID for the call: how its outcome is
-	// collected from the gateway, and how the hold is withdrawn.
+	// Operation is the call's kiff_operation_id: repeating the identical
+	// call with it collects the outcome from the gateway.
 	Operation string `json:"operation"`
+	// Exception is KIFF's ID for the owner's decision on the hold: what its
+	// hold_answered alert names, and what withdrawing the call takes.
+	Exception string `json:"exception,omitempty"`
 	// Expires is when KIFF's hold expires. Expiry means refused: once it has
 	// passed with no answer recorded, KIFF is asked for the call's outcome.
 	Expires time.Time `json:"expires"`

@@ -1,7 +1,7 @@
-# Continue on a hold: what #15 will deliver
+# Continue on a hold: what #15 delivers
 
-**Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** not started. Nobody has taken it. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), **has shipped**, so nothing outside this repo blocks it now.
-**PRs:** none
+**Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
+**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs)
 
 ## What it's for
 
@@ -11,16 +11,49 @@ phone, or once the hold expires, and lets a cancel withdraw what KIFF still
 holds. Until it lands, a paused run waits and never continues, and tafs
 can't switch over ([kiff/tafs#42](https://github.com/kiff/tafs/issues/42)).
 
-## What it will deliver
+## Delivered
 
-- **`tool/kiff` records KIFF's IDs and the hold's expiry for each call.**
-  Today a result keeps only KIFF's `state` (`held`, refused). Each
-  requirement needs:
-  - the ID that withdraws the hold: KIFF's `exception_id`, which the gateway
-    already puts in a held result's `_meta` (`dev.kiff/call`);
-  - the hold's expiry, `hold_expires_at`, from the same `_meta`, into
-    `Requirement.Expires`;
-  - the ID the call's outcome is collected by (`Requirement.Operation`).
+**A held call keeps KIFF's handle on it (#44).** The gateway reports a held
+call in its result's `_meta`:
+
+```json
+"dev.kiff/call": {
+  "state": "held",
+  "operation_id": "op-refund-42",
+  "exception_id": "exc_123",
+  "hold_expires_at": "2026-10-16T09:10:00Z",
+  "retry": "same_call"
+}
+```
+
+`tool/kiff` reads it into `tool.Result.Hold`, and the loop copies it onto the
+requirement:
+
+```json
+{ "call_id": "toolu_01", "tool": "stripe_refund", "input": {"order": 42},
+  "operation": "op-refund-42", "exception": "exc_123",
+  "expires": "2026-10-16T09:10:00Z" }
+```
+
+- `operation`: the call's `kiff_operation_id`. Repeating the identical call
+  with it collects the outcome.
+- `exception`: the owner's decision. Alerts name it; withdraw takes it.
+- `expires`: when the hold stops waiting. With it, a requirement resolves on
+  expiry as well as on an answer.
+- Only `state` decides whether a call is held. A hold field in another shape
+  is left empty, and an empty expiry fails closed, so the run still pauses.
+- Other tools' `_meta` namespaces are never decoded with KIFF's schema.
+
+| Rule | Guarded by |
+|---|---|
+| a held result's IDs and expiry reach `Hold` | `tool/kiff` `TestListsAndCallsToolsThroughTheGateway` (JSON, SSE) |
+| a read result has no `Hold` | the same |
+| another namespace's fields don't break a call | the same (`example.com/audit` with a numeric `hold_expires_at`) |
+| a hold field in another shape keeps the call held | `TestAHoldStaysHeldWhenAFieldDoesntParse` |
+| the loop copies operation, exception and expiry | `agent` `TestAHeldCallPausesTheRun` |
+
+## Still to deliver
+
 - **`Runner.Collect`**: one outcome per requirement, none still held. An
   approved call is forwarded by KIFF once; a refused or expired one comes
   back refused. The runner already calls it
@@ -62,16 +95,15 @@ can't switch over ([kiff/tafs#42](https://github.com/kiff/tafs/issues/42)).
 
 | Needs | State |
 |---|---|
-| `Requirement` with `Operation`, `Expires`, `Answered` | Built; `Operation` and `Expires` are empty until this step |
+| `Requirement` with `Operation`, `Exception`, `Expires`, `Answered` | Built; filled from the gateway (#44) |
 | Requirements fail closed when they carry no expiry | Built (#32) |
 | `Runner.Collect` hook, and pausing again when it fails | Built (#36) |
 | A run cancelled while held ends CANCELLED once resolved | Built (#36, #38) |
 | Withdraw and expiry alerts in KIFF | Shipped in KIFF (kiff/kiff-cloud#1245) |
 | Signed HMAC alerts, alert targets | Exist in KIFF |
 
-## Open question for whoever takes it
+## Which IDs a requirement stores
 
-ARCHITECTURE.md says outcomes are collected and holds withdrawn "by
-operation ID". KIFF's withdraw goes by `exception_id`. Decide whether a
-requirement stores both, or whether `Operation` holds the exception ID, and
-update ARCHITECTURE.md to match.
+Both (#44). The outcome is collected by `operation` (the gateway's
+`kiff_operation_id`); alerts and withdraw go by `exception`
+(kiff/kiff-cloud#1247). ARCHITECTURE.md says so.

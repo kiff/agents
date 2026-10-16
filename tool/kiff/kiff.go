@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/tool"
@@ -125,9 +126,9 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			Text string `json:"text"`
 		} `json:"content"`
 		IsError bool `json:"isError"`
-		Meta    map[string]struct {
-			State string `json:"state"`
-		} `json:"_meta"`
+		// Meta is kept opaque: the gateway passes other namespaces through
+		// from the tool, and only MetaKey is KIFF's to read.
+		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := t.c.call(ctx, "tools/call", map[string]any{"name": t.spec.Name, "arguments": input}, &res); err != nil {
 		return tool.Result{}, err
@@ -138,7 +139,47 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			text = append(text, c.Text)
 		}
 	}
-	return tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: res.Meta["dev.kiff/call"].State}, nil
+	var m meta
+	if raw, ok := res.Meta[MetaKey]; ok {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return tool.Result{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
+		}
+	}
+	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
+	if m.State == tool.StateHeld {
+		// Only state says whether the call is held. The hold's fields are
+		// read best effort: one KIFF writes in another shape is left empty,
+		// and an empty expiry fails closed, so the run still pauses.
+		out.Hold = &tool.Hold{Operation: str(m.OperationID), Exception: str(m.ExceptionID)}
+		var at string
+		if json.Unmarshal(m.HoldExpiresAt, &at) == nil {
+			if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
+				out.Hold.Expires = t.UTC()
+			}
+		}
+	}
+	return out, nil
+}
+
+// str is raw as a JSON string, or "" when it isn't one.
+func str(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// MetaKey is the result _meta key where the gateway says what happened to a
+// call it wrote the result of.
+const MetaKey = "dev.kiff/call"
+
+// meta is what this client reads at MetaKey.
+type meta struct {
+	State         string          `json:"state"`
+	OperationID   json.RawMessage `json:"operation_id"`
+	ExceptionID   json.RawMessage `json:"exception_id"`
+	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`
 }
 
 // init opens the MCP session once.

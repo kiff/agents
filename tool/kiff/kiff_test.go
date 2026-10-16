@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
@@ -62,14 +63,30 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			}}
 		case "tools/call":
 			var p struct {
-				Name string `json:"name"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
 			}
 			_ = json.Unmarshal(msg.Params, &p)
-			if p.Name == "stripe_refund" {
+			var args map[string]any
+			_ = json.Unmarshal(p.Arguments, &args)
+			if p.Name == "stripe_refund" && args["odd"] == true {
+				// KIFF's hold fields in a shape this client doesn't expect.
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
+						"state": "held", "operation_id": "op-refund-42", "exception_id": "exc_123", "hold_expires_at": 1760605800}}}
+			} else if p.Name == "stripe_refund" {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held: the owner answers on their phone."}},
-					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "held", "sent": "no", "retry": "same_call"}}}
+					"isError": true, "_meta": map[string]any{
+						// A tool's own namespace, passed through by the gateway, with
+						// a field of the same name and another type.
+						"example.com/audit": map[string]any{"hold_expires_at": 1720000000},
+						"dev.kiff/call": map[string]any{
+							"state": "held", "invocation": "tc-01", "operation_id": "op-refund-42", "sent": "no",
+							"exception_id": "exc_123", "review_url": "https://app.kiff.dev/review/exc_123",
+							"hold_expires_at": "2026-10-16T09:10:00Z", "retry": "same_call", "retry_after_s": 30}}}
 			} else {
-				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"id":"ch_1"}`}}}
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"id":"ch_1"}`}},
+					"_meta": map[string]any{"example.com/audit": map[string]any{"hold_expires_at": 1720000000}}}
 			}
 		default:
 			result = nil
@@ -103,12 +120,17 @@ func TestListsAndCallsToolsThroughTheGateway(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := tools[0].Call(context.Background(), json.RawMessage(`{"charge":"ch_1"}`))
-			if err != nil || got.Text != `{"id":"ch_1"}` || got.IsError || got.Held() {
+			if err != nil || got.Text != `{"id":"ch_1"}` || got.IsError || got.Held() || got.Hold != nil {
 				t.Fatalf("read = %+v %v", got, err)
 			}
 			held, err := tools[1].Call(context.Background(), nil)
 			if err != nil || !held.Held() || !held.IsError {
 				t.Fatalf("refund = %+v %v", held, err)
+			}
+			// The held call's handle in KIFF, from the gateway's _meta.
+			wantHold := tool.Hold{Operation: "op-refund-42", Exception: "exc_123", Expires: time.Date(2026, 10, 16, 9, 10, 0, 0, time.UTC)}
+			if held.Hold == nil || *held.Hold != wantHold {
+				t.Fatalf("hold = %+v, want %+v", held.Hold, wantHold)
 			}
 			want := "initialize notifications/initialized tools/list tools/call tools/call"
 			if strings.Join(*methods, " ") != want {
@@ -170,5 +192,23 @@ func TestTheKeyStaysOutOfGatewayErrors(t *testing.T) {
 	_, err = kiff.New(initErr.URL, testKey, initErr.Client()).Tools(context.Background())
 	if err == nil || strings.Contains(err.Error(), testKey) {
 		t.Fatalf("initialize err = %v", err)
+	}
+}
+
+// Only state says a call is held: a hold field KIFF sends in another shape is
+// left empty, and the call is still held, so the run still pauses (and, with
+// no expiry, fails closed) instead of going on as if the call had failed.
+func TestAHoldStaysHeldWhenAFieldDoesntParse(t *testing.T) {
+	srv, _ := gateway(t, false)
+	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := tools[1].Call(context.Background(), json.RawMessage(`{"odd":true}`))
+	if err != nil || !held.Held() || held.Hold == nil {
+		t.Fatalf("got %+v, %v; want it held", held, err)
+	}
+	if *held.Hold != (tool.Hold{Operation: "op-refund-42", Exception: "exc_123"}) {
+		t.Fatalf("hold %+v, want the IDs and no expiry", *held.Hold)
 	}
 }
