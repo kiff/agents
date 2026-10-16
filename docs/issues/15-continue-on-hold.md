@@ -89,6 +89,26 @@ rn := &runner.Runner{Runs: runs, Sessions: sessions, Builder: builder, Collect: 
 r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
 ```
 
+**What the model reads (#PR, for #69).** The model last saw KIFF hold the
+call, and its Card, which the call was outside. A bare tool answer then
+reads as KIFF having sent a call it should have held; the first live run's
+report told the owner exactly that. So each collected result opens with
+what happened, from the answer recorded on the requirement, or with none
+recorded (no alert came), from the collected result:
+
+```text
+approved   KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:
+
+           refunded re_1
+refused    KIFF held this call for the owner, who refused it. It was not sent.
+
+           KIFF said: …
+expired    … the hold expired without an answer. It was not sent.
+withdrawn  … it was withdrawn because the run was asked to stop. It was not sent.
+```
+
+A call that wasn't sent is always an error result.
+
 | Rule | Guarded by |
 |---|---|
 | each call is repeated with its operation ID and its own arguments | `tool/kiff` `TestCollectRepeatsEachCallByItsOperation` |
@@ -98,6 +118,8 @@ r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
 | a call still being decided leaves the run paused, no model turn; collected later | `TestACallStillBeingDecidedLeavesTheRunPaused` |
 | no operation ID, or a tool the agent lacks, is refused before the gateway | `TestCollectRefuses` |
 | held, answered, collected and continued, end to end through the gateway | `TestAHeldRunContinuesThroughTheGateway` |
+| a continued held call's result says it was held and approved, before the tool's answer | `runner` `TestAPausedRunContinues` |
+| approved, refused, expired, withdrawn, and with no answer recorded: each says what happened; one not sent is an error | `runner` `TestHeldOutcome` |
 
 **A run is found by its hold, and KIFF's answer is recorded on it (#49).**
 `Runs.ByHold(ctx, tenant, exception)` finds the run that paused on the call

@@ -572,7 +572,9 @@ func TestAPausedRunContinues(t *testing.T) {
 	}
 	reqs := f.model.requests()
 	last := reqs[len(reqs)-1].Messages
-	if len(last) != 3 || last[2].Blocks[0].Result != "refunded, approved by the owner" {
+	// The held call's result says it was held and approved before the
+	// tool's answer: the model saw the Card it was outside (#69).
+	if len(last) != 3 || last[2].Blocks[0].Result != "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded, approved by the owner" {
 		t.Fatalf("the model continued from %+v", last)
 	}
 	s, _, _ := f.store.Read(ctx, "t1", r.Session)
@@ -1278,5 +1280,32 @@ func TestALastingFailureStoringTheStopIsNotRetried(t *testing.T) {
 	}
 	if took := time.Since(began); took > 2*time.Second {
 		t.Fatalf("took %v: a lost lease was tried again", took)
+	}
+}
+
+// A collected held call says what happened to it, from the answer KIFF
+// recorded, or with none recorded, from what the collect returned (#69).
+func TestHeldOutcome(t *testing.T) {
+	sent := tool.Result{Text: "refunded re_1"}
+	refused := tool.Result{Text: "Refused by KIFF.", IsError: true, State: tool.StateRefused}
+	for name, c := range map[string]struct {
+		answer string
+		res    tool.Result
+		want   string
+		isErr  bool
+	}{
+		"approved":                     {"approved", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
+		"approved, no alert came":      {"", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
+		"approved, the tool failed":    {"approved", tool.Result{Text: "card declined", IsError: true}, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\ncard declined", true},
+		"refused":                      {"refused", refused, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"expired":                      {"expired", refused, "KIFF held this call for the owner, and the hold expired without an answer. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"refused, the result unmarked": {"refused", tool.Result{Text: "Not sent."}, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Not sent.", true},
+		"withdrawn":                    {"invalidated", refused, "KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"not approved, no alert came":  {"", refused, "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+	} {
+		got := runner.HeldOutcome(run.Requirement{CallID: "c1", Answer: c.answer}, c.res)
+		if got.Text != c.want || got.IsError != c.isErr {
+			t.Errorf("%s: %q (error %v)\nwant %q (error %v)", name, got.Text, got.IsError, c.want, c.isErr)
+		}
 	}
 }

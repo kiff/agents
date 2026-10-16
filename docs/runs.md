@@ -129,6 +129,11 @@ for _, q := range r.Requirements {
   a continued run sees.
 - Once KIFF resolves every requirement, `Execute` on the same ID continues
   from `paused`, with each held call's outcome from `Runner.Collect` (#15).
+  Each outcome opens with what happened to the call (`runner.HeldOutcome`),
+  since the model last saw KIFF hold it outside its Card:
+  `KIFF held this call for the owner, who approved it. KIFF then sent it,
+  once. The tool answered: …`, or that it was refused, expired or withdrawn
+  and not sent.
 - Cancelling a paused run withdraws KIFF's held calls first
   (`server.Server.Withdraw`), records what became of each and sets `cancel`;
   it is then claimed again, records the outcomes and ends CANCELLED. A run

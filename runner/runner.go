@@ -22,6 +22,7 @@ import (
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool"
 )
 
 // MaxRun is how long a run may go when its caller set no deadline: Lambda's
@@ -211,8 +212,44 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.repause(ctx, recording, r, fmt.Errorf("collecting its held calls: %w", err))
 	}
+	for i := range held {
+		for _, q := range r.Requirements {
+			if q.CallID == held[i].CallID {
+				held[i].Result = HeldOutcome(q, held[i].Result)
+			}
+		}
+	}
 	out, _, err := agent.Continue(loop, a, recording, history, r, held, emit)
 	return x.stop(ctx, recording, d.Keep, out, err)
+}
+
+// HeldOutcome is a collected held call's result, opening with what happened
+// to the call. The model last saw KIFF hold it, and its Card, which the call
+// was outside; a bare tool answer then reads as KIFF having sent a call it
+// should have held. The answer recorded on the requirement says which, or,
+// with none recorded (no alert came), the collected result: KIFF sends a held
+// call only once the owner approves it.
+func HeldOutcome(q run.Requirement, res tool.Result) tool.Result {
+	notSent := ""
+	switch q.Answer {
+	case "refused", "rejected":
+		notSent = "KIFF held this call for the owner, who refused it. It was not sent."
+	case "expired":
+		notSent = "KIFF held this call for the owner, and the hold expired without an answer. It was not sent."
+	case "invalidated", "withdrawn":
+		notSent = "KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent."
+	default:
+		if res.State == tool.StateRefused {
+			notSent = "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent."
+		}
+	}
+	if notSent != "" {
+		res.Text = notSent + "\n\nKIFF said: " + res.Text
+		res.IsError = true
+		return res
+	}
+	res.Text = "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\n" + res.Text
+	return res
 }
 
 // Ended ends what a run left open when its invocation is gone: its recording,
