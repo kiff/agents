@@ -65,11 +65,17 @@ func Withdraw(ctx context.Context, hc *http.Client, apiURL, key, exception strin
 		w.Withdrawn = true
 		return w, nil
 	case http.StatusConflict:
+		// Only KIFF's already_answered, with the hold's status, says what
+		// became of the call; any other conflict leaves it unknown.
 		var c struct {
-			Hold Withdrawal `json:"hold"`
+			Error string     `json:"error"`
+			Hold  Withdrawal `json:"hold"`
 		}
 		if err := json.Unmarshal(body, &c); err != nil {
 			return Withdrawal{}, fmt.Errorf("kiff: withdraw %s: %w", exception, err)
+		}
+		if c.Error != "already_answered" || c.Hold.Status == "" {
+			return Withdrawal{}, fmt.Errorf("kiff: withdraw %s: KIFF answered 409 %q", exception, c.Error)
 		}
 		c.Hold.Withdrawn = false
 		return c.Hold, nil

@@ -176,13 +176,21 @@ claim holds (up to `run.SaveTries`, 5); the run it returns shows `Cancel`.
 ## The sweep
 
 ```go
-sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Expires: expiresFromKeepRules}
+sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Expires: expiresFromKeepRules,
+	Continue: executeInBackground}
 n, err := sw.Sweep(ctx, time.Now(), 100)
 ```
 
 Marks ERROR (or CANCELLED, if asked to stop) a RUNNING run whose lease ran
 out, and a PENDING run not claimed within `run.PendingTimeout` (5 min). `Ended`
 ends the run's recording first.
+
+Then, read apart (`Runs.DuePaused`), PAUSED runs due `run.ResolvedGrace`
+(1 min) after their last requirement is answered or expires: the sweep calls
+`Continue` for each. One still paused is looked at again after 2, 4, 8 …
+minutes, up to an hour (`retries`, `retry`). A day after it resolved
+(`run.PausedGiveUp`), the sweep claims it, ends its recording and marks it
+ERROR.
 
 ## Listing
 
@@ -214,7 +222,8 @@ One table, `pk`/`sk`, TTL on `ttl`, on-demand. Key parts are length-prefixed
 | `R\|tenant\|id` | `T\|n` | part n of the paused turn (300 KB parts, 3 MB max) |
 | `L\|tenant\|agent` | `created\|id` | an agent's runs |
 | `O\|tenant\|trigger\|source` | `created\|id` | one source's runs |
-| `W` | `due\|tenant\|id` | runs the sweep must look at |
+| `W` | `due\|tenant\|id` | RUNNING and PENDING runs the sweep must look at |
+| `WP` | `due\|tenant\|id` | PAUSED runs the sweep must look at |
 
 An ended run carries a TTL on every item from its `expires`. Local tests:
 `DYNAMODB_ENDPOINT=http://localhost:8000 go test ./store/dynamodb/`.

@@ -1,7 +1,7 @@
 # Continue on a hold: what #15 delivers
 
 **Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
-**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers), [#50](https://github.com/kiff/agents/pull/50) (the alerts handler)
+**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers), [#50](https://github.com/kiff/agents/pull/50) (the alerts handler), [#51](https://github.com/kiff/agents/pull/51) (withdraw), [#52](https://github.com/kiff/agents/pull/52) (expiry in the sweep)
 
 ## What it's for
 
@@ -184,13 +184,59 @@ IAM auth that serves this route only. `Accounts` reads Secrets Manager, and
 `Continue` sends the run to the agents function as a background run event
 (#13: [KIFF's alerts](13-server.md#kiffs-alerts)).
 
+**The sweep continues a resolved run (#52).** A PAUSED run is due one
+minute (`run.ResolvedGrace`) after its last requirement is answered or
+expires. The sweep continues it then, in case no alert did: KIFF's expiry
+alert was lost, or the alert's own continue failed.
+
+```go
+sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Expires: keep,
+	Continue: func(ctx context.Context, tenant, id string) error {
+		return invokeAsync(ctx, tenant, id) // Execute in the background
+	}}
+n, err := sw.Sweep(ctx, time.Now(), 100) // marked or continued
+```
+
+```text
+requirement c1  expires 09:10            c2  answered 09:04
+run due         09:11  (latest resolution + 1 min)
+sweep 09:12     retries 1, retry 09:14; Continue("t1", run)
+still paused    looked at again 09:14, 09:18, 09:26 … then hourly
+```
+
+- Paused runs are a queue of their own (`Runs.DuePaused`). Each sweep reads
+  up to `limit` RUNNING and PENDING runs first, then up to `limit` paused
+  ones, so paused runs never hold up crash recovery.
+- Before each continue the sweep stores `retries` and `retry`: the next look
+  waits 2, 4, 8 … minutes, up to an hour (`run.MaxRetryWait`). That's about
+  30 looks a day for a run that stays paused (KIFF says not final, its agent
+  is gone). It backs off with `Continue` nil too. A new pause starts from
+  zero; a pause after a failed collect keeps it.
+- A requirement with no expiry and no answer keeps its run off the sweep:
+  only an answer resolves it.
+- A day after it resolved (`run.PausedGiveUp`), a run still paused is
+  claimed by the sweep (`run.SweepClaim`), its recording is ended, and it is
+  marked ERROR, `"it could not continue once KIFF resolved its held calls"`,
+  or CANCELLED if it was asked to stop. The claim is a compare-and-set on
+  the run the sweep read, so a continue that claimed it first wins, and its
+  recording is never ended under it.
+
+| Rule | Guarded by |
+|---|---|
+| due at the latest answer or expiry plus the grace, or at `retry` once later; never, with an open requirement that doesn't expire | `run` `TestDue` |
+| the sweep continues a resolved paused run, then backs off (2, 4 … min); a failed continue is an error; a day later ERROR, recording ended | `runtest` `SweepContinuesAResolvedPausedRun` (memory, DynamoDB) |
+| more resolved paused runs than `limit` don't stop a lost lease or an unclaimed run being marked; they back off with no `Continue` | `runtest` `PausedRunsNeverHoldUpCrashRecovery` |
+| a continue that claims the run before the give-up wins; no recording ended | `runtest` `AGiveUpNeverEndsAContinuedRun` |
+| a pause after a failed collect keeps the backoff; a new held call resets it | `runner` `TestANewPauseResetsTheSweepsBackoff` |
+| an expired hold, swept: collected, continued, COMPLETED; KIFF down for a day: ERROR | `runner` `TestTheSweepContinuesARunWhoseHoldExpired` |
+
 ## Still to deliver
 
 - **`POST /agents/{id}/runs/{run_id}/continue`**: a repeat of a continue
   already applied gets 200; any other continue on a run that isn't PAUSED
   gets 409. A held call is never collected twice.
-- **Expiry in the sweep:** a requirement whose hold expired with no answer
-  recorded is asked of KIFF, and the run continues with the outcome.
+- **Wiring the sweep's `Continue`** in `cmd/lambda` (#13's lane): the same
+  background invoke the alerts route uses.
 - **Cancelling a paused run** withdraws its held calls in KIFF first, so an
   answer that comes later forwards nothing. The cancel route answers 409 for
   a paused run until then. Removing an agent does the same before deleting
@@ -206,7 +252,8 @@ IAM auth that serves this route only. `Accounts` reads Secrets Manager, and
     | KIFF answers | `Withdraw` returns |
     |---|---|
     | 200 (and 200 again on a repeat) | `Withdrawal{Withdrawn: true, Status: "invalidated"}` |
-    | 409 `already_answered` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
+    | 409 `already_answered`, with `hold.status` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
+    | 409 with another `error`, or no status | an error: KIFF didn't say what became of the call |
     | 404 | `kiff.ErrNoHold` |
     | anything else | an error, never carrying the key |
 

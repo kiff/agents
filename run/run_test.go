@@ -112,6 +112,30 @@ func TestDue(t *testing.T) {
 			t.Fatalf("%s: due %v, want none", s, r.Due())
 		}
 	}
+	r.Status = run.Paused
+	r.Requirements = []run.Requirement{
+		{CallID: "c1", Expires: at.Add(2 * time.Hour), Answered: at.Add(time.Minute)},
+		{CallID: "c2", Expires: at.Add(time.Hour)},
+	}
+	if !r.Due().Equal(at.Add(time.Hour + run.ResolvedGrace)) {
+		t.Fatalf("paused: due %v, want the last requirement's resolution plus the grace", r.Due())
+	}
+	r.Requirements[1].Answered = at.Add(3 * time.Hour)
+	if !r.Due().Equal(at.Add(3*time.Hour + run.ResolvedGrace)) {
+		t.Fatalf("paused, answered after: due %v", r.Due())
+	}
+	r.Retry = at.Add(5 * time.Hour)
+	if !r.Due().Equal(r.Retry) {
+		t.Fatalf("paused, continued by the sweep: due %v, want its retry", r.Due())
+	}
+	r.Retry = at.Add(2 * time.Hour)
+	if !r.Due().Equal(at.Add(3*time.Hour + run.ResolvedGrace)) {
+		t.Fatalf("paused, retry before its resolution: due %v", r.Due())
+	}
+	r.Requirements = append(r.Requirements, run.Requirement{CallID: "c3"})
+	if !r.Due().IsZero() {
+		t.Fatalf("paused on a requirement that never expires: due %v, want none", r.Due())
+	}
 }
 
 // A cancelled run isn't claimed: it stops before it starts.

@@ -21,6 +21,20 @@ const LeaseGrace = time.Minute
 // session.MaxStartDelay, so a run that is claimed can always start recording.
 const PendingTimeout = 5 * time.Minute
 
+// ResolvedGrace is how long after its last requirement resolved a PAUSED run
+// is due: time for KIFF to record a hold's expiry, so collecting finds it
+// final, and for an alert's own continue to claim the run first.
+const ResolvedGrace = time.Minute
+
+// MaxRetryWait is the longest the sweep waits between continues of a
+// resolved PAUSED run that stays paused.
+const MaxRetryWait = time.Hour
+
+// PausedGiveUp is how long the sweep keeps continuing a resolved PAUSED run
+// that stays paused (its agent is gone, or KIFF keeps saying "not final")
+// before it marks the run ERROR.
+const PausedGiveUp = 24 * time.Hour
+
 // ErrNotFound means no such run for this tenant; ErrExists, that Create found
 // one; ErrConflict, that the run changed since it was read (read it again);
 // ErrTransition, that its status can't move as asked; ErrLeaseLost, that the
@@ -69,15 +83,55 @@ func CanMove(from, to Status) bool {
 }
 
 // Due is when the sweep must look at the run, or zero: a RUNNING run when its
-// lease runs out, a PENDING one when its wait for a claim does.
+// lease runs out, a PENDING one when its wait for a claim does, and a PAUSED
+// one ResolvedGrace after its last requirement is answered or expires, or at
+// its Retry if the sweep has continued it already. A
+// paused run with an unanswered requirement that never expires is never due:
+// only an answer resolves it.
 func (r Run) Due() time.Time {
 	switch r.Status {
 	case Running:
 		return r.Lease
 	case Pending:
 		return r.Created.Add(PendingTimeout)
+	case Paused:
+		at := r.resolved()
+		if at.IsZero() {
+			return time.Time{}
+		}
+		if due := at.Add(ResolvedGrace); !r.Retry.After(due) {
+			return due
+		}
+		return r.Retry
 	}
 	return time.Time{}
+}
+
+// resolved is when the last of the run's requirements was answered or
+// expires, or zero: no requirements, or one with neither.
+func (r Run) resolved() time.Time {
+	var last time.Time
+	for _, q := range r.Requirements {
+		at := q.Answered
+		if at.IsZero() {
+			at = q.Expires
+		}
+		if at.IsZero() {
+			return time.Time{}
+		}
+		if at.After(last) {
+			last = at
+		}
+	}
+	return last
+}
+
+// retryWait is how long the sweep waits after its nth continue of a run.
+func retryWait(n int) time.Duration {
+	if n > 10 {
+		return MaxRetryWait
+	}
+	return min(ResolvedGrace<<n, MaxRetryWait)
 }
 
 // Runs keeps runs. Every call names the tenant, so one tenant never reaches
@@ -103,9 +157,11 @@ type Runs interface {
 	// first, at most limit, without their paused turn. An empty source lists
 	// nothing.
 	ListSource(ctx context.Context, tenant string, trigger Trigger, source string, limit int) ([]Run, error)
-	// Due returns runs whose Due is before now, across tenants, the oldest
-	// due first, at most limit, without their paused turn.
+	// Due returns RUNNING and PENDING runs whose Due is before now, across
+	// tenants, the oldest due first, at most limit, without their paused turn.
 	Due(ctx context.Context, now time.Time, limit int) ([]Run, error)
+	// DuePaused is Due for PAUSED runs.
+	DuePaused(ctx context.Context, now time.Time, limit int) ([]Run, error)
 	// Delete removes a run; DeleteAgent, all of an agent's runs.
 	Delete(ctx context.Context, tenant, id string) error
 	DeleteAgent(ctx context.Context, tenant, agent string) error
@@ -154,8 +210,6 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	return next, nil
 }
 
-// clone is r with its own copy of everything a change could edit in place:
-// the requirements and the paused turn, with their inputs and results.
 // HoldsOf is every hold the runs have named: their Holds and their
 // requirements' exceptions, in order, once each.
 func HoldsOf(runs ...Run) []string {
@@ -176,6 +230,8 @@ func HoldsOf(runs ...Run) []string {
 	return out
 }
 
+// clone is r with its own copy of everything a change could edit in place:
+// the requirements and the paused turn, with their inputs and results.
 func (r Run) clone() Run {
 	c := r
 	c.Holds = slices.Clone(r.Holds)
@@ -279,40 +335,58 @@ func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run
 
 // Sweeper marks ended the runs nobody is left to end: a RUNNING run whose
 // lease ran out (its invocation crashed or timed out, and can't write ERROR
-// itself), and a PENDING run no invocation claimed within PendingTimeout.
+// itself), and a PENDING run no invocation claimed within PendingTimeout. It
+// continues a PAUSED run whose requirements have all resolved, in case no
+// alert did (a hold that expired, or an alert's continue that failed), and
+// marks one that is still paused PausedGiveUp later.
 type Sweeper struct {
 	Runs Runs
-	// Ended ends what else a RUNNING run left open (its recording), before
-	// the run is marked: if it fails, the run stays due, and the next sweep
-	// tries again. It must accept a run whose recording has ended already.
-	// A PENDING run has begun no recording, so it isn't called for one.
+	// Ended ends what else a RUNNING or PAUSED run left open (its recording),
+	// before the run is marked: if it fails, the run stays due, and the next
+	// sweep tries again. It must accept a run whose recording has ended
+	// already. A PENDING run has begun no recording, so it isn't called for one.
 	Ended func(ctx context.Context, r Run) error
+	// Continue executes a resolved PAUSED run, in the background: it claims
+	// the run, collects its held calls' outcomes and carries on. Nil: paused
+	// runs are left to their alerts until PausedGiveUp. A run that stays
+	// paused is continued again, after a wait that doubles (Retry).
+	Continue func(ctx context.Context, tenant, id string) error
 	// Expires is when a run the sweep ends may go, from its agent's keep
 	// rules (nil, or zero: kept until deleted).
 	Expires func(r Run) time.Time
 }
 
-// Sweep marks every run whose Due has passed, at most limit: ERROR, or
-// CANCELLED if it was asked to stop. A run that moved on meanwhile is left
-// alone. It returns how many runs it marked; errors are joined.
+// Sweep looks at every run whose Due has passed: at most limit RUNNING and
+// PENDING runs, which it marks ERROR (or CANCELLED if asked to stop), and
+// then at most limit PAUSED ones, which it continues, or past PausedGiveUp
+// marks. The two are read apart, so paused runs never keep crash recovery
+// waiting. A run that moved on meanwhile is left alone. It returns how many
+// runs it marked or continued; errors are joined.
 func (sw Sweeper) Sweep(ctx context.Context, now time.Time, limit int) (int, error) {
-	due, err := sw.Runs.Due(ctx, now, limit)
-	if err != nil {
-		return 0, err
-	}
 	var errs []error
-	marked := 0
-	for _, d := range due {
-		ok, err := sw.mark(ctx, d, now)
+	done := 0
+	for _, due := range []func(context.Context, time.Time, int) ([]Run, error){sw.Runs.Due, sw.Runs.DuePaused} {
+		runs, err := due(ctx, now, limit)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("run %s: %w", d.ID, err))
+			errs = append(errs, err)
+			continue
 		}
-		if ok {
-			marked++
+		for _, d := range runs {
+			ok, err := sw.mark(ctx, d, now)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("run %s: %w", d.ID, err))
+			}
+			if ok {
+				done++
+			}
 		}
 	}
-	return marked, errors.Join(errs...)
+	return done, errors.Join(errs...)
 }
+
+// SweepClaim is the claim the sweep holds on a PAUSED run it gives up on,
+// while it ends the run's recording.
+const SweepClaim = "sweep"
 
 // mark ends one due run, read again whole: Due leaves out the paused turn,
 // which a run continued from PAUSED still holds until its first Save.
@@ -325,16 +399,35 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, err
 	case r.Due().IsZero() || !r.Due().Before(now):
 		return false, nil // it moved on meanwhile
+	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
+		return sw.retry(ctx, r, now)
 	}
-	if r.Status == Running && sw.Ended != nil {
-		if err := sw.Ended(ctx, r); err != nil {
+	paused := r.Status == Paused
+	if paused {
+		// Claimed first, as of the run read: a continue that claimed it
+		// since wins, and its recording is never ended under it.
+		r, err = Change(ctx, sw.Runs, r, now, func(n *Run) error {
+			n.Status, n.Claim, n.Lease = Running, SweepClaim, now.UTC().Add(LeaseGrace)
+			return nil
+		})
+		switch {
+		case errors.Is(err, ErrConflict):
+			return false, nil
+		case err != nil:
 			return false, err
 		}
 	}
-	_, err = Change(ctx, sw.Runs, r, now, func(n *Run) error {
+	if r.Status != Pending && sw.Ended != nil {
+		if err := sw.Ended(ctx, r); err != nil {
+			return false, err // a paused run's claim runs out, and the next sweep marks it
+		}
+	}
+	end := func(n *Run) error {
 		switch {
 		case r.Cancel:
 			n.Status = Cancelled
+		case paused:
+			n.Status, n.Error = Error, "it could not continue once KIFF resolved its held calls"
 		case r.Status == Running:
 			n.Status, n.Error = Error, "its lease ran out: the invocation crashed or timed out"
 		default:
@@ -344,11 +437,40 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 			n.Expires = sw.Expires(r)
 		}
 		return nil
-	})
-	if errors.Is(err, ErrConflict) {
+	}
+	if paused {
+		_, err = Save(ctx, sw.Runs, r, now, end)
+	} else {
+		_, err = Change(ctx, sw.Runs, r, now, end)
+	}
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrLeaseLost) {
 		return false, nil // it moved on meanwhile: not ours to mark
 	}
 	return err == nil, err
+}
+
+// retry pushes a resolved PAUSED run's next look out, then hands it to
+// Continue. The next look is stored first: if the run stays paused, or
+// nothing continues it, it waits longer each time, and runs due after it
+// are swept.
+func (sw Sweeper) retry(ctx context.Context, r Run, now time.Time) (bool, error) {
+	r, err := Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		n.Retries++
+		n.Retry = now.Add(retryWait(n.Retries))
+		return nil
+	})
+	switch {
+	case errors.Is(err, ErrConflict):
+		return false, nil // it moved on meanwhile
+	case err != nil:
+		return false, err
+	case sw.Continue == nil:
+		return false, nil
+	}
+	if err := sw.Continue(ctx, r.Tenant, r.ID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Answer records KIFF's answer on the requirement whose hold is exception:
