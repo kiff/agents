@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
-**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), #59 (withdraw on Lambda), this page's PR (`AGENTS_KIFF_API`)
+**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, KIFF's alerts have their own function, and a tenant's active runs are capped (429). Nothing is deployed.
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), #59 (withdraw on Lambda), #63 (`AGENTS_KIFF_API`), this page's PR (the 429 cap)
 
 ## What it's for
 
@@ -79,7 +79,45 @@ without `end` (the client went, or a read failed): read the run, or resume.
 | 405 | A route that exists, with the wrong method, with `Allow` (#39) |
 | 409 | A run that can't take the action, a transition in progress, a schedule that exists: read it again |
 | 413 | A body over 4 MB |
+| 429 | The tenant has as many runs going as it may (below), with `Retry-After: 30` |
 | 500 | Says only "internal error". The cause goes to the log, never to the caller |
+
+### The cap on a tenant's runs
+
+A tenant may have at most `MaxActive` runs going at once: PENDING or RUNNING
+(`run.Run.Active`). A PAUSED run waits on KIFF and holds no place. On Lambda
+it is `AGENTS_TENANT_RUNS`, 10 by default.
+
+A request that would start one more answers 429, starts nothing, and says
+when to try again:
+
+```http
+POST /agents/payouts/runs
+
+429 Retry-After: 30
+{"error":"the tenant has 10 runs going and may have 10: wait for one to end, then try again"}
+```
+
+- **Capped:** `POST /agents/{id}/runs`, `POST /schedules/{id}/trigger`,
+  `POST /agents/{id}/events` for a new event, and
+  `POST /agents/{id}/runs/{run_id}/continue`.
+- **Not capped:** an event delivered again, which gets the run it started;
+  a schedule's firing and the sweep's continue, which have nobody to answer
+  and go on.
+- **One way in.** Every route starts its runs through `Server.start`, which
+  holds the cap; `TestEveryStartIsCapped` fails if a route calls
+  `Runner.Start` itself. A continue doesn't start a run, and checks the cap
+  on its own.
+- **The count** is `run.Runs.CountActive`. In DynamoDB, an active run has an
+  item under `X|<tenant>`, written and removed in the same transaction as
+  the status that makes it active or not, so the count is one key-only
+  query. It reads consistently, so a run that just started is counted and
+  one that just ended isn't.
+- **No backfill.** The items arrive with this change, before the first
+  deploy, so no stored run lacks one. A table that already held active runs
+  would undercount until they ended.
+- **It's a soft cap.** Requests in flight at once may each see room, so the
+  cap can be overrun by as many requests as arrive together.
 
 ### Removing an agent
 
@@ -278,6 +316,7 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_TABLE` | The DynamoDB table |
 | `AGENTS_CALLERS` | Assumed-role ARN prefixes allowed to call, comma-separated |
 | `AGENTS_GATEWAYS` | The gateways an agent may name; KIFF's by default |
+| `AGENTS_TENANT_RUNS` | How many runs a tenant may have going at once (PENDING or RUNNING); 10 by default, a whole number from 1 |
 | `AGENTS_KIFF_API` | The KIFF API held calls are withdrawn from, `https://` and a host only; `https://api.kiff.dev` by default. Required when `AGENTS_GATEWAYS` is set, so a withdrawal never sends an agent's key to another KIFF than the one holding its calls |
 | `SCHEDULE_GROUP`, `SCHEDULE_TARGET`, `SCHEDULE_ROLE` | EventBridge Scheduler's group, the function each firing invokes, and the role it invokes with |
 | `AGENTS_SECRETS_PREFIX` | The name prefix of the agents' KIFF keys in Secrets Manager |
@@ -314,6 +353,11 @@ function is the only guard on who the caller is:
 |---|---|
 | Every route but `/health` needs a verified caller; the tenant comes from it | `TestEveryRouteNeedsAVerifiedCaller`, `TestACallerWithNoTenantIsRefused`, `TestPutAgentTakesTheTenantFromTheCaller` |
 | Only a configured role's tenant header is trusted, and no role entry can match others | `TestAuthTrustsTheTenantOnlyFromACallerRole`, `TestAuthRefusesARoleThatCouldMatchOthers` |
+| A tenant's active runs are capped: start, trigger, a new event and continue are 429 with `Retry-After`; another tenant, an event delivered again and a freed place go on | `TestATenantsActiveRunsAreCapped` |
+| A tenant's PENDING and RUNNING runs are counted, in that tenant only, through start, claim, pause, continue, end, sweep and delete | `ActiveRunsAreCounted` (runtest, both stores) |
+| `AGENTS_TENANT_RUNS` is 10 by default, and a whole number from 1 | `TestSetupNeedsItsConfiguration` |
+| Every route starts runs through the capped `Server.start` | `TestEveryStartIsCapped` |
+| The count reads consistently, on every page | `TestTheActiveCountReadsConsistently` (store/dynamodb) |
 | Internal errors and private causes stay inside | `TestInternalErrorsStayInside`, `TestServeKeepsAPanicPrivate` |
 | Removing an agent removes what's kept for it, runs included | `TestDeleteAgentRemovesWhatIsKeptForIt`, `TestDeleteAgentDeletesItsRuns` |
 | A run streams `run`, `delta`, `event` (with its `Seq` as `id`) and `end`, and resumes from the last cursor | `TestStartStreamsTheRun`, `TestStartThenResumeFromTheLastCursor`, `TestResumeReplaysThenFollows` |
@@ -356,8 +400,6 @@ Tests drive the routes against `store/memory`. No test touches AWS.
   crash or a timeout leaves the run PENDING or RUNNING, and the sweep ends it
   (a PENDING run after 5 minutes, a RUNNING one once its lease runs out).
   A destination would only end it sooner.
-- **429 at the tenant's concurrency cap.** The run store can't count a
-  tenant's running runs yet.
 - **The `continue` route and cancelling a paused run** are
   [#15](15-continue-on-hold.md)'s; `/evals`, `/usage` and `/ops/*` are
   [#14](14-console.md)'s.

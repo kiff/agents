@@ -299,7 +299,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rn, err := s.Runner.Start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input})
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input})
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -358,6 +358,12 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
 			return
 		}
+	}
+	// Continued, the run is active again. The sweep would continue it too,
+	// uncapped: a 429 here only asks the caller not to add one more now.
+	if err := s.room(ctx, c.Tenant); err != nil {
+		s.fail(w, r, err)
+		return
 	}
 	if body.Background {
 		// A failed hand-off leaves the run paused; the sweep continues it.
@@ -636,7 +642,7 @@ func (s *Server) triggerSchedule(ctx context.Context, c Caller, r *http.Request)
 	if err != nil {
 		return 0, nil, err
 	}
-	rn, err := s.Runner.Start(ctx, Start{Tenant: c.Tenant, Agent: sc.Agent, Trigger: run.BySchedule, Source: id, Input: sc.Input})
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: sc.Agent, Trigger: run.BySchedule, Source: id, Input: sc.Input})
 	if err != nil {
 		return 0, nil, err
 	}
@@ -695,7 +701,7 @@ func (s *Server) startEvent(ctx context.Context, c Caller, r *http.Request) (int
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
-	rn, err := s.Runner.Start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByEvent, Source: body.Source,
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByEvent, Source: body.Source,
 		Input: body.Input, ID: EventRunID(c.Tenant, id, body.Key)})
 	switch {
 	case errors.Is(err, run.ErrExists) && rn.Status != run.Pending:
@@ -711,6 +717,42 @@ func (s *Server) startEvent(ctx context.Context, c Caller, r *http.Request) (int
 		return 0, nil, err
 	}
 	return http.StatusAccepted, viewRun(rn), nil
+}
+
+// start is how every route starts a run: through the tenant's cap
+// (MaxActive). A named run already stored is returned with run.ErrExists, as
+// Runner.Start would, before the cap: a delivery again of an event already
+// started gets its run, cap or not. TestEveryStartIsCapped keeps routes from
+// calling Runner.Start themselves.
+func (s *Server) start(ctx context.Context, st Start) (run.Run, error) {
+	if st.ID != "" {
+		rn, err := s.Runs.Get(ctx, st.Tenant, st.ID)
+		switch {
+		case err == nil:
+			return rn, run.ErrExists
+		case !errors.Is(err, run.ErrNotFound):
+			return run.Run{}, err
+		}
+	}
+	if err := s.room(ctx, st.Tenant); err != nil {
+		return run.Run{}, err
+	}
+	return s.Runner.Start(ctx, st)
+}
+
+// room refuses one more active run for tenant at its cap (MaxActive).
+func (s *Server) room(ctx context.Context, tenant string) error {
+	if s.MaxActive <= 0 {
+		return nil
+	}
+	n, err := s.Runs.CountActive(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	if n >= s.MaxActive {
+		return tooManyError{n: n, max: s.MaxActive}
+	}
+	return nil
 }
 
 // sourceName reports whether name is an event source's name.

@@ -63,6 +63,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"EndedRunsExpire", endedRunsExpire},
 		{"TenantsAreApart", tenantsAreApart},
 		{"DeleteAgentLeavesNothing", deleteAgentLeavesNothing},
+		{"ActiveRunsAreCounted", activeRunsAreCounted},
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -1205,4 +1206,56 @@ func aRunPausedTwiceKeepsBothHolds(t *testing.T, s run.Runs, c *clock) {
 	if found, err := s.ByHold(ctx, "t1", "exc_1"); err != nil || found.ID != r.ID {
 		t.Fatalf("the first hold after the end: %+v, %v", found, err)
 	}
+}
+
+// activeRunsAreCounted: a tenant's PENDING and RUNNING runs are counted, in
+// that tenant only, from every way a run comes and goes: started, claimed,
+// paused, continued, ended, swept, deleted.
+func activeRunsAreCounted(t *testing.T, s run.Runs, c *clock) {
+	count := func(tenant string, want int, when string) {
+		t.Helper()
+		if n, err := s.CountActive(ctx, tenant); err != nil || n != want {
+			t.Fatalf("%s: %s has %d active (%v), want %d", when, tenant, n, err, want)
+		}
+	}
+	count("t1", 0, "an empty store")
+	created(t, s, c, "t1", "refunds")
+	running := claimed(t, s, c)
+	created(t, s, c, "t2", "refunds")
+	count("t1", 2, "one PENDING, one RUNNING")
+	count("t2", 1, "another tenant's")
+	count("t3", 0, "a tenant with no runs")
+
+	paused, err := run.Save(ctx, s, running, c.now(), func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Operation: "op_1", Expires: c.now()}}
+		return nil
+	})
+	check(t, err)
+	count("t1", 1, "a run paused")
+	c.add(time.Second)
+	again, err := run.Claim(ctx, s, "t1", paused.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	count("t1", 2, "the paused run continued")
+	_, err = run.Save(ctx, s, again, c.now(), set(run.Completed))
+	check(t, err)
+	count("t1", 1, "a run completed")
+
+	claimed(t, s, c)
+	count("t1", 2, "another claimed")
+	c.add(16*time.Minute + run.LeaseGrace + run.PendingTimeout)
+	_, err = run.Sweeper{Runs: s}.Sweep(ctx, c.now(), 10)
+	check(t, err)
+	count("t1", 0, "the sweep ended the crashed run and the unclaimed one")
+	count("t2", 0, "the sweep ended t2's unclaimed run")
+
+	fresh := created(t, s, c, "t1", "refunds")
+	count("t1", 1, "a new run")
+	check(t, s.Delete(ctx, "t1", fresh.ID))
+	count("t1", 0, "the run deleted")
+	created(t, s, c, "t1", "refunds")
+	claimed(t, s, c)
+	count("t1", 2, "two more")
+	check(t, s.DeleteAgent(ctx, "t1", "refunds"))
+	count("t1", 0, "the agent removed")
 }

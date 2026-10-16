@@ -82,6 +82,10 @@ func CanMove(from, to Status) bool {
 	return false
 }
 
+// Active reports whether the run holds one of its tenant's places: PENDING
+// or RUNNING. A PAUSED run waits on KIFF and holds none.
+func (r Run) Active() bool { return r.Status == Pending || r.Status == Running }
+
 // Due is when the sweep must look at the run, or zero: a RUNNING run when its
 // lease runs out, a PENDING one when its wait for a claim does, and a PAUSED
 // one ResolvedGrace after its last requirement is answered or expires, or at
@@ -168,6 +172,9 @@ type Runs interface {
 	Due(ctx context.Context, now time.Time, limit int) ([]Run, error)
 	// DuePaused is Due for PAUSED runs.
 	DuePaused(ctx context.Context, now time.Time, limit int) ([]Run, error)
+	// CountActive returns how many of the tenant's runs are Active: what
+	// the server's per-tenant cap counts.
+	CountActive(ctx context.Context, tenant string) (int, error)
 	// Delete removes a run; DeleteAgent, all of an agent's runs.
 	Delete(ctx context.Context, tenant, id string) error
 	DeleteAgent(ctx context.Context, tenant, agent string) error
