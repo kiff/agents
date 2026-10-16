@@ -602,3 +602,65 @@ func TestAToolCallRecordsWhereItWent(t *testing.T) {
 		t.Fatalf("recorded servers %v", servers)
 	}
 }
+
+// thinking is an opaque thinking block, as a provider returns one.
+var thinking = model.Block{Kind: model.Thinking, Text: "The refund is under the Card.", Signature: "sig-abc"}
+
+// A model's thinking goes back to it in place, before the tool call it came
+// with: the next turn replays the reply exactly as it came (#68).
+func TestThinkingGoesBackInPlace(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	call := use("c1", "stripe_refund", `{"charge":"ch_1"}`)
+	call.Blocks = append([]model.Block{thinking}, call.Blocks...)
+	m := &script{replies: []model.Reply{call, say("Refunded ch_1.")}}
+	_, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund), r, nil, "Refund ch_1.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.reqs[1].Messages[1].Blocks; len(got) != 2 || !reflect.DeepEqual(got[0], thinking) || got[1].Kind != model.ToolUse {
+		t.Fatalf("the second turn replayed %+v", got)
+	}
+}
+
+// A paused turn keeps its thinking, so the continued run sends it back too.
+func TestAPausedTurnKeepsItsThinking(t *testing.T) {
+	refund := heldRefund()
+	call := use("c1", "stripe_refund", `{"charge":"ch_big"}`)
+	call.Blocks = append([]model.Block{thinking}, call.Blocks...)
+	m := &script{replies: []model.Reply{call, say("Waiting for your answer.")}}
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m, refund), r, nil, "Refund ch_big.", nil)
+	if err != nil || out.Stop != agent.Paused {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+	b, _ := json.Marshal(out.Turn) // as the run store keeps it
+	var kept run.Turn
+	if err := json.Unmarshal(b, &kept); err != nil || !reflect.DeepEqual(kept.Reply.Blocks[0], thinking) {
+		t.Fatalf("the paused turn kept %+v, %v", kept.Reply.Blocks, err)
+	}
+}
+
+// A turn a safety classifier refused stops the run as refused, with the
+// category it was refused for (#68).
+func TestARefusedTurnStopsTheRun(t *testing.T) {
+	m := &script{replies: []model.Reply{{Stop: model.Refused, Refusal: "cyber", Usage: model.Usage{InputTokens: 1000}}}}
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m), r, nil, "x", nil)
+	if err != nil || out.Stop != agent.Refused || out.Refusal != "cyber" {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+}
+
+// The agent's effort goes on every turn.
+func TestEffortGoesOnEveryTurn(t *testing.T) {
+	m := &script{replies: []model.Reply{say("Hi.")}}
+	_, r := start(t, session.KindRun)
+	a := newAgent(m)
+	a.Effort = "high"
+	if _, _, err := agent.Run(context.Background(), a, r, nil, "x", nil); err != nil {
+		t.Fatal(err)
+	}
+	if m.reqs[0].Effort != "high" {
+		t.Fatalf("effort %q", m.reqs[0].Effort)
+	}
+}

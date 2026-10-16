@@ -18,11 +18,17 @@ import (
 //
 //	ANTHROPIC_API_KEY=… AGENTS_LIVE_MODEL=claude-opus-5-5 go test -run Live ./model/anthropic/
 //
-// Run it on the model agents run on in production: with thinking on, the
-// replayed tool calls come without their thinking, which is what it checks.
-// MaxTokens leaves room for thinking, so a turn fails only for what it tests.
+// Run it on the model agents run on in production. Every turn goes at
+// AGENTS_LIVE_EFFORT (default high), as tafs runs, and the replayed tool call
+// comes with the thinking it was made with, in place, which the API requires
+// (#68); the test logs how many thinking blocks went back. MaxTokens leaves
+// room for thinking, so a turn fails only for what it tests.
 func TestLiveTurn(t *testing.T) {
 	modelID := os.Getenv("AGENTS_LIVE_MODEL")
+	effort := os.Getenv("AGENTS_LIVE_EFFORT")
+	if effort == "" {
+		effort = "high"
+	}
 	if os.Getenv("ANTHROPIC_API_KEY") == "" || modelID == "" {
 		t.Skip("set ANTHROPIC_API_KEY and AGENTS_LIVE_MODEL to call the real API")
 	}
@@ -34,7 +40,7 @@ func TestLiveTurn(t *testing.T) {
 	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "What is the amount of charge ch_1? Use the tool."}}}}
 
 	streamed := 0
-	first, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 2048, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
+	first, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 4096, Effort: effort, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,16 +56,25 @@ func TestLiveTurn(t *testing.T) {
 	if first.Usage.InputTokens == 0 || first.Usage.OutputTokens == 0 {
 		t.Fatalf("no usage: %+v", first.Usage)
 	}
+	thinking := 0
+	for _, b := range first.Blocks {
+		if b.Kind == model.Thinking || b.Kind == model.RedactedThinking {
+			thinking++
+		}
+	}
+	t.Logf("the first turn thought in %d block(s); they go back with its tool call", thinking)
 
 	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: first.Blocks},
 		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: call.CallID, Result: `{"id":"ch_1","amount":4200,"currency":"eur"}`}}})
-	second, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 2048, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
+	second, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 4096, Effort: effort, Messages: msgs, Tools: tools}, func(s string) { streamed += len(s) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	var text strings.Builder
 	for _, b := range second.Blocks {
-		text.WriteString(b.Text)
+		if b.Kind == model.Text {
+			text.WriteString(b.Text)
+		}
 	}
 	if second.Stop != model.EndTurn || !strings.Contains(text.String(), "42") || streamed == 0 {
 		t.Fatalf("second turn: stop %s, text %q, streamed %d bytes", second.Stop, text.String(), streamed)
@@ -70,7 +85,7 @@ func TestLiveTurn(t *testing.T) {
 	// takes it with the tools offered and tool use forbidden.
 	held := append(msgs[:1:1], model.Message{Role: model.Assistant, Blocks: first.Blocks},
 		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: call.CallID, Result: "Held for the owner's answer.", IsError: true}}})
-	third, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 2048, Messages: held, Tools: tools, NoToolUse: true}, nil)
+	third, err := m.Turn(ctx, model.Request{Model: modelID, MaxTokens: 4096, Effort: effort, Messages: held, Tools: tools, NoToolUse: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

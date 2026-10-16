@@ -34,6 +34,8 @@ func TestCheckRefuses(t *testing.T) {
 		"no output price":        func(d *registry.Definition) { d.Price.Output = 0 },
 		"a negative cache":       func(d *registry.Definition) { d.Price.CacheRead = -1 },
 		"no max tokens":          func(d *registry.Definition) { d.MaxTokens = 0 },
+		"an unknown effort":      func(d *registry.Definition) { d.Effort = "extreme" },
+		"an effort's case":       func(d *registry.Definition) { d.Effort = "High" },
 		"no key reference":       func(d *registry.Definition) { d.KeyRef = "" },
 		"no cost cap":            func(d *registry.Definition) { d.MaxCost = 0 },
 		"negative turns":         func(d *registry.Definition) { d.MaxTurns = -1 },
@@ -44,6 +46,13 @@ func TestCheckRefuses(t *testing.T) {
 	}
 	if err := registrytest.Definition("t1", "payouts").Check(); err != nil {
 		t.Fatalf("the valid definition is refused: %v", err)
+	}
+	for _, e := range append([]string{""}, model.Efforts...) { // none is the provider's default
+		d := registrytest.Definition("t1", "payouts")
+		d.Effort = e
+		if err := d.Check(); err != nil {
+			t.Errorf("effort %q refused: %v", e, err)
+		}
 	}
 	for name, change := range cases {
 		d := registrytest.Definition("t1", "payouts")
@@ -128,7 +137,7 @@ func TestBuildMakesTheAgentFromItsDefinition(t *testing.T) {
 	}
 	want := registrytest.Definition("t1", "payouts")
 	if a.Tenant != "t1" || a.ID != "payouts" || a.ModelID != want.Model || a.Price != want.Price ||
-		a.MaxTokens != want.MaxTokens || a.System != want.Instructions || a.MaxCost != want.MaxCost || a.MaxTurns != want.MaxTurns {
+		a.MaxTokens != want.MaxTokens || a.Effort != want.Effort || a.System != want.Instructions || a.MaxCost != want.MaxCost || a.MaxTurns != want.MaxTurns {
 		t.Fatalf("built %+v from %+v", a, want)
 	}
 	if d.History != want.History || d.Keep[session.Usage] != want.Keep[session.Usage] {

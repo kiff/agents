@@ -60,9 +60,12 @@ type Run struct {
 	// instruction. A PENDING run is started from it.
 	Input string `json:"input"`
 
-	// Stop is why a COMPLETED run stopped: the agent answered, or a cap
-	// (cost, turns, output length) stopped it.
+	// Stop is why a COMPLETED run stopped: the agent answered, a cap (cost,
+	// turns, output length) stopped it, or the model's turn was refused.
 	Stop string `json:"stop,omitempty"`
+	// Refusal is the category a refused run's turn was declined for ("cyber",
+	// "bio", …), when the provider named one.
+	Refusal string `json:"refusal,omitempty"`
 	// Output is the agent's last answer.
 	Output string `json:"output,omitempty"`
 	// Error says what went wrong, for an ERROR run.

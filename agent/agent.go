@@ -32,6 +32,9 @@ type Agent struct {
 	ModelID   string
 	Price     model.Price
 	MaxTokens int64
+	// Effort is how hard the model works on each turn; empty is the
+	// provider's default.
+	Effort string
 
 	// System is the agent's instructions, with KIFF's skill in them.
 	System string
@@ -131,6 +134,7 @@ const (
 	TurnCap   Stop = "turn_cap"  // the run reached its turn limit
 	TooLong   Stop = "max_token" // the model ran out of room mid-answer
 	Cancelled Stop = "cancelled" // the run was asked to stop, and stopped at a checkpoint
+	Refused   Stop = "refused"   // a safety classifier declined the model's turn: Outcome.Refusal says why
 )
 
 // Outcome is how a run stopped. Cost and Turns count the whole run, across
@@ -139,6 +143,9 @@ type Outcome struct {
 	Stop Stop `json:"stop"`
 	// Text is the agent's last answer; for a paused run, what it waits for.
 	Text string `json:"text"`
+	// Refusal is the category a Refused run's turn was declined for, or ""
+	// when the provider named none.
+	Refusal string `json:"refusal,omitempty"`
 	// Cost is what the run's model turns cost, in millionths of a US dollar.
 	Cost int64 `json:"cost_micro_usd"`
 	// Turns counts the run's model turns.
@@ -306,8 +313,11 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		}
 		if len(calls) == 0 {
 			out.Stop = Answered
-			if reply.Stop == model.MaxTokens {
+			switch reply.Stop {
+			case model.MaxTokens:
 				out.Stop = TooLong
+			case model.Refused:
+				out.Stop, out.Refusal = Refused, reply.Refusal
 			}
 			return out, msgs, nil
 		}
@@ -385,7 +395,7 @@ func (a Agent) capped(out Outcome) Stop {
 // turn is one model turn, offered tools (to call, unless noToolUse),
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, out *Outcome, emit func(Event)) (model.Reply, error) {
-	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse}
+	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort}
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	if err != nil {
 		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})

@@ -1431,3 +1431,20 @@ func TestATenantsActiveRunsAreCapped(t *testing.T) {
 	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+paused.ID+"/continue", map[string]any{"background": true})
 	f.want(202, code, body, "a place freed")
 }
+
+// A refused run says so, with its category, where the API shows a run (#68).
+func TestARefusedRunShowsWhy(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.session("t1", "s-refused", "payouts")
+	r := run.New("t1", "payouts", "s-refused", run.ByOwner, "x", now)
+	r.Status, r.Stop, r.Refusal = run.Completed, "refused", "cyber"
+	if err := f.runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID, nil)
+	f.want(200, code, body, "get")
+	if body["stop"] != "refused" || body["refusal"] != "cyber" {
+		t.Fatalf("got %v", body)
+	}
+}

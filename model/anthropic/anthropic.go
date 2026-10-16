@@ -55,6 +55,9 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 
 func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	p := sdk.MessageNewParams{Model: sdk.Model(req.Model), MaxTokens: req.MaxTokens}
+	if req.Effort != "" {
+		p.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffort(req.Effort)}
+	}
 	if req.System != "" {
 		p.System = []sdk.TextBlockParam{{Text: req.System}}
 	}
@@ -68,6 +71,10 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 				blocks = append(blocks, sdk.NewToolUseBlock(b.CallID, b.Input, b.Tool))
 			case model.ToolResult:
 				blocks = append(blocks, sdk.NewToolResultBlock(b.CallID, b.Result, b.IsError))
+			case model.Thinking: // back exactly as it came: dropping or editing it breaks the turn
+				blocks = append(blocks, sdk.NewThinkingBlock(b.Signature, b.Text))
+			case model.RedactedThinking:
+				blocks = append(blocks, sdk.NewRedactedThinkingBlock(b.Data))
 			default:
 				return p, fmt.Errorf("anthropic: unknown block kind %q", b.Kind)
 			}
@@ -128,6 +135,10 @@ func fromMessage(msg sdk.Message) model.Reply {
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.Text, Text: b.Text})
 		case sdk.ToolUseBlock:
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.ToolUse, CallID: b.ID, Tool: b.Name, Input: b.Input})
+		case sdk.ThinkingBlock:
+			r.Blocks = append(r.Blocks, model.Block{Kind: model.Thinking, Text: b.Thinking, Signature: b.Signature})
+		case sdk.RedactedThinkingBlock:
+			r.Blocks = append(r.Blocks, model.Block{Kind: model.RedactedThinking, Data: b.Data})
 		}
 	}
 	switch msg.StopReason {
@@ -137,6 +148,8 @@ func fromMessage(msg sdk.Message) model.Reply {
 		r.Stop = model.CallTools
 	case sdk.StopReasonMaxTokens:
 		r.Stop = model.MaxTokens
+	case sdk.StopReasonRefusal:
+		r.Stop, r.Refusal = model.Refused, string(msg.StopDetails.Category)
 	default:
 		r.Stop = model.Other
 	}

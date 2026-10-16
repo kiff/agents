@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
@@ -45,6 +46,9 @@ type Definition struct {
 	Model     string      `json:"model"`
 	Price     model.Price `json:"price"`
 	MaxTokens int64       `json:"max_tokens"`
+	// Effort is how hard the model works ("low", "medium", "high", "xhigh",
+	// "max"); empty is the provider's default (medium on Opus 5.5).
+	Effort string `json:"effort,omitempty"`
 
 	// Gateway is the URL of KIFF's gateway the agent's tools come from.
 	Gateway string `json:"gateway"`
@@ -77,6 +81,8 @@ func (d Definition) Check() error {
 		return errors.New("registry: a price needs positive input and output, and no negative cache price")
 	case d.MaxTokens <= 0:
 		return errors.New("registry: max tokens must be positive")
+	case d.Effort != "" && !slices.Contains(model.Efforts, d.Effort):
+		return fmt.Errorf("registry: effort is empty or one of %s", strings.Join(model.Efforts, ", "))
 	case d.KeyRef == "":
 		return errors.New("registry: a reference to the agent's KIFF key is required")
 	case d.MaxCost <= 0:
@@ -196,7 +202,7 @@ func (b *Builder) Build(ctx context.Context, tenant, id string) (agent.Agent, De
 		tools = append(tools, b.Own(tenant, id)...)
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price,
-		MaxTokens: d.MaxTokens, System: d.Instructions, Tools: tools, MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
+		MaxTokens: d.MaxTokens, Effort: d.Effort, System: d.Instructions, Tools: tools, MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}

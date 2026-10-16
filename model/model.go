@@ -24,6 +24,12 @@ const (
 	Text       BlockKind = "text"        // Text
 	ToolUse    BlockKind = "tool_use"    // the model calls Tool with Input, as CallID
 	ToolResult BlockKind = "tool_result" // what CallID returned: Result, IsError
+	// Thinking is the model's reasoning before what follows it in the reply:
+	// Text, with Signature. RedactedThinking is reasoning the provider holds
+	// encrypted: Data. Both are opaque: they go back to the provider exactly
+	// as they came, in place, and nothing else reads them.
+	Thinking         BlockKind = "thinking"
+	RedactedThinking BlockKind = "redacted_thinking"
 )
 
 // Block is one part of a message.
@@ -35,6 +41,9 @@ type Block struct {
 	Input   json.RawMessage `json:"input,omitempty"`
 	Result  string          `json:"result,omitempty"`
 	IsError bool            `json:"is_error,omitempty"`
+	// Signature and Data belong to a Thinking or RedactedThinking block.
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 // Message is one turn of the conversation.
@@ -64,7 +73,13 @@ type Request struct {
 	// tools, and keeping them unchanged keeps the cached prompt prefix. With
 	// no Tools it changes nothing.
 	NoToolUse bool
+	// Effort is how hard the model works on the turn ("low" to "max"), for
+	// providers that take it; empty is the provider's default.
+	Effort string
 }
+
+// Efforts are the effort levels a Request may name, lowest first.
+var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
 // Stop is why the model ended its turn.
 type Stop string
@@ -73,6 +88,7 @@ const (
 	EndTurn   Stop = "end_turn"   // it answered
 	CallTools Stop = "tool_use"   // it waits for its tool calls' results
 	MaxTokens Stop = "max_tokens" // it ran out of room mid-answer
+	Refused   Stop = "refusal"    // a safety classifier declined the turn: Reply.Refusal says why
 	Other     Stop = "other"
 )
 
@@ -90,6 +106,9 @@ type Reply struct {
 	Blocks []Block
 	Stop   Stop
 	Usage  Usage
+	// Refusal is the category a Refused turn was declined for ("cyber",
+	// "bio", …), or "" when the provider named none.
+	Refusal string
 }
 
 // Model runs one turn. onText, when set, receives the reply's text as it
