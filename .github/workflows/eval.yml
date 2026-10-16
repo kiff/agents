@@ -1,0 +1,76 @@
+name: Eval
+
+# Nightly, and by hand: grade tafs runs against the eval cases (#3) and fail
+# when a score is lower than eval/baseline.json.
+#
+# The runs to grade are Managed Agents session ids: given by hand, or nightly
+# from the repository variables EVAL_REFUNDS_SESSION and
+# EVAL_CHARGEBACKS_SESSION. EVAL_SEED_IDS holds the seed's Stripe test-mode ids
+# by item reference (JSON). The judge is EVAL_JUDGE_MODEL at EVAL_JUDGE_PRICE
+# ("input,output" in millionths of a dollar per million tokens). Without
+# sessions, the job says so and stops. ANTHROPIC_API_KEY is a secret and only
+# reaches the eval step, through its environment.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      refunds:
+        description: "Refunds run: its session id"
+        required: false
+      chargebacks:
+        description: "Chargebacks run: its session id"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o eval-bin ./cmd/eval
+      - name: Grade
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REFUNDS: ${{ inputs.refunds || vars.EVAL_REFUNDS_SESSION }}
+          CHARGEBACKS: ${{ inputs.chargebacks || vars.EVAL_CHARGEBACKS_SESSION }}
+          SEED_IDS: ${{ vars.EVAL_SEED_IDS }}
+          JUDGE_MODEL: ${{ vars.EVAL_JUDGE_MODEL }}
+          JUDGE_PRICE: ${{ vars.EVAL_JUDGE_PRICE }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set."
+            exit 1
+          fi
+          runs=()
+          [ -n "$REFUNDS" ] && runs+=("refunds=$REFUNDS")
+          [ -n "$CHARGEBACKS" ] && runs+=("chargebacks=$CHARGEBACKS")
+          if [ ${#runs[@]} -eq 0 ]; then
+            echo "::notice::No runs to grade: set EVAL_REFUNDS_SESSION and EVAL_CHARGEBACKS_SESSION, or give session ids by hand."
+            exit 0
+          fi
+          args=(-out results.json)
+          if [ -n "$SEED_IDS" ]; then
+            printf '%s' "$SEED_IDS" > seed.json
+            args+=(-ids seed.json)
+          fi
+          if [ -n "$JUDGE_MODEL" ]; then
+            args+=(-judge-model "$JUDGE_MODEL" -judge-price "$JUDGE_PRICE")
+          fi
+          if [ -f eval/baseline.json ]; then
+            args+=(-baseline eval/baseline.json)
+          fi
+          ./eval-bin "${args[@]}" "${runs[@]}" > /dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: results.json
+          if-no-files-found: ignore
