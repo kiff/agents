@@ -1,7 +1,7 @@
 # Evals as the development loop: what #78 delivers
 
 **Issue:** [#78](https://github.com/kiff/agents/issues/78) · **Status:** in progress.
-**PRs:** #82, #84, #PR
+**PRs:** #82, #84, #85
 
 ## What it's for
 
