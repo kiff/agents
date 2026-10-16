@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/registrytest"
@@ -279,4 +280,46 @@ func fakeGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": result})
+}
+
+// A workspace is opt-in per definition, and bound to the run being built
+// (#86): an agent that doesn't ask for one never gets one, and one that does
+// is never built without its run's.
+func TestBuildGivesAWorkspaceOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
+	f := newFixture(t)
+	var gotTenant, gotRun string
+	f.b.Workspace = func(tenant, run string) tool.Tool {
+		gotTenant, gotRun = tenant, run
+		return stub{name: "workspace", access: tool.Own}
+	}
+	has := func(a agent.Agent) bool {
+		for _, tl := range a.Tools {
+			if tl.Spec().Name == "workspace" {
+				return true
+			}
+		}
+		return false
+	}
+
+	a, _, err := f.b.BuildRun(ctx, "t1", "payouts", "run-1")
+	if err != nil || has(a) || gotRun != "" {
+		t.Fatalf("a definition without workspace: tool %v, built for %q, err %v", has(a), gotRun, err)
+	}
+
+	d := registrytest.Definition("t1", "payouts")
+	d.Workspace = true
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err = f.b.BuildRun(ctx, "t1", "payouts", "run-1")
+	if err != nil || !has(a) || gotTenant != "t1" || gotRun != "run-1" {
+		t.Fatalf("with workspace: tool %v for %s/%s, err %v", has(a), gotTenant, gotRun, err)
+	}
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrNoWorkspace) {
+		t.Fatalf("built for no run: %v, want ErrNoWorkspace", err)
+	}
+	f.b.Workspace = nil
+	if _, _, err := f.b.BuildRun(ctx, "t1", "payouts", "run-1"); !errors.Is(err, registry.ErrNoWorkspace) {
+		t.Fatalf("a server with no workspaces: %v, want ErrNoWorkspace", err)
+	}
 }
