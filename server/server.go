@@ -58,6 +58,9 @@ type Server struct {
 	// Background has the run executed by another invocation, and returns
 	// once that invocation is on its way.
 	Background func(ctx context.Context, tenant, id string) error
+	// Operator verifies that a request is an operator's, for the read-only
+	// operators' routes under /ops. Nil: those routes aren't served.
+	Operator func(r *http.Request) error
 	// Withdraw takes back a call KIFF holds for run r, by its exception ID,
 	// and returns what became of the call: "invalidated" when it was
 	// withdrawn, or KIFF's status for one it had already answered
@@ -118,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
 	mux.HandleFunc("POST /agents/{id}/runs/{run_id}/resume", s.resumeRun)
+	s.opsRoutes(mux)
 	return jsonErrors{mux}
 }
 

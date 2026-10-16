@@ -158,6 +158,22 @@ func limitTo(runs []run.Run, limit int) []run.Run {
 	return runs
 }
 
+func (m *Runs) ListAll(_ context.Context, limit int) ([]run.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.all(func(run.Run) bool { return true })
+	newestFirst(out)
+	return limitTo(out, limit), nil
+}
+
+func (m *Runs) ListPaused(_ context.Context, limit int) ([]run.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.all(func(r run.Run) bool { return r.Status == run.Paused })
+	newestFirst(out)
+	return limitTo(out, limit), nil
+}
+
 func (m *Runs) ListSource(_ context.Context, tenant string, trigger run.Trigger, source string, limit int) ([]run.Run, error) {
 	if source == "" {
 		return nil, nil

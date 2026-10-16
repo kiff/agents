@@ -224,6 +224,8 @@ One table, `pk`/`sk`, TTL on `ttl`, on-demand. Key parts are length-prefixed
 | `R\|tenant\|id` | `T\|n` | part n of the paused turn (300 KB parts, 3 MB max) |
 | `L\|tenant\|agent` | `created\|id` | an agent's runs |
 | `O\|tenant\|trigger\|source` | `created\|id` | one source's runs |
+| `A` | `created\|tenant\|id` | every run, for operators (`ListAll`) |
+| `PA` | `created\|tenant\|id` | PAUSED runs, for operators (`ListPaused`) |
 | `W` | `due\|tenant\|id` | RUNNING and PENDING runs the sweep must look at |
 | `WP` | `due\|tenant\|id` | PAUSED runs the sweep must look at |
 
