@@ -100,10 +100,6 @@ type function struct {
 	log *slog.Logger
 }
 
-// errNoRuns is what a firing gets until runs can start: the firing is
-// checked against the stored schedule (and the Scheduler healed) first.
-var errNoRuns = errors.New("lambda: a scheduled run can't start yet: runs arrive with the run routes (#13)")
-
 func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	env := func(name string) (string, error) {
 		v := strings.TrimSpace(os.Getenv(name))
@@ -169,9 +165,8 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			}
 			return err == nil, err
 		},
-		Start: func(context.Context, schedule.Firing) error { return errNoRuns },
 	}
-	return &function{
+	f := &function{
 		http: (&server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
 			Runs: runs, Runner: rn, Background: background(lambdasvc.NewFromConfig(cfg), self),
 			Gateways: gateways, Log: log}).Handler(),
@@ -179,7 +174,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		runner:    rn,
 		sweeper:   sweeping(runs, rn),
 		log:       log,
-	}, nil
+	}
+	// A firing starts its run and executes it in its own invocation.
+	schedules.Start = f.fire
+	return f, nil
 }
 
 func split(s string) []string {
@@ -220,7 +218,7 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return nil, fmt.Errorf("lambda: a run event that isn't one: %w", err)
 		}
-		return nil, f.execute(ctx, e)
+		return nil, f.execute(ctx, e.Run.Tenant, e.Run.ID)
 	case len(shape.Sweep) > 0:
 		return nil, f.sweep(ctx)
 	case shape.Schedule != "" && shape.Due != "":

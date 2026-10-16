@@ -776,6 +776,55 @@ func TestExpiresFollowsTheAgentsKeepRules(t *testing.T) {
 	}
 }
 
+func TestANamedRunStartsOnce(t *testing.T) {
+	f := newFixture(t)
+	s := server.Start{Tenant: "t1", Agent: "rae", Trigger: run.BySchedule, Source: "morning", Input: "go",
+		ID: "0123456789abcdef0123456789abcdef"}
+	first, err := f.r.Start(ctx, s)
+	if err != nil || first.ID != s.ID || first.Status != run.Pending {
+		t.Fatalf("got %+v (%v)", first, err)
+	}
+	again, err := f.r.Start(ctx, s)
+	if !errors.Is(err, run.ErrExists) || again.ID != first.ID || again.Session != first.Session {
+		t.Fatalf("again: %+v (%v), want the stored run with ErrExists", again, err)
+	}
+	if list, _ := f.store.List(ctx, "t1", "rae", 10); len(list) != 1 {
+		t.Fatalf("%d sessions: a second delivery must open none", len(list))
+	}
+}
+
+// lateRuns is a run store that answers the first Get as not found, as when
+// another delivery stores the run between this one's Get and its Create.
+type lateRuns struct {
+	run.Runs
+	gets int
+}
+
+func (l *lateRuns) Get(ctx context.Context, tenant, id string) (run.Run, error) {
+	if l.gets++; l.gets == 1 {
+		return run.Run{}, run.ErrNotFound
+	}
+	return l.Runs.Get(ctx, tenant, id)
+}
+
+func TestANamedRunStartedMeanwhileIsReturned(t *testing.T) {
+	f := newFixture(t)
+	s := server.Start{Tenant: "t1", Agent: "rae", Trigger: run.BySchedule, Source: "morning", Input: "go",
+		ID: "0123456789abcdef0123456789abcdef"}
+	first, err := f.r.Start(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.r.Runs = &lateRuns{Runs: f.r.Runs}
+	again, err := f.r.Start(ctx, s)
+	if !errors.Is(err, run.ErrExists) || again.ID != first.ID || again.Session != first.Session {
+		t.Fatalf("got %+v (%v), want the stored run with ErrExists", again, err)
+	}
+	if list, _ := f.store.List(ctx, "t1", "rae", 10); len(list) != 1 {
+		t.Fatalf("%d sessions: the one this Start opened must be removed", len(list))
+	}
+}
+
 func BenchmarkStartAndExecute(b *testing.B) {
 	f := newFixture(b)
 	b.ReportAllocs()

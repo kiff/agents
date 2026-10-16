@@ -19,6 +19,7 @@ import (
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
+	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
 )
 
@@ -310,5 +311,25 @@ func TestAFailedSweepShows(t *testing.T) {
 	f.sweeper = sweeping(failingRuns{runs}, f.runner.(*runner.Runner))
 	if _, err := f.handle(ctx, json.RawMessage(`{"sweep":{}}`)); err == nil {
 		t.Fatal("a sweep that read nothing succeeded")
+	}
+}
+
+// TestARepeatedFiringRunsWhatTheFirstLeftPending: the first delivery stored
+// the run and died before claiming it; the next delivery executes it.
+func TestARepeatedFiringRunsWhatTheFirstLeftPending(t *testing.T) {
+	m := &replies{next: []model.Reply{answer("Payouts are reconciled.")}}
+	f, _, agents, runs := newFunctionWith(t, m, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	if _, err := f.runner.Start(ctx, server.Start{Tenant: "t1", Agent: "payouts", Trigger: run.BySchedule,
+		Source: "morning", Input: fi.Input, ID: fi.Key()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.fire(ctx, fi); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := runs.Get(ctx, "t1", fi.Key()); err != nil || r.Status != run.Completed {
+		t.Fatalf("got %+v (%v)", r, err)
 	}
 }

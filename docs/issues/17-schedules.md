@@ -1,6 +1,6 @@
 # Schedules: what #17 delivers
 
-**Issue:** [#17](https://github.com/kiff/agents/issues/17) · **Status:** partly delivered. Schedules, EventBridge Scheduler and the routes are built. A firing doesn't start a run yet, and triggers are still to come.
+**Issue:** [#17](https://github.com/kiff/agents/issues/17) · **Status:** delivered up to triggers. Schedules, EventBridge Scheduler, the routes, firings starting runs and firing by hand are built. Triggers (work starting runs) are still to come.
 **PRs:** #21 (core), #22 (EventBridge adapter); the routes came in #24 and #30 (under [#13](13-server.md)); a run's source in #26 (under [#12](12-runs.md))
 
 ## What it's for
@@ -62,8 +62,17 @@ firing is an ordinary run.
 
 `POST /schedules`, `GET /schedules?agent_id=`, `GET`/`PUT`/`DELETE
 /schedules/{id}`, `POST /schedules/{id}/enable` and `/disable`, and
-`GET /schedules/{id}/runs` (the runs it started, newest first). See
-[#13](13-server.md).
+`GET /schedules/{id}/runs` (the runs it started, newest first), and
+`POST /schedules/{id}/trigger` (fire it now, by hand, as a background run).
+See [#13](13-server.md).
+
+### A firing starts a run
+
+On Lambda, a firing starts an ordinary run of the schedule's agent with its
+input (`Trigger: run.BySchedule`, `Source` the schedule's ID) and executes it
+in the firing's own invocation. The run's ID is `Firing.Key()`, so however
+often EventBridge delivers a firing, it starts one run, and runs it once. A
+run that pauses counts as paused, not failed. How: [#13](13-server.md).
 
 ## What holds, and the test that guards it
 
@@ -78,16 +87,11 @@ firing is an ordinary run.
 | A firing's key depends only on tenant, schedule and due time | `TestFiringKey` |
 | The EventBridge name fits and says nothing; set and remove are safe to race and repeat | `TestNameFitsEventBridgeAndSaysNothing`, `TestSetThatRacesACreateReplaces`, `TestRemoveIsSafeToRepeat` |
 | A firing reads back exactly | `TestParseEvent` |
-| A firing reaches the schedule through `cmd/lambda` | `TestFiringsReachTheSchedule` |
+| A firing starts one run of the schedule through `cmd/lambda`, named by its key, and runs it once however often it's delivered | `TestFiringsReachTheSchedule`, `TestARepeatedFiringRunsWhatTheFirstLeftPending` |
+| A schedule fired by hand is a background run tagged with it | `TestTriggerASchedule` |
 
 ## Not delivered yet
 
-- **A firing starts a run.** `cmd/lambda` passes firings to `Service.Fire`,
-  but its `Start` returns `errNoRuns` until the runner is wired
-  ([#13](13-server.md)). Then: `Runner.Start` with `Trigger: run.BySchedule`
-  and `Source` the schedule's ID, executed in the background, once per
-  `Firing.Key()`. A run that pauses counts as paused, not failed.
-- **`POST /schedules/{id}/trigger`**, to fire a schedule by hand.
 - **The deploy:** the schedule group, and the IAM role that lets
   `scheduler.amazonaws.com` invoke the function only.
 - **Triggers:** work (a Stripe event, an e-invoice, an answered hold) starts
