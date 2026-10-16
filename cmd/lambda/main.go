@@ -152,7 +152,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
 		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
-	}}
+	}, Collect: kiff.Collect}
 	schedules := &schedule.Service{
 		Store:     dynamodb.NewSchedules(db, table),
 		Scheduler: eventbridge.New(sch.NewFromConfig(cfg), group, target, role),

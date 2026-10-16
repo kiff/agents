@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
 **Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule, and schedule firings start runs. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), this page's PR (runs on Lambda)
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect)
 
 ## What it's for
 
@@ -115,6 +115,9 @@ stores, with the registry's `Builder`:
   given by name, not ARN: any name under the prefix is reachable as some
   tenant's agent key. Setup refuses otherwise.
 - **Tools:** the agent's gateway tools through `tool/kiff`, and its memory.
+- **Paused runs:** `kiff.Collect` ([#15](15-continue-on-hold.md)) collects
+  the outcome of each held call when a paused run is executed again. Without
+  it, `Execute` refuses a paused run with `runner.ErrNoCollect`.
 
 **Background runs.** `POST /agents/{id}/runs` with `background` stores the
 run PENDING, then invokes this same function asynchronously (Lambda's
@@ -147,9 +150,10 @@ now, and starts its run through `Runner.Start`: `Trigger: run.BySchedule`,
   the run stored (`run.ErrExists`) and starts no other.
 - **The run executes in the firing's own invocation**, which is already in
   the background, so a firing costs one invocation. A repeated delivery
-  executes it too: `Execute` claims it once, so a run already going or ended
-  is left as it is, and one whose first invocation died before claiming it
-  gets run.
+  executes the run only if it is still PENDING, which means its first
+  invocation died before claiming it. A run that is going, ended or PAUSED
+  is left as it is. A paused run continues on KIFF's answer, not on a
+  repeated firing.
 - A run that pauses is stored PAUSED, like any run, not as a failure.
 - **Known limit:** if storing the run fails, that firing is lost. The
   invocation fails and is logged, but asynchronous retries are off, and the
@@ -226,7 +230,7 @@ function is the only guard on who the caller is:
 | A wrong method is 405 with `Allow`; an unknown path is JSON 404 | `TestWrongMethodAndUnknownPath` |
 | Without a Runner there is no start route | `TestNoRunnerNoStart` |
 | `cmd/lambda` refuses events it doesn't know, and needs its configuration | `TestOtherEventsAreRefused`, `TestSetupNeedsItsConfiguration` |
-| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, the start route served | `TestSetupNeedsItsConfiguration` |
+| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, held calls collected through `kiff.Collect`, the start route served | `TestSetupNeedsItsConfiguration` |
 | A run streams through the function URL on Lambda | `TestARunStreamsOnLambda` |
 | A background run is one asynchronous invoke naming only the run, executed by that invocation, once however often it's delivered | `TestABackgroundRunIsExecutedByAnotherInvocation` |
 | A run that can't be queued is stored ERROR | `TestARunThatCantBeQueuedIsAnError` |
@@ -234,6 +238,7 @@ function is the only guard on who the caller is:
 | A sweep that can't read fails its invocation | `TestAFailedSweepShows` |
 | A firing starts its schedule's run, named by its key, and runs it to its stop; a repeated delivery starts and runs nothing more | `TestFiringsReachTheSchedule` |
 | A repeated firing runs what the first left PENDING | `TestARepeatedFiringRunsWhatTheFirstLeftPending` |
+| A repeated firing leaves a paused run alone: no claim, no collect | `TestARepeatedFiringLeavesAPausedRunToItsAnswer` |
 | A named run starts once, even when two deliveries race | `TestANamedRunStartsOnce`, `TestANamedRunStartedMeanwhileIsReturned` (runner) |
 | A schedule fired by hand is a background run of its agent, tagged with it, in the tenant only; one that can't go to the background is ERROR | `TestTriggerASchedule` |
 | Without a Runner there is no trigger route | `TestNoRunnerNoStart` |

@@ -90,13 +90,20 @@ func (f *function) execute(ctx context.Context, tenant, id string) error {
 // fire starts the run a schedule's firing asks for, and executes it in this
 // invocation, which EventBridge Scheduler already started in the background.
 // The run's ID is the firing's key, so a repeated delivery finds the run
-// stored (run.ErrExists) and starts no other. It executes the run either way:
-// Execute claims it once, so a run already going or ended is left as it is,
-// and one whose first invocation died before claiming it gets run.
+// stored (run.ErrExists) and starts no other. A stored run still PENDING is
+// one whose first invocation died before claiming it, and it gets run here.
+// Any other is left as it is: going, ended, or paused until KIFF answers,
+// which is for the answer to continue, not a repeated firing.
 func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	r, err := f.runner.Start(ctx, server.Start{Tenant: fi.Tenant, Agent: fi.Agent, Trigger: run.BySchedule,
 		Source: fi.Schedule, Input: fi.Input, ID: fi.Key()})
-	if err != nil && !errors.Is(err, run.ErrExists) {
+	switch {
+	case errors.Is(err, run.ErrExists):
+		if r.Status != run.Pending {
+			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
+			return nil
+		}
+	case err != nil:
 		return err
 	}
 	return f.execute(ctx, r.Tenant, r.ID)

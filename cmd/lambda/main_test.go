@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/kiff"
 )
 
 var ctx = context.Background()
@@ -220,6 +222,9 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	}
 	if _, ok := rn.Builder.Model.(*keyedModel); !ok {
 		t.Errorf("the model is %T", rn.Builder.Model)
+	}
+	if rn.Collect == nil || reflect.ValueOf(rn.Collect).Pointer() != reflect.ValueOf(kiff.Collect).Pointer() {
+		t.Error("a paused run must be continued by collecting its held calls from KIFF")
 	}
 	if f.sweeper == nil {
 		t.Error("no sweep")
