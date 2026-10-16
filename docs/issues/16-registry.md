@@ -1,7 +1,7 @@
 # The registry: what #16 delivers
 
-**Issue:** [#16](https://github.com/kiff/agents/issues/16) · **Status:** mostly delivered. Definitions, building per request, the routes and the Secrets Manager adapter are built. Still to do: withdrawing an agent's holds when it's removed.
-**PRs:** #19; the routes came in #24 and #30 (under [#13](13-server.md)); the Secrets Manager adapter in this page's PR. By example: [docs/registry.md](../registry.md)
+**Issue:** [#16](https://github.com/kiff/agents/issues/16) · **Status:** delivered. Definitions, building per request, the routes, the Secrets Manager adapter on Lambda, and removing an agent (its holds withdrawn in KIFF first) are built.
+**PRs:** #19; the routes came in #24 and #30 (under [#13](13-server.md)); the Secrets Manager adapter in #42, wired on Lambda in #46 (under [#13](13-server.md)); withdrawing on removal in #55 (under [#15](15-continue-on-hold.md)). By example: [docs/registry.md](../registry.md)
 
 ## What it's for
 
@@ -94,12 +94,26 @@ key, err := secrets.Key(ctx, "t1", "kiff/rae") // the secret "agents/t1/kiff/rae
 **Benchmark:** `BenchmarkBuild`, the per-request build including the gateway
 round trip.
 
-## Not delivered yet
+## Removing an agent
 
-- **`cmd/lambda` builds agents with the adapter.** It's wired with the
-  runner there ([#13](13-server.md)): `secretsmanager.New` on the function's
-  Secrets Manager client, with the name prefix from its environment. The
-  function's role reads only secrets under that prefix.
-- **Removing an agent withdraws its holds in KIFF** before deleting what's
-  kept for it. `DELETE /agents/{id}` already deletes schedules, runs,
-  sessions and notes; withdrawing is [#15](15-continue-on-hold.md)'s.
+`DELETE /agents/{id}` deletes, in order: its schedules; then, for each of its
+PAUSED runs, withdraws every held call in KIFF with the agent's own key
+(`Server.Withdraw`, `kiff.Withdrawer`), while the agent is still there; then
+its runs, sessions and notes; then the definition. If KIFF fails, the runs
+are not deleted (500); a repeat is safe. A hold KIFF doesn't know for the
+key is nothing to withdraw.
+
+```http
+DELETE /agents/rae
+204
+```
+
+| Rule | Guarded by |
+|---|---|
+| everything kept for the agent goes, another agent's stays | `server` `TestDeleteAgentRemovesWhatIsKeptForIt`, `TestDeleteAgentDeletesItsRuns` |
+| held calls are withdrawn first, with the agent still there; KIFF failing deletes no runs | `TestDeleteAgentWithdrawsItsHeldCalls` |
+| a hold KIFF doesn't know doesn't block the removal | `TestAHoldKIFFDoesntKnowIsNothingToWithdraw` |
+
+On Lambda, `cmd/lambda` builds agents with `secretsmanager.New` and the
+`AGENTS_SECRETS_PREFIX` name prefix; the function's role reads only secrets
+under it. Wiring `Server.Withdraw` there is [#13](13-server.md)'s.
