@@ -82,7 +82,10 @@ the run's events.
 - Bytes, not tokens, per part: the API counts tokens for the whole input
   only. Bytes show which part grows (tool results, most often).
 - The window comes from the Models API (`max_input_tokens`), asked once per
-  model and without retries. A failed ask leaves it out and fails nothing.
+  model, without retries and for at most 5 seconds. A failed ask leaves it
+  out and fails nothing; a turn cancelled while it asks doesn't count, so
+  the next turn asks again. On Lambda the model is made with its key on
+  first use (`keyedModel`), and passes the ask through.
 - In the eval, the skill is part of `system_bytes`.
 
 **The evals read it.** Each result has `context`, and `eval` prints it:

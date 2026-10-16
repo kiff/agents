@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 
@@ -348,5 +350,48 @@ func TestTheWindowIsAskedOnce(t *testing.T) {
 	}
 	if asked["/v1/models/m"] != 1 || asked["/v1/models/gone"] != 1 {
 		t.Fatalf("asked %v", asked)
+	}
+}
+
+// Window waits only so long for the Models API, and remembers that; a turn
+// cancelled while it asks is not remembered, so the next one asks again.
+func TestTheWindowNeverStallsATurn(t *testing.T) {
+	defer anthropic.SetWindowWait(50 * time.Millisecond)()
+	var mu sync.Mutex
+	asked := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked[r.URL.Path]++
+		mu.Unlock()
+		if r.URL.Path == "/v1/models/slow" {
+			select {
+			case <-time.After(2 * time.Second):
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"type":"model","id":"m","display_name":"M","created_at":"2026-01-01T00:00:00Z","max_input_tokens":1000000,"max_tokens":128000}`)
+	}))
+	defer srv.Close()
+	m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("k"))
+	for range 2 {
+		start := time.Now()
+		if _, err := m.Window(context.Background(), "slow"); err == nil || time.Since(start) > time.Second {
+			t.Fatalf("a hung Models API: %v after %s", err, time.Since(start))
+		}
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.Window(cancelled, "m"); err == nil {
+		t.Fatal("a cancelled turn got a window")
+	}
+	if w, err := m.Window(context.Background(), "m"); err != nil || w != 1_000_000 {
+		t.Fatalf("after a cancelled ask: %d, %v", w, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if asked["/v1/models/slow"] != 1 {
+		t.Fatalf("asked the slow model %d times", asked["/v1/models/slow"])
 	}
 }

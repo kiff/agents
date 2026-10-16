@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -56,15 +57,20 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 }
 
 // Window is the model's context window, from the Models API. It asks once
-// per model id, without retries, and remembers a failure too: the window is
+// per model id, without retries and for at most windowWait, and remembers
+// the answer, or a failure that wasn't the caller giving up: the window is
 // for the report, never worth slowing a turn for.
 func (m *Model) Window(ctx context.Context, id string) (int64, error) {
 	if w, ok := m.windows.Load(id); ok {
 		return w.(window).tokens, w.(window).err
 	}
 	var w window
-	info, err := m.client.Models.Get(ctx, id, sdk.ModelGetParams{}, option.WithMaxRetries(0))
+	ask, cancel := context.WithTimeout(ctx, windowWait)
+	defer cancel()
+	info, err := m.client.Models.Get(ask, id, sdk.ModelGetParams{}, option.WithMaxRetries(0))
 	switch {
+	case err != nil && ctx.Err() != nil: // the caller's turn was cancelled: ask again next time
+		return 0, fmt.Errorf("anthropic: %w", err)
 	case err != nil:
 		w.err = fmt.Errorf("anthropic: %w", err)
 	case info.MaxInputTokens <= 0:
@@ -75,6 +81,9 @@ func (m *Model) Window(ctx context.Context, id string) (int64, error) {
 	m.windows.Store(id, w)
 	return w.tokens, w.err
 }
+
+// windowWait is the longest Window waits for the Models API.
+var windowWait = 5 * time.Second
 
 type window struct {
 	tokens int64

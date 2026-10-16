@@ -411,3 +411,38 @@ func TestARepeatedFiringLeavesAPausedRunToItsAnswer(t *testing.T) {
 		t.Fatalf("got %+v (%v), collected %d: a repeated firing must leave a paused run alone", got, err, collected)
 	}
 }
+
+// windowedReplies is a model that knows its context window.
+type windowedReplies struct{ replies }
+
+func (*windowedReplies) Window(_ context.Context, id string) (int64, error) {
+	if id != "claude-opus-5-5" {
+		return 0, errors.New("unknown model")
+	}
+	return 1_000_000, nil
+}
+
+// The model on Lambda gives the run's context report its window, made with
+// its key like a turn (#77): the agent asks it through model.Windower.
+func TestTheKeyedModelKnowsTheWindow(t *testing.T) {
+	var _ model.Windower = (*keyedModel)(nil)
+	reads := 0
+	k := &keyedModel{
+		key:  func(context.Context) (string, error) { reads++; return "sk-model", nil },
+		make: func(string) model.Model { return &windowedReplies{} },
+	}
+	if w, err := k.Window(ctx, "claude-opus-5-5"); err != nil || w != 1_000_000 {
+		t.Fatalf("window %d, %v", w, err)
+	}
+	if _, err := k.Turn(ctx, model.Request{}, nil); err == nil {
+		t.Fatal("the scripted model had a reply") // replies is empty: the turn reaches the same model
+	}
+	if reads != 1 {
+		t.Fatalf("%d key reads", reads)
+	}
+	plain := &keyedModel{key: func(context.Context) (string, error) { return "k", nil },
+		make: func(string) model.Model { return &replies{} }}
+	if _, err := plain.Window(ctx, "claude-opus-5-5"); err == nil {
+		t.Fatal("a model with no window gave one")
+	}
+}
