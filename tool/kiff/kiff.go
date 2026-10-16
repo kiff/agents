@@ -117,6 +117,12 @@ func (t *gatewayTool) Gateway() bool        { return true }
 // Call calls the tool through the gateway and reads the gateway's state from
 // the result's _meta.
 func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+	out, _, err := t.callMeta(ctx, input)
+	return out, err
+}
+
+// callMeta is Call, with what the gateway said in MetaKey.
+func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool.Result, meta, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}
@@ -131,7 +137,7 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := t.c.call(ctx, "tools/call", map[string]any{"name": t.spec.Name, "arguments": input}, &res); err != nil {
-		return tool.Result{}, err
+		return tool.Result{}, meta{}, err
 	}
 	var text []string
 	for _, c := range res.Content {
@@ -142,7 +148,7 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 	var m meta
 	if raw, ok := res.Meta[MetaKey]; ok {
 		if err := json.Unmarshal(raw, &m); err != nil {
-			return tool.Result{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
+			return tool.Result{}, meta{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
 		}
 	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
@@ -150,7 +156,13 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 		// Only state says whether the call is held. The hold's fields are
 		// read best effort: one KIFF writes in another shape is left empty,
 		// and an empty expiry fails closed, so the run still pauses.
-		out.Hold = &tool.Hold{Operation: str(m.OperationID), Exception: str(m.ExceptionID)}
+		// A call made without kiff_operation_id is keyed by KIFF's own
+		// "tc-…" key, which the gateway takes as kiff_operation_id too.
+		op := str(m.OperationID)
+		if op == "" {
+			op = str(m.Invocation)
+		}
+		out.Hold = &tool.Hold{Operation: op, Exception: str(m.ExceptionID)}
 		var at string
 		if json.Unmarshal(m.HoldExpiresAt, &at) == nil {
 			if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
@@ -158,7 +170,7 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 			}
 		}
 	}
-	return out, nil
+	return out, m, nil
 }
 
 // str is raw as a JSON string, or "" when it isn't one.
@@ -176,7 +188,11 @@ const MetaKey = "dev.kiff/call"
 
 // meta is what this client reads at MetaKey.
 type meta struct {
-	State         string          `json:"state"`
+	State string `json:"state"`
+	// Retry "same_call" means the call has no final outcome yet: repeating
+	// it gets the answer.
+	Retry         string          `json:"retry"`
+	Invocation    json.RawMessage `json:"invocation"`
 	OperationID   json.RawMessage `json:"operation_id"`
 	ExceptionID   json.RawMessage `json:"exception_id"`
 	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`

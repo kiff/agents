@@ -36,7 +36,9 @@ requirement:
 ```
 
 - `operation`: the call's `kiff_operation_id`. Repeating the identical call
-  with it collects the outcome.
+  with it collects the outcome. For a call the model made without one, it is
+  KIFF's own key (`invocation`, `tc-…`), which the gateway accepts in its
+  place.
 - `exception`: the owner's decision. Alerts name it; withdraw takes it.
 - `expires`: when the hold stops waiting. With it, a requirement resolves on
   expiry as well as on an answer.
@@ -73,7 +75,8 @@ A refused, expired or withdrawn one comes back refused. Repeating a call
 already collected returns the same outcome without sending it again, so a
 retry is safe. A call with no final outcome yet is `kiff.ErrNotFinal`, and
 the runner puts the run back to PAUSED, its requirement intact and no model
-turn taken. The gateway says `"retry": "same_call"` for exactly these states:
+turn taken. `Collect` reads the gateway's `"retry": "same_call"`, which today
+it sets for these states:
 
 ```json
 {"state": "held"}        the owner hasn't answered
@@ -90,7 +93,8 @@ r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
 |---|---|
 | each call is repeated with its operation ID and its own arguments | `tool/kiff` `TestCollectRepeatsEachCallByItsOperation` |
 | an approved call's result and an expired hold's refusal come back in order | the same |
-| held, deciding or forwarding is `ErrNotFinal`, and nothing is returned | `TestCollectLeavesACallWithNoOutcome` |
+| `retry: same_call` (held, deciding, forwarding) is `ErrNotFinal`, and nothing is returned | `TestCollectLeavesACallWithNoOutcome` |
+| a call made without `kiff_operation_id` is collected by KIFF's `tc-…` key | `TestACallMadeWithoutAnOperationIsCollectedByItsKey` |
 | a call still being decided leaves the run paused, no model turn; collected later | `TestACallStillBeingDecidedLeavesTheRunPaused` |
 | no operation ID, or a tool the agent lacks, is refused before the gateway | `TestCollectRefuses` |
 | held, answered, collected and continued, end to end through the gateway | `TestAHeldRunContinuesThroughTheGateway` |

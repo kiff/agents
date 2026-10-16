@@ -19,9 +19,6 @@ import (
 
 const testKey = "kiff_test_agent_key"
 
-// gateway is a fake KIFF gateway: it checks the bearer key and the session
-// header, lists two tools, and holds every refund. With sse set, it answers
-// requests as an event stream.
 // calls are the arguments of each tools/call the fake gateway received, and
 // slow counts the repeats of "op-slow".
 var (
@@ -29,6 +26,9 @@ var (
 	slow  atomic.Int32
 )
 
+// gateway is a fake KIFF gateway: it checks the bearer key and the session
+// header, lists two tools, and holds every refund. With sse set, it answers
+// requests as an event stream.
 func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 	t.Helper()
 	calls = nil
@@ -85,7 +85,7 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			// A repeat with an operation ID collects the call: KIFF knows the
 			// owner's answer by it.
 			op, _ := args["kiff_operation_id"].(string)
-			if op == "op-approved" || op == "op-refund-42" { // the hold below, answered
+			if op == "op-approved" || op == "op-refund-42" || op == "tc-77" { // the holds below, answered
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_1"}},
 					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "sent": "yes", "retry": "none"}}}
 			} else if op == "op-expired" {
@@ -106,6 +106,12 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			} else if op == "op-error" {
 				http.Error(w, "gateway down", http.StatusBadGateway)
 				return
+			} else if p.Name == "stripe_refund" && args["keyless"] == true {
+				// Called without kiff_operation_id: KIFF keys it by its own
+				// "tc-…" invocation key, and sends no operation_id.
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
+						"state": "held", "invocation": "tc-77", "exception_id": "exc_789", "sent": "no", "retry": "same_call"}}}
 			} else if p.Name == "stripe_refund" && args["slow"] == true {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{

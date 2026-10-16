@@ -174,3 +174,22 @@ func TestACallStillBeingDecidedLeavesTheRunPaused(t *testing.T) {
 		t.Fatalf("collected later: %+v, %v", got, err)
 	}
 }
+
+// A held call the model made without kiff_operation_id is collected by
+// KIFF's own invocation key, which the gateway accepts in its place: the run
+// doesn't stay paused for good.
+func TestACallMadeWithoutAnOperationIsCollectedByItsKey(t *testing.T) {
+	rn, _, r := heldRun(t, `{"charge":"ch_big","keyless":true}`)
+	if r.Requirements[0].Operation != "tc-77" {
+		t.Fatalf("requirement %+v, want operation tc-77", r.Requirements[0])
+	}
+	r, err := rn.Execute(context.Background(), "t1", r.ID, nil)
+	if err != nil || r.Status != run.Completed || r.Output != "Refunded ch_big." {
+		t.Fatalf("continued %+v, %v", r, err)
+	}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(calls[len(calls)-1]), &args)
+	if args["kiff_operation_id"] != "tc-77" {
+		t.Fatalf("collected with %v", args)
+	}
+}

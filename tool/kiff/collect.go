@@ -8,20 +8,15 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/run"
-	"github.com/kiff/agents/tool"
 )
 
 // OperationArg is the argument the gateway reads a call's operation ID from.
 const OperationArg = "kiff_operation_id"
 
-// ErrNotFinal means KIFF has no final outcome for a call yet: it still holds
-// it (the owner hasn't answered and the hold hasn't expired), or it is still
-// deciding or sending it. The gateway says retry "same_call" for each.
+// ErrNotFinal means KIFF has no final outcome for a call yet: the gateway
+// answered its repeat with retry "same_call" (it still holds the call, or is
+// still deciding or sending it).
 var ErrNotFinal = errors.New("kiff: the call has no final outcome yet")
-
-// notFinal are the gateway's states that carry no outcome: repeating the call
-// later gets it.
-var notFinal = map[string]bool{"held": true, "deciding": true, "forwarding": true}
 
 // Collect gets the outcome of each call a paused run waits for: it repeats
 // the identical call through the gateway with the call's kiff_operation_id.
@@ -30,9 +25,9 @@ var notFinal = map[string]bool{"held": true, "deciding": true, "forwarding": tru
 // collected returns the same outcome without sending it again, so Collect
 // can be retried. It is runner.Runner's Collect.
 //
-// A call with no final outcome yet (held, deciding or forwarding) is
-// ErrNotFinal, and nothing is returned: the run stays paused, and a later
-// Collect gets the outcome.
+// A call with no final outcome yet (retry "same_call": held, deciding or
+// forwarding) is ErrNotFinal, and nothing is returned: the run stays paused,
+// and a later Collect gets the outcome.
 func Collect(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error) {
 	out := make([]agent.ToolResultBody, 0, len(held))
 	for _, q := range held {
@@ -47,23 +42,23 @@ func Collect(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agen
 		if err != nil {
 			return nil, fmt.Errorf("kiff: call %s: %w", q.CallID, err)
 		}
-		res, err := t.Call(ctx, input)
+		res, m, err := t.callMeta(ctx, input)
 		if err != nil {
 			return nil, fmt.Errorf("kiff: collecting call %s: %w", q.CallID, err)
 		}
-		if notFinal[res.State] {
-			return nil, fmt.Errorf("%w: call %s is %s", ErrNotFinal, q.CallID, res.State)
+		if m.Retry == "same_call" {
+			return nil, fmt.Errorf("%w: call %s is %s", ErrNotFinal, q.CallID, m.State)
 		}
 		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: res})
 	}
 	return out, nil
 }
 
-// find is the agent's gateway tool named name, or nil.
-func find(a agent.Agent, name string) tool.Tool {
+// find is the agent's KIFF gateway tool named name, or nil.
+func find(a agent.Agent, name string) *gatewayTool {
 	for _, t := range a.Tools {
-		if t.Gateway() && t.Spec().Name == name {
-			return t
+		if g, ok := t.(*gatewayTool); ok && g.spec.Name == name {
+			return g
 		}
 	}
 	return nil
