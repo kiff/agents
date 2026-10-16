@@ -19,9 +19,19 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
+    # Only main, as pushed to this repository: for workflow_run, github.ref is
+    # always the default branch, so the upstream run's own event, branch and
+    # repository are what tell a push to main from a pull request (a fork's
+    # branch can be named main too). A dispatch runs on main by hand.
     if: >-
-      vars.AGENTS_DEPLOY == 'on' && github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      vars.AGENTS_DEPLOY == 'on' && (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.head_repository.full_name == github.repository)
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -32,10 +42,24 @@ jobs:
         with:
           # The commit the Go workflow passed, not whatever main is by now.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Still main's head
+        # Runs finish out of order: an older commit whose checks end late must
+        # not roll the functions back. Inside the deploy concurrency group, so
+        # no newer deploy can start between this check and the update.
+        id: fresh
+        run: |
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" = "$(git rev-parse HEAD)" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now; its own run deploys it" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/setup-go@v5
+        if: steps.fresh.outputs.deploy == 'true'
         with:
           go-version-file: go.mod
       - name: Build
+        if: steps.fresh.outputs.deploy == 'true'
         run: |
           for cmd in lambda kiffalerts; do
             mkdir -p "build/$cmd"
@@ -43,10 +67,12 @@ jobs:
             (cd "build/$cmd" && zip -q -X "../$cmd.zip" bootstrap)
           done
       - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.fresh.outputs.deploy == 'true'
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE }}
           aws-region: eu-west-1
       - name: Deploy
+        if: steps.fresh.outputs.deploy == 'true'
         run: |
           for pair in agents:lambda agents-kiffalerts:kiffalerts; do
             fn=${pair%%:*}; zip=${pair##*:}
