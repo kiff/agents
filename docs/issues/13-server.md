@@ -115,6 +115,9 @@ stores, with the registry's `Builder`:
   given by name, not ARN: any name under the prefix is reachable as some
   tenant's agent key. Setup refuses otherwise.
 - **Tools:** the agent's gateway tools through `tool/kiff`, and its memory.
+- **Paused runs:** `kiff.Collect` ([#15](15-continue-on-hold.md)) collects
+  the outcome of each held call when a paused run is executed again. Without
+  it, `Execute` refuses a paused run with `runner.ErrNoCollect`.
 
 **Background runs.** `POST /agents/{id}/runs` with `background` stores the
 run PENDING, then invokes this same function asynchronously (Lambda's
@@ -226,7 +229,7 @@ function is the only guard on who the caller is:
 | A wrong method is 405 with `Allow`; an unknown path is JSON 404 | `TestWrongMethodAndUnknownPath` |
 | Without a Runner there is no start route | `TestNoRunnerNoStart` |
 | `cmd/lambda` refuses events it doesn't know, and needs its configuration | `TestOtherEventsAreRefused`, `TestSetupNeedsItsConfiguration` |
-| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, the start route served | `TestSetupNeedsItsConfiguration` |
+| Setup wires the runner: agents' keys from Secrets Manager, the model keyed on first use, held calls collected through `kiff.Collect`, the start route served | `TestSetupNeedsItsConfiguration` |
 | A run streams through the function URL on Lambda | `TestARunStreamsOnLambda` |
 | A background run is one asynchronous invoke naming only the run, executed by that invocation, once however often it's delivered | `TestABackgroundRunIsExecutedByAnotherInvocation` |
 | A run that can't be queued is stored ERROR | `TestARunThatCantBeQueuedIsAnError` |
