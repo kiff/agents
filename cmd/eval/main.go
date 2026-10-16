@@ -24,6 +24,13 @@
 // with the same key; its price is in millionths of a dollar per million input
 // and output tokens. Without it, those checks are skipped and the output says
 // which.
+//
+//	eval seed [-out seed.json] chargebacks
+//
+// fills the Stripe test-mode account of STRIPE_API_KEY with a case's items,
+// after closing what an earlier seed left open, and writes their Stripe ids
+// by reference: the file -ids reads. It also prints the owner's note the
+// case's taf starts with. A live key is refused.
 package main
 
 import (
@@ -45,6 +52,7 @@ import (
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
 	"github.com/kiff/agents/eval/managed"
+	"github.com/kiff/agents/eval/seed"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
@@ -193,7 +201,12 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	return eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
 }
 
+var stripeURL = ""
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
+	if len(args) > 0 && args[0] == "seed" {
+		return runSeed(ctx, args[1:], stdout, stderr, env)
+	}
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	idsPath := fs.String("ids", "", "the seed's Stripe ids by item reference (JSON)")
@@ -346,6 +359,45 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			return fmt.Errorf("lower than the baseline: %s", strings.Join(lower, "; "))
 		}
 	}
+	return nil
+}
+
+func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
+	fs := flag.NewFlagSet("eval seed", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	outPath := fs.String("out", "", "also write the ids here (JSON)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || fs.Arg(0) != "chargebacks" {
+		return errors.New("eval seed: name one case to seed: chargebacks")
+	}
+	c, err := seed.New(stripeURL, env("STRIPE_API_KEY"), nil)
+	if err != nil {
+		return err
+	}
+	closed, err := c.Close(ctx, "chargebacks")
+	if err != nil {
+		return err
+	}
+	ids, err := c.Disputes(ctx, "chargebacks", seed.Chargebacks)
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(ids, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	if _, err := stdout.Write(out); err != nil {
+		return err
+	}
+	if *outPath != "" {
+		if err := os.WriteFile(*outPath, out, 0o644); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(stderr, "seeded %d disputes for chargebacks (closed %d left open)\nthe taf's owner note: %s\n", len(ids), closed, seed.ChargebacksNote)
 	return nil
 }
 
