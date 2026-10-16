@@ -71,8 +71,15 @@ and its result comes back:
 
 A refused, expired or withdrawn one comes back refused. Repeating a call
 already collected returns the same outcome without sending it again, so a
-retry is safe. A call KIFF still holds is `kiff.ErrStillHeld`, and the
-runner puts the run back to PAUSED.
+retry is safe. A call with no final outcome yet is `kiff.ErrNotFinal`, and
+the runner puts the run back to PAUSED, its requirement intact and no model
+turn taken. The gateway says `"retry": "same_call"` for exactly these states:
+
+```json
+{"state": "held"}        the owner hasn't answered
+{"state": "deciding"}    KIFF is still checking the call
+{"state": "forwarding"}  KIFF is still sending it
+```
 
 ```go
 rn := &runner.Runner{Runs: runs, Sessions: sessions, Builder: builder, Collect: kiff.Collect}
@@ -83,7 +90,8 @@ r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
 |---|---|
 | each call is repeated with its operation ID and its own arguments | `tool/kiff` `TestCollectRepeatsEachCallByItsOperation` |
 | an approved call's result and an expired hold's refusal come back in order | the same |
-| a call still held is `ErrStillHeld`, and nothing is returned | `TestCollectLeavesAStillHeldCall` |
+| held, deciding or forwarding is `ErrNotFinal`, and nothing is returned | `TestCollectLeavesACallWithNoOutcome` |
+| a call still being decided leaves the run paused, no model turn; collected later | `TestACallStillBeingDecidedLeavesTheRunPaused` |
 | no operation ID, or a tool the agent lacks, is refused before the gateway | `TestCollectRefuses` |
 | held, answered, collected and continued, end to end through the gateway | `TestAHeldRunContinuesThroughTheGateway` |
 

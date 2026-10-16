@@ -14,9 +14,14 @@ import (
 // OperationArg is the argument the gateway reads a call's operation ID from.
 const OperationArg = "kiff_operation_id"
 
-// ErrStillHeld means KIFF still holds a call: the owner hasn't answered, and
-// its hold hasn't expired.
-var ErrStillHeld = errors.New("kiff: the call is still held")
+// ErrNotFinal means KIFF has no final outcome for a call yet: it still holds
+// it (the owner hasn't answered and the hold hasn't expired), or it is still
+// deciding or sending it. The gateway says retry "same_call" for each.
+var ErrNotFinal = errors.New("kiff: the call has no final outcome yet")
+
+// notFinal are the gateway's states that carry no outcome: repeating the call
+// later gets it.
+var notFinal = map[string]bool{"held": true, "deciding": true, "forwarding": true}
 
 // Collect gets the outcome of each call a paused run waits for: it repeats
 // the identical call through the gateway with the call's kiff_operation_id.
@@ -25,8 +30,9 @@ var ErrStillHeld = errors.New("kiff: the call is still held")
 // collected returns the same outcome without sending it again, so Collect
 // can be retried. It is runner.Runner's Collect.
 //
-// A call KIFF still holds is ErrStillHeld, and nothing is returned: the run
-// stays paused.
+// A call with no final outcome yet (held, deciding or forwarding) is
+// ErrNotFinal, and nothing is returned: the run stays paused, and a later
+// Collect gets the outcome.
 func Collect(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error) {
 	out := make([]agent.ToolResultBody, 0, len(held))
 	for _, q := range held {
@@ -45,8 +51,8 @@ func Collect(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agen
 		if err != nil {
 			return nil, fmt.Errorf("kiff: collecting call %s: %w", q.CallID, err)
 		}
-		if res.Held() {
-			return nil, fmt.Errorf("%w: call %s", ErrStillHeld, q.CallID)
+		if notFinal[res.State] {
+			return nil, fmt.Errorf("%w: call %s is %s", ErrNotFinal, q.CallID, res.State)
 		}
 		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: res})
 	}
