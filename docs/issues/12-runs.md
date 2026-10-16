@@ -1,6 +1,6 @@
 # Runs: what #12 delivers
 
-**Issue:** [#12](https://github.com/kiff/agents/issues/12) · **Status:** delivered. Continuing a paused run in production waits on [#15](15-continue-on-hold.md), and the sweep on [#13](13-server.md)'s wiring.
+**Issue:** [#12](https://github.com/kiff/agents/issues/12) · **Status:** delivered. Continuing a paused run in production waits on [#15](15-continue-on-hold.md).
 **PRs:** #18 (shared types), #20 (the `run` package and stores), #26 (a run's source), #28 (the loop pauses and continues), #29, #31, #32, #36 (the runner), #37 (evals read runs, see [#3](03-evals.md)), #38, #34 (chat on the runner)
 **By example:** [docs/runs.md](../runs.md) shows a stored run, and the runner, chat and evals in use.
 
@@ -84,8 +84,10 @@ end:
 - each run it ends gets its expiry from `Expires`, the agent's keep rules;
 - a run that moved on meanwhile is left alone.
 
-`runner.Runner.Ended` is the `Ended` to use. Scheduling the sweep is
-[#13](13-server.md)'s.
+`runner.Runner.Ended` is the `Ended` to use, and `runner.Runner.Expires` the
+`Expires`: the agent's keep rules, or `UnknownKeep` (7 days) when the agent
+can't be read, so a swept run is never kept for good by accident. On Lambda
+the sweep runs every minute ([#13](13-server.md)).
 
 ### The runner
 
@@ -178,6 +180,7 @@ due   pk=W                          sk=due|key       a run the sweep must look a
 | A hold pauses; a paused run continues in a fresh Runner | `TestAHoldPausesTheRun`, `TestAPausedRunContinues` (runner) |
 | A new message while a run is paused is a run of its own | `TestANewMessageWhilePaused` (runner) |
 | A failed collect pauses again | `TestAFailedCollectPausesAgain` (runner) |
+| A swept run's expiry follows its agent's keep rules, and is bounded when the agent can't be read | `TestExpiresFollowsTheAgentsKeepRules` (runner) |
 | Each message is a run of one conversation; a message while a run is paused is a run of its own; conversations stay apart | `TestEachMessageIsARunOfOneConversation`, `TestAMessageWhilePausedIsARunOfItsOwn`, `TestConversationsAreApart` (chat) |
 | The tenant never sees a private cause | `TestTheServerShowsNoPrivateCause` (runner, through the server) |
 
@@ -195,8 +198,6 @@ compares them with `main` on every PR.
   carry KIFF's IDs and the hold's expiry. Both are
   [#15](15-continue-on-hold.md). Until then a paused run waits, visibly, and
   never continues.
-- **The sweep on a schedule** still needs wiring in `cmd/lambda`
-  ([#13](13-server.md)): nothing runs it yet.
 
 ## Known limits, accepted
 

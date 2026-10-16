@@ -735,6 +735,47 @@ func TestEndedAcceptsWhatever(t *testing.T) {
 	}
 }
 
+// brokenAgents is a registry whose reads fail.
+type brokenAgents struct{ registry.Agents }
+
+func (brokenAgents) Get(context.Context, string, string) (registry.Definition, error) {
+	return registry.Definition{}, errors.New("throttled")
+}
+
+func TestExpiresFollowsTheAgentsKeepRules(t *testing.T) {
+	f := newFixture(t)
+	r := f.start(server.Start{Input: "go"})
+	now := f.clock.now()
+	d, err := f.agents.Get(ctx, "t1", "rae")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.r.Expires(ctx, r, now), now.Add(d.Keep.SessionRetention()); !got.Equal(want) {
+		t.Fatalf("got %v, want %v (the agent's keep rules)", got, want)
+	}
+
+	// Keep rules with a kind kept until deleted: the run is kept until deleted.
+	d.Keep[session.Report] = session.Rule{Keep: session.Kept}
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.r.Expires(ctx, r, now); !got.IsZero() {
+		t.Fatalf("got %v, want kept until deleted", got)
+	}
+
+	// An agent that can't be read: kept UnknownKeep, never for good.
+	if err := f.agents.Delete(ctx, "t1", "rae"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.r.Expires(ctx, r, now); !got.Equal(now.Add(runner.UnknownKeep)) {
+		t.Fatalf("removed agent: got %v", got)
+	}
+	f.r.Builder.Agents = brokenAgents{}
+	if got := f.r.Expires(ctx, r, now); !got.Equal(now.Add(runner.UnknownKeep)) {
+		t.Fatalf("failed read: got %v", got)
+	}
+}
+
 func BenchmarkStartAndExecute(b *testing.B) {
 	f := newFixture(b)
 	b.ReportAllocs()

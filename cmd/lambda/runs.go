@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
@@ -81,6 +82,40 @@ func (f *function) execute(ctx context.Context, e runEvent) error {
 		f.log.WarnContext(ctx, "paused run can't continue yet", "tenant", tenant, "run", id)
 	default:
 		f.log.ErrorContext(ctx, "run", "tenant", tenant, "run", id, "status", r.Status, "err", err)
+	}
+	return nil
+}
+
+// sweepLimit bounds the runs one sweep reads. The sweep runs every minute, so
+// this ends up to 100 runs a minute that nobody else is left to end.
+const sweepLimit = 100
+
+// sweeping is the sweep the function runs on each sweep event: across tenants,
+// it marks ended the runs nobody is left to end (run.Sweeper). Each run's
+// recording is ended by the runner first, and its expiry comes from its
+// agent's keep rules, read under the sweep's own context.
+func sweeping(runs run.Runs, rn *runner.Runner) func(ctx context.Context, now time.Time) (int, error) {
+	return func(ctx context.Context, now time.Time) (int, error) {
+		sw := run.Sweeper{Runs: runs, Ended: rn.Ended,
+			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
+		return sw.Sweep(ctx, now, sweepLimit)
+	}
+}
+
+// sweep handles a sweep event. A run it couldn't end stays due, and the next
+// sweep tries again; the error fails this invocation so it shows.
+func (f *function) sweep(ctx context.Context) error {
+	now := time.Now().UTC()
+	if f.now != nil {
+		now = f.now().UTC()
+	}
+	n, err := f.sweeper(ctx, now)
+	if err != nil {
+		f.log.ErrorContext(ctx, "sweep", "ended", n, "err", err)
+		return err
+	}
+	if n > 0 {
+		f.log.InfoContext(ctx, "sweep", "ended", n)
 	}
 	return nil
 }

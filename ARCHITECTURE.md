@@ -117,7 +117,7 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
 | `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents and schedules; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
-| `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode; the runner, with agents' keys and the model key from Secrets Manager; background runs as asynchronous invocations of the same function; schedule firings. Still to come: the sweep on a schedule, firings starting runs; the deploy |
+| `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode; the runner, with agents' keys and the model key from Secrets Manager; background runs as asynchronous invocations of the same function; the sweep every minute; schedule firings. Still to come: firings starting runs; the deploy |
 
 ## The API
 

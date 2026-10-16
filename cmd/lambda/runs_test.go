@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -17,6 +18,8 @@ import (
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/runner"
+	"github.com/kiff/agents/server"
 )
 
 // replies is a model that answers each turn with the next reply, and counts
@@ -239,5 +242,73 @@ func TestTheModelKeyIsOutsideTheAgentsKeys(t *testing.T) {
 		if err := outsidePrefix(secret, "agents/"); (err == nil) != ok {
 			t.Errorf("%s: got %v", secret, err)
 		}
+	}
+}
+
+// TestTheSweepEndsWhatNobodyElseWill: a background run whose invocation never
+// came, and a run whose invocation crashed mid-run, are both ended by a sweep
+// event, with their expiry from the agent's keep rules; a run still in its
+// lease is left alone.
+func TestTheSweepEndsWhatNobodyElseWill(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	d := registrytest.Definition("t1", "rae")
+	_ = agents.Put(ctx, d)
+	rn := f.runner.(*runner.Runner)
+	start := func() run.Run {
+		r, err := rn.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "Refund order 42."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	now := time.Now().UTC()
+
+	unclaimed := start()
+	crashed := start()
+	if _, err := run.Claim(ctx, runs, "t1", crashed.ID, "c1", now.Add(time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := rn.Sessions.Begin(ctx, "t1", crashed.Session, crashed.ID, crashed.Created); err != nil {
+		t.Fatal(err)
+	}
+	healthy := start()
+	if _, err := run.Claim(ctx, runs, "t1", healthy.ID, "c2", now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Past PendingTimeout and the crashed run's lease, inside the healthy one's.
+	later := now.Add(run.PendingTimeout + run.LeaseGrace + 2*time.Minute)
+	f.now = func() time.Time { return later }
+	if _, err := f.handle(ctx, json.RawMessage(`{"sweep":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := later.Add(d.Keep.SessionRetention())
+	for _, r := range []run.Run{unclaimed, crashed} {
+		got, err := runs.Get(ctx, "t1", r.ID)
+		if err != nil || got.Status != run.Error || !got.Expires.Equal(want) {
+			t.Fatalf("got %s %s expiring %v (%v), want ERROR expiring %v", got.ID, got.Status, got.Expires, err, want)
+		}
+	}
+	if st, err := rn.Sessions.State(ctx, "t1", crashed.Session, crashed.ID); err != nil || !st.Ended {
+		t.Fatalf("the crashed run's recording: %+v (%v)", st, err)
+	}
+	if got, _ := runs.Get(ctx, "t1", healthy.ID); got.Status != run.Running {
+		t.Fatalf("a run still in its lease was swept: %s", got.Status)
+	}
+}
+
+// failingRuns is a run store whose Due fails.
+type failingRuns struct{ run.Runs }
+
+func (failingRuns) Due(context.Context, time.Time, int) ([]run.Run, error) {
+	return nil, errors.New("throttled")
+}
+
+func TestAFailedSweepShows(t *testing.T) {
+	f, _, _, runs := newFunctionWith(t, &replies{}, &invocations{})
+	f.sweeper = sweeping(failingRuns{runs}, f.runner.(*runner.Runner))
+	if _, err := f.handle(ctx, json.RawMessage(`{"sweep":{}}`)); err == nil {
+		t.Fatal("a sweep that read nothing succeeded")
 	}
 }

@@ -217,6 +217,18 @@ func (rn *Runner) Ended(ctx context.Context, r run.Run) error {
 	return err
 }
 
+// Expires is when a run the sweep ends at now may go: its agent's keep rules,
+// as when the runner ends a run itself. It is the sweep's run.Sweeper.Expires,
+// which can't fail, so an agent that can't be read (removed, or a failed
+// read) gives UnknownKeep: the run is kept a bounded time, never for good.
+func (rn *Runner) Expires(ctx context.Context, r run.Run, now time.Time) time.Time {
+	d, err := rn.Builder.Agents.Get(ctx, r.Tenant, r.Agent)
+	if err != nil {
+		return expires(nil, now)
+	}
+	return expires(d.Keep, now)
+}
+
 // history is what the model gets before current: the owner's and the agent's
 // messages of the session's last n finished runs created before it, in
 // order. A run still going, or paused, is left out until it ends. Which runs

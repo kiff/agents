@@ -1,6 +1,6 @@
 # The server on Lambda: what #13 delivers
 
-**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. Still to do: the sweep on a schedule, firings starting runs, the 429 cap. Nothing is deployed.
+**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule. Still to do: firings starting runs, the 429 cap. Nothing is deployed.
 **PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), this page's PR (runs on Lambda)
 
 ## What it's for
@@ -134,6 +134,23 @@ ended and does nothing. That invocation never fails on what the runner
 stored: a failed run is already ERROR, and a run that couldn't be claimed
 stays PENDING until the sweep marks it.
 
+### The sweep
+
+An EventBridge Scheduler schedule invokes the function every minute with
+`{"sweep":{}}`. Across tenants, the sweep ends the runs nobody else is left
+to end: a PENDING run no invocation claimed within 5 minutes, and a RUNNING
+run whose lease ran out (its invocation crashed or timed out). Each becomes
+ERROR, or CANCELLED if it was asked to stop
+([#12](12-runs.md)).
+
+- A RUNNING run's recording is ended first (`runner.Runner.Ended`), so what
+  was kept only until its end goes at once. If that fails, the run stays due
+  and the next sweep tries again.
+- Its expiry comes from its agent's keep rules (`runner.Runner.Expires`), or
+  7 days when the agent can't be read.
+- One sweep reads at most 100 due runs. A sweep that fails to read or to end
+  a run fails its invocation, so it shows in the function's errors.
+
 ### Configuration
 
 Everything account-specific comes from the environment, never from code:
@@ -166,7 +183,10 @@ function is the only guard on who the caller is:
 - the function's asynchronous retries are off (`MaximumRetryAttempts` 0):
   the runner claims each run once, and the sweep ends what a crash leaves;
 - the function's role may `secretsmanager:GetSecretValue` on secrets under
-  `AGENTS_SECRETS_PREFIX` and on the model key's secret, nothing else.
+  `AGENTS_SECRETS_PREFIX` and on the model key's secret, nothing else;
+- one EventBridge Scheduler schedule, `rate(1 minute)`, invokes the function
+  with `{"sweep":{}}` through `SCHEDULE_ROLE`. Give it a name outside the
+  agents' schedules (theirs are `s-` and a hash), for example `agents-sweep`.
 
 ## What holds, and the test that guards it
 
@@ -189,6 +209,8 @@ function is the only guard on who the caller is:
 | A run streams through the function URL on Lambda | `TestARunStreamsOnLambda` |
 | A background run is one asynchronous invoke naming only the run, executed by that invocation, once however often it's delivered | `TestABackgroundRunIsExecutedByAnotherInvocation` |
 | A run that can't be queued is stored ERROR | `TestARunThatCantBeQueuedIsAnError` |
+| A sweep event ends an unclaimed run and a crashed one, ends the crashed run's recording, gives both the agent's expiry, and leaves a run in its lease | `TestTheSweepEndsWhatNobodyElseWill` |
+| A sweep that can't read fails its invocation | `TestAFailedSweepShows` |
 | A run event must name a run; a missing run doesn't fail the invocation | `TestARunEventMustNameARun` |
 | The model key is read when a turn needs it, once, and again after a failed read | `TestTheModelKeyIsReadWhenATurnNeedsIt` |
 | The model key's secret can't be one an agent's key reference names | `TestTheModelKeyIsOutsideTheAgentsKeys`, `TestSetupNeedsItsConfiguration` |
@@ -204,8 +226,6 @@ Tests drive the routes against `store/memory`. No test touches AWS.
   crash or a timeout leaves the run PENDING or RUNNING, and the sweep ends it
   (a PENDING run after 5 minutes, a RUNNING one once its lease runs out).
   A destination would only end it sooner.
-- **The sweep on a schedule:** `run.Sweeper{Runs, Ended: runner.Ended,
-  Expires}`, with `Expires` from the agent's keep rules.
 - **429 at the tenant's concurrency cap.** The run store can't count a
   tenant's running runs yet.
 - **`POST /schedules/{id}/trigger`** (ARCHITECTURE.md lists it).
