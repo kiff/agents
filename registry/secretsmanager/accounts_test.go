@@ -40,10 +40,10 @@ func TestAnAccountIsOnlyOneUnderThePrefix(t *testing.T) {
 			t.Errorf("%q: %v, want ErrUnknownAccount", account, err)
 		}
 	}
-	for _, name := range f.asked {
-		if !strings.HasPrefix(name, "kiff-accounts/") || strings.Contains(name[len("kiff-accounts/"):], "/") {
-			t.Errorf("asked for %q", name)
-		}
+	// Only acct_3 is a name worth asking for. One too long for Secrets Manager
+	// would be a ValidationException there: a 503, not the 401 promised.
+	if len(f.asked) != 1 || f.asked[0] != "kiff-accounts/acct_3" {
+		t.Errorf("asked for %q, want only kiff-accounts/acct_3", f.asked)
 	}
 }
 

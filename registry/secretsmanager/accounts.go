@@ -26,6 +26,8 @@ type Accounts struct {
 	Prefix string
 }
 
+var _ kiffalert.Accounts = (*Accounts)(nil)
+
 // NewAccounts returns Accounts that read the secrets named under prefix.
 func NewAccounts(api API, prefix string) *Accounts {
 	return &Accounts{api: api, Prefix: prefix}
