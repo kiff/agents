@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
-	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/kiff/agents/model"
@@ -19,48 +16,6 @@ import (
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
 )
-
-// runEvent is what a background invocation is sent: the run to execute. The
-// run is already stored PENDING; the event names it and carries nothing else,
-// so a repeated or made-up event can only execute a run that exists, once.
-type runEvent struct {
-	Run struct {
-		Tenant string `json:"tenant"`
-		ID     string `json:"id"`
-	} `json:"run"`
-}
-
-// invoker is the part of the Lambda client background uses.
-type invoker interface {
-	Invoke(context.Context, *lambdasvc.InvokeInput, ...func(*lambdasvc.Options)) (*lambdasvc.InvokeOutput, error)
-}
-
-// background has another invocation of function execute the run: an
-// asynchronous invoke, which returns once Lambda has queued the event. The
-// server marks the run ERROR when this fails, so nothing waits on a run no
-// invocation will claim.
-func background(api invoker, function string) func(ctx context.Context, tenant, id string) error {
-	return func(ctx context.Context, tenant, id string) error {
-		var e runEvent
-		e.Run.Tenant, e.Run.ID = tenant, id
-		payload, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		out, err := api.Invoke(ctx, &lambdasvc.InvokeInput{
-			FunctionName:   &function,
-			InvocationType: lambdatypes.InvocationTypeEvent,
-			Payload:        payload,
-		})
-		if err != nil {
-			return fmt.Errorf("lambda: queueing a background run: %w", err)
-		}
-		if out.StatusCode != 202 {
-			return fmt.Errorf("lambda: queueing a background run: status %d", out.StatusCode)
-		}
-		return nil
-	}
-}
 
 // execute runs a background run to its next stop. Whatever happens, the run's
 // state is what the runner stored, so execute never fails the invocation:

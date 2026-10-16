@@ -179,14 +179,13 @@ KIFF delivers again until it gets a 2xx:
 | 404 before the pause while recent; 200 once older or with no time, so KIFF never switches the target off; 200 for a run that went on | `TestTheStatusSaysWhetherKIFFShouldDeliverAgain` |
 | a failed continue is 503, then continued on redelivery | `TestAFailedContinueIsDeliveredAgain` |
 
-Wiring it in `cmd/lambda` (its own URL, `Accounts`, `Continue` as a background
-invoke) is #13's.
+On Lambda it runs as its own function, `cmd/kiffalerts`, behind a URL with no
+IAM auth that serves this route only. `Accounts` reads Secrets Manager, and
+`Continue` sends the run to the agents function as a background run event
+(#13: [KIFF's alerts](13-server.md#kiffs-alerts)).
 
 ## Still to deliver
 
-- **Wiring `/kiff/alerts`** in `cmd/lambda` ([#13](13-server.md)): its own
-  URL, the KIFF account → tenant and secret lookup, and `Continue` as a
-  background invoke.
 - **`POST /agents/{id}/runs/{run_id}/continue`**: a repeat of a continue
   already applied gets 200; any other continue on a run that isn't PAUSED
   gets 409. A held call is never collected twice.

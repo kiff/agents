@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"github.com/kiff/agents/cmd/internal/background"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/registrytest"
@@ -76,7 +77,7 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 		Connect: func(context.Context, string, string) ([]tool.Tool, error) { return nil, nil },
 	}}
 	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
-		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
+		Runner: rn, Background: background.Invoke(inv, "agents-fn"), Gateways: gateways}
 	f := &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn),
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	svc.Start = f.fire

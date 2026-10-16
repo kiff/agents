@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
 **Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule, and schedule firings start runs. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), this page's PR (KIFF accounts)
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), this page's PR (`cmd/kiffalerts`)
 
 ## What it's for
 
@@ -181,8 +181,22 @@ ERROR, or CANCELLED if it was asked to stop
 KIFF tells the server when the owner answers a held call, through
 `POST /kiff/alerts` ([#15](15-continue-on-hold.md)). KIFF signs each alert
 with the alert target's own secret, not with AWS, so the alerts get a
-function of their own (`cmd/kiffalerts`, next PR) behind a URL with no IAM
-auth. That function serves this one route and nothing else.
+function of their own, `cmd/kiffalerts`, behind a URL with no IAM auth
+(`AuthType NONE`, invoke mode `BUFFERED`). It serves `POST /kiff/alerts` at
+that exact path and nothing else: any other path is 404, cleaned or not, so
+no route of the agents' API is reachable without IAM. Any event that isn't a
+function URL request is refused.
+
+When an answer leaves a run waiting for nothing, `kiffalerts` sends the agents
+function the same run event a background run gets
+(`cmd/internal/background`), with an asynchronous invoke:
+
+```json
+{"run": {"tenant": "t1", "id": "5c4c1b44224543331c22207410d6bc18"}}
+```
+
+The agents function claims the run, collects the held calls' outcomes through
+`kiff.Collect` and continues it.
 
 **Which tenant an alert is for.** `registry/secretsmanager.Accounts` reads
 the alert's KIFF account (its `tenant_id`) from one secret per account, named
@@ -203,7 +217,23 @@ the alert's KIFF account (its `tenant_id`) from one secret per account, named
   configuration error, and the handler answers 503. No error carries the
   signing secret.
 - The accounts prefix must be outside the agents' key prefix, so no agent's
-  key reference can name a signing secret.
+  key reference can name a signing secret. `kiffalerts` refuses to start if
+  either prefix starts the other.
+
+`cmd/kiffalerts` reads:
+
+| Variable | What |
+|---|---|
+| `AGENTS_TABLE` | The DynamoDB table, for the runs |
+| `KIFF_ACCOUNTS_PREFIX` | The name prefix of the KIFF accounts' secrets |
+| `AGENTS_SECRETS_PREFIX` | The agents' key prefix, which `KIFF_ACCOUNTS_PREFIX` must stay apart from |
+| `AGENTS_FUNCTION` | The agents function, which continues the runs |
+
+Its role may read and write `AGENTS_TABLE`, `secretsmanager:GetSecretValue`
+on `KIFF_ACCOUNTS_PREFIX` only, and `lambda:InvokeFunction` on the agents
+function. A direct invoke can send any event, so this role is trusted as much
+as the agents function's own; the code sends only run events. Its reserved
+concurrency should be low: anyone can post to its URL.
 
 ### Configuration
 
@@ -219,15 +249,15 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_MODEL_KEY_SECRET` | The name of the secret holding the model provider's key; not under the prefix |
 | `AWS_LAMBDA_FUNCTION_NAME` | Set by Lambda: where background runs are sent |
 
-Setup names every missing variable at once. The function builds for
+Setup names every missing variable at once. Both functions build for
 `provided.al2023` on arm64.
 
 **Before the first deploy**, IAM must hold this, because who may invoke the
 function is the only guard on who the caller is:
 
-- only `SCHEDULE_ROLE` and the function's own role may call
-  `lambda:InvokeFunction` directly. The function's role needs it, on this
-  function only, to send background runs. A direct invoke can send a run
+- only `SCHEDULE_ROLE`, the function's own role and `kiffalerts`' role may
+  call `lambda:InvokeFunction` directly. The two roles need it, on this
+  function only, to send runs to execute. A direct invoke can send a run
   event, which only executes a stored run once, as a request would;
 - tafs cloud's role gets `lambda:InvokeFunctionUrl` (plus
   `lambda:InvokeFunction` only under `lambda:InvokedViaFunctionUrl`, if the
@@ -273,6 +303,9 @@ function is the only guard on who the caller is:
 | Without a Runner there is no trigger route | `TestNoRunnerNoStart` |
 | A run event must name a run; a missing run doesn't fail the invocation | `TestARunEventMustNameARun` |
 | The model key is read when a turn needs it, once, and again after a failed read | `TestTheModelKeyIsReadWhenATurnNeedsIt` |
+| `kiffalerts` serves only `POST /kiff/alerts`, at that exact path; any other path is 404, any other event refused | `TestOnlyTheAlertsAreServed`, `TestOtherEventsAreRefused` (cmd/kiffalerts) |
+| A signed answer is recorded and its run sent to the agents function as a run event; an unsigned, altered or unknown-account alert is 401 and changes nothing | `TestAnAnswerContinuesItsRunInTheAgentsFunction`, `TestAnAlertThatDoesntCheckChangesNothing` (cmd/kiffalerts) |
+| `kiffalerts` needs its configuration, with the accounts prefix apart from the agents' keys | `TestSetupNeedsItsConfiguration` (cmd/kiffalerts) |
 | A KIFF account resolves to its tenant and signing secret, only under its prefix; an unknown or malformed account is ErrUnknownAccount; a bad secret is an error that carries no secret | `TestAnAccountIsItsTenantAndSecret`, `TestAnAccountIsOnlyOneUnderThePrefix`, `TestOnlyTheAccountAskedForAnswers`, `TestAnAccountSecretMustNameATenantAndASecret`, `TestAFailedAccountReadIsReported` (registry/secretsmanager) |
 | The model key's secret can't be one an agent's key reference names | `TestTheModelKeyIsOutsideTheAgentsKeys`, `TestSetupNeedsItsConfiguration` |
 
@@ -286,9 +319,9 @@ Tests drive the routes against `store/memory`. No test touches AWS.
   A destination would only end it sooner.
 - **429 at the tenant's concurrency cap.** The run store can't count a
   tenant's running runs yet.
-- **`cmd/kiffalerts`**, the function and URL that serve `/kiff/alerts`, and
-  the sweep's `Continue` for paused runs, once [#15](15-continue-on-hold.md)'s
-  expiry PR (#52) lands. The `continue` route is #15's;
+- **The sweep's `Continue`** for paused runs whose holds expired, once
+  [#15](15-continue-on-hold.md)'s expiry PR (#52) lands. The `continue`
+  route is #15's;
   `/evals`, `/usage` and `/ops/*` are [#14](14-console.md)'s.
 - **The deploy:** the function, its URL, the table (in an EU region), the
   schedule group and role, and the IAM above. Nothing has been created on
