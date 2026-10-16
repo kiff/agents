@@ -97,6 +97,9 @@ type function struct {
 	schedules *schedule.Service
 	runner    server.Runner
 	sweeper   func(ctx context.Context, now time.Time) (int, error)
+	// cont is how the sweep continues a resolved paused run; setup keeps it
+	// so its wiring can be read.
+	cont func(ctx context.Context, tenant, id string) error
 	// now is the clock; nil is time.Now.
 	now func() time.Time
 	log *slog.Logger
@@ -174,9 +177,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log}).Handler(),
 		schedules: schedules,
 		runner:    rn,
-		sweeper:   sweeping(runs, rn, bg),
+		cont:      bg,
 		log:       log,
 	}
+	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
 	return f, nil

@@ -226,8 +226,8 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if rn.Collect == nil || reflect.ValueOf(rn.Collect).Pointer() != reflect.ValueOf(kiff.Collect).Pointer() {
 		t.Error("a paused run must be continued by collecting its held calls from KIFF")
 	}
-	if f.sweeper == nil {
-		t.Error("no sweep")
+	if f.sweeper == nil || f.cont == nil {
+		t.Error("no sweep, or one that continues no paused run")
 	}
 	if f.schedules.Start == nil {
 		t.Error("firings start nothing")

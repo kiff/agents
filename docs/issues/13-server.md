@@ -233,11 +233,35 @@ the alert's KIFF account (its `tenant_id`) from one secret per account, named
 | `KIFF_ACCOUNTS_PREFIX` | The name prefix of the KIFF accounts' secrets |
 | `AGENTS_SECRETS_PREFIX` | The agents' key prefix, which `KIFF_ACCOUNTS_PREFIX` must stay apart from |
 
-Its role may read and write `AGENTS_TABLE` and
-`secretsmanager:GetSecretValue` on `KIFF_ACCOUNTS_PREFIX` only. It gets no
-`lambda:InvokeFunction`. Its reserved concurrency should be low: anyone can
-post to its URL, and each post costs an invocation and a secret read, from
-the same Secrets Manager quota the agents function reads its keys from.
+Its role may `secretsmanager:GetSecretValue` on `KIFF_ACCOUNTS_PREFIX` only,
+and gets no `lambda:InvokeFunction`. On `AGENTS_TABLE` it reaches only the run
+items an answer touches. The table also holds every tenant's agents,
+sessions, notes and schedules, and a role that could reach them from the open
+URL could read any tenant's conversations or rewrite an agent's definition.
+The store's keys start with their kind, so IAM can bound it:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem",
+             "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
+  "Resource": "arn:aws:dynamodb:<region>:<account>:table/<AGENTS_TABLE>",
+  "Condition": {"ForAllValues:StringLike":
+    {"dynamodb:LeadingKeys": ["R|*", "H|*", "L|*", "O|*", "W", "WP"]}}
+}
+```
+
+- `R|`: the run and its turns.
+- `H|`: its holds, which find a run by the exception KIFF names.
+- `L|`, `O|`: its list items, by agent and by source.
+- `W`, `WP`: the sweep's queues.
+
+`TransactWriteItems` is authorized item by item under these actions. Check
+the list at the first deploy, against a real answer.
+
+Its reserved concurrency should be low: anyone can post to its URL, and each
+post costs an invocation and a secret read, from the same Secrets Manager
+quota the agents function reads its keys from.
 
 ### Configuration
 
