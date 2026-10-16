@@ -116,6 +116,28 @@ r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
   answer that comes later forwards nothing. The cancel route answers 409 for
   a paused run until then. Removing an agent does the same before deleting
   anything.
+  - **The client is built** ([#51](https://github.com/kiff/agents/pull/51)):
+    `kiff.Withdraw(ctx, hc, kiff.APIURL, key, exception)`.
+
+    ```http
+    POST https://api.kiff.dev/v1/me/holds/exc_123/withdraw
+    Authorization: Bearer <the agent's KIFF key>
+    ```
+
+    | KIFF answers | `Withdraw` returns |
+    |---|---|
+    | 200 (and 200 again on a repeat) | `Withdrawal{Withdrawn: true, Status: "invalidated"}` |
+    | 409 `already_answered` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
+    | 404 | `kiff.ErrNoHold` |
+    | anything else | an error, never carrying the key |
+
+    Guarded by `tool/kiff` `TestWithdrawAHeldCall`,
+    `TestACallAlreadyAnsweredIsNotWithdrawn`, `TestWithdrawFailures`.
+  - **Left:** the cancel route calls it for each requirement's `exception`,
+    then sets `Cancel`. KIFF then announces each hold `invalidated`; the
+    alerts handler records it, the run is claimed again, collects (refused,
+    `mandate_withdrawn`) and ends CANCELLED at its first checkpoint (#36,
+    #38). A call KIFF already sent is recorded when collected.
 
 ## What KIFF now offers (from kiff/kiff-cloud#1245)
 
