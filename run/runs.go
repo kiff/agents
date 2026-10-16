@@ -161,6 +161,12 @@ type Runs interface {
 	// first, at most limit, without their paused turn. An empty source lists
 	// nothing.
 	ListSource(ctx context.Context, tenant string, trigger Trigger, source string, limit int) ([]Run, error)
+	// ListAll returns runs across tenants, newest first, at most limit,
+	// without their paused turn. It is for operators' read-only routes only:
+	// every other read names its tenant.
+	ListAll(ctx context.Context, limit int) ([]Run, error)
+	// ListPaused is ListAll for PAUSED runs only.
+	ListPaused(ctx context.Context, limit int) ([]Run, error)
 	// Due returns RUNNING and PENDING runs whose Due is before now, across
 	// tenants, the oldest due first, at most limit, without their paused turn.
 	Due(ctx context.Context, now time.Time, limit int) ([]Run, error)

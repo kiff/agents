@@ -54,6 +54,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"SweptRunsExpireAndCancelsHold", sweptRunsExpireAndCancelsHold},
 		{"ListNewestFirst", listNewestFirst},
 		{"ListBySource", listBySource},
+		{"OperatorsListAcrossTenants", operatorsListAcrossTenants},
 		{"ARunIsFoundByItsHold", aRunIsFoundByItsHold},
 		{"AnAnswerIsRecordedOnce", anAnswerIsRecordedOnce},
 		{"AnAnswerOutlivesTheRunsEnd", anAnswerOutlivesTheRunsEnd},
@@ -807,6 +808,65 @@ func listNewestFirst(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	if !slices.Equal(ids(l), made[:2]) {
 		t.Fatalf("limit 2: %v", ids(l))
+	}
+}
+
+// Operators list every run across tenants, newest first, and the PAUSED ones
+// apart: a run is in the paused list only while it is paused, and neither
+// list keeps a run that was deleted, or ended and expired.
+func operatorsListAcrossTenants(t *testing.T, s run.Runs, c *clock) {
+	a := created(t, s, c, "t1", "refunds")
+	c.add(time.Second)
+	b := created(t, s, c, "t2", "refunds")
+	c.add(time.Second)
+	held := claimed(t, s, c)
+	held, err := run.Save(ctx, s, held, c.now(), func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Operation: "op_1", Expires: c.now().Add(time.Hour)}}
+		return nil
+	})
+	check(t, err)
+	all, err := s.ListAll(ctx, 0)
+	check(t, err)
+	if want := []string{held.ID, b.ID, a.ID}; !slices.Equal(ids(all), want) {
+		t.Fatalf("all = %v, want %v", ids(all), want)
+	}
+	if all, _ := s.ListAll(ctx, 2); !slices.Equal(ids(all), []string{held.ID, b.ID}) {
+		t.Fatalf("limit 2: %v", ids(all))
+	}
+	if all[1].Tenant != "t2" || all[0].Paused != nil {
+		t.Fatalf("listed %+v: want each with its tenant, without its paused turn", all[:2])
+	}
+	paused, err := s.ListPaused(ctx, 0)
+	check(t, err)
+	if !slices.Equal(ids(paused), []string{held.ID}) || len(paused[0].Requirements) != 1 {
+		t.Fatalf("paused = %+v", paused)
+	}
+
+	// Continued: no longer paused. Ended and expired, or deleted: gone.
+	c.add(2 * time.Hour)
+	held, err = run.Claim(ctx, s, "t1", held.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	if paused, _ := s.ListPaused(ctx, 0); len(paused) != 0 {
+		t.Fatalf("a continued run is still paused: %v", ids(paused))
+	}
+	_, err = run.Save(ctx, s, held, c.now(), func(n *run.Run) error {
+		n.Status, n.Expires = run.Completed, c.now().Add(time.Minute)
+		return nil
+	})
+	check(t, err)
+	check(t, s.Delete(ctx, "t2", b.ID))
+	c.add(2 * time.Minute)
+	if all, _ := s.ListAll(ctx, 0); !slices.Equal(ids(all), []string{a.ID}) {
+		t.Fatalf("after an expiry and a delete: %v", ids(all))
+	}
+
+	// A run deleted while paused leaves the paused list.
+	p, err := run.Save(ctx, s, claimed(t, s, c), c.now(), func(n *run.Run) error { n.Status = run.Paused; return nil })
+	check(t, err)
+	check(t, s.DeleteAgent(ctx, "t1", "refunds"))
+	if paused, _ := s.ListPaused(ctx, 0); len(paused) != 0 {
+		t.Fatalf("a deleted paused run %s is still listed: %v", p.ID, ids(paused))
 	}
 }
 
