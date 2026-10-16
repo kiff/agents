@@ -1,7 +1,7 @@
 # Continue on a hold: what #15 delivers
 
 **Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
-**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers), [#50](https://github.com/kiff/agents/pull/50) (the alerts handler), [#51](https://github.com/kiff/agents/pull/51) (withdraw), [#52](https://github.com/kiff/agents/pull/52) (expiry in the sweep)
+**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers), [#50](https://github.com/kiff/agents/pull/50) (the alerts handler), [#51](https://github.com/kiff/agents/pull/51) (withdraw), [#52](https://github.com/kiff/agents/pull/52) (expiry in the sweep), [#55](https://github.com/kiff/agents/pull/55) (cancel)
 
 ## What it's for
 
@@ -232,38 +232,75 @@ still paused    looked at again 09:14, 09:18, 09:26 … then hourly
 | a pause after a failed collect keeps the backoff; a new held call resets it | `runner` `TestANewPauseResetsTheSweepsBackoff` |
 | an expired hold, swept: collected, continued, COMPLETED; KIFF down for a day: ERROR | `runner` `TestTheSweepContinuesARunWhoseHoldExpired` |
 
+**Cancelling a paused run (#55).** `POST /agents/{id}/runs/{run_id}/cancel`
+on a PAUSED run sets `cancel` first, then withdraws each held call in KIFF,
+records what became of it, and hands the run to `Background`. The run is
+claimed, collects the outcomes (a withdrawn call comes back refused; one
+KIFF had already sent, its result) and ends CANCELLED at its first
+checkpoint. `cancel` comes first because each withdrawal makes KIFF send an
+`invalidated` alert, which may continue the run before the cancel returns; a
+paused run with `cancel` set can only end CANCELLED.
+
+```http
+POST /agents/rae/runs/5c4c…/cancel
+
+200 {"id":"5c4c…","status":"PAUSED","cancel_requested":true,
+     "requirements":[{"call_id":"toolu_01","exception":"exc_123","answer":"invalidated",…}]}
+```
+
+```go
+srv := &server.Server{ /* … */
+	Withdraw: kiff.Withdrawer(agents, secrets, http.DefaultClient, kiff.APIURL), // the run's agent's own key
+}
+```
+
+| Case | Answer |
+|---|---|
+| every held call withdrawn or already answered | 200, `cancel_requested`; each requirement's `answer` is `invalidated` or KIFF's status |
+| no `Withdraw` set, or a held call with no `exception` | 409, nothing withdrawn |
+| KIFF fails | 500; `cancel` is already recorded, and so is each call withdrawn before the failure; repeat the cancel to withdraw the rest |
+| KIFF doesn't know a hold for the agent's key (404: purged, or `key_ref` now names another KIFF agent) | nothing to withdraw: carries on, and that requirement waits for KIFF's own answer |
+| `Background` fails | 200; the sweep continues the run (#52) |
+
+`DELETE /agents/{id}` withdraws every held call of the agent's paused runs
+first, while the agent (and its key) is still there. A hold KIFF doesn't
+know is nothing to withdraw. If KIFF fails, none of the agent's runs are
+deleted (500); repeat it.
+
+**The withdraw client (#51):** `kiff.Withdraw(ctx, hc, kiff.APIURL, key, exception)`.
+
+```http
+POST https://api.kiff.dev/v1/me/holds/exc_123/withdraw
+Authorization: Bearer <the agent's KIFF key>
+```
+
+| KIFF answers | `Withdraw` returns |
+|---|---|
+| 200 (and 200 again on a repeat) | `Withdrawal{Withdrawn: true, Status: "invalidated"}` |
+| 409 `already_answered`, with `hold.status` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
+| 409 with another `error`, or no status | an error: KIFF didn't say what became of the call ([#54](https://github.com/kiff/agents/pull/54)) |
+| 404 | `kiff.ErrNoHold` |
+| anything else | an error, never carrying the key |
+
+Guarded by `tool/kiff` `TestWithdrawAHeldCall`,
+`TestACallAlreadyAnsweredIsNotWithdrawn`, `TestWithdrawFailures`.
+
+| Rule | Guarded by |
+|---|---|
+| a paused run's calls are withdrawn, answers recorded, `cancel` set, the run handed on | `server` `TestCancelAPausedRunWithdrawsItsHeldCalls` |
+| no `Withdraw` or no exception ID: 409, nothing recorded; KIFF failing partway: 500, `cancel` recorded; `Background` failing: still 200 | `TestCancelAPausedRunNeedsKIFF` |
+| `cancel` is stored before the first withdrawal, so KIFF's alert finds it | `TestACancelIsRecordedBeforeItsWithdrawals` |
+| a hold KIFF doesn't know blocks neither the cancel nor the agent's removal | `TestAHoldKIFFDoesntKnowIsNothingToWithdraw` |
+| removing an agent withdraws first, with the agent still there; KIFF failing deletes nothing | `TestDeleteAgentWithdrawsItsHeldCalls` |
+| `Withdrawer` uses the run's agent's own key; `ErrNoHold` is nothing to withdraw | `tool/kiff` `TestWithdrawerUsesTheRunsAgentsKey` |
+
 ## Still to deliver
 
 - **`POST /agents/{id}/runs/{run_id}/continue`**: a repeat of a continue
   already applied gets 200; any other continue on a run that isn't PAUSED
   gets 409. A held call is never collected twice.
-- **Cancelling a paused run** withdraws its held calls in KIFF first, so an
-  answer that comes later forwards nothing. The cancel route answers 409 for
-  a paused run until then. Removing an agent does the same before deleting
-  anything.
-  - **The client is built** ([#51](https://github.com/kiff/agents/pull/51)):
-    `kiff.Withdraw(ctx, hc, kiff.APIURL, key, exception)`.
-
-    ```http
-    POST https://api.kiff.dev/v1/me/holds/exc_123/withdraw
-    Authorization: Bearer <the agent's KIFF key>
-    ```
-
-    | KIFF answers | `Withdraw` returns |
-    |---|---|
-    | 200 (and 200 again on a repeat) | `Withdrawal{Withdrawn: true, Status: "invalidated"}` |
-    | 409 `already_answered`, with `hold.status` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
-    | 409 with another `error`, or no status | an error: KIFF didn't say what became of the call |
-    | 404 | `kiff.ErrNoHold` |
-    | anything else | an error, never carrying the key |
-
-    Guarded by `tool/kiff` `TestWithdrawAHeldCall`,
-    `TestACallAlreadyAnsweredIsNotWithdrawn`, `TestWithdrawFailures`.
-  - **Left:** the cancel route calls it for each requirement's `exception`,
-    then sets `Cancel`. KIFF then announces each hold `invalidated`; the
-    alerts handler records it, the run is claimed again, collects (refused,
-    `mandate_withdrawn`) and ends CANCELLED at its first checkpoint (#36,
-    #38). A call KIFF already sent is recorded when collected.
+- **Wiring `Server.Withdraw`** in `cmd/lambda` ([#13](13-server.md)):
+  `kiff.Withdrawer(agents, secrets, hc, kiff.APIURL)`.
 
 ## What KIFF now offers (from kiff/kiff-cloud#1245)
 

@@ -32,7 +32,7 @@ only tafs cloud may call it.
 | `POST /schedules/{id}/trigger` | Fire the schedule now, by hand: an ordinary run of its agent with its input, tagged with the schedule, in the background. Answers 202 with the run. The schedule needn't be on. **Only served when a `Runner` is set** |
 | `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams the run as SSE (below). With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
 | `GET /agents/{id}/runs/{run_id}` | The run: status, stop, output, error, cost, turns, requirements. Never its paused turn, claim, lease or version |
-| `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED is 409 until [#15](15-continue-on-hold.md) can withdraw its held calls |
+| `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED has its held calls withdrawn in KIFF, then stops ([#15](15-continue-on-hold.md)); 409 with no `Withdraw`, which `cmd/lambda` doesn't set yet |
 | `POST /agents/{id}/runs/{run_id}/resume?after=N` | Replays the run's recorded events after `Seq` N, then follows the run until it's final or paused, then `end` (below) |
 
 ### The stream
