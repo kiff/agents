@@ -379,3 +379,30 @@ func TestAnInterruptStartsNoLaterCase(t *testing.T) {
 		t.Fatalf("Run after an interrupt: %v", err)
 	}
 }
+
+// With -notes, the case's note is in the agent's memory before the run: the
+// agent reads it with its memory tool. A case with no note file starts with
+// none.
+func TestTheOwnersNoteIsInMemory(t *testing.T) {
+	m := &script{replies: []model.Reply{
+		calls(call("c1", "memory", `{"action":"list"}`)),
+		{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn},
+	}}
+	withAgent(t, m)
+	notes := t.TempDir()
+	_ = os.WriteFile(filepath.Join(notes, "refunds.md"), []byte("Offer store credit to Ada first.\n"), 0o644)
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", MaxCost: 2_000_000, History: 20},
+		jobsDir(t), "", io.Discard)
+	rt.notes = notes
+	if _, err := rt.Run(context.Background(), cases.Refunds); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(m.asked[1].Messages)
+	if !strings.Contains(string(b), "Offer store credit to Ada first.") {
+		t.Fatalf("the agent's memory didn't hold the note: %s", b)
+	}
+	if got, _ := rt.sessions.ListNotes(context.Background(), evalTenant, "chargebacks"); len(got) != 0 {
+		t.Fatalf("a case with no note file has notes: %+v", got)
+	}
+}

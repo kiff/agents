@@ -2,7 +2,7 @@
 // per case.
 //
 //	eval [-judge-model id -judge-price in,out] [-ids seed.json] [-baseline base.json] [-out results.json] case=session...
-//	eval -run -model id -price in,out -jobs dir [-skill file] [-gateway url] [-max-cost usd] [...] case...
+//	eval -run -model id -price in,out -jobs dir [-skill file] [-notes dir] [-gateway url] [-max-cost usd] [...] case...
 //
 // In the first form, each argument names a case (refunds, chargebacks) and the
 // Managed Agents session of the run to grade, read with ANTHROPIC_API_KEY from
@@ -13,7 +13,9 @@
 // job, read from <jobs>/<job>.md, with -skill added, on the model given,
 // through KIFF's gateway with the key in KIFF_AGENT_KEY. Tool calls and
 // results are kept for grading (eval.Policy). Runs and sessions are kept in
-// memory. A run KIFF holds a call of stops PAUSED, and is graded there.
+// memory. With -notes, <notes>/<case>.md is the owner's note in the agent's
+// memory before the run. A run KIFF holds a call of stops PAUSED, and is
+// graded there.
 //
 // With -baseline, a case that scores lower than it did there fails the
 // command. -ids is the seed's Stripe ids by item reference.
@@ -49,6 +51,7 @@ import (
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
@@ -92,6 +95,7 @@ type runtime struct {
 	rn       *runner.Runner
 	base     registry.Definition
 	jobs     string // the directory of the jobs' instructions
+	notes    string // the directory of the owner's notes, <case>.md each; empty: none
 	skill    string // added to every job's instructions
 	log      io.Writer
 }
@@ -108,6 +112,24 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent)} },
 	}}
 	return rt
+}
+
+// note puts the owner's note for the case, <notes>/<case>.md, in the agent's
+// memory, as the owner would have left it: the agent reads it with its
+// memory tool. A case with no note file starts with none.
+func (rt *runtime) note(ctx context.Context, name string) error {
+	if rt.notes == "" {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(rt.notes, name+".md"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: the owner's note: %w", name, err)
+	}
+	return rt.sessions.PutNote(ctx, session.Note{Tenant: evalTenant, Agent: name, Name: "owner",
+		Text: strings.TrimSpace(string(b)), Updated: time.Now().UTC()})
 }
 
 // cancel asks a run to stop, re-reading it if it changed meanwhile.
@@ -141,6 +163,9 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 		d.Instructions += "\n\n" + rt.skill
 	}
 	if err := rt.agents.Put(ctx, d); err != nil {
+		return eval.Run{}, err
+	}
+	if err := rt.note(ctx, s.Name); err != nil {
 		return eval.Run{}, err
 	}
 	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: s.Input})
@@ -181,6 +206,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	price := fs.String("price", "", "-run: the agent's input,output price in millionths of a dollar per million tokens")
 	jobs := fs.String("jobs", "", "-run: the directory of the jobs' instructions, <job>.md each")
 	skillPath := fs.String("skill", "", "-run: a file with KIFF's skill, added to every job's instructions")
+	notesDir := fs.String("notes", "", "-run: the directory of the owner's notes, <case>.md each, put in the agent's memory first")
 	gateway := fs.String("gateway", kiff.URL, "-run: KIFF's gateway")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
 	if err := fs.Parse(args); err != nil {
@@ -231,6 +257,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		rt = newRuntime(newModel(key), kiffKey, registry.Definition{Tenant: evalTenant, Model: *modelID, Price: p,
 			MaxTokens: 8192, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY",
 			MaxCost: int64(*maxCost * 1_000_000), History: 20}, *jobs, skill, stderr)
+		rt.notes = *notesDir
 	}
 	var judge *eval.Judge
 	if *judgeModel != "" {

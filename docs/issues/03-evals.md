@@ -65,7 +65,7 @@ it:
 ```sh
 KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… eval -run \
   -model claude-opus-5-5 -price 5000000,25000000 \
-  -jobs ./jobs -skill ./kiff-skill.md -ids seed.json \
+  -jobs ./jobs -skill ./kiff-skill.md -notes ./notes -ids seed.json \
   -judge-model claude-opus-5-5 -judge-price 5000000,25000000 \
   refunds chargebacks
 ```
@@ -74,6 +74,9 @@ KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… eval -run \
   `chargebacks.md`: tafs's job texts) plus `-skill`. Its tools come through
   KIFF's gateway (`-gateway`, default `https://mcp.kiff.dev/mcp`) with
   `KIFF_AGENT_KEY`, the key whose Card has the case's limits.
+- With `-notes <dir>`, `<dir>/<case>.md` is the owner's note in the agent's
+  memory before the run (`chargebacks.md`: "Always fight disputes from Gus
+  Regular…"). The agent reads it with its `memory` tool, as a taf would.
 - The run's input is the case's opening instruction. Its keep rules are
   `eval.Policy`, whatever else is set, so the checks have the tool calls and
   results to read. Each run is capped at `-max-cost` dollars (default 2).
@@ -119,6 +122,7 @@ refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
 | a gateway call is recorded under `kiff`, an own tool's under none | `agent` `TestAToolCallRecordsWhereItWent` |
 | an interrupt stops the run at its next checkpoint, CANCELLED | `cmd/eval` `TestAnInterruptStopsTheRun` |
 | after an interrupt no later case starts; the graded ones are printed, the rest named | `TestAnInterruptStartsNoLaterCase` |
+| `-notes`: the case's note is in the agent's memory before the run; a case without one has none | `TestTheOwnersNoteIsInMemory` |
 
 The case tests are the **smoke cases**. They run in the Go workflow on every
 PR.
