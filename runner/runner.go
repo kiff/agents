@@ -226,25 +226,40 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 // HeldOutcome is a collected held call's result, opening with what happened
 // to the call. The model last saw KIFF hold it, and its Card, which the call
 // was outside; a bare tool answer then reads as KIFF having sent a call it
-// should have held. The answer recorded on the requirement says which, or,
-// with none recorded (no alert came), the collected result: KIFF sends a held
-// call only once the owner approves it.
+// should have held. Two things are said apart: the owner's decision, from
+// the answer recorded on the requirement, and the delivery, from KIFF's
+// state on the collected result. The call is said to be sent only when KIFF
+// forwarded it; with no answer recorded (no alert came), a forwarded call
+// was approved, as KIFF sends a held call only then.
 func HeldOutcome(q run.Requirement, res tool.Result) tool.Result {
-	notSent := ""
+	notSent := func(why string) tool.Result {
+		res.Text = why + "\n\nKIFF said: " + res.Text
+		res.IsError = true
+		return res
+	}
 	switch q.Answer {
 	case "refused", "rejected":
-		notSent = "KIFF held this call for the owner, who refused it. It was not sent."
+		return notSent("KIFF held this call for the owner, who refused it. It was not sent.")
 	case "expired":
-		notSent = "KIFF held this call for the owner, and the hold expired without an answer. It was not sent."
+		return notSent("KIFF held this call for the owner, and the hold expired without an answer. It was not sent.")
 	case "invalidated", "withdrawn":
-		notSent = "KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent."
-	default:
-		if res.State == tool.StateRefused {
-			notSent = "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent."
-		}
+		return notSent("KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.")
 	}
-	if notSent != "" {
-		res.Text = notSent + "\n\nKIFF said: " + res.Text
+	approved := q.Answer == "approved"
+	held := "KIFF held this call for the owner"
+	if approved {
+		held += ", who approved it"
+	}
+	switch res.State {
+	case tool.StateRefused:
+		if approved {
+			return notSent(held + ", but KIFF refused it when it came to send it (its Card may have changed). It was not sent.")
+		}
+		return notSent(held + ", and it was not approved (refused, or the hold expired). It was not sent.")
+	case "failed":
+		return notSent(held + ". KIFF could not send it, so it was not sent.")
+	case "unknown":
+		res.Text = held + ". KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.\n\nKIFF said: " + res.Text
 		res.IsError = true
 		return res
 	}

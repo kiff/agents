@@ -107,7 +107,18 @@ expired    … the hold expired without an answer. It was not sent.
 withdrawn  … it was withdrawn because the run was asked to stop. It was not sent.
 ```
 
-A call that wasn't sent is always an error result.
+The owner's decision and the delivery are said apart: the decision from the
+answer recorded on the requirement, the delivery from KIFF's state on the
+collected result. "Sent once" only when KIFF forwarded it:
+
+```text
+approved, refused when sent  … who approved it, but KIFF refused it when it came to send it (its Card may have changed). It was not sent.
+failed                       … KIFF could not send it, so it was not sent.
+unknown                      … KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.
+```
+
+A call that wasn't sent, or whose outcome is unknown, is always an error
+result.
 
 | Rule | Guarded by |
 |---|---|
@@ -120,6 +131,7 @@ A call that wasn't sent is always an error result.
 | held, answered, collected and continued, end to end through the gateway | `TestAHeldRunContinuesThroughTheGateway` |
 | a continued held call's result says it was held and approved, before the tool's answer | `runner` `TestAPausedRunContinues` |
 | approved, refused, expired, withdrawn, and with no answer recorded: each says what happened; one not sent is an error | `runner` `TestHeldOutcome` |
+| end to end through the gateway: approved and sent, approved but KIFF couldn't send it, response lost, expired; "sent once" only when forwarded | `tool/kiff` `TestTheContinuedModelReadsWhatHappened` |
 
 **A run is found by its hold, and KIFF's answer is recorded on it (#49).**
 `Runs.ByHold(ctx, tenant, exception)` finds the run that paused on the call

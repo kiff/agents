@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,7 +92,11 @@ func TestCollectRefuses(t *testing.T) {
 // replies is a model that answers each turn with the next reply.
 type replies []model.Reply
 
-func (r *replies) Turn(context.Context, model.Request, func(string)) (model.Reply, error) {
+// asked is the last request the model was asked.
+var asked model.Request
+
+func (r *replies) Turn(_ context.Context, req model.Request, _ func(string)) (model.Reply, error) {
+	asked = req
 	next := (*r)[0]
 	*r = (*r)[1:]
 	return next, nil
@@ -191,5 +196,44 @@ func TestACallMadeWithoutAnOperationIsCollectedByItsKey(t *testing.T) {
 	_ = json.Unmarshal([]byte(calls[len(calls)-1]), &args)
 	if args["kiff_operation_id"] != "tc-77" {
 		t.Fatalf("collected with %v", args)
+	}
+}
+
+// End to end, the continued model reads what happened to its held call,
+// and "sent once" only when KIFF forwarded it (#69): not when KIFF couldn't
+// send it, nor when its response was lost.
+func TestTheContinuedModelReadsWhatHappened(t *testing.T) {
+	for _, c := range []struct {
+		outcome, answer, want string
+	}{
+		{"approved", "approved", "KIFF held this call for the owner, who approved it. KIFF then sent it, once."},
+		{"failed", "approved", "KIFF held this call for the owner, who approved it. KIFF could not send it, so it was not sent."},
+		{"failed", "", "KIFF held this call for the owner. KIFF could not send it, so it was not sent."},
+		{"unknown", "approved", "KIFF sent it, but the tool's response was lost: whether it took effect is unknown."},
+		{"unknown", "", "KIFF sent it, but the tool's response was lost: whether it took effect is unknown."},
+		{"expired", "expired", "the hold expired without an answer. It was not sent."},
+	} {
+		rn, _, r := heldRun(t, `{"charge":"ch_big","outcome":"`+c.outcome+`"}`)
+		ctx := context.Background()
+		if c.answer != "" {
+			var err error
+			if r, err = run.Change(ctx, rn.Runs, r, time.Now(), func(n *run.Run) error { n.Requirements[0].Answer = c.answer; return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := rn.Execute(ctx, "t1", r.ID, nil); err != nil {
+			t.Fatalf("%s/%s: %v", c.outcome, c.answer, err)
+		}
+		got := ""
+		for _, m := range asked.Messages {
+			for _, b := range m.Blocks {
+				if b.Kind == model.ToolResult && b.CallID == "c1" {
+					got = b.Result
+				}
+			}
+		}
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s, answer %q: the model read %q\nwant it to say %q", c.outcome, c.answer, got, c.want)
+		}
 	}
 }

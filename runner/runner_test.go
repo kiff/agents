@@ -1294,14 +1294,21 @@ func TestHeldOutcome(t *testing.T) {
 		want   string
 		isErr  bool
 	}{
-		"approved":                     {"approved", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
-		"approved, no alert came":      {"", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
-		"approved, the tool failed":    {"approved", tool.Result{Text: "card declined", IsError: true}, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\ncard declined", true},
-		"refused":                      {"refused", refused, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
-		"expired":                      {"expired", refused, "KIFF held this call for the owner, and the hold expired without an answer. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
-		"refused, the result unmarked": {"refused", tool.Result{Text: "Not sent."}, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Not sent.", true},
-		"withdrawn":                    {"invalidated", refused, "KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
-		"not approved, no alert came":  {"", refused, "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"approved":                         {"approved", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
+		"approved, no alert came":          {"", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
+		"approved, the tool failed":        {"approved", tool.Result{Text: "card declined", IsError: true}, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\ncard declined", true},
+		"refused":                          {"refused", refused, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"expired":                          {"expired", refused, "KIFF held this call for the owner, and the hold expired without an answer. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"refused, the result unmarked":     {"refused", tool.Result{Text: "Not sent."}, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Not sent.", true},
+		"withdrawn":                        {"invalidated", refused, "KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"approved, refused when sent":      {"approved", refused, "KIFF held this call for the owner, who approved it, but KIFF refused it when it came to send it (its Card may have changed). It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"approved, KIFF could not send it": {"approved", tool.Result{Text: "The tool could not be reached.", IsError: true, State: "failed"}, "KIFF held this call for the owner, who approved it. KIFF could not send it, so it was not sent.\n\nKIFF said: The tool could not be reached.", true},
+		"no alert, KIFF could not send it": {"", tool.Result{Text: "The tool could not be reached.", IsError: true, State: "failed"}, "KIFF held this call for the owner. KIFF could not send it, so it was not sent.\n\nKIFF said: The tool could not be reached.", true},
+		"approved, the response was lost":  {"approved", tool.Result{Text: "Sent, response lost.", IsError: true, State: "unknown"}, "KIFF held this call for the owner, who approved it. KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.\n\nKIFF said: Sent, response lost.", true},
+		"the response was lost, unmarked":  {"approved", tool.Result{Text: "Sent.", State: "unknown"}, "KIFF held this call for the owner, who approved it. KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.\n\nKIFF said: Sent.", true},
+		"no alert, the response was lost":  {"", tool.Result{Text: "Sent, response lost.", IsError: true, State: "unknown"}, "KIFF held this call for the owner. KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.\n\nKIFF said: Sent, response lost.", true},
+		"approved, forwarded":              {"approved", tool.Result{Text: "refunded re_1", State: "forwarded"}, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
+		"not approved, no alert came":      {"", refused, "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent.\n\nKIFF said: Refused by KIFF.", true},
 	} {
 		got := runner.HeldOutcome(run.Requirement{CallID: "c1", Answer: c.answer}, c.res)
 		if got.Text != c.want || got.IsError != c.isErr {

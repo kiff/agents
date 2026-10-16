@@ -106,6 +106,12 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			} else if op == "op-held-no-retry" {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "held"}}}
+			} else if op == "op-failed" { // approved, but KIFF couldn't send it
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "The tool could not be reached, so the call was not sent."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "failed", "sent": "no", "retry": "new_call"}}}
+			} else if op == "op-unknown" { // sent, and its response lost
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Sent to the tool, but its response was lost."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "unknown", "sent": "unknown", "retry": "none"}}}
 			} else if op == "op-error" {
 				http.Error(w, "gateway down", http.StatusBadGateway)
 				return
@@ -115,6 +121,12 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
 						"state": "held", "invocation": "tc-77", "exception_id": "exc_789", "sent": "no", "retry": "same_call"}}}
+			} else if o, _ := args["outcome"].(string); p.Name == "stripe_refund" && o != "" {
+				// Held, and collected later as "op-<outcome>".
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
+						"state": "held", "operation_id": "op-" + o, "exception_id": "exc_" + o, "sent": "no", "retry": "same_call",
+						"hold_expires_at": "2026-10-16T09:10:00Z"}}}
 			} else if p.Name == "stripe_refund" && args["slow"] == true {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
