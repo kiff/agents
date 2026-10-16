@@ -115,5 +115,8 @@ DELETE /agents/rae
 | a hold KIFF doesn't know doesn't block the removal | `TestAHoldKIFFDoesntKnowIsNothingToWithdraw` |
 
 On Lambda, `cmd/lambda` builds agents with `secretsmanager.New` and the
-`AGENTS_SECRETS_PREFIX` name prefix; the function's role reads only secrets
-under it. Wiring `Server.Withdraw` there is [#13](13-server.md)'s.
+`AGENTS_SECRETS_PREFIX` name prefix: the adapter reads only agents' keys
+under it. The function's role may read those and, besides, the one model-key
+secret `AGENTS_MODEL_KEY_SECRET` names, which sits outside the prefix
+([#13](13-server.md)'s deploy section). Wiring `Server.Withdraw` there is
+#13's.
