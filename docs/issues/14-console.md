@@ -83,7 +83,11 @@ GET /console/callback  → code exchanged with the PKCE verifier; ID token check
   name an operator's subject. Anything else: 401, or 403 for someone who
   isn't an operator.
 - **The sign-in in progress** (state, nonce, verifier) lives 10 minutes in a
-  signed, HttpOnly cookie scoped to the callback.
+  signed, HttpOnly cookie scoped to the callback. Only the callback with its
+  state ends it, so a stray link to the callback can't cancel a sign-in.
+  Each cookie is signed for its own name, so a session doesn't open as a
+  sign-in or the other way round, and a sign-in without a state, nonce or
+  verifier is refused.
 - **The session** is a signed, HttpOnly, SameSite=Lax cookie for 8 hours
   (`SessionTTL`). It's checked on every request, and the subject must still
   be in `Operators`, so removing an operator takes effect at once. Signing out
@@ -101,6 +105,8 @@ GET /console/callback  → code exchanged with the PKCE verifier; ID token check
 | someone signed in who isn't an operator: 403, no session | `TestSomeoneElseIsNotLetIn` |
 | an ID token from another issuer, for another client, expired, from the future, with another nonce, no subject, another or unlisted key, `none` or HS256, a tampered claim, or not a JWT: no session | `TestAnIDTokenThatDoesntCheck` |
 | the callback's state, cookie, age, the issuer's refusal, the code and the verifier | `TestACallbackThatDoesntCheck` |
+| a callback with another state leaves the sign-in to finish; its own callback clears it | `TestAStrayCallbackLeavesTheSignIn` |
+| a session used as a sign-in, a sign-in sealed as a session or as a session's cookie, a sign-in with no state, nonce or verifier: no session | `TestACookieIsOnlyWhatItWasSealedAs` |
 | a forged session, no session, a POST without one, signing out, an operator removed since | `TestSessions` |
 | a key under 2048 bits isn't trusted | `TestAShortKeyIsNotTrusted` |
 | an http or relative endpoint in the discovery document, or keys redirected to http, signs no one in | `TestTheIssuerIsReachedOnlyOverHTTPS` |

@@ -176,7 +176,7 @@ func (s *SignIn) Operator(r *http.Request) (Operator, error) {
 		Operator
 		Expires int64 `json:"exp"`
 	}
-	if err := s.open(c.Value, &sess); err != nil {
+	if err := s.open(sessionCookie, c.Value, &sess); err != nil {
 		return Operator{}, err
 	}
 	if s.now().Unix() >= sess.Expires {
@@ -213,7 +213,7 @@ func (s *SignIn) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := signIn{State: random(), Nonce: random(), Verifier: random(), Expires: s.now().Add(signInTTL).Unix()}
-	sealed, err := s.seal(st)
+	sealed, err := s.seal(signInCookie, st)
 	if err != nil {
 		http.Error(w, "sign-in is unavailable", http.StatusInternalServerError)
 		return
@@ -251,19 +251,26 @@ func (s *SignIn) callback(w http.ResponseWriter, r *http.Request) {
 		refuse("no sign-in in progress")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: signInCookie, Value: "", Path: "/console/callback", MaxAge: -1,
-		HttpOnly: true, Secure: s.secure(), SameSite: http.SameSiteLaxMode})
 	var st signIn
-	if err := s.open(c.Value, &st); err != nil || s.now().Unix() >= st.Expires {
+	if err := s.open(signInCookie, c.Value, &st); err != nil || s.now().Unix() >= st.Expires ||
+		st.State == "" || st.Nonce == "" || st.Verifier == "" {
 		refuse("the sign-in doesn't check, or took too long")
 		return
 	}
 	q := r.URL.Query()
+	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(st.State)) != 1 {
+		refuse("the sign-in doesn't check")
+		return
+	}
+	// Only the callback for this sign-in ends it: one with another state
+	// (a link from elsewhere, say) leaves it to finish.
+	http.SetCookie(w, &http.Cookie{Name: signInCookie, Value: "", Path: "/console/callback", MaxAge: -1,
+		HttpOnly: true, Secure: s.secure(), SameSite: http.SameSiteLaxMode})
 	if q.Get("error") != "" {
 		refuse("the sign-in was refused")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(st.State)) != 1 || q.Get("code") == "" {
+	if q.Get("code") == "" {
 		refuse("the sign-in doesn't check")
 		return
 	}
@@ -276,7 +283,7 @@ func (s *SignIn) callback(w http.ResponseWriter, r *http.Request) {
 		refuse("the sign-in doesn't check")
 		return
 	}
-	sealed, err := s.seal(struct {
+	sealed, err := s.seal(sessionCookie, struct {
 		Operator
 		Expires int64 `json:"exp"`
 	}{op, s.now().Add(SessionTTL).Unix()})
@@ -532,24 +539,27 @@ func (s *SignIn) do(req *http.Request, v any) error {
 	return json.Unmarshal(body, v)
 }
 
-// seal is v as JSON, signed with the cookie key: payload.mac, base64url.
-func (s *SignIn) seal(v any) (string, error) {
+// seal is v as JSON, signed with the cookie key for the cookie named
+// purpose: payload.mac, base64url. One cookie's value doesn't open as
+// another's.
+func (s *SignIn) seal(purpose string, v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "", err
 	}
 	payload := base64.RawURLEncoding.EncodeToString(b)
-	return payload + "." + base64.RawURLEncoding.EncodeToString(s.mac(payload)), nil
+	return payload + "." + base64.RawURLEncoding.EncodeToString(s.mac(purpose, payload)), nil
 }
 
-// open checks a sealed value's signature and decodes it into v.
-func (s *SignIn) open(sealed string, v any) error {
+// open checks a sealed value's signature, for the cookie named purpose, and
+// decodes it into v.
+func (s *SignIn) open(purpose, sealed string, v any) error {
 	payload, sig, ok := strings.Cut(sealed, ".")
 	if !ok {
 		return errors.New("console: the cookie doesn't check")
 	}
 	got, err := base64.RawURLEncoding.DecodeString(sig)
-	if err != nil || !hmac.Equal(got, s.mac(payload)) {
+	if err != nil || !hmac.Equal(got, s.mac(purpose, payload)) {
 		return errors.New("console: the cookie doesn't check")
 	}
 	b, err := base64.RawURLEncoding.DecodeString(payload)
@@ -559,9 +569,9 @@ func (s *SignIn) open(sealed string, v any) error {
 	return json.NewDecoder(bytes.NewReader(b)).Decode(v)
 }
 
-func (s *SignIn) mac(payload string) []byte {
+func (s *SignIn) mac(purpose, payload string) []byte {
 	m := hmac.New(sha256.New, s.cfg.CookieKey)
-	m.Write([]byte("console|" + payload))
+	m.Write([]byte("console|" + purpose + "|" + payload))
 	return m.Sum(nil)
 }
 

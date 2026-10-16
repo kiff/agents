@@ -356,6 +356,76 @@ func TestACallbackThatDoesntCheck(t *testing.T) {
 	}
 }
 
+// A callback with another state leaves the sign-in in progress to finish:
+// a link from elsewhere can't cancel it. The callback that ends it clears it.
+func TestAStrayCallbackLeavesTheSignIn(t *testing.T) {
+	e := setup(t)
+	loc, c := e.login(t)
+	for _, q := range []string{"code=code-1&state=junk", "error=access_denied&state=junk", "state="} {
+		resp := e.callback(t, q, c)
+		if resp.StatusCode != http.StatusUnauthorized || cleared(resp) {
+			t.Fatalf("%s: %d, cleared %v", q, resp.StatusCode, cleared(resp))
+		}
+	}
+	resp := e.callback(t, "code=code-1&state="+loc.Query().Get("state"), c)
+	if resp.StatusCode != http.StatusSeeOther || session(resp) == nil || !cleared(resp) {
+		t.Fatalf("the sign-in's own callback: %d, cleared %v", resp.StatusCode, cleared(resp))
+	}
+}
+
+// cleared reports whether resp clears the sign-in cookie.
+func cleared(resp *http.Response) bool {
+	for _, k := range resp.Cookies() {
+		if k.Name == "console_signin" && k.MaxAge < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// A cookie opens only as what it was sealed as, and a sign-in names its
+// state, nonce and verifier. Here the issuer would take an empty verifier
+// and nonce, so only these checks stop each sign-in.
+func TestACookieIsOnlyWhatItWasSealedAs(t *testing.T) {
+	e := setup(t)
+	loc, c := e.login(t)
+	sess := session(e.callback(t, "code=code-1&state="+loc.Query().Get("state"), c))
+	if sess == nil {
+		t.Fatal("no session")
+	}
+	accept := func(verifier, nonce string) {
+		sum := sha256.Sum256([]byte(verifier))
+		e.is.challenge, e.is.nonce = base64.RawURLEncoding.EncodeToString(sum[:]), nonce
+	}
+	refused := func(name, query string, value string) {
+		t.Helper()
+		k := &http.Cookie{Name: "console_signin", Value: value}
+		if resp := e.callback(t, query, k); resp.StatusCode != http.StatusUnauthorized || session(resp) != nil {
+			t.Errorf("%s: %d", name, resp.StatusCode)
+		}
+	}
+	exp := at.Add(5 * time.Minute).Unix()
+
+	accept("", "")
+	refused("a session as a sign-in", "code=code-1&state=", sess.Value)
+
+	empty, _ := e.in.Seal("console_signin", map[string]any{"exp": exp})
+	refused("a sign-in with no state, nonce or verifier", "code=code-1&state=", empty)
+
+	accept("v", "n")
+	other, _ := e.in.Seal("console_session", map[string]any{"state": "s", "nonce": "n", "verifier": "v", "exp": exp})
+	refused("a sign-in sealed as a session", "code=code-1&state=s", other)
+	good, _ := e.in.Seal("console_signin", map[string]any{"state": "s", "nonce": "n", "verifier": "v", "exp": exp})
+	if resp := e.callback(t, "code=code-1&state=s", &http.Cookie{Name: "console_signin", Value: good}); session(resp) == nil {
+		t.Fatalf("the same sign-in sealed as one: %d", resp.StatusCode)
+	}
+
+	asSession := &http.Cookie{Name: "console_session", Value: c.Value}
+	if code, _ := e.page(t, asSession); code != http.StatusSeeOther {
+		t.Errorf("a sign-in as a session: %d", code)
+	}
+}
+
 // A session is only good as sealed, for an operator still on the list;
 // signing out ends it; without one, a page sends you to sign in and anything
 // else is 401.
