@@ -15,11 +15,9 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
-	"github.com/kiff/agents/cmd/internal/background"
 	"github.com/kiff/agents/registry/secretsmanager"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server/kiffalert"
@@ -41,17 +39,9 @@ func (secrets) GetSecretValue(_ context.Context, in *sm.GetSecretValueInput, _ .
 		SecretString: aws.String(fmt.Sprintf(`{"tenant": "t1", "secret": %q}`, signing))}, nil
 }
 
-// invocations records each Invoke, and answers 202.
-type invocations struct{ in []*lambdasvc.InvokeInput }
-
-func (i *invocations) Invoke(_ context.Context, in *lambdasvc.InvokeInput, _ ...func(*lambdasvc.Options)) (*lambdasvc.InvokeOutput, error) {
-	i.in = append(i.in, in)
-	return &lambdasvc.InvokeOutput{StatusCode: 202}, nil
-}
-
 // newTest is the function on a memory store holding t1's run, paused on one
 // call KIFF holds as exc_1.
-func newTest(t *testing.T) (*function, *memory.Runs, *invocations, run.Run) {
+func newTest(t *testing.T) (*function, *memory.Runs, run.Run) {
 	t.Helper()
 	runs, now := memory.NewRuns(), time.Now().UTC()
 	r := run.New("t1", "rae", "s1", run.ByOwner, "Refund the order.", now)
@@ -71,10 +61,9 @@ func newTest(t *testing.T) (*function, *memory.Runs, *invocations, run.Run) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inv := &invocations{}
 	f := newFunction(secretsmanager.NewAccounts(secrets{}, "kiff-accounts/"), runs,
-		background.Invoke(inv, "agents-fn"), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return f, runs, inv, r
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return f, runs, r
 }
 
 // request is a function URL event, as Lambda sends one with AuthType NONE.
@@ -93,29 +82,28 @@ func alert(account, status string) (string, map[string]string) {
 	return body, map[string]string{"content-type": "application/json", strings.ToLower(kiffalert.SignatureHeader): sig}
 }
 
-func TestAnAnswerContinuesItsRunInTheAgentsFunction(t *testing.T) {
-	f, runs, inv, r := newTest(t)
+// An answer is recorded, and that is all: the run is left PAUSED, due to the
+// agents function's sweep, which continues it.
+func TestAnAnswerIsRecordedForTheSweep(t *testing.T) {
+	f, runs, r := newTest(t)
 	body, header := alert("kiff-acct-1", "approved")
 	res, err := f.handle(ctx, request(http.MethodPost, "/kiff/alerts", body, header))
 	if err != nil || res.StatusCode != http.StatusOK {
 		t.Fatalf("%d %q (%v)", res.StatusCode, res.Body, err)
 	}
 	got, _ := runs.Get(ctx, "t1", r.ID)
-	if got.Requirements[0].Answered.IsZero() {
-		t.Fatal("the answer isn't recorded")
+	if got.Status != run.Paused || got.Requirements[0].Answer != "approved" || got.Due().IsZero() {
+		t.Fatalf("stored %+v, want the answer recorded and the run PAUSED, due", got)
 	}
-	if len(inv.in) != 1 || aws.ToString(inv.in[0].FunctionName) != "agents-fn" || inv.in[0].InvocationType != "Event" {
-		t.Fatalf("invocations %+v, want one asynchronous invoke of the agents function", inv.in)
-	}
-	var e background.Event
-	if err := json.Unmarshal(inv.in[0].Payload, &e); err != nil || e.Run.Tenant != "t1" || e.Run.ID != r.ID {
-		t.Fatalf("sent %s, want the run event", inv.in[0].Payload)
+	due, err := runs.DuePaused(ctx, got.Due().Add(time.Second), 10)
+	if err != nil || len(due) != 1 || due[0].ID != r.ID {
+		t.Fatalf("due to the sweep: %+v (%v), want the run", due, err)
 	}
 }
 
 // The URL takes anyone's post: an alert that isn't KIFF's changes nothing.
 func TestAnAlertThatDoesntCheckChangesNothing(t *testing.T) {
-	f, runs, inv, r := newTest(t)
+	f, runs, r := newTest(t)
 	body, header := alert("kiff-acct-1", "approved")
 	unsigned := map[string]string{"content-type": "application/json"}
 	other, otherHeader := alert("kiff-acct-2", "approved")
@@ -129,15 +117,15 @@ func TestAnAlertThatDoesntCheckChangesNothing(t *testing.T) {
 			t.Errorf("%s: %d (%v), want 401", name, res.StatusCode, err)
 		}
 	}
-	if got, _ := runs.Get(ctx, "t1", r.ID); !got.Requirements[0].Answered.IsZero() || len(inv.in) != 0 {
-		t.Fatalf("an alert that doesn't check answered %+v, invoked %d", got.Requirements[0], len(inv.in))
+	if got, _ := runs.Get(ctx, "t1", r.ID); got.Version != r.Version {
+		t.Fatalf("an alert that doesn't check changed the run: %+v", got.Requirements[0])
 	}
 }
 
 // The function's URL has no IAM auth, so it serves the alerts and nothing
 // else: no route of the agents' API is reachable through it.
 func TestOnlyTheAlertsAreServed(t *testing.T) {
-	f, _, inv, _ := newTest(t)
+	f, runs, r := newTest(t)
 	for _, p := range []string{"/", "/health", "/agents", "/agents/rae/runs", "/kiff/alerts/x", "/kiff", "/kiff/alerts/../../agents", "//kiff/alerts", "/kiff/alerts/", "/KIFF/alerts"} {
 		res, err := f.handle(ctx, request(http.MethodPost, p, "{}", nil))
 		if err != nil || res.StatusCode != http.StatusNotFound {
@@ -147,25 +135,22 @@ func TestOnlyTheAlertsAreServed(t *testing.T) {
 	if res, _ := f.handle(ctx, request(http.MethodGet, "/kiff/alerts", "", nil)); res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET /kiff/alerts: %d, want 405", res.StatusCode)
 	}
-	if len(inv.in) != 0 {
-		t.Fatal("invoked the agents function")
+	if got, _ := runs.Get(ctx, "t1", r.ID); got.Version != r.Version {
+		t.Fatal("a request to another path changed the run")
 	}
 }
 
 func TestOtherEventsAreRefused(t *testing.T) {
-	f, _, inv, _ := newTest(t)
+	f, _, _ := newTest(t)
 	var e events.LambdaFunctionURLRequest
 	_ = json.Unmarshal([]byte(`{"run":{"tenant":"t1","id":"x"}}`), &e)
 	if _, err := f.handle(ctx, e); err == nil {
 		t.Fatal("took a run event")
 	}
-	if len(inv.in) != 0 {
-		t.Fatal("invoked the agents function")
-	}
 }
 
 func TestSetupNeedsItsConfiguration(t *testing.T) {
-	required := []string{"AGENTS_TABLE", "KIFF_ACCOUNTS_PREFIX", "AGENTS_SECRETS_PREFIX", "AGENTS_FUNCTION"}
+	required := []string{"AGENTS_TABLE", "KIFF_ACCOUNTS_PREFIX", "AGENTS_SECRETS_PREFIX"}
 	for _, k := range required {
 		t.Setenv(k, "")
 	}
@@ -180,7 +165,6 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 		}
 	}
 	t.Setenv("AGENTS_TABLE", "agents")
-	t.Setenv("AGENTS_FUNCTION", "agents-fn")
 	t.Setenv("AGENTS_SECRETS_PREFIX", "agents/")
 	for _, bad := range []string{"agents/", "agents/kiff-accounts/", "agent"} {
 		t.Setenv("KIFF_ACCOUNTS_PREFIX", bad)

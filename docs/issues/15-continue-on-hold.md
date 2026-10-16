@@ -180,9 +180,11 @@ KIFF delivers again until it gets a 2xx:
 | a failed continue is 503, then continued on redelivery | `TestAFailedContinueIsDeliveredAgain` |
 
 On Lambda it runs as its own function, `cmd/kiffalerts`, behind a URL with no
-IAM auth that serves this route only. `Accounts` reads Secrets Manager, and
-`Continue` sends the run to the agents function as a background run event
-(#13: [KIFF's alerts](13-server.md#kiffs-alerts)).
+IAM auth that serves this route only. `Accounts` reads Secrets Manager. It
+sets no `Continue`, so it only records the answer: the function anyone can
+post to holds no power to execute anything, and the sweep continues the run
+about a minute later (#13: [KIFF's alerts](13-server.md#kiffs-alerts)).
+`TestWithoutContinueTheSweepContinues` covers the handler without one.
 
 **The sweep continues a resolved run (#52).** A PAUSED run is due one
 minute (`run.ResolvedGrace`) after its last requirement is answered or
@@ -235,8 +237,6 @@ still paused    looked at again 09:14, 09:18, 09:26 … then hourly
 - **`POST /agents/{id}/runs/{run_id}/continue`**: a repeat of a continue
   already applied gets 200; any other continue on a run that isn't PAUSED
   gets 409. A held call is never collected twice.
-- **Wiring the sweep's `Continue`** in `cmd/lambda` (#13's lane): the same
-  background invoke the alerts route uses.
 - **Cancelling a paused run** withdraws its held calls in KIFF first, so an
   answer that comes later forwards nothing. The cancel route answers 409 for
   a paused run until then. Removing an agent does the same before deleting

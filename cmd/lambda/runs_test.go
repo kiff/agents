@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -300,6 +301,52 @@ func TestTheSweepEndsWhatNobodyElseWill(t *testing.T) {
 	}
 }
 
+// A paused run whose held calls are all answered (cmd/kiffalerts records the
+// answers) is sent to another invocation by the sweep, as a background run
+// is; one still waiting on KIFF is not.
+func TestTheSweepContinuesAResolvedPausedRun(t *testing.T) {
+	inv := &invocations{}
+	f, _, agents, runs := newFunctionWith(t, &replies{}, inv)
+	_ = agents.Put(ctx, registrytest.Definition("t1", "rae"))
+	rn := f.runner.(*runner.Runner)
+	now := time.Now().UTC()
+	paused := func(answered time.Time) run.Run {
+		r, err := rn.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "Refund order 42."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, err = run.Claim(ctx, runs, "t1", r.ID, "c1", now.Add(time.Minute), now); err != nil {
+			t.Fatal(err)
+		}
+		r, err = run.Save(ctx, runs, r, now, func(n *run.Run) error {
+			n.Status = run.Paused
+			n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Operation: "op-1", Exception: "exc-" + r.ID,
+				Answered: answered}}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	resolved, waiting := paused(now), paused(time.Time{})
+
+	f.now = func() time.Time { return now.Add(run.ResolvedGrace + time.Second) }
+	if _, err := f.handle(ctx, json.RawMessage(`{"sweep":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.got) != 1 || aws.ToString(inv.got[0].FunctionName) != "agents-fn" || inv.got[0].InvocationType != lambdatypes.InvocationTypeEvent {
+		t.Fatalf("invocations %+v, want the resolved run sent to the background once", inv.got)
+	}
+	var e runEvent
+	if err := json.Unmarshal(inv.got[0].Payload, &e); err != nil || e.Run.Tenant != "t1" || e.Run.ID != resolved.ID {
+		t.Fatalf("sent %s, want %s's run event", inv.got[0].Payload, resolved.ID)
+	}
+	if got, _ := runs.Get(ctx, "t1", waiting.ID); got.Status != run.Paused || got.Version != waiting.Version {
+		t.Fatalf("a run still waiting on KIFF was touched: %+v", got)
+	}
+}
+
 // failingRuns is a run store whose Due fails.
 type failingRuns struct{ run.Runs }
 
@@ -309,7 +356,7 @@ func (failingRuns) Due(context.Context, time.Time, int) ([]run.Run, error) {
 
 func TestAFailedSweepShows(t *testing.T) {
 	f, _, _, runs := newFunctionWith(t, &replies{}, &invocations{})
-	f.sweeper = sweeping(failingRuns{runs}, f.runner.(*runner.Runner))
+	f.sweeper = sweeping(failingRuns{runs}, f.runner.(*runner.Runner), nil)
 	if _, err := f.handle(ctx, json.RawMessage(`{"sweep":{}}`)); err == nil {
 		t.Fatal("a sweep that read nothing succeeded")
 	}

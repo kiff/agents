@@ -142,6 +142,27 @@ func TestAnswersAreRecordedAndTheRunContinuesOnceAllAre(t *testing.T) {
 	}
 }
 
+// Without Continue the handler only records: the resolved run is left to the
+// sweep, which finds it due ResolvedGrace after the last answer.
+func TestWithoutContinueTheSweepContinues(t *testing.T) {
+	e := setup(t)
+	e.h.Continue = nil
+	for _, hold := range []string{"exc_1", "exc_2"} {
+		body := payload("kiff-acct-1", kiffalert.HoldAnswered, hold, "approved")
+		if w := e.post(body, signed(body, e.now)); w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", hold, w.Code, w.Body)
+		}
+	}
+	r := e.stored(t)
+	if r.Status != run.Paused || r.Requirements[1].Answered.IsZero() || r.Due().IsZero() {
+		t.Fatalf("stored %+v, want both answers recorded, still PAUSED, and due", r)
+	}
+	due, err := e.runs.DuePaused(ctx, r.Due().Add(time.Second), 10)
+	if err != nil || len(due) != 1 || due[0].ID != e.run.ID {
+		t.Fatalf("due to the sweep: %+v (%v), want the run", due, err)
+	}
+}
+
 // What doesn't check is refused, and nothing is recorded: no signature, a
 // wrong one, one made with another secret, one too old or from the future,
 // and an account no tenant here takes alerts from.

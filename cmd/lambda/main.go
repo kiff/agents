@@ -16,11 +16,12 @@
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
 //
 // An EventBridge Scheduler schedule sends {"sweep":{}} every minute, through
-// SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end.
+// SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end, and
+// sends paused runs whose held calls KIFF resolved to the background to
+// continue (cmd/kiffalerts records the answers).
 //
 // Lambda sets AWS_LAMBDA_FUNCTION_NAME itself: a background run is an
-// asynchronous invoke of this same function, with a run event
-// (cmd/internal/background).
+// asynchronous invoke of this same function, with a run event (runs.go).
 //
 // Who may invoke the function is the only guard on who the caller is: the
 // function reads the signer Lambda verified from the event, and a direct
@@ -28,10 +29,9 @@
 // cloud's role and any tenant included. The code can't tell the two apart, so
 // the function's resource policy and IAM must hold this:
 //
-//   - Only SCHEDULE_ROLE, the function's own role and cmd/kiffalerts' role,
-//     both on this function only (to send runs to execute), may call
-//     lambda:InvokeFunction directly. A run event only executes a stored run
-//     once, as a request would.
+//   - Only SCHEDULE_ROLE, and the function's own role on this function (to
+//     send background runs), may call lambda:InvokeFunction directly. A run
+//     event only executes a stored run once, as a request would.
 //   - The function's asynchronous retries are off (MaximumRetryAttempts 0).
 //   - Its role reads only secrets under AGENTS_SECRETS_PREFIX and the model
 //     key's secret.
@@ -66,7 +66,6 @@ import (
 	sch "github.com/aws/aws-sdk-go-v2/service/scheduler"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
-	"github.com/kiff/agents/cmd/internal/background"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
@@ -169,13 +168,13 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			return err == nil, err
 		},
 	}
+	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		http: (&server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: background.Invoke(lambdasvc.NewFromConfig(cfg), self),
-			Gateways: gateways, Log: log}).Handler(),
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log}).Handler(),
 		schedules: schedules,
 		runner:    rn,
-		sweeper:   sweeping(runs, rn),
+		sweeper:   sweeping(runs, rn, bg),
 		log:       log,
 	}
 	// A firing starts its run and executes it in its own invocation.
@@ -217,7 +216,7 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		}
 		return lambdaurl.Serve(ctx, f.http, e, f.log)
 	case len(shape.Run) > 0:
-		var e background.Event
+		var e runEvent
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return nil, fmt.Errorf("lambda: a run event that isn't one: %w", err)
 		}

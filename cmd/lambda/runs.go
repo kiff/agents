@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
+	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/kiff/agents/model"
@@ -16,6 +19,48 @@ import (
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
 )
+
+// runEvent is what a background invocation is sent: the run to execute. The
+// run is already stored PENDING; the event names it and carries nothing else,
+// so a repeated or made-up event can only execute a run that exists, once.
+type runEvent struct {
+	Run struct {
+		Tenant string `json:"tenant"`
+		ID     string `json:"id"`
+	} `json:"run"`
+}
+
+// invoker is the part of the Lambda client background uses.
+type invoker interface {
+	Invoke(context.Context, *lambdasvc.InvokeInput, ...func(*lambdasvc.Options)) (*lambdasvc.InvokeOutput, error)
+}
+
+// background has another invocation of function execute the run: an
+// asynchronous invoke, which returns once Lambda has queued the event. The
+// server marks the run ERROR when this fails, so nothing waits on a run no
+// invocation will claim.
+func background(api invoker, function string) func(ctx context.Context, tenant, id string) error {
+	return func(ctx context.Context, tenant, id string) error {
+		var e runEvent
+		e.Run.Tenant, e.Run.ID = tenant, id
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		out, err := api.Invoke(ctx, &lambdasvc.InvokeInput{
+			FunctionName:   &function,
+			InvocationType: lambdatypes.InvocationTypeEvent,
+			Payload:        payload,
+		})
+		if err != nil {
+			return fmt.Errorf("lambda: queueing a background run: %w", err)
+		}
+		if out.StatusCode != 202 {
+			return fmt.Errorf("lambda: queueing a background run: status %d", out.StatusCode)
+		}
+		return nil
+	}
+}
 
 // execute runs a background run to its next stop. Whatever happens, the run's
 // state is what the runner stored, so execute never fails the invocation:
@@ -64,17 +109,22 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	return f.execute(ctx, r.Tenant, r.ID)
 }
 
-// sweepLimit bounds the runs one sweep reads. The sweep runs every minute, so
-// this ends up to 100 runs a minute that nobody else is left to end.
+// sweepLimit bounds the runs one sweep reads, of each kind. The sweep runs
+// every minute, so this ends up to 100 runs a minute that nobody else is left
+// to end, and continues up to 100 paused ones.
 const sweepLimit = 100
 
 // sweeping is the sweep the function runs on each sweep event: across tenants,
 // it marks ended the runs nobody is left to end (run.Sweeper). Each run's
 // recording is ended by the runner first, and its expiry comes from its
 // agent's keep rules, read under the sweep's own context.
-func sweeping(runs run.Runs, rn *runner.Runner) func(ctx context.Context, now time.Time) (int, error) {
+//
+// A paused run whose held calls KIFF has all resolved (cmd/kiffalerts records
+// the answers) is sent to cont, another invocation, as a background run is:
+// one sweep doesn't wait on a hundred runs.
+func sweeping(runs run.Runs, rn *runner.Runner, cont func(ctx context.Context, tenant, id string) error) func(ctx context.Context, now time.Time) (int, error) {
 	return func(ctx context.Context, now time.Time) (int, error) {
-		sw := run.Sweeper{Runs: runs, Ended: rn.Ended,
+		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont,
 			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
 		return sw.Sweep(ctx, now, sweepLimit)
 	}

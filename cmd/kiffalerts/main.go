@@ -1,9 +1,10 @@
 // Command kiffalerts receives KIFF's alerts on AWS Lambda: POST /kiff/alerts,
 // and nothing else, behind a function URL with no IAM auth (AuthType NONE),
 // since KIFF signs each alert with the alert target's own secret, not with
-// AWS. kiffalert.Handler checks that signature, records the owner's answer on
-// the run that paused on the hold, and sends a run that waits for nothing
-// more to the agents function (cmd/lambda) to continue, as a run event.
+// AWS. kiffalert.Handler checks that signature and records the owner's answer
+// on the run that paused on the hold. That is all it does: a run that waits
+// for nothing more is due a minute later, and the agents function's sweep
+// (cmd/lambda) continues it. This function can execute nothing.
 //
 // The function is apart from the agents function so that its open URL can
 // serve no other route: this command mounts only kiffalert.Handler.
@@ -13,19 +14,19 @@
 //	AGENTS_TABLE           the DynamoDB table (store/dynamodb's), for the runs
 //	KIFF_ACCOUNTS_PREFIX   the name prefix of the KIFF accounts' secrets (registry/secretsmanager.Accounts)
 //	AGENTS_SECRETS_PREFIX  the agents' key prefix, which KIFF_ACCOUNTS_PREFIX must stay apart from
-//	AGENTS_FUNCTION        the agents function, which continues the runs
 //
 // Its role must hold no more than this:
 //
 //   - Read and write on AGENTS_TABLE.
 //   - secretsmanager:GetSecretValue on KIFF_ACCOUNTS_PREFIX only.
-//   - lambda:InvokeFunction on AGENTS_FUNCTION. A direct invoke can send any
-//     event, so this role is trusted as the agents function's own; the code
-//     sends run events only.
+//   - No lambda:InvokeFunction on the agents function. A direct invoke there
+//     can send any event, a made-up function URL request for any tenant
+//     included, and this function's URL is open to anyone.
 //
 // The function's URL is AuthType NONE, and its invoke mode BUFFERED. Its
 // reserved concurrency should be low: anyone can post to it, and each post
-// costs an invocation and, for a known account, a secret read.
+// costs an invocation and a secret read, from the same Secrets Manager quota
+// the agents function reads its keys from.
 package main
 
 import (
@@ -43,10 +44,8 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
-	"github.com/kiff/agents/cmd/internal/background"
 	"github.com/kiff/agents/registry/secretsmanager"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server/kiffalert"
@@ -79,7 +78,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		return v
 	}
 	table, accounts := need("AGENTS_TABLE"), need("KIFF_ACCOUNTS_PREFIX")
-	keys, agents := need("AGENTS_SECRETS_PREFIX"), need("AGENTS_FUNCTION")
+	keys := need("AGENTS_SECRETS_PREFIX")
 	if err := errors.Join(missing...); err != nil {
 		return nil, err
 	}
@@ -91,8 +90,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		return nil, err
 	}
 	return newFunction(secretsmanager.NewAccounts(sm.NewFromConfig(cfg), accounts),
-		dynamodb.NewRuns(ddb.NewFromConfig(cfg), table),
-		background.Invoke(lambdasvc.NewFromConfig(cfg), agents), log), nil
+		dynamodb.NewRuns(ddb.NewFromConfig(cfg), table), log), nil
 }
 
 // apart refuses an accounts prefix that overlaps the agents' key prefix: an
@@ -105,9 +103,11 @@ func apart(accounts, keys string) error {
 	return nil
 }
 
-func newFunction(accounts kiffalert.Accounts, runs run.Runs, cont func(ctx context.Context, tenant, id string) error, log *slog.Logger) *function {
+// newFunction serves the alerts with no Continue: the answer is recorded, and
+// the sweep continues the run.
+func newFunction(accounts kiffalert.Accounts, runs run.Runs, log *slog.Logger) *function {
 	return &function{http: only{path: "/kiff/alerts",
-		h: &kiffalert.Handler{Accounts: accounts, Runs: runs, Continue: cont, Log: log}}}
+		h: &kiffalert.Handler{Accounts: accounts, Runs: runs, Log: log}}}
 }
 
 // only serves h at path, exactly, and 404 for any other path, cleaned or not.
