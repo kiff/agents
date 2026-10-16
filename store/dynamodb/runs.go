@@ -69,17 +69,6 @@ func runPK(tenant, id string) string         { return key("R", tenant, id) }
 func runListPK(tenant, agent string) string  { return key("L", tenant, agent) }
 func holdPK(tenant, exception string) string { return key("H", tenant, exception) }
 
-// exceptions are the holds named in r's requirements.
-func exceptions(r run.Run) []string {
-	var out []string
-	for _, q := range r.Requirements {
-		if q.Exception != "" && !slices.Contains(out, q.Exception) {
-			out = append(out, q.Exception)
-		}
-	}
-	return out
-}
-
 // holdItems points each of exs at r, with t. A hold item lives as long as
 // its run: it gets the run's TTL when the run ends, so an alert for a run
 // that has ended still finds it.
@@ -216,7 +205,7 @@ func (rs *Runs) Create(ctx context.Context, r run.Run) error {
 		return err
 	}
 	items := append([]types.TransactWriteItem{rs.put(rs.runItem(r, st), "attribute_not_exists(pk)")}, rs.listItems(r, st.ttl)...)
-	items = append(items, rs.holdItems(r, exceptions(r), st.ttl)...)
+	items = append(items, rs.holdItems(r, run.HoldsOf(r), st.ttl)...)
 	for i, part := range st.parts {
 		items = append(items, rs.put(rs.partItem(r, i, part, st.ttl), ""))
 	}
@@ -357,17 +346,11 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 		items = append(items, rs.listItems(next, now.ttl)...)
 	}
 	// Holds: new ones are written; when the TTL changes (the run ended),
-	// every hold the run had takes it, the ones its requirements just lost
-	// included.
-	holds := exceptions(next)
+	// every hold the run ever had takes it.
+	holds := run.HoldsOf(prev, next)
 	if sameTTL(was.ttl, now.ttl) {
-		holds = slices.DeleteFunc(holds, func(ex string) bool { return slices.Contains(exceptions(prev), ex) })
-	} else {
-		for _, ex := range exceptions(prev) {
-			if !slices.Contains(holds, ex) {
-				holds = append(holds, ex)
-			}
-		}
+		had := run.HoldsOf(prev)
+		holds = slices.DeleteFunc(holds, func(ex string) bool { return slices.Contains(had, ex) })
 	}
 	items = append(items, rs.holdItems(next, holds, now.ttl)...)
 	if !prev.Due().Equal(next.Due()) {
@@ -578,7 +561,7 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 	for _, k := range lists(r) {
 		items = append(items, rs.del(k))
 	}
-	for _, ex := range exceptions(r) {
+	for _, ex := range run.HoldsOf(r) {
 		items = append(items, rs.del(pkey(holdPK(r.Tenant, ex), metaSK)))
 	}
 	for i := range st.parts {

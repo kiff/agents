@@ -275,18 +275,55 @@ func TestHoldItems(t *testing.T) {
 		t.Fatalf("an ended run's hold: ttl %v, want %d", by["H"][0]["ttl"], expires.Unix())
 	}
 
-	paused := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
-	paused.Status = run.Paused
-	paused.Requirements = []run.Requirement{{CallID: "c1", Tool: "refund", Exception: "exc_2"}}
-	if err := rs.Create(ctx, paused); err != nil {
+	// A run paused on two holds in turn: both items take its TTL when it
+	// ends, and deleting it while paused on the second leaves neither.
+	twice := func(exs ...string) run.Run {
+		t.Helper()
+		r := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+		if err := rs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		for _, ex := range exs {
+			r, err = run.Claim(ctx, rs, "t1", r.ID, "i", at.Add(15*time.Minute), at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err = run.Save(ctx, rs, r, at, func(n *run.Run) error {
+				n.Status = run.Paused
+				n.Requirements = []run.Requirement{{CallID: ex, Tool: "refund", Exception: ex, Answered: at}}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return r
+	}
+	ended := twice("exc_2", "exc_3")
+	ended, err = run.Claim(ctx, rs, "t1", ended.ID, "i", at.Add(15*time.Minute), at)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := run.Save(ctx, rs, ended, at, func(n *run.Run) error {
+		n.Status, n.Requirements, n.Expires = run.Completed, nil, expires
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	by = scan(t, db, name)
+	if len(by["H"]) != 3 {
+		t.Fatalf("%d hold items, want 3", len(by["H"]))
+	}
+	for _, item := range by["H"] {
+		if got, ok := item["ttl"].(*types.AttributeValueMemberN); !ok || got.Value != itoa(expires.Unix()) {
+			t.Fatalf("hold %v: ttl %v, want the run's", item["pk"], item["ttl"])
+		}
+	}
+	paused := twice("exc_4", "exc_5")
 	if err := rs.Delete(ctx, "t1", paused.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, item := range scan(t, db, name)["H"] {
-		if pk := item["pk"].(*types.AttributeValueMemberS).Value; pk != "H|2:t1|5:exc_1" {
-			t.Fatalf("a deleted run's hold is left: %v", item["pk"])
-		}
+	if n := len(scan(t, db, name)["H"]); n != 3 {
+		t.Fatalf("%d hold items after deleting a run paused twice, want the 3 of the ended runs", n)
 	}
 }

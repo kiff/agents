@@ -145,6 +145,7 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	if next.Status.Final() {
 		next.Paused = nil
 	}
+	next.Holds = HoldsOf(r, next)
 	next.ID, next.Tenant, next.Agent, next.Session, next.Created = r.ID, r.Tenant, r.Agent, r.Session, r.Created
 	next.Updated, next.Version = now.UTC(), r.Version+1
 	if err := runs.Put(ctx, r, next); err != nil {
@@ -155,8 +156,29 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 
 // clone is r with its own copy of everything a change could edit in place:
 // the requirements and the paused turn, with their inputs and results.
+// HoldsOf is every hold the runs have named: their Holds and their
+// requirements' exceptions, in order, once each.
+func HoldsOf(runs ...Run) []string {
+	var out []string
+	add := func(ex string) {
+		if ex != "" && !slices.Contains(out, ex) {
+			out = append(out, ex)
+		}
+	}
+	for _, r := range runs {
+		for _, ex := range r.Holds {
+			add(ex)
+		}
+		for _, q := range r.Requirements {
+			add(q.Exception)
+		}
+	}
+	return out
+}
+
 func (r Run) clone() Run {
 	c := r
+	c.Holds = slices.Clone(r.Holds)
 	c.Requirements = nil
 	for _, q := range r.Requirements {
 		q.Input = bytes.Clone(q.Input)
@@ -332,8 +354,9 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 // Answer records KIFF's answer on the requirement whose hold is exception:
 // when, and what (approved, refused, expired, invalidated). It returns the
 // run as stored. Recording an answer again changes nothing, and so does an
-// answer for a run that has ended: the run moved on without it. A run that hasn't paused on that hold yet is ErrNotFound, so
-// the alert is delivered again later.
+// answer for a run that is no longer paused (it went on, or ended): the run
+// moved on without it. A run that hasn't paused on that hold yet is
+// ErrNotFound, so the alert is delivered again later.
 func Answer(ctx context.Context, runs Runs, tenant, exception, answer string, now time.Time) (Run, error) {
 	if exception == "" || answer == "" {
 		return Run{}, errors.New("run: an answer names its hold and what KIFF answered")
@@ -344,8 +367,11 @@ func Answer(ctx context.Context, runs Runs, tenant, exception, answer string, no
 			return r, err
 		}
 		i := slices.IndexFunc(r.Requirements, func(q Requirement) bool { return q.Exception == exception })
-		if i < 0 || !r.Requirements[i].Answered.IsZero() || r.Status.Final() {
-			return r, nil // nothing left to record it on
+		if i < 0 || !r.Requirements[i].Answered.IsZero() || r.Status != Paused {
+			// Nothing left to record it on: the run went on (resolved by
+			// expiry, then claimed) or ended. Only a cancel changes a
+			// running run under its claimant (Save).
+			return r, nil
 		}
 		next, err := Change(ctx, runs, r, now, func(n *Run) error {
 			n.Requirements[i].Answered, n.Requirements[i].Answer = now.UTC(), answer

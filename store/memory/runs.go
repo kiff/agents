@@ -67,10 +67,8 @@ func (m *Runs) Create(_ context.Context, r run.Run) error {
 
 // index records r's holds. Called with mu held.
 func (m *Runs) index(r run.Run) {
-	for _, q := range r.Requirements {
-		if q.Exception != "" {
-			m.holds[[2]string{r.Tenant, q.Exception}] = r.ID
-		}
+	for _, ex := range run.HoldsOf(r) {
+		m.holds[[2]string{r.Tenant, ex}] = r.ID
 	}
 }
 

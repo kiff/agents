@@ -54,6 +54,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"ARunIsFoundByItsHold", aRunIsFoundByItsHold},
 		{"AnAnswerIsRecordedOnce", anAnswerIsRecordedOnce},
 		{"AnAnswerOutlivesTheRunsEnd", anAnswerOutlivesTheRunsEnd},
+		{"ARunPausedTwiceKeepsBothHolds", aRunPausedTwiceKeepsBothHolds},
 		{"WhatARunIsNeverChanges", whatARunIsNeverChanges},
 		{"EndedRunsExpire", endedRunsExpire},
 		{"TenantsAreApart", tenantsAreApart},
@@ -929,5 +930,46 @@ func anAnswerOutlivesTheRunsEnd(t *testing.T, s run.Runs, c *clock) {
 	got, err = run.Answer(ctx, s, "t1", "exc_2", "approved", c.now())
 	if err != nil || !reflect.DeepEqual(got, swept) {
 		t.Fatalf("an answer for a swept run: %+v, %v", got, err)
+	}
+}
+
+// A run that pauses on one hold, goes on, and pauses on another is found by
+// both, and keeps both in Holds after it ends. An answer that comes while it
+// is running (its first hold resolved by expiry, then claimed) changes
+// nothing: only a cancel changes a running run under its claimant.
+func aRunPausedTwiceKeepsBothHolds(t *testing.T, s run.Runs, c *clock) {
+	r := heldOn(t, s, c, "exc_1")
+	c.add(11 * time.Minute) // the first hold expired: resolved
+	r, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	got, err := run.Answer(ctx, s, "t1", "exc_1", "expired", c.now())
+	if err != nil || !reflect.DeepEqual(got, r) {
+		t.Fatalf("an answer on a running run: %+v, %v", got, err)
+	}
+	r, err = run.Save(ctx, s, r, c.now(), func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c2", Tool: "stripe_refund", Operation: "op-2", Exception: "exc_2",
+			Expires: c.now().Add(10 * time.Minute)}}
+		return nil
+	})
+	check(t, err)
+	for _, ex := range []string{"exc_1", "exc_2"} {
+		if found, err := s.ByHold(ctx, "t1", ex); err != nil || found.ID != r.ID {
+			t.Fatalf("%s: found %+v, %v", ex, found, err)
+		}
+	}
+	c.add(11 * time.Minute)
+	r, err = run.Claim(ctx, s, "t1", r.ID, "i3", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	r, err = run.Save(ctx, s, r, c.now(), func(n *run.Run) error {
+		n.Status, n.Requirements, n.Expires = run.Completed, nil, c.now().Add(time.Hour)
+		return nil
+	})
+	check(t, err)
+	if !slices.Equal(r.Holds, []string{"exc_1", "exc_2"}) {
+		t.Fatalf("holds %v, want both", r.Holds)
+	}
+	if found, err := s.ByHold(ctx, "t1", "exc_1"); err != nil || found.ID != r.ID {
+		t.Fatalf("the first hold after the end: %+v, %v", found, err)
 	}
 }

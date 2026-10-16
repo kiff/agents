@@ -118,19 +118,21 @@ r, err := run.Answer(ctx, runs, "t1", "exc_123", "approved", time.Now())
 |---|---|
 | first answer | recorded (`answered`, `answer`); the requirement is resolved |
 | the same answer again, or another | nothing changes |
-| the run has ended (or was swept) | nothing changes, no error |
+| the run is no longer paused (went on, ended, swept) | nothing changes, no error |
 | no run has paused on that hold yet | `run.ErrNotFound`: the alert must come again |
 
-DynamoDB keeps `H|tenant|exception → run id`, written in the run's
-transaction; it takes the run's TTL when the run ends, and goes when the run
-is deleted.
+The run keeps every hold it has paused on, over all its pauses, in
+`holds` (`Change` only adds to it). DynamoDB keeps `H|tenant|exception → run
+id` for each, written in the run's transaction; all of them take the run's
+TTL when it ends, and go when it is deleted.
 
 | Rule | Guarded by |
 |---|---|
 | found by hold, in its tenant only; gone with the run | `run/runtest` `ARunIsFoundByItsHold` (both stores) |
 | an answer is recorded once; before the pause it's `ErrNotFound` | `AnAnswerIsRecordedOnce` |
 | an ended or swept run is still found, and an answer changes nothing | `AnAnswerOutlivesTheRunsEnd` |
-| the hold item takes the run's TTL and is deleted with it | `store/dynamodb` `TestHoldItems` |
+| a run paused twice is found by both holds; an answer on a running run changes nothing | `ARunPausedTwiceKeepsBothHolds` |
+| every hold item, both pauses', takes the run's TTL and is deleted with it | `store/dynamodb` `TestHoldItems` |
 
 ## Still to deliver
 
