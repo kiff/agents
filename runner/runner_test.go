@@ -1316,3 +1316,17 @@ func TestHeldOutcome(t *testing.T) {
 		}
 	}
 }
+
+// A refused turn ends the run COMPLETED, stopped "refused", with the
+// category it was refused for (#68).
+func TestARefusedRunRecordsWhy(t *testing.T) {
+	f := newFixture(t, model.Reply{Stop: model.Refused, Refusal: "cyber"})
+	r := f.start(server.Start{Input: "x"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || got.Stop != string(agent.Refused) || got.Refusal != "cyber" {
+		t.Fatalf("stored %s, stop %q, refusal %q", got.Status, got.Stop, got.Refusal)
+	}
+}

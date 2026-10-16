@@ -468,7 +468,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		case out.Stop == agent.Cancelled:
 			n.Status, n.Stop, n.Output = run.Cancelled, string(out.Stop), out.Text
 		default:
-			n.Status, n.Stop, n.Output = run.Completed, string(out.Stop), out.Text
+			n.Status, n.Stop, n.Output, n.Refusal = run.Completed, string(out.Stop), out.Text, out.Refusal
 		}
 		return nil
 	})

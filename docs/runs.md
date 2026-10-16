@@ -72,7 +72,7 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
 |---|---|---|
 | PENDING | RUNNING | claimed |
 | PENDING | CANCELLED, ERROR | cancelled, or not claimed within 5 min |
-| RUNNING | COMPLETED | answered, or a cap stopped it (`stop` says which) |
+| RUNNING | COMPLETED | answered, a cap stopped it, or the model's turn was refused (`stop` says which; `refusal`, the category) |
 | RUNNING | PAUSED | KIFF holds a call |
 | RUNNING | ERROR, CANCELLED | failed or lease ran out; asked to stop |
 | PAUSED | RUNNING | every requirement resolved: claimed again, same ID |

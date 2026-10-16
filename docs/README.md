@@ -15,13 +15,14 @@ the runner, chat and evals) and [registry.md](registry.md).
 |---|---|---|---|
 | [#1](https://github.com/kiff/agents/issues/1) Sessions | — | Delivered; SQLite deferred | [01-sessions.md](issues/01-sessions.md) |
 | [#2](https://github.com/kiff/agents/issues/2) The model, the loop, KIFF's gateway as tools | — | Closed, delivered | [02-chat-loop.md](issues/02-chat-loop.md) |
-| [#3](https://github.com/kiff/agents/issues/3) Evals | — | Harness and cases built; baseline, nightly run and grading this runtime to do | [03-evals.md](issues/03-evals.md) |
+| [#3](https://github.com/kiff/agents/issues/3) Evals | — | Harness, both cases, `eval -run` on this runtime and the cases' Stripe tools behind KIFF built; first Chargebacks numbers posted; Refunds tools, the baseline and the nightly run to do | [03-evals.md](issues/03-evals.md) |
 | [#12](https://github.com/kiff/agents/issues/12) Runs | 1 | Delivered (chat on runs: #34) | [12-runs.md](issues/12-runs.md) |
 | [#13](https://github.com/kiff/agents/issues/13) Server on Lambda | 2 | Built: routes, auth, streaming, runs, background runs, the sweep, firings, KIFF's alerts, the 429 cap. Not deployed (the tafs#42 session deploys) | [13-server.md](issues/13-server.md) |
-| [#14](https://github.com/kiff/agents/issues/14) Console | 3 | Not started | [14-console.md](issues/14-console.md) |
-| [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | In progress: hold IDs (#44), Collect (#45), runs by hold (#49), `/kiff/alerts` (#50, served by `cmd/kiffalerts`), withdraw (#51); expiry and cancel next | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
-| [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Mostly delivered, the Secrets Manager adapter included; withdrawing holds on removal to do (#15) | [16-registry.md](issues/16-registry.md) |
-| [#17](https://github.com/kiff/agents/issues/17) Schedules | 6 | Delivered up to triggers: firings start runs, firing by hand; triggers to do | [17-schedules.md](issues/17-schedules.md) |
+| [#14](https://github.com/kiff/agents/issues/14) Console | 3 | In progress: `/ops` runs across tenants, operator sign-in; pages next | [14-console.md](issues/14-console.md) |
+| [#15](https://github.com/kiff/agents/issues/15) Continue on a hold | 4 | Built: hold IDs, Collect, alerts, withdraw, expiry, cancel, continue, what a continued held call says (#72); `cmd/lambda` wiring with #13 | [15-continue-on-hold.md](issues/15-continue-on-hold.md) |
+| [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Delivered | [16-registry.md](issues/16-registry.md) |
+| [#17](https://github.com/kiff/agents/issues/17) Schedules | 6 | Delivered: firings, firing by hand, triggers (`/agents/{id}/events`) | [17-schedules.md](issues/17-schedules.md) |
+| [#68](https://github.com/kiff/agents/issues/68) Opus 5.5 in the model adapter | — | Delivered: effort per agent, thinking kept, refusals | [68-opus55-model.md](issues/68-opus55-model.md) |
 | [kiff/tafs#42](https://github.com/kiff/tafs/issues/42) tafs switches over | 7 | Waits on #13, #15, #16 | — |
 
 ## What blocks what

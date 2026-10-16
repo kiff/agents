@@ -163,3 +163,104 @@ func TestNoToolUseSendsTheToolsAndChoiceNone(t *testing.T) {
 		t.Fatalf("a turn with no tools sent tools %v, tool_choice %v", body["tools"], body["tool_choice"])
 	}
 }
+
+// serve answers every request with events, and keeps the last request body.
+func serve(t *testing.T, events []string) (*anthropic.Model, *map[string]any) {
+	t.Helper()
+	sent := new(map[string]any)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		*sent = map[string]any{} // this request's, not merged into the last
+		_ = json.Unmarshal(body, sent)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range events {
+			var head struct{ Type string }
+			_ = json.Unmarshal([]byte(ev), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, ev)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("test"), option.WithMaxRetries(0)), sent
+}
+
+// thinkingStream is a turn that thinks, then answers.
+var thinkingStream = []string{
+	`{"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The refund is under the Card."}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"enc-xyz"}}`,
+	`{"type":"content_block_stop","index":1}`,
+	`{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`,
+	`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Done."}}`,
+	`{"type":"content_block_stop","index":2}`,
+	`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}`,
+	`{"type":"message_stop"}`,
+}
+
+// Thinking comes back as opaque blocks, in order, and goes back to the API
+// exactly as it came, in place: dropping it breaks the next turn (#68).
+func TestThinkingIsKeptAndSentBackInPlace(t *testing.T) {
+	m, sent := serve(t, thinkingStream)
+	reply, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Refund ch_1."}}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Block{
+		{Kind: model.Thinking, Text: "The refund is under the Card.", Signature: "sig-abc"},
+		{Kind: model.RedactedThinking, Data: "enc-xyz"},
+		{Kind: model.Text, Text: "Done."},
+	}
+	if fmt.Sprint(reply.Blocks) != fmt.Sprint(want) {
+		t.Fatalf("blocks %+v\nwant %+v", reply.Blocks, want)
+	}
+
+	// The next turn replays them before the tool call, unchanged.
+	_, err = m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Messages: []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Refund ch_1."}}},
+		{Role: model.Assistant, Blocks: append(want[:2:2], model.Block{Kind: model.ToolUse, CallID: "toolu_1", Tool: "refund", Input: json.RawMessage(`{}`)})},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "toolu_1", Result: "ok"}}},
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal((*sent)["messages"].([]any)[1].(map[string]any)["content"])
+	if got := string(b); got != `[{"signature":"sig-abc","thinking":"The refund is under the Card.","type":"thinking"},{"data":"enc-xyz","type":"redacted_thinking"},{"id":"toolu_1","input":{},"name":"refund","type":"tool_use"}]` {
+		t.Fatalf("sent back %s", got)
+	}
+}
+
+// An agent's effort goes as output_config.effort; none sends nothing, and
+// the API's default applies.
+func TestEffortIsSent(t *testing.T) {
+	m, sent := serve(t, thinkingStream)
+	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Hi."}}}}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Messages: msgs, Effort: "high"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if oc, _ := (*sent)["output_config"].(map[string]any); oc["effort"] != "high" {
+		t.Fatalf("output_config %v", (*sent)["output_config"])
+	}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Messages: msgs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := (*sent)["output_config"]; ok {
+		t.Fatalf("no effort sent output_config %v", (*sent)["output_config"])
+	}
+}
+
+// A refused turn is its own stop, with the category the API gives (#68).
+func TestARefusalIsItsOwnStop(t *testing.T) {
+	m, _ := serve(t, []string{
+		`{"type":"message_start","message":{"id":"msg_3","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"declined"}},"usage":{"output_tokens":1}}`,
+		`{"type":"message_stop"}`,
+	})
+	reply, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "x"}}}}}, nil)
+	if err != nil || reply.Stop != model.Refused || reply.Refusal != "cyber" {
+		t.Fatalf("stop %q, refusal %q, %v", reply.Stop, reply.Refusal, err)
+	}
+}

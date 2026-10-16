@@ -82,6 +82,7 @@ type runView struct {
 	Source          string            `json:"source,omitempty"`
 	Status          run.Status        `json:"status"`
 	Stop            string            `json:"stop,omitempty"`
+	Refusal         string            `json:"refusal,omitempty"`
 	Output          string            `json:"output,omitempty"`
 	Error           string            `json:"error,omitempty"`
 	Cost            int64             `json:"cost_micro_usd"`
@@ -93,7 +94,7 @@ type runView struct {
 }
 
 func viewRun(r run.Run) runView {
-	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Status: r.Status, Stop: r.Stop,
+	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements,
 		CancelRequested: r.Cancel && !r.Status.Final(), Created: r.Created, Updated: r.Updated}
 }

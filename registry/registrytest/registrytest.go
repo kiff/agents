@@ -23,7 +23,7 @@ func Definition(tenant, id string) registry.Definition {
 		Tenant: tenant, ID: id,
 		Instructions: "You reconcile payouts.\n\nKIFF's skill: every write goes through KIFF.",
 		Model:        "a-model", Price: model.Price{Input: 3_000_000, Output: 15_000_000, CacheRead: 300_000, CacheWrite: 3_750_000},
-		MaxTokens: 8192, Gateway: "https://gateway.test/mcp", KeyRef: "agents/" + id,
+		MaxTokens: 8192, Effort: "high", Gateway: "https://gateway.test/mcp", KeyRef: "agents/" + id,
 		Keep: keep, MaxCost: 500_000, MaxTurns: 20, History: 5,
 	}
 }

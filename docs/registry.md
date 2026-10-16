@@ -22,6 +22,7 @@ of its eight kinds):
   "model": "claude-opus-5-5",
   "price": { "Input": 5000000, "Output": 25000000, "CacheRead": 0, "CacheWrite": 0 },
   "max_tokens": 8192,
+  "effort": "high",
   "gateway": "https://mcp.kiff.dev/mcp",
   "key_ref": "kiff/rae",
   "keep": {
