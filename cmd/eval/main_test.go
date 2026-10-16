@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
@@ -263,5 +264,90 @@ func TestRunNeeds(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err %v, want it to mention %q", name, err, c.want)
 		}
+	}
+}
+
+// grade runs the refunds case on the runtime with the agent's turns, and
+// returns each check's verdict by name.
+func grade(t *testing.T, turns []model.Reply) map[string]eval.CheckResult {
+	t.Helper()
+	m := &script{replies: turns}
+	withAgent(t, m)
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", MaxCost: 2_000_000, History: 20},
+		jobsDir(t), "", io.Discard)
+	r, err := rt.Run(context.Background(), cases.Refunds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := cases.Refunds.Case().Grade(context.Background(), r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]eval.CheckResult{}
+	for _, c := range res.Checks {
+		out[c.Name] = c
+	}
+	return out
+}
+
+func calls(blocks ...model.Block) model.Reply {
+	return model.Reply{Blocks: blocks, Stop: model.CallTools}
+}
+
+func call(id, name, input string) model.Block {
+	return model.Block{Kind: model.ToolUse, CallID: id, Tool: name, Input: json.RawMessage(input)}
+}
+
+// The cases grade this runtime's calls as they grade the baseline's: a call
+// through KIFF's gateway is KIFF's, the memory tool is the agent's own, and
+// a write the injected instruction asked for is still caught.
+func TestTheChecksGradeThisRuntimesCalls(t *testing.T) {
+	end := model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn}
+	got := grade(t, []model.Reply{
+		calls(call("c1", "memory", `{"action":"list"}`), call("c2", "create_refund", `{"charge":"ch_1","metadata":{"order":"T-1001"}}`)),
+		end,
+	})
+	if c := got["writes only through KIFF"]; !c.Pass {
+		t.Errorf("a gateway call and the memory tool: %+v", c)
+	}
+	if c := got["ignores injected instructions"]; !c.Pass {
+		t.Errorf("no injected write: %+v", c)
+	}
+
+	got = grade(t, []model.Reply{calls(call("c1", "create_refund", `{"metadata":{"order":"`+cases.Refunds.Injected+`"}}`)), end})
+	if c := got["ignores injected instructions"]; c.Pass {
+		t.Errorf("an injected write through the gateway passed: %+v", c)
+	}
+}
+
+// interrupting is a model whose first turn interrupts the command, as Ctrl+C
+// would, and asks for a tool call.
+type interrupting struct {
+	stop  context.CancelFunc
+	turns int
+}
+
+func (m *interrupting) Turn(context.Context, model.Request, func(string)) (model.Reply, error) {
+	m.turns++
+	m.stop()
+	time.Sleep(50 * time.Millisecond) // the interrupt lands while the turn runs
+	return calls(call("c1", "create_refund", `{"charge":"ch_1"}`)), nil
+}
+
+// An interrupt stops the run at its next checkpoint: no model turn after it.
+func TestAnInterruptStopsTheRun(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	m := &interrupting{stop: stop}
+	withAgent(t, &script{})
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", MaxCost: 2_000_000, History: 20},
+		jobsDir(t), "", io.Discard)
+	r, err := rt.Run(ctx, cases.Refunds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != runs.Cancelled || m.turns != 1 {
+		t.Fatalf("after an interrupt: %s after %d model turns; want CANCELLED after 1", r.Status, m.turns)
 	}
 }

@@ -75,10 +75,18 @@ type TextBody struct {
 // ToolCallBody is the body of a ToolCall event. The input is recorded as the
 // model wrote it; secrets never reach it (keys live in the tool adapters).
 type ToolCallBody struct {
-	CallID string          `json:"call_id"`
-	Tool   string          `json:"tool"`
+	CallID string `json:"call_id"`
+	Tool   string `json:"tool"`
+	// Server is GatewayServer for a call through KIFF's gateway, and empty
+	// for one of the agent's own tools: what evals grade where it went.
+	Server string          `json:"server,omitempty"`
 	Input  json.RawMessage `json:"input"`
 }
+
+// GatewayServer is the server a call through KIFF's gateway is recorded
+// under: the name Managed Agents gives KIFF's MCP server, so runs of both
+// runtimes grade alike.
+const GatewayServer = "kiff"
 
 // ToolResultBody is the body of a ToolResult event.
 type ToolResultBody struct {
@@ -416,7 +424,11 @@ func (a Agent) say(rec *session.Recording, text string, last bool) error {
 // their results in the order of the calls.
 func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map[string]tool.Tool, calls []model.Block, emit func(Event)) ([]ToolResultBody, error) {
 	for _, c := range calls {
-		if err := rec.Record(session.ToolCall, ToolCallBody{CallID: c.CallID, Tool: c.Tool, Input: c.Input}); err != nil {
+		server := ""
+		if t, ok := byName[c.Tool]; ok && t.Gateway() {
+			server = GatewayServer
+		}
+		if err := rec.Record(session.ToolCall, ToolCallBody{CallID: c.CallID, Tool: c.Tool, Server: server, Input: c.Input}); err != nil {
 			return nil, err
 		}
 		emit(Event{Kind: CallStart, CallID: c.CallID, Tool: c.Tool, Input: c.Input})

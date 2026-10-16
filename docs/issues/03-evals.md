@@ -81,6 +81,13 @@ KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… eval -run \
   of stops PAUSED, and is graded there: the "stops when KIFF holds" check
   reads what it did up to the hold.
 - A run that fails is graded as it stopped, and the failure is printed.
+- A call through KIFF's gateway is recorded with `"server": "kiff"`
+  (`agent.GatewayServer`), the name Managed Agents gives KIFF's MCP server,
+  and one of the agent's own tools with none; `memory` counts as the agent's
+  own, like Managed Agents' file tools. So the six checks grade both runtimes
+  alike.
+- Ctrl+C asks the run to stop (`cancel`); it stops at its next checkpoint,
+  with no model turn after it, and is graded as CANCELLED.
 
 ```text
 refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
@@ -106,6 +113,9 @@ refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
 | `-run` runs the case as an eval run of its job's agent (job text + skill, the case's input, KIFF's key and gateway), then grades it | `cmd/eval` `TestRunACaseOnThisRuntime` |
 | A `-run` run keeps its tool calls and results, whatever keep rules are set | `TestARuntimeRunKeepsWhatTheChecksRead` |
 | `-run` needs `KIFF_AGENT_KEY`, `-model`, `-price`, `-jobs`, case names, and each job's file | `TestRunNeeds` |
+| this runtime's gateway call passes "writes only through KIFF", its memory tool is its own, an injected gateway write still fails | `TestTheChecksGradeThisRuntimesCalls` |
+| a gateway call is recorded under `kiff`, an own tool's under none | `agent` `TestAToolCallRecordsWhereItWent` |
+| an interrupt stops the run at its next checkpoint, CANCELLED | `cmd/eval` `TestAnInterruptStopsTheRun` |
 
 The case tests are the **smoke cases**. They run in the Go workflow on every
 PR.

@@ -110,6 +110,20 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 	return rt
 }
 
+// cancel asks a run to stop, re-reading it if it changed meanwhile.
+func (rt *runtime) cancel(tenant, id string) {
+	ctx := context.Background()
+	for try := 0; try < 5; try++ {
+		r, err := rt.runs.Get(ctx, tenant, id)
+		if err != nil || r.Status.Final() || r.Cancel {
+			return
+		}
+		if _, err := runs.Change(ctx, rt.runs, r, time.Now(), func(n *runs.Run) error { n.Cancel = true; return nil }); !errors.Is(err, runs.ErrConflict) {
+			return
+		}
+	}
+}
+
 // Run runs the case once, as a run of its job's agent, and reads it back for
 // grading. A run that failed is graded as it stopped.
 func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) {
@@ -130,6 +144,18 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err != nil {
 		return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
 	}
+	// The runner detaches a run from its caller's context, as a server run
+	// outlives its request; an interrupt here asks the run to stop instead,
+	// and it does at its next checkpoint.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			rt.cancel(r.Tenant, r.ID)
+		}
+	}()
 	if _, err := rt.rn.Execute(ctx, evalTenant, r.ID, nil); err != nil {
 		if _, gerr := rt.runs.Get(ctx, evalTenant, r.ID); gerr != nil {
 			return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
