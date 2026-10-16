@@ -5,6 +5,9 @@
 // segment and a reference is one or more, so no reference reaches another
 // tenant's secrets: whatever it says, the name it makes starts with its own
 // tenant's segment.
+//
+// Accounts is kiffalert.Accounts on the same store: which tenant takes a KIFF
+// account's alerts, and the secret they are signed with.
 package secretsmanager
 
 import (
