@@ -162,7 +162,8 @@ TTL when it ends, and go when it is deleted.
     | KIFF answers | `Withdraw` returns |
     |---|---|
     | 200 (and 200 again on a repeat) | `Withdrawal{Withdrawn: true, Status: "invalidated"}` |
-    | 409 `already_answered` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
+    | 409 `already_answered`, with `hold.status` | `Withdrawal{Withdrawn: false, Status: "approved"}` (or refused, expired): what KIFF did |
+    | 409 with another `error`, or no status | an error: KIFF didn't say what became of the call |
     | 404 | `kiff.ErrNoHold` |
     | anything else | an error, never carrying the key |
 

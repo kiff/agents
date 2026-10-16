@@ -29,6 +29,12 @@ func api(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"error":"already_answered","detail":"this call was already sent, refused or re-decided, or it expired; nothing was changed",` +
 				`"hold":{"exception_id":"exc_sent","action":"stripe.refund","status":"approved"}}`))
+		case "POST /v1/me/holds/exc_busy/withdraw":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"in_flight","hold":{"exception_id":"exc_busy","status":"approved"}}`))
+		case "POST /v1/me/holds/exc_bare/withdraw":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"already_answered"}`))
 		case "POST /v1/me/holds/exc_down/withdraw":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"error":"withdraw failed"}`))
@@ -68,6 +74,11 @@ func TestWithdrawFailures(t *testing.T) {
 	srv := api(t)
 	if _, err := kiff.Withdraw(context.Background(), srv.Client(), srv.URL, testKey, "exc_other"); !errors.Is(err, kiff.ErrNoHold) {
 		t.Fatalf("an unknown hold: err = %v, want ErrNoHold", err)
+	}
+	for _, ex := range []string{"exc_busy", "exc_bare"} { // a 409 that isn't already_answered, or names no status
+		if w, err := kiff.Withdraw(context.Background(), srv.Client(), srv.URL, testKey, ex); err == nil {
+			t.Fatalf("%s: %+v, want an error: KIFF didn't say what became of the call", ex, w)
+		}
 	}
 	if _, err := kiff.Withdraw(context.Background(), srv.Client(), srv.URL, testKey, "exc_down"); err == nil || errors.Is(err, kiff.ErrNoHold) {
 		t.Fatalf("a server error: err = %v", err)
