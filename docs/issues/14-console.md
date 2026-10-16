@@ -1,7 +1,7 @@
 # The console: what #14 delivers
 
 **Issue:** [#14](https://github.com/kiff/agents/issues/14) · **Status:** in progress. The operators' run routes are built; the rest of `/ops`, the console pages, stored eval runs and operator sign-in are to come.
-**PRs:** #PR (runs across tenants, the `/ops` run routes)
+**PRs:** #65 (runs across tenants, the `/ops` run routes)
 
 ## What it's for
 
@@ -12,7 +12,7 @@ operators'.
 
 ## Delivered
 
-**Operators read runs across tenants (#PR).** Served only when
+**Operators read runs across tenants (#65).** Served only when
 `Server.Operator` is set: it verifies an operator, and the routes never take a
 tenant's caller (a tenant's request is 401 there). They change nothing.
 
@@ -81,6 +81,6 @@ shows what the keep rules dropped.
 | Sessions and events per run | Built ([#1](01-sessions.md), [#12](12-runs.md)) |
 | Following a run's events live | Built for tenants (`resume`, [#13](13-server.md)); the `/ops` version reuses it |
 | Grading a run of this runtime | Built (`eval.Load`, [#3](03-evals.md)) |
-| Listing runs across tenants | Built: `Runs.ListAll`, `Runs.ListPaused` (#PR) |
+| Listing runs across tenants | Built: `Runs.ListAll`, `Runs.ListPaused` (#65) |
 | Usage per agent per day | Not built: needs an aggregate the stores don't keep |
 | Operator sign-in through KIFF | Not built |
