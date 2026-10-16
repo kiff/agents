@@ -95,8 +95,12 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
 - `emit` gets `agent.Event`s as the run goes (`text`, `tool_call`,
   `tool_result`); `nil` in the background.
 - `Execute` leases the run until the caller's deadline plus a minute
-  (`runner.MaxRun`, 15 min, if none). The loop stops 10 s short of it
-  (`StopTimeout`), so where it stopped is always stored.
+  (`runner.MaxRun`, 15 min, if the caller has none). The loop stops 10 s
+  before the caller's deadline (`StopTimeout`), to store where the run
+  stopped: the recording is ended (or paused) once, then the run is saved,
+  retrying a save that fails. If either still fails, the run stays RUNNING
+  until its lease runs out, and the next sweep marks it ERROR (or CANCELLED,
+  if it was asked to stop). Nothing schedules the sweep yet (#13).
 - A failed run is stored ERROR with a public message (`runner.FailedBuild`,
   `FailedStart`, `FailedRun`, `FailedTime`); the cause is returned, never
   stored.
