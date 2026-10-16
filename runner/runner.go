@@ -400,6 +400,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		r, err := x.saveStop(ctx, func(n *run.Run) error {
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
+			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
 			return nil
 		})
 		return r, errors.Join(runErr, err) // a failed turn after the hold is still the caller's to log
