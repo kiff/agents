@@ -246,13 +246,13 @@ type startBody struct {
 
 // The stream a run's start and resume share, as server-sent events:
 //
-//	event: run    the run as stored, once, first (start only)
+//	event: run    the run as stored, once, first (start and continue only)
 //	event: event  one recorded session event of the run, its id the event's
 //	              Seq: the cursor resume?after= takes
 //	event: delta  what the agent does as it does it (an agent.Event): text as
 //	              it is written, tool calls as they are made. No id: it is for
 //	              showing, and the recorded events carry what is kept. Start
-//	              only, in the foreground
+//	              and continue only, in the foreground
 //	event: end    the run as stored at its stop; its status is empty when
 //	              the run couldn't be read back, and the client reads it
 //
@@ -309,7 +309,69 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, viewRun(rn))
 		return
 	}
+	s.execute(w, r, c, rn)
+}
 
+// continueBody is what POST /agents/{id}/runs/{run_id}/continue takes, if
+// anything.
+type continueBody struct {
+	Background bool `json:"background,omitempty"`
+}
+
+// continueRun continues a PAUSED run whose held calls KIFF has resolved:
+// streamed as SSE, or in the background, answering 202. Any other run is a
+// conflict: one not paused (it went on, or ended; read it), or one that
+// still waits for KIFF. The run is claimed once, so a continue that races an
+// alert's or the sweep's executes it once, and the other gets the run as
+// stored.
+func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
+	c, err := s.caller(w, r)
+	if err != nil {
+		return
+	}
+	ctx := r.Context()
+	var body continueBody
+	if r.ContentLength != 0 {
+		if err := decode(r, &body); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
+	if body.Background && s.Background == nil {
+		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
+		return
+	}
+	rn, err := s.agentRun(ctx, c, r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if rn.Status != run.Paused {
+		s.fail(w, r, conflict("the run isn't paused: read it"))
+		return
+	}
+	for _, q := range rn.Requirements {
+		if !q.Resolved(s.now()) {
+			s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
+			return
+		}
+	}
+	if body.Background {
+		// A failed hand-off leaves the run paused; the sweep continues it.
+		if err := s.Background(ctx, rn.Tenant, rn.ID); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, viewRun(rn))
+		return
+	}
+	s.execute(w, r, c, rn)
+}
+
+// execute runs rn in this invocation, streamed to the caller as SSE: the run
+// first, then what it does and records, then where it stopped.
+func (s *Server) execute(w http.ResponseWriter, r *http.Request, c Caller, rn run.Run) {
+	ctx := r.Context()
 	sse := newStream(w)
 	sse.send("run", viewRun(rn))
 	f := &follower{s: s, sse: sse, tenant: c.Tenant, rn: rn}

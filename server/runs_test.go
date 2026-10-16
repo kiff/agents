@@ -682,6 +682,90 @@ func TestAHoldKIFFDoesntKnowIsNothingToWithdraw(t *testing.T) {
 	f.want(204, code, body, "delete")
 }
 
+// answered records KIFF's answer on every requirement of r.
+func (f *runFixture) answered(r run.Run) {
+	f.t.Helper()
+	r, _ = f.runs.Get(ctx, r.Tenant, r.ID)
+	if _, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error {
+		for i := range n.Requirements {
+			n.Requirements[i].Answered, n.Requirements[i].Answer = now, "approved"
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// A paused run continues once KIFF has resolved it, streamed like a start;
+// before that, and once it went on, a continue is 409.
+func TestContinueAPausedRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.stored(run.Paused)
+	path := "/agents/payouts/runs/" + r.ID + "/continue"
+	code, body := f.do("t1", "POST", path, nil)
+	f.want(409, code, body, "a run still waiting for KIFF")
+	code, body = f.do("t2", "POST", path, nil)
+	f.want(404, code, body, "another tenant's run")
+	f.answered(r)
+	code, events := f.stream("t1", "POST", path, "")
+	if code != 200 || len(events) == 0 || events[0].name != "run" || events[0].data["status"] != string(run.Paused) {
+		t.Fatalf("got %d %s", code, names(events))
+	}
+	if end := events[len(events)-1]; end.name != "end" || end.data["status"] != string(run.Completed) {
+		t.Fatalf("ended %s %v", end.name, end.data)
+	}
+	if !slices.Contains(f.runner.execs, r.ID) {
+		t.Fatalf("executed %v", f.runner.execs)
+	}
+	code, body = f.do("t1", "POST", path, nil)
+	f.want(409, code, body, "a run that went on")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+f.stored(run.Running).ID+"/continue", nil)
+	f.want(409, code, body, "a running run")
+
+	// Without a Runner, nothing here executes runs: the route isn't there.
+	f.server.Runner = nil
+	f.restart()
+	other := f.heldResolved()
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+other.ID+"/continue", nil)
+	f.want(404, code, body, "continuing with no Runner")
+}
+
+// heldResolved is a paused run of t1's payouts that KIFF has resolved.
+func (f *runFixture) heldResolved() run.Run {
+	f.t.Helper()
+	r := f.stored(run.Paused)
+	f.answered(r)
+	return r
+}
+
+// {"background": true} hands the run on and answers 202; if the hand-off
+// fails, the run stays paused for the sweep.
+func TestContinueInTheBackground(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.stored(run.Paused)
+	f.answered(r)
+	path := "/agents/payouts/runs/" + r.ID + "/continue"
+	code, body := f.do("t1", "POST", path, map[string]any{"background": true, "input": "x"})
+	f.want(400, code, body, "a field continue doesn't take")
+	f.bgFail = errors.New("invoke failed")
+	code, body = f.do("t1", "POST", path, map[string]any{"background": true})
+	f.want(500, code, body, "the hand-off failing")
+	f.bgFail = nil
+	code, body = f.do("t1", "POST", path, map[string]any{"background": true})
+	f.want(202, code, body, "continue in the background")
+	if !slices.Equal(f.background, []string{"t1/" + r.ID}) || len(f.runner.execs) != 0 {
+		t.Fatalf("handed on %v, executed here %v", f.background, f.runner.execs)
+	}
+	if got, _ := f.runs.Get(ctx, "t1", r.ID); got.Status != run.Paused {
+		t.Fatalf("now %s: the background invocation claims it, not the request", got.Status)
+	}
+	f.noBackground()
+	code, body = f.do("t1", "POST", path, map[string]any{"background": true})
+	f.want(503, code, body, "no background dispatcher")
+}
+
 // record appends events 1..n to run r.
 func (f *runFixture) record(r run.Run, from, to int64) {
 	f.t.Helper()
