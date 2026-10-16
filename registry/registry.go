@@ -66,6 +66,9 @@ type Definition struct {
 	// History is how many of the session's finished runs the model gets
 	// before a new one.
 	History int `json:"history"`
+	// Workspace gives each of the agent's runs a workspace: files and
+	// commands, with no credentials and no way out (#86). Off unless set.
+	Workspace bool `json:"workspace,omitempty"`
 }
 
 // Check refuses a definition that can't be stored or run safely.
@@ -158,6 +161,10 @@ type Secrets interface {
 // ErrGateway means a definition names a gateway the server doesn't allow.
 var ErrGateway = errors.New("registry: the gateway is not one this server allows")
 
+// ErrNoWorkspace means a definition asks for a workspace this build can't
+// give: the server has none, or the agent is built for no run.
+var ErrNoWorkspace = errors.New("registry: the agent needs a workspace, and this build has none")
+
 // Builder builds agents from their definitions, once per request.
 type Builder struct {
 	Agents  Agents
@@ -171,12 +178,23 @@ type Builder struct {
 	// Own, when set, returns the tools an agent has besides its gateway's,
 	// such as its memory.
 	Own func(tenant, agent string) []tool.Tool
+	// Workspace, when set, returns the workspace tool for one run of an
+	// agent whose definition asks for one.
+	Workspace func(tenant, run string) tool.Tool
 }
 
 // Build returns the tenant's agent, ready to run, and the definition it was
 // built from (its keep rules and history size are the caller's to apply).
 // Its gateway tools are listed now, so a run sees what its Cards reach today.
+// An agent whose definition asks for a workspace is built only for a run,
+// with BuildRun.
 func (b *Builder) Build(ctx context.Context, tenant, id string) (agent.Agent, Definition, error) {
+	return b.BuildRun(ctx, tenant, id, "")
+}
+
+// BuildRun is Build for one run of the agent: one whose definition asks for
+// a workspace gets that run's.
+func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.Agent, Definition, error) {
 	d, err := b.Agents.Get(ctx, tenant, id)
 	if err != nil {
 		return agent.Agent{}, Definition{}, err
@@ -200,6 +218,12 @@ func (b *Builder) Build(ctx context.Context, tenant, id string) (agent.Agent, De
 	}
 	if b.Own != nil {
 		tools = append(tools, b.Own(tenant, id)...)
+	}
+	if d.Workspace {
+		if b.Workspace == nil || run == "" {
+			return agent.Agent{}, d, ErrNoWorkspace
+		}
+		tools = append(tools, b.Workspace(tenant, run))
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, System: d.Instructions, Tools: tools, MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
