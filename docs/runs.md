@@ -76,7 +76,7 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
 | RUNNING | PAUSED | KIFF holds a call |
 | RUNNING | ERROR, CANCELLED | failed or lease ran out; asked to stop |
 | PAUSED | RUNNING | every requirement resolved: claimed again, same ID |
-| PAUSED | CANCELLED | cancelled; the API allows it once KIFF can withdraw the held calls (#15) |
+| PAUSED | CANCELLED | cancelled: KIFF's held calls are withdrawn, then the run continues and stops |
 
 COMPLETED, ERROR and CANCELLED are final. `run.CanMove(from, to)` is the table.
 
@@ -129,8 +129,10 @@ for _, q := range r.Requirements {
   a continued run sees.
 - Once KIFF resolves every requirement, `Execute` on the same ID continues
   from `paused`, with each held call's outcome from `Runner.Collect` (#15).
-- A run cancelled while KIFF holds a call stays PAUSED with `cancel` set; once
-  resolved it is claimed again, records the outcomes and ends CANCELLED.
+- Cancelling a paused run withdraws KIFF's held calls first
+  (`server.Server.Withdraw`), records what became of each and sets `cancel`;
+  it is then claimed again, records the outcomes and ends CANCELLED. A run
+  cancelled while RUNNING that then pauses does the same once KIFF resolves it.
 
 ## Chat
 
