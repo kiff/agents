@@ -77,6 +77,10 @@ type Run struct {
 	Requirements []Requirement `json:"requirements,omitempty"`
 	// Paused is the turn the run paused in, to carry on from.
 	Paused *Turn `json:"paused,omitempty"`
+	// Holds are the exceptions of every call KIFF has held in the run, over
+	// all its pauses: what Runs.ByHold finds it by, for as long as the run
+	// exists. Change keeps it; it only grows.
+	Holds []string `json:"holds,omitempty"`
 
 	// Cancel records that the run was asked to stop: a running run stops at
 	// its next checkpoint (before a model turn, after a tool batch).
@@ -120,6 +124,10 @@ type Requirement struct {
 	Expires time.Time `json:"expires"`
 	// Answered is when KIFF reported the hold answered; zero until then.
 	Answered time.Time `json:"answered,omitzero"`
+	// Answer is what KIFF reported: approved, refused, expired, or
+	// invalidated (withdrawn). The outcome itself is collected from the
+	// gateway (Operation).
+	Answer string `json:"answer,omitempty"`
 }
 
 // Resolved reports whether KIFF has resolved the requirement as of now: it

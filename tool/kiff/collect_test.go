@@ -62,7 +62,7 @@ func TestCollectRepeatsEachCallByItsOperation(t *testing.T) {
 // sent, is ErrNotFinal, and nothing is returned: the run stays paused.
 func TestCollectLeavesACallWithNoOutcome(t *testing.T) {
 	a := collector(t)
-	for _, op := range []string{"op-waiting", "op-deciding", "op-forwarding"} {
+	for _, op := range []string{"op-waiting", "op-deciding", "op-forwarding", "op-held-no-retry"} {
 		got, err := kiff.Collect(context.Background(), a, []run.Requirement{requirement("c1", "op-approved"), requirement("c2", op)})
 		if !errors.Is(err, kiff.ErrNotFinal) || got != nil {
 			t.Fatalf("%s: got %+v, %v; want ErrNotFinal", op, got, err)

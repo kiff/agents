@@ -103,6 +103,9 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			} else if op == "op-slow" {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_1"}},
 					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "sent": "yes", "retry": "none"}}}
+			} else if op == "op-held-no-retry" {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
+					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "held"}}}
 			} else if op == "op-error" {
 				http.Error(w, "gateway down", http.StatusBadGateway)
 				return

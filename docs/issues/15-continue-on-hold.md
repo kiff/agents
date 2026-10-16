@@ -1,7 +1,7 @@
 # Continue on a hold: what #15 delivers
 
 **Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
-**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect)
+**PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers)
 
 ## What it's for
 
@@ -98,6 +98,41 @@ r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
 | a call still being decided leaves the run paused, no model turn; collected later | `TestACallStillBeingDecidedLeavesTheRunPaused` |
 | no operation ID, or a tool the agent lacks, is refused before the gateway | `TestCollectRefuses` |
 | held, answered, collected and continued, end to end through the gateway | `TestAHeldRunContinuesThroughTheGateway` |
+
+**A run is found by its hold, and KIFF's answer is recorded on it (#49).**
+`Runs.ByHold(ctx, tenant, exception)` finds the run that paused on the call
+KIFF holds as `exception`, for as long as the run exists: after it ended too.
+`run.Answer` records what KIFF answered on that requirement:
+
+```go
+r, err := run.Answer(ctx, runs, "t1", "exc_123", "approved", time.Now())
+```
+
+```json
+{ "call_id": "toolu_01", "tool": "stripe_refund", "operation": "op-refund-42",
+  "exception": "exc_123", "expires": "2026-10-16T09:10:00Z",
+  "answered": "2026-10-16T09:03:12Z", "answer": "approved" }
+```
+
+| Case | Result |
+|---|---|
+| first answer | recorded (`answered`, `answer`); the requirement is resolved |
+| the same answer again, or another | nothing changes |
+| the run is no longer paused (went on, ended, swept) | nothing changes, no error |
+| no run has paused on that hold yet | `run.ErrNotFound`: the alert must come again |
+
+The run keeps every hold it has paused on, over all its pauses, in
+`holds` (`Change` only adds to it). DynamoDB keeps `H|tenant|exception → run
+id` for each, written in the run's transaction; all of them take the run's
+TTL when it ends, and go when it is deleted.
+
+| Rule | Guarded by |
+|---|---|
+| found by hold, in its tenant only; gone with the run | `run/runtest` `ARunIsFoundByItsHold` (both stores) |
+| an answer is recorded once; before the pause it's `ErrNotFound` | `AnAnswerIsRecordedOnce` |
+| an ended or swept run is still found, and an answer changes nothing | `AnAnswerOutlivesTheRunsEnd` |
+| a run paused twice is found by both holds; an answer on a running run changes nothing | `ARunPausedTwiceKeepsBothHolds` |
+| every hold item, both pauses', takes the run's TTL and is deleted with it | `store/dynamodb` `TestHoldItems` |
 
 ## Still to deliver
 

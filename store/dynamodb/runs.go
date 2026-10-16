@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 //	from  pk=O|tenant|trigger|source  sk=created|id  lists the runs one source
 //	                                       started (a run with a Source only)
 //	due   pk=W               sk=due|key    a run the sweep must look at, by when
+//	hold  pk=H|tenant|exception  sk=M      the run that held that call (ByHold)
 //
 // The paused turn is cut into parts because what tools returned can be bigger
 // than one item holds; the parts are written in the same transaction as the
@@ -63,8 +65,23 @@ const (
 
 const duePK = "W"
 
-func runPK(tenant, id string) string        { return key("R", tenant, id) }
-func runListPK(tenant, agent string) string { return key("L", tenant, agent) }
+func runPK(tenant, id string) string         { return key("R", tenant, id) }
+func runListPK(tenant, agent string) string  { return key("L", tenant, agent) }
+func holdPK(tenant, exception string) string { return key("H", tenant, exception) }
+
+// holdItems points each of exs at r, with t. A hold item lives as long as
+// its run: it gets the run's TTL when the run ends, so an alert for a run
+// that has ended still finds it.
+func (rs *Runs) holdItems(r run.Run, exs []string, t types.AttributeValue) []types.TransactWriteItem {
+	var out []types.TransactWriteItem
+	for _, ex := range exs {
+		item := pkey(holdPK(r.Tenant, ex), metaSK)
+		item["id"] = s(r.ID)
+		out = append(out, rs.put(withTTL(item, t), ""))
+	}
+	return out
+}
+
 func sourcePK(tenant string, trigger run.Trigger, source string) string {
 	return key("O", tenant, string(trigger), source)
 }
@@ -188,6 +205,7 @@ func (rs *Runs) Create(ctx context.Context, r run.Run) error {
 		return err
 	}
 	items := append([]types.TransactWriteItem{rs.put(rs.runItem(r, st), "attribute_not_exists(pk)")}, rs.listItems(r, st.ttl)...)
+	items = append(items, rs.holdItems(r, run.HoldsOf(r), st.ttl)...)
 	for i, part := range st.parts {
 		items = append(items, rs.put(rs.partItem(r, i, part, st.ttl), ""))
 	}
@@ -327,6 +345,14 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 	if !sameTTL(was.ttl, now.ttl) {
 		items = append(items, rs.listItems(next, now.ttl)...)
 	}
+	// Holds: new ones are written; when the TTL changes (the run ended),
+	// every hold the run ever had takes it.
+	holds := run.HoldsOf(prev, next)
+	if sameTTL(was.ttl, now.ttl) {
+		had := run.HoldsOf(prev)
+		holds = slices.DeleteFunc(holds, func(ex string) bool { return slices.Contains(had, ex) })
+	}
+	items = append(items, rs.holdItems(next, holds, now.ttl)...)
 	if !prev.Due().Equal(next.Due()) {
 		if !prev.Due().IsZero() {
 			items = append(items, rs.del(pkey(duePK, dueSK(prev))))
@@ -535,6 +561,9 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 	for _, k := range lists(r) {
 		items = append(items, rs.del(k))
 	}
+	for _, ex := range run.HoldsOf(r) {
+		items = append(items, rs.del(pkey(holdPK(r.Tenant, ex), metaSK)))
+	}
 	for i := range st.parts {
 		items = append(items, rs.del(pkey(runPK(r.Tenant, r.ID), turnSK(i))))
 	}
@@ -573,4 +602,16 @@ func (rs *Runs) DeleteAgent(ctx context.Context, tenant, agent string) error {
 		return err
 	}
 	return (&Store{db: rs.db, table: rs.table}).deleteKeys(ctx, left)
+}
+
+func (rs *Runs) ByHold(ctx context.Context, tenant, exception string) (run.Run, error) {
+	out, err := rs.db.GetItem(ctx, &ddb.GetItemInput{TableName: &rs.table, Key: pkey(holdPK(tenant, exception), metaSK),
+		ConsistentRead: aws.Bool(true)})
+	if err != nil {
+		return run.Run{}, err
+	}
+	if out.Item == nil {
+		return run.Run{}, run.ErrNotFound
+	}
+	return rs.Get(ctx, tenant, getS(out.Item, "id"))
 }
