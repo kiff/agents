@@ -1,0 +1,107 @@
+name: Deploy
+# Ships main to AWS once the Go workflow has passed on it: the code of both
+# functions, nothing else. infra/aws.sh makes and repairs everything around
+# them; this only updates what they run.
+#
+# On once infra/aws.sh has run: the repository variable AGENTS_DEPLOY=on, and
+# the secret AWS_DEPLOY_ROLE holding the role infra/aws.sh prints. That role
+# trusts only this repository's main and may only update the two functions.
+on:
+  workflow_run:
+    workflows: [Go]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  # Before the deploy queue, so an older commit seldom takes a place in it at
+  # all; the deploy job's own check covers one that does.
+  fresh:
+    # Only main, as pushed to this repository: for workflow_run, github.ref is
+    # always the default branch, so the upstream run's own event, branch and
+    # repository are what tell a push to main from a pull request (a fork's
+    # branch can be named main too). A dispatch runs on main by hand.
+    if: >-
+      vars.AGENTS_DEPLOY == 'on' && (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.head_repository.full_name == github.repository)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - name: Still main's head
+        id: head
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$REPO/commits/main" --jq .sha)
+          if [ "$head" = "$SHA" ]; then
+            echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now; its own run deploys it" >> "$GITHUB_STEP_SUMMARY"
+          fi
+  deploy:
+    needs: fresh
+    if: needs.fresh.outputs.sha != ''
+    # Every waiting deploy keeps its place (queue: max; the default keeps one
+    # and cancels it when another queues), so an older one admitted late can't
+    # cancel a newer one. Each checks main's head again when its turn comes.
+    concurrency:
+      group: deploy
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit the Go workflow passed, not whatever main is by now.
+          ref: ${{ needs.fresh.outputs.sha }}
+      - name: Still main's head
+        # Again inside the deploy queue: a newer commit may have landed while
+        # this one waited, and must not be rolled back.
+        id: fresh
+        run: |
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" = "$(git rev-parse HEAD)" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now; its own run deploys it" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.fresh.outputs.deploy == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Build
+        if: steps.fresh.outputs.deploy == 'true'
+        run: |
+          for cmd in lambda kiffalerts; do
+            mkdir -p "build/$cmd"
+            GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -tags lambda.norpc -ldflags=-s -o "build/$cmd/bootstrap" "./cmd/$cmd"
+            (cd "build/$cmd" && zip -q -X "../$cmd.zip" bootstrap)
+          done
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.fresh.outputs.deploy == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE }}
+          aws-region: eu-west-1
+      - name: Deploy
+        if: steps.fresh.outputs.deploy == 'true'
+        run: |
+          for pair in agents:lambda agents-kiffalerts:kiffalerts; do
+            fn=${pair%%:*}; zip=${pair##*:}
+            aws lambda update-function-code --function-name "$fn" --zip-file "fileb://build/$zip.zip" >/dev/null
+            aws lambda wait function-updated-v2 --function-name "$fn"
+            echo "$fn runs $(git rev-parse --short HEAD)"
+          done
