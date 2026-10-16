@@ -9,6 +9,8 @@
 //	AGENTS_TABLE      the DynamoDB table (store/dynamodb's)
 //	AGENTS_CALLERS    assumed-role ARN prefixes allowed to call, comma-separated (lambdaurl.Auth)
 //	AGENTS_GATEWAYS   the gateways an agent may name, comma-separated; KIFF's by default
+//	AGENTS_KIFF_API   the KIFF API held calls are withdrawn from; KIFF's by default, and
+//	                  required when AGENTS_GATEWAYS is set, so the two name the same KIFF
 //	SCHEDULE_GROUP    EventBridge Scheduler's schedule group
 //	SCHEDULE_TARGET   the function each firing invokes: this one
 //	SCHEDULE_ROLE     the role EventBridge Scheduler invokes it with
@@ -53,6 +55,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -102,6 +105,9 @@ type function struct {
 	// cont is how the sweep continues a resolved paused run; setup keeps it
 	// so its wiring can be read.
 	cont func(ctx context.Context, tenant, id string) error
+	// kiffAPI is the KIFF API Withdraw goes to; setup keeps it so its wiring
+	// can be read.
+	kiffAPI string
 	// now is the clock; nil is time.Now.
 	now func() time.Time
 	log *slog.Logger
@@ -134,6 +140,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	gateways := []string{kiff.URL}
 	if v := strings.TrimSpace(os.Getenv("AGENTS_GATEWAYS")); v != "" {
 		gateways = split(v)
+	}
+	kiffAPI, err := kiffAPIFor(os.Getenv("AGENTS_GATEWAYS"), os.Getenv("AGENTS_KIFF_API"))
+	if err != nil {
+		return nil, err
 	}
 	auth, err := lambdaurl.Auth(split(callers))
 	if err != nil {
@@ -177,20 +187,49 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log,
-			// Cancelling a paused run, or removing an agent with paused runs,
-			// takes back its held calls in KIFF with the agent's own key.
-			Withdraw: kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, kiff.APIURL)},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, Log: log},
+		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,
 		cont:      bg,
 		log:       log,
 	}
+	// Cancelling a paused run, or removing an agent with paused runs, takes
+	// back its held calls in KIFF with the agent's own key.
+	f.api.Withdraw = kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
 	return f, nil
+}
+
+// kiffAPIFor is the KIFF API held calls are withdrawn from: api, or KIFF's
+// own when neither it nor gateways is set. A withdrawal sends the agent's
+// KIFF key there, and must reach the KIFF that holds the call: with gateways
+// set, an agent's calls may be held by another KIFF (a staging one, say), so
+// api must be set too. It must be https, with a host and nothing after it.
+func kiffAPIFor(gateways, api string) (string, error) {
+	api = strings.TrimSpace(api)
+	if api == "" {
+		if strings.TrimSpace(gateways) != "" {
+			return "", errors.New("set AGENTS_KIFF_API: AGENTS_GATEWAYS is set, so held calls may not be KIFF's own to withdraw")
+		}
+		return kiff.APIURL, nil
+	}
+	// kiff.Withdraw appends its route to this as a string, so anything after
+	// the host would move it: a '?' or '#', even with nothing after it, makes
+	// the route a query or a fragment, and extra slashes another path. Its
+	// 404 would read as no hold to withdraw, and the call would stay live.
+	// So only "https://host" is taken, or with one trailing slash, and what
+	// is returned is built from the parsed host, not the spelling given.
+	u, err := url.Parse(api)
+	bad := err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || strings.ContainsAny(api, "?#")
+	if bad {
+		return "", fmt.Errorf("AGENTS_KIFF_API %q: https:// and a host, nothing after it", api)
+	}
+	return "https://" + u.Host, nil
 }
 
 // withdrawTimeout bounds one withdrawal from KIFF: a cancel waits on each of

@@ -1,7 +1,7 @@
 # The server on Lambda: what #13 delivers
 
 **Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. Nothing is deployed.
-**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), this page's PR (withdraw on Lambda)
+**PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), #59 (withdraw on Lambda), this page's PR (`AGENTS_KIFF_API`)
 
 ## What it's for
 
@@ -121,9 +121,10 @@ stores, with the registry's `Builder`:
   the outcome of each held call when a paused run is executed again. Without
   it, `Execute` refuses a paused run with `runner.ErrNoCollect`.
 - **Cancelling a paused run**, or removing an agent with paused runs:
-  `kiff.Withdrawer` takes back each held call at `api.kiff.dev` with the
+  `kiff.Withdrawer` takes back each held call at KIFF's API with the
   run's agent's own key, from the same Secrets Manager adapter. Each
-  withdrawal waits at most 15 seconds.
+  withdrawal waits at most 15 seconds, and goes to `AGENTS_KIFF_API`
+  (below): the KIFF that holds the call, which is sent the agent's key.
 
 **Background runs.** `POST /agents/{id}/runs` with `background` stores the
 run PENDING, then invokes this same function asynchronously (Lambda's
@@ -277,6 +278,7 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_TABLE` | The DynamoDB table |
 | `AGENTS_CALLERS` | Assumed-role ARN prefixes allowed to call, comma-separated |
 | `AGENTS_GATEWAYS` | The gateways an agent may name; KIFF's by default |
+| `AGENTS_KIFF_API` | The KIFF API held calls are withdrawn from, `https://` and a host only; `https://api.kiff.dev` by default. Required when `AGENTS_GATEWAYS` is set, so a withdrawal never sends an agent's key to another KIFF than the one holding its calls |
 | `SCHEDULE_GROUP`, `SCHEDULE_TARGET`, `SCHEDULE_ROLE` | EventBridge Scheduler's group, the function each firing invokes, and the role it invokes with |
 | `AGENTS_SECRETS_PREFIX` | The name prefix of the agents' KIFF keys in Secrets Manager |
 | `AGENTS_MODEL_KEY_SECRET` | The name of the secret holding the model provider's key; not under the prefix |
@@ -343,6 +345,7 @@ function is the only guard on who the caller is:
 | Without `Continue`, the alerts handler only records, and the run is due to the sweep | `TestWithoutContinueTheSweepContinues` (server/kiffalert) |
 | `kiffalerts` needs its configuration, with the accounts prefix apart from the agents' keys | `TestSetupNeedsItsConfiguration` (cmd/kiffalerts) |
 | A KIFF account resolves to its tenant and signing secret, only under its prefix; an unknown or malformed account is ErrUnknownAccount; a bad secret is an error that carries no secret | `TestAnAccountIsItsTenantAndSecret`, `TestAnAccountIsOnlyOneUnderThePrefix`, `TestOnlyTheAccountAskedForAnswers`, `TestAnAccountSecretMustNameATenantAndASecret`, `TestAFailedAccountReadIsReported` (registry/secretsmanager) |
+| Withdrawals go to KIFF's API by default; with other gateways, setup needs `AGENTS_KIFF_API`; only an https host is taken | `TestSetupNeedsItsConfiguration`, `TestTheKIFFAPIWithdrawalsGoTo` |
 | The model key's secret can't be one an agent's key reference names | `TestTheModelKeyIsOutsideTheAgentsKeys`, `TestSetupNeedsItsConfiguration` |
 
 Tests drive the routes against `store/memory`. No test touches AWS.

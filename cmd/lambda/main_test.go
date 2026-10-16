@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -232,10 +234,83 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if f.api == nil || f.api.Withdraw == nil {
 		t.Error("a paused run can't be cancelled: nothing withdraws its held calls from KIFF")
 	}
+	if f.kiffAPI != kiff.APIURL {
+		t.Errorf("held calls are withdrawn from %q, want KIFF's own %q", f.kiffAPI, kiff.APIURL)
+	}
+	// Gateways other than KIFF's: withdrawals need to know which KIFF.
+	t.Setenv("AGENTS_GATEWAYS", "https://mcp.staging.example/mcp")
+	if _, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil || !strings.Contains(err.Error(), "AGENTS_KIFF_API") {
+		t.Errorf("set up with other gateways and no AGENTS_KIFF_API: %v", err)
+	}
+	t.Setenv("AGENTS_KIFF_API", "https://api.staging.example/")
+	if f, err := setup(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil || f.kiffAPI != "https://api.staging.example" {
+		t.Errorf("withdrawing from %q (%v), want the configured KIFF", f.kiffAPI, err)
+	}
 	if f.schedules.Start == nil {
 		t.Error("firings start nothing")
 	}
 	if status, body := startRun(t, f, "rae", `not json`); status != 400 {
 		t.Errorf("start route: got %d %s", status, body)
+	}
+}
+
+// A withdrawal sends the agent's KIFF key: only to an https host, with no
+// path, query or credentials to bend where it goes.
+func TestTheKIFFAPIWithdrawalsGoTo(t *testing.T) {
+	for _, c := range []struct{ gateways, api, want string }{
+		{"", "", kiff.APIURL},
+		{"", "https://api.staging.example", "https://api.staging.example"},
+		{"", " https://api.staging.example/ ", "https://api.staging.example"},
+		{"https://mcp.staging.example/mcp", "https://api.staging.example", "https://api.staging.example"},
+	} {
+		if got, err := kiffAPIFor(c.gateways, c.api); err != nil || got != c.want {
+			t.Errorf("%q, %q: %q (%v), want %q", c.gateways, c.api, got, err, c.want)
+		}
+	}
+	for _, c := range []struct{ gateways, api string }{
+		{"https://mcp.staging.example/mcp", ""},
+		{"", "http://api.kiff.dev"},
+		{"", "api.kiff.dev"},
+		{"", "https://"},
+		{"", "https://api.kiff.dev/v1"},
+		{"", "https://api.kiff.dev?x=1"},
+		{"", "https://api.kiff.dev#x"},
+		{"", "https://user:pw@api.kiff.dev"},
+		{"", "https://api.kiff.dev?"},
+		{"", "https://api.kiff.dev#"},
+		{"", "https://api.kiff.dev///"},
+		{"", "https://api.kiff.dev//"},
+		{"", "https://api.kiff.dev/%2F"},
+		{"", "https:api.kiff.dev"},
+	} {
+		if got, err := kiffAPIFor(c.gateways, c.api); err == nil {
+			t.Errorf("%q, %q: took %q", c.gateways, c.api, got)
+		}
+	}
+}
+
+// What kiffAPIFor takes, kiff.Withdraw reaches its route with: checked
+// against a real server, since a 404 from a wrong route would read as no
+// hold to withdraw.
+func TestAWithdrawalReachesItsRoute(t *testing.T) {
+	var paths []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hold":{"status":"invalidated"}}`))
+	}))
+	defer srv.Close()
+	for _, api := range []string{srv.URL, srv.URL + "/", " " + srv.URL + " "} {
+		paths = nil
+		base, err := kiffAPIFor("", api)
+		if err != nil {
+			t.Fatalf("%q: %v", api, err)
+		}
+		if _, err := kiff.Withdraw(ctx, srv.Client(), base, "kiff-agent-key", "exc_123"); err != nil {
+			t.Fatalf("%q: %v", api, err)
+		}
+		if len(paths) != 1 || paths[0] != "POST /v1/me/holds/exc_123/withdraw" {
+			t.Fatalf("%q reached %v", api, paths)
+		}
 	}
 }
