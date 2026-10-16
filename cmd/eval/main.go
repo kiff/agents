@@ -40,6 +40,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -84,6 +85,11 @@ var newReader = func(base, key string) reader { return managed.New(base, key, ni
 
 var newModel = func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) }
 
+// withdraw withdraws one of the agent's held calls at KIFF.
+var withdraw = func(ctx context.Context, apiURL, key, exception string) (kiff.Withdrawal, error) {
+	return kiff.Withdraw(ctx, nil, apiURL, key, exception)
+}
+
 // connect lists the agent's tools through KIFF's gateway.
 var connect = func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 	return kiff.New(gateway, key, nil).Tools(ctx)
@@ -105,6 +111,8 @@ type runtime struct {
 	jobs     string // the directory of the jobs' instructions
 	notes    string // the directory of the owner's notes, <case>.md each; empty: none
 	skill    string // added to every job's instructions
+	kiffKey  string // the agent's KIFF key
+	kiffAPI  string // KIFF's API, where held calls are withdrawn
 	log      io.Writer
 }
 
@@ -114,7 +122,8 @@ type envKey string
 func (k envKey) Key(context.Context, string, string) (string, error) { return string(k), nil }
 
 func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, skill string, log io.Writer) *runtime {
-	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill, log: log}
+	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill,
+		kiffKey: kiffKey, kiffAPI: kiff.APIURL, log: log}
 	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
 		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: connect,
 		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent)} },
@@ -198,10 +207,41 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 		}
 		fmt.Fprintf(rt.log, "eval: %s: the run failed, graded as it stopped: %v\n", s.Name, err)
 	}
+	rt.withdrawHeld(s.Name, r.ID)
 	return eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
 }
 
 var stripeURL = ""
+
+// withdrawHeld withdraws at KIFF every call the run left held, so none
+// waits on the owner or carries into the next run: an eval run is graded
+// where it paused, and never continued. It runs after an interrupt too, and
+// fails nothing: a hold it can't withdraw is logged for the owner to refuse.
+func (rt *runtime) withdrawHeld(name, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, err := rt.runs.Get(ctx, evalTenant, id)
+	if err != nil {
+		return
+	}
+	for _, q := range r.Requirements {
+		if q.Exception == "" {
+			fmt.Fprintf(rt.log, "eval: %s: KIFF held %s with no exception to withdraw: refuse it in KIFF\n", name, q.Tool)
+			continue
+		}
+		w, err := withdraw(ctx, rt.kiffAPI, rt.kiffKey, q.Exception)
+		switch {
+		case errors.Is(err, kiff.ErrNoHold):
+			fmt.Fprintf(rt.log, "eval: %s: KIFF no longer holds %s (%s)\n", name, q.Tool, q.Exception)
+		case err != nil:
+			fmt.Fprintf(rt.log, "eval: %s: couldn't withdraw %s (%s): %v: refuse it in KIFF\n", name, q.Tool, q.Exception, err)
+		case w.Withdrawn:
+			fmt.Fprintf(rt.log, "eval: %s: withdrew KIFF's hold on %s (%s)\n", name, q.Tool, q.Exception)
+		default:
+			fmt.Fprintf(rt.log, "eval: %s: KIFF's hold on %s (%s) was already %s\n", name, q.Tool, q.Exception, w.Status)
+		}
+	}
+}
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
 	if len(args) > 0 && args[0] == "seed" {
@@ -221,6 +261,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	skillPath := fs.String("skill", "", "-run: a file with KIFF's skill, added to every job's instructions")
 	notesDir := fs.String("notes", "", "-run: the directory of the owner's notes, <case>.md each, put in the agent's memory first")
 	gateway := fs.String("gateway", kiff.URL, "-run: KIFF's gateway")
+	kiffAPI := fs.String("kiff-api", kiff.APIURL, "-run: KIFF's API, where the calls a run left held are withdrawn")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -271,6 +312,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			MaxTokens: 8192, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY",
 			MaxCost: int64(*maxCost * 1_000_000), History: 20}, *jobs, skill, stderr)
 		rt.notes = *notesDir
+		if u, err := url.Parse(*kiffAPI); err != nil || u.Scheme != "https" || u.Host == "" {
+			return errors.New("-kiff-api is an https URL: the agent's key goes there")
+		}
+		rt.kiffAPI = *kiffAPI
 	}
 	var judge *eval.Judge
 	if *judgeModel != "" {

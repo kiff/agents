@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/kiff"
 )
 
 type fakeReader map[string]eval.Run
@@ -423,5 +426,59 @@ func TestAPriceMayCarryCachePrices(t *testing.T) {
 		if _, err := parsePrice(s); err == nil {
 			t.Errorf("%q was accepted", s)
 		}
+	}
+}
+
+// heldTool is a write KIFF holds for the owner.
+type heldTool struct{ refundTool }
+
+func (heldTool) Call(context.Context, json.RawMessage) (tool.Result, error) {
+	return tool.Result{Text: "Held for the owner.", State: tool.StateHeld,
+		Hold: &tool.Hold{Operation: "op_1", Exception: "ex_1", Expires: time.Now().Add(time.Hour)}}, nil
+}
+
+// A run KIFF holds a call of is graded where it paused, and the hold is
+// withdrawn with the agent's key, so it never waits on the owner or carries
+// into the next run (#78).
+func TestARunsHeldCallsAreWithdrawn(t *testing.T) {
+	turns := []model.Reply{agentTurns()[0], {Blocks: []model.Block{{Kind: model.Text, Text: "Waiting on the owner."}}, Stop: model.EndTurn}}
+	m := &script{replies: slices.Clone(turns)}
+	withAgent(t, m)
+	connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{heldTool{}}, nil }
+	var asked []string
+	old := withdraw
+	withdraw = func(_ context.Context, api, key, exception string) (kiff.Withdrawal, error) {
+		asked = append(asked, api+" "+key+" "+exception)
+		return kiff.Withdrawal{Withdrawn: true, Status: "invalidated"}, nil
+	}
+	t.Cleanup(func() { withdraw = old })
+	var log bytes.Buffer
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", MaxCost: 2_000_000, History: 20}, jobsDir(t), "", &log)
+	r, err := rt.Run(context.Background(), cases.Refunds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != runs.Paused {
+		t.Fatalf("status %s", r.Status)
+	}
+	if len(asked) != 1 || asked[0] != kiff.APIURL+" kiff-k ex_1" {
+		t.Fatalf("withdrew %v", asked)
+	}
+	if !strings.Contains(log.String(), "withdrew KIFF's hold on create_refund (ex_1)") {
+		t.Fatalf("log %q", log.String())
+	}
+
+	// A hold that can't be withdrawn is logged for the owner; nothing fails.
+	log.Reset()
+	m.replies = slices.Clone(turns)
+	withdraw = func(context.Context, string, string, string) (kiff.Withdrawal, error) {
+		return kiff.Withdrawal{}, errors.New("KIFF answered 500")
+	}
+	if _, err := rt.Run(context.Background(), cases.Refunds); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "couldn't withdraw create_refund (ex_1): KIFF answered 500: refuse it in KIFF") {
+		t.Fatalf("log %q", log.String())
 	}
 }
