@@ -584,7 +584,12 @@ func TestAToolCallRecordsWhereItWent(t *testing.T) {
 	if _, _, err := agent.Run(context.Background(), newAgent(m, refund, notes), r, nil, "Go.", nil); err != nil {
 		t.Fatal(err)
 	}
-	_, events, err := store.Read(context.Background(), "t1", r.Session().ID) // before the run ends drops them
+	// Read before the run ends (that drops tool calls), once what was
+	// recorded is written: the recording writes in batches, in the background.
+	if err := r.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
 	if err != nil {
 		t.Fatal(err)
 	}
