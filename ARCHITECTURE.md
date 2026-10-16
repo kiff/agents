@@ -193,7 +193,7 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
 - **Memory** is the agent's notes, written through its memory tool. Each update
   costs a tool call, so the turn and cost caps bound it; notes live until
   forgotten or the agent is removed.
-- **Removing an agent** deletes its sessions, runs, events, notes and schedules.
+- **Removing an agent** withdraws its paused runs' held calls in KIFF, then deletes its sessions, runs, events, notes and schedules.
 
 ## Running it
 
