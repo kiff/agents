@@ -33,18 +33,19 @@ only tafs cloud may call it.
 | `POST /agents/{id}/runs` | `{input, session_id?, background?}`. Streams the run as SSE (below). With `background`, answers 202 with the run. **Only served when a `Runner` is set** |
 | `GET /agents/{id}/runs/{run_id}` | The run: status, stop, output, error, cost, turns, requirements. Never its paused turn, claim, lease or version |
 | `POST /agents/{id}/runs/{run_id}/cancel` | PENDING becomes CANCELLED; RUNNING stops at its next checkpoint; PAUSED has its held calls withdrawn in KIFF, then stops ([#15](15-continue-on-hold.md)); 409 with no `Withdraw`, which `cmd/lambda` doesn't set yet |
+| `POST /agents/{id}/runs/{run_id}/continue` | `{background?}`, or no body. A PAUSED run KIFF has resolved: streams like a start, or with `background` answers 202. 409 for a run not paused, or still waiting for KIFF ([#15](15-continue-on-hold.md)). **Only served when a `Runner` is set** |
 | `POST /agents/{id}/runs/{run_id}/resume?after=N` | Replays the run's recorded events after `Seq` N, then follows the run until it's final or paused, then `end` (below) |
 
 ### The stream
 
-Start and resume share one stream. The SSE event name says what the data is;
+Start, continue and resume share one stream. The SSE event name says what the data is;
 it is not the kind of the agent event inside it.
 
 | SSE event | `id:` | Data | Sent |
 |---|---|---|---|
-| `run` | none | The run as stored | Once, first; start only |
-| `delta` | none | An `agent.Event`: text as it's written, tool calls and their results as they happen. For showing only; what's kept is in the recorded events | Start in the foreground only |
-| `event` | the event's `Seq` | One recorded session event of the run | As it's recorded; resume replays them |
+| `run` | none | The run as stored | Once, first; start and continue only |
+| `delta` | none | An `agent.Event`: text as it's written, tool calls and their results as they happen. For showing only; what's kept is in the recorded events | Start and continue in the foreground only |
+| `event` | the event's `Seq` | One recorded session event of the run | As it's recorded; resume replays them. Continue sends only what's recorded after the pause |
 | `end` | none | The run as stored at its stop. Its status is empty when the run couldn't be read back, and the client reads it | Once, last, when the stream finishes normally |
 
 A client that loses the stream calls `resume?after=` with the last `id` it
