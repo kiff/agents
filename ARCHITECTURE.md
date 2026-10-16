@@ -113,7 +113,7 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). Step 4: `tool/kiff` records a held call's operation ID, exception ID and expiry (#44); collecting the outcome by the operation ID is next |
 | `hook` | Before a run (input checks), around each tool call, after a run (output checks); background hooks for notifications | To build, when a check needs it |
 | `registry` | Stored agent definitions, each bounded as stored; built per request for their tenant, with its gateway on the server's list and its KIFF key by reference; ports `Agents`, `Secrets` | Built (#16): definitions, `Build`, memory and DynamoDB stores, the routes, removing an agent and what is kept for it, the Secrets Manager adapter (`registry/secretsmanager`; by example in [docs/registry.md](docs/registry.md)). Removing an agent withdraws its paused runs' holds first (#15) |
-| `schedule` | Schedules: five-field cron in a time zone, at most every 15 minutes, on or off; ports `Schedules`, `Scheduler` (EventBridge Scheduler, `schedule/eventbridge`). A firing reads the stored schedule and heals the Scheduler when the two disagree | Built (#17): the core, memory and DynamoDB stores, the EventBridge adapter, the routes (#13), firings starting runs (one per firing, named by its key), `/schedules/{id}/trigger`. Still to come: triggers |
+| `schedule` | Schedules: five-field cron in a time zone, at most every 15 minutes, on or off; ports `Schedules`, `Scheduler` (EventBridge Scheduler, `schedule/eventbridge`). A firing reads the stored schedule and heals the Scheduler when the two disagree | Built (#17): the core, memory and DynamoDB stores, the EventBridge adapter, the routes (#13), firings starting runs (one per firing, named by its key), `/schedules/{id}/trigger`, triggers (`POST /agents/{id}/events`, one run per event key) |
 | `server`, `server/lambdaurl` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud; the `Runner` port | Built (#13): agents, memory, sessions, schedules and run routes; the IAM function URL adapter, streaming. `continue` and the `/kiff/alerts` handler (step 4, #15). Still to come: `/evals`, `/usage` and `/ops` (step 3), the 429 cap |
 | `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3): the harness, Refunds and Chargebacks, the Managed Agents baseline reader; `Policy` and `Load` grade runs of this runtime (#12). Still to come: `cmd/eval` starting cases as runs, stored eval runs (step 3) |
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
@@ -139,6 +139,7 @@ verified; the phone never calls it directly.
 | `GET /sessions?agent_id=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their runs |
 | `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |
+| `POST /agents/{id}/events` | Work that came in (a Stripe event, an e-invoice), verified by the caller: one background run per event key |
 | `POST /kiff/alerts` | KIFF's signed hold-answered alert: resolve the requirement, continue the run in the background. Answers 200 once the answer is recorded, whatever the run's state (a repeat, a cancelled run), so KIFF stops redelivering |
 | `GET /evals`, `GET /evals/{id}` | Eval runs and their cases, each linked to the run it produced |
 | `GET /usage?agent_id=&from=&to=` | Runs, tokens and cost per agent and per day: what a price is set from |
@@ -192,7 +193,7 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
 - **Memory** is the agent's notes, written through its memory tool. Each update
   costs a tool call, so the turn and cost caps bound it; notes live until
   forgotten or the agent is removed.
-- **Removing an agent** deletes its sessions, runs, events, notes and schedules.
+- **Removing an agent** withdraws its paused runs' held calls in KIFF, then deletes its sessions, runs, events, notes and schedules.
 
 ## Running it
 

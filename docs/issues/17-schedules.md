@@ -1,7 +1,7 @@
 # Schedules: what #17 delivers
 
-**Issue:** [#17](https://github.com/kiff/agents/issues/17) · **Status:** delivered up to triggers. Schedules, EventBridge Scheduler, the routes, firings starting runs and firing by hand are built. Triggers (work starting runs) are still to come.
-**PRs:** #21 (core), #22 (EventBridge adapter); the routes came in #24 and #30 (under [#13](13-server.md)); a run's source in #26 (under [#12](12-runs.md))
+**Issue:** [#17](https://github.com/kiff/agents/issues/17) · **Status:** delivered; the deploy is [#13](13-server.md)'s. Schedules, EventBridge Scheduler, the routes, firings starting runs, firing by hand, and triggers (work starting a run; an answered hold continuing one) are built.
+**PRs:** #21 (core), #22 (EventBridge adapter); the routes came in #24 and #30 (under [#13](13-server.md)); a run's source in #26 (under [#12](12-runs.md)); triggers in #61
 
 ## What it's for
 
@@ -74,6 +74,37 @@ in the firing's own invocation. The run's ID is `Firing.Key()`, so however
 often EventBridge delivers a firing, it starts one run, and runs it once. A
 run that pauses counts as paused, not failed. How: [#13](13-server.md).
 
+### Triggers: work starts a run
+
+Work that came in for an agent (a Stripe event, an e-invoice) starts an
+ordinary background run. tafs cloud receives the work, verifies it at its
+origin (Stripe's signature, for one), and posts it here; this server trusts
+only its IAM caller, as for every route.
+
+```http
+POST /agents/payouts/events
+{"key": "evt_1QxDispute", "source": "stripe",
+ "input": "charge.dispute.created on ch_3Qx…: 120.00 EUR, reason fraudulent."}
+
+202 {"id": "6f1c…", "trigger": "event", "source": "stripe", "status": "PENDING", …}
+```
+
+- One key, one run: the run's ID is `server.EventRunID(tenant, agent, key)`.
+  The same event delivered again starts nothing: 200 with the run it
+  started, or 202 again if that run is still PENDING (it is handed on once
+  more; it is claimed once).
+- `source` is 1 to 64 of `a-z 0-9 . _ -`, and becomes the run's `source`;
+  `key` is 1 to 256 bytes; `input` as for a start. Any other field is 400.
+- The run is `Trigger: run.ByEvent` in a job session of its own, executed in
+  the background. A run that pauses on a hold continues when KIFF's alert
+  comes ([#15](15-continue-on-hold.md)): that is the "answered hold" trigger.
+- A failed hand-off is 500 and leaves the run PENDING for the redelivery; if
+  none comes, the sweep ends it after 5 minutes. No `Background`: 503. No
+  `Runner`: the route isn't served.
+
+The clock stays as the safety net: a schedule still fires whatever work did
+or didn't arrive.
+
 ## What holds, and the test that guards it
 
 | Rule | Test |
@@ -89,10 +120,13 @@ run that pauses counts as paused, not failed. How: [#13](13-server.md).
 | A firing reads back exactly | `TestParseEvent` |
 | A firing starts one run of the schedule through `cmd/lambda`, named by its key, and runs it once however often it's delivered | `TestFiringsReachTheSchedule`, `TestARepeatedFiringRunsWhatTheFirstLeftPending` |
 | A schedule fired by hand is a background run tagged with it | `TestTriggerASchedule` |
+| An event starts one background `event` run per key, tagged with its source; a redelivery starts nothing, and re-hands a PENDING run | `server` `TestAnEventStartsOneRun` |
+| A bad key, source, input or field is 400 and starts nothing; a failed hand-off is 500 with the run left PENDING; no dispatcher is 503 | `TestEventsThatDontStart` |
 
 ## Not delivered yet
 
 - **The deploy:** the schedule group, and the IAM role that lets
   `scheduler.amazonaws.com` invoke the function only.
-- **Triggers:** work (a Stripe event, an e-invoice, an answered hold) starts
-  or continues a run the same way, and the clock becomes the safety net.
+- **tafs cloud posting its work** (its Stripe webhook, e-invoices) to
+  `/agents/{id}/events`: tafs's side
+  ([kiff/tafs#42](https://github.com/kiff/tafs/issues/42)).

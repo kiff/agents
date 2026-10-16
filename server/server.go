@@ -113,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /agents/{id}/runs", s.startRun)
 		mux.HandleFunc("POST /agents/{id}/runs/{run_id}/continue", s.continueRun)
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
+		route("POST /agents/{id}/events", s.startEvent)
 	}
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
