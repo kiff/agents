@@ -175,7 +175,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return r, err
 	}
 
-	a, d, err := rn.Builder.Build(ctx, tenant, r.Agent)
+	a, d, err := rn.Builder.BuildRun(ctx, tenant, r.Agent, r.ID)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}

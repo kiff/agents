@@ -43,6 +43,9 @@ of its eight kinds):
 - `gateway` must be on the server's own list (`Server.Gateways`), so a
   definition can't send its key anywhere else.
 - `key_ref` names the key; it is never the key.
+- `workspace` (optional, off by default) gives each run a workspace: files
+  and commands, with no credentials and no way out (#86). Only an agent that
+  needs one sets it, such as kiff/tafs' setup agent.
 - `keep` has a rule for every event kind (`session.DefaultPolicy` gives one).
   `Retention` is in nanoseconds: 30 days here.
 - `Check` refuses what can't run safely: a bad ID, no cost cap, a gateway
@@ -75,7 +78,10 @@ a, def, err := b.Build(ctx, "t1", "rae")
 3. looks up the key with `Secrets.Key(ctx, "t1", "kiff/rae")`;
 4. lists the gateway's tools with that key, so a run sees what its Cards
    reach today;
-5. returns the agent, checked, and the definition (its keep rules and history
+5. adds the run's workspace tool when the definition asks for one; `BuildRun`
+   names the run, and without a run or a server `Workspace` it refuses
+   (`ErrNoWorkspace`) rather than build the agent without it;
+6. returns the agent, checked, and the definition (its keep rules and history
    size are the runner's to apply).
 
 ## Keys on Secrets Manager

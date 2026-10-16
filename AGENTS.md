@@ -38,6 +38,9 @@ model/anthropic     adapter: Claude API, through the official Go SDK
 tool/               the tool port; Check refuses a write tool outside KIFF's gateway
 tool/kiff           adapter: MCP client to KIFF's gateway, with the agent's own key
 tool/memory         adapter: the agent's notes, on session.Notes
+tool/workspace      adapter: the workspace tool, on workspace.Workspaces (an Own tool)
+workspace/          a run's workspace: files and commands, no credentials, no way out; port Workspaces
+workspace/workspacetest the checks every Workspaces must pass
 agent/              the run loop: model → tools → model, recorded and streamed; pauses on a KIFF hold
 chat/               the owner talking to an agent: each message a run in the conversation's session
 runner/             executes runs, as the server's Runner: start in a session, claim, build, record, run, store the stop; continue a paused run
