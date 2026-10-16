@@ -22,10 +22,15 @@
 #   agents-accounts/<KIFF account> {"tenant","secret"} for alerts KIFF_ACCOUNTS_PREFIX
 #   agents-model/anthropic         the model provider's key       AGENTS_MODEL_KEY_SECRET
 #
-# The model key is read from stdin when its secret doesn't exist yet, so it
-# never appears in a command line or a log:
+# The model key's secret can be another one in the region, outside the agents'
+# prefix: a replica of the key the caller already keeps, for example
+# (AGENTS_MODEL_KEY_SECRET=<name>). When it doesn't exist, the key is read from
+# stdin, so it never appears in a command line or a log:
 #
 #   some-command-printing-the-key | infra/aws.sh
+#
+# Needs an aws-cli recent enough for add-permission --invoked-via-function-url
+# (2.28 is not); the deploy workflow uses the current one.
 #
 # Nothing account-specific is written here: the account comes from the
 # caller's credentials, and ARNs are built from it at run time.
@@ -47,7 +52,7 @@ GROUP=agents
 SWEEP=agents-sweep
 SECRETS_PREFIX=agents/
 ACCOUNTS_PREFIX=agents-accounts/
-MODEL_SECRET=agents-model/anthropic
+MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
 GATEWAYS=https://mcp.kiff.dev/mcp
 
 aws() { command aws --region "$REGION" --output text "$@"; }
@@ -205,10 +210,17 @@ url_up "$ALERTS_FN" NONE BUFFERED
 
 # The alerts URL is public: KIFF's signature is its check. Nobody may invoke
 # the API function except through IAM: no resource policy grants it.
-aws lambda add-permission --function-name "$ALERTS_FN" --statement-id public-url \
-  --action lambda:InvokeFunctionUrl --principal '*' --function-url-auth-type NONE >/dev/null 2>&1 || true
-aws lambda add-permission --function-name "$ALERTS_FN" --statement-id public-url-invoke \
-  --action lambda:InvokeFunction --principal '*' --invoked-via-function-url >/dev/null 2>&1 || true
+# Both are needed: invoking through the URL, and invoking only when it comes
+# through the URL, so nobody can invoke the function directly.
+POLICY=$(aws lambda get-policy --function-name "$ALERTS_FN" --query Policy 2>/dev/null || true)
+case "$POLICY" in *'"Sid":"public-url"'*) ;; *)
+  aws lambda add-permission --function-name "$ALERTS_FN" --statement-id public-url \
+    --action lambda:InvokeFunctionUrl --principal '*' --function-url-auth-type NONE >/dev/null ;;
+esac
+case "$POLICY" in *'"Sid":"public-url-invoke"'*) ;; *)
+  aws lambda add-permission --function-name "$ALERTS_FN" --statement-id public-url-invoke \
+    --action lambda:InvokeFunction --principal '*' --invoked-via-function-url >/dev/null ;;
+esac
 
 # --- Schedules -------------------------------------------------------------
 
@@ -225,6 +237,25 @@ else
     --flexible-time-window Mode=OFF --target "$SWEEP_TARGET" --state ENABLED >/dev/null
   say "created the sweep, every minute"
 fi
+
+# --- The deploy role, for this repository's main only ------------------------
+
+# GitHub's immutable subject (owner and repository by id), so a renamed or
+# recreated repository can't take the role over. The OIDC provider is the
+# account's one for token.actions.githubusercontent.com.
+DEPLOY_ROLE=agents-github-deploy
+SUB=$(gh api repos/kiff/agents/actions/oidc/customization/sub --jq .sub_claim_prefix)
+OIDC="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
+role "$DEPLOY_ROLE" "$(cat <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"$OIDC"},"Action":"sts:AssumeRoleWithWebIdentity",
+ "Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com","token.actions.githubusercontent.com:sub":"$SUB:ref:refs/heads/main"}}}]}
+EOF
+)"
+aws iam put-role-policy --role-name "$DEPLOY_ROLE" --policy-name deploy-agents --policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["lambda:UpdateFunctionCode","lambda:GetFunction","lambda:GetFunctionConfiguration"],
+    "Resource":["'"$ARN_FN"'","arn:aws:lambda:'"$REGION:$ACCOUNT"':function:'"$ALERTS_FN"'"]}]}'
+# The workflow reads the role from the secret AWS_DEPLOY_ROLE, never from code.
+echo "deploy role: set it as the secret AWS_DEPLOY_ROLE: aws iam get-role --role-name $DEPLOY_ROLE --query Role.Arn --output text | gh secret set AWS_DEPLOY_ROLE --repo kiff/agents" >&2
 
 echo "api:    $(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl)"
 echo "alerts: $(aws lambda get-function-url-config --function-name "$ALERTS_FN" --query FunctionUrl)kiff/alerts"

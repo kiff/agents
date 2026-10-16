@@ -1,6 +1,6 @@
 # The server on Lambda: what #13 delivers
 
-**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. `infra/aws.sh` creates everything on AWS; it hasn't been run yet.
+**Issue:** [#13](https://github.com/kiff/agents/issues/13) · **Status:** partly delivered. The routes, auth and streaming are built, and on Lambda runs start, stream and go to the background. The sweep runs on a schedule and continues resolved paused runs, schedule firings start runs, and KIFF's alerts have their own function. Still to do: the 429 cap. Deployed in eu-west-1 on 2026-10-16 (`infra/aws.sh`); main deploys itself after the Go workflow passes (`.github/workflows/deploy.yml`).
 **PRs:** #24 (routes that need no runs), #25 (`cmd/lambda`), #30 (run routes), #35 (streaming), #39 (follow-ups), #46 (runs on Lambda), #47 (the sweep), #48 (firings start runs), #53 (paused runs collect), #56 (KIFF accounts), #57 (`cmd/kiffalerts`), #59 (withdraw on Lambda), #63 (`AGENTS_KIFF_API`), #64 (the deploy)
 
 ## What it's for
@@ -361,12 +361,22 @@ Tests drive the routes against `store/memory`. No test touches AWS.
 - **The `continue` route and cancelling a paused run** are
   [#15](15-continue-on-hold.md)'s; `/evals`, `/usage` and `/ops/*` are
   [#14](14-console.md)'s.
-- **The deploy** is scripted, not yet run: `infra/aws.sh` makes both
-  functions and their URLs, the table, the schedule group, the sweep, the
-  three roles with the IAM above, and the model key's secret, in eu-west-1.
-  It is safe to run again, and builds every ARN from the caller's account at
-  run time. The agents' keys (`agents/<tenant>/<key_ref>`) and the KIFF
-  accounts (`agents-accounts/<account>`) are written by tafs cloud, whose
-  role gets that permission in kiff/tafs's own `infra/aws.sh`.
-  Still to check at the first run: `TransactWriteItems` under the alerts
-  role's leading-keys condition, against a real answer.
+- **The deploy** is done, in eu-west-1 (2026-10-16), step by step:
+  - `infra/aws.sh` makes and repairs everything: the table, both functions
+    and their URLs, the schedule group and the sweep, the three roles with
+    the IAM above, and the deploy role. It builds every ARN from the caller's
+    account at run time.
+  - The model key's secret is a replica of tafs cloud's key in the region
+    (`AGENTS_MODEL_KEY_SECRET`), outside the agents' prefix.
+  - After the first run, `.github/workflows/deploy.yml` ships main's code
+    once the Go workflow passes on it. Its role trusts only this
+    repository's main and may only update the two functions.
+  - **Checked live:** the sweep fires every minute and ends without error;
+    the API URL refuses an unsigned request (403); the alerts URL answers an
+    unsigned alert 401 and any other path 404.
+  - **Not checked yet:** a signed call from tafs cloud's role, a run end to
+    end, and `TransactWriteItems` under the alerts role's leading-keys
+    condition against a real answer.
+  - The agents' keys (`agents/<tenant>/<key_ref>`) and the KIFF accounts
+    (`agents-accounts/<account>`) are written by tafs cloud, whose role gets
+    that permission in kiff/tafs's own `infra/aws.sh`.

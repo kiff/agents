@@ -1,0 +1,56 @@
+name: Deploy
+# Ships main to AWS once the Go workflow has passed on it: the code of both
+# functions, nothing else. infra/aws.sh makes and repairs everything around
+# them; this only updates what they run.
+#
+# On once infra/aws.sh has run: the repository variable AGENTS_DEPLOY=on, and
+# the secret AWS_DEPLOY_ROLE holding the role infra/aws.sh prints. That role
+# trusts only this repository's main and may only update the two functions.
+on:
+  workflow_run:
+    workflows: [Go]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: >-
+      vars.AGENTS_DEPLOY == 'on' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit the Go workflow passed, not whatever main is by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          for cmd in lambda kiffalerts; do
+            mkdir -p "build/$cmd"
+            GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -tags lambda.norpc -ldflags=-s -o "build/$cmd/bootstrap" "./cmd/$cmd"
+            (cd "build/$cmd" && zip -q -X "../$cmd.zip" bootstrap)
+          done
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE }}
+          aws-region: eu-west-1
+      - name: Deploy
+        run: |
+          for pair in agents:lambda agents-kiffalerts:kiffalerts; do
+            fn=${pair%%:*}; zip=${pair##*:}
+            aws lambda update-function-code --function-name "$fn" --zip-file "fileb://build/$zip.zip" >/dev/null
+            aws lambda wait function-updated-v2 --function-name "$fn"
+            echo "$fn runs $(git rev-parse --short HEAD)"
+          done
