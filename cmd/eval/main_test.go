@@ -351,3 +351,31 @@ func TestAnInterruptStopsTheRun(t *testing.T) {
 		t.Fatalf("after an interrupt: %s after %d model turns; want CANCELLED after 1", r.Status, m.turns)
 	}
 }
+
+// An interrupt during one case starts no later case: the command prints
+// what it graded and fails, naming the cases it didn't start.
+func TestAnInterruptStartsNoLaterCase(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	m := &interrupting{stop: stop}
+	withAgent(t, &script{})
+	newModel = func(string) model.Model { return m }
+	jobs := jobsDir(t)
+	_ = os.WriteFile(filepath.Join(jobs, "chargebacks.md"), []byte("You answer disputes."), 0o644)
+	var stdout bytes.Buffer
+	err := run(ctx, []string{"-run", "-model", "m", "-price", "1,1", "-jobs", jobs, "-gateway", "https://gateway.test/mcp", "refunds", "chargebacks"},
+		&stdout, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
+	if err == nil || !strings.Contains(err.Error(), "not started: chargebacks") {
+		t.Fatalf("err %v, want the interrupt to name chargebacks", err)
+	}
+	if m.turns != 1 {
+		t.Fatalf("%d model turns after the interrupt, want 1", m.turns)
+	}
+	var results []eval.Result
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil || len(results) != 1 || results[0].Case != "refunds" {
+		t.Fatalf("printed %s: want refunds' result", stdout.String())
+	}
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant}, jobs, "", io.Discard)
+	if _, err := rt.Run(ctx, cases.Chargebacks); err == nil || !strings.Contains(err.Error(), "not started") {
+		t.Fatalf("Run after an interrupt: %v", err)
+	}
+}

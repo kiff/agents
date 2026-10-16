@@ -87,7 +87,9 @@ KIFF_AGENT_KEY=… ANTHROPIC_API_KEY=… eval -run \
   own, like Managed Agents' file tools. So the six checks grade both runtimes
   alike.
 - Ctrl+C asks the run to stop (`cancel`); it stops at its next checkpoint,
-  with no model turn after it, and is graded as CANCELLED.
+  with no model turn after it, and is graded as CANCELLED. No later case
+  starts: eval prints what it graded and fails with `interrupted: not
+  started: chargebacks`.
 
 ```text
 refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
@@ -116,6 +118,7 @@ refunds  5/6  $0.3120 a run, $0.0446 an item, judge $0.0042  (8c1e…)
 | this runtime's gateway call passes "writes only through KIFF", its memory tool is its own, an injected gateway write still fails | `TestTheChecksGradeThisRuntimesCalls` |
 | a gateway call is recorded under `kiff`, an own tool's under none | `agent` `TestAToolCallRecordsWhereItWent` |
 | an interrupt stops the run at its next checkpoint, CANCELLED | `cmd/eval` `TestAnInterruptStopsTheRun` |
+| after an interrupt no later case starts; the graded ones are printed, the rest named | `TestAnInterruptStartsNoLaterCase` |
 
 The case tests are the **smoke cases**. They run in the Go workflow on every
 PR.

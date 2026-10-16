@@ -127,6 +127,9 @@ func (rt *runtime) cancel(tenant, id string) {
 // Run runs the case once, as a run of its job's agent, and reads it back for
 // grading. A run that failed is graded as it stopped.
 func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) {
+	if err := ctx.Err(); err != nil { // interrupted: start nothing more
+		return eval.Run{}, fmt.Errorf("%s: not started: %w", s.Name, err)
+	}
 	job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
 	if err != nil {
 		return eval.Run{}, fmt.Errorf("%s: the job's instructions: %w", s.Name, err)
@@ -239,7 +242,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	}
 
 	var results []eval.Result
-	for _, arg := range fs.Args() {
+	var skipped []string // cases an interrupt kept from starting
+	for i, arg := range fs.Args() {
+		if rt != nil && ctx.Err() != nil {
+			skipped = fs.Args()[i:]
+			break
+		}
 		var r eval.Run
 		var s cases.Scenario
 		if rt != nil {
@@ -298,6 +306,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		if err := os.WriteFile(*outPath, out, 0o644); err != nil {
 			return err
 		}
+	}
+	if len(skipped) > 0 {
+		return fmt.Errorf("interrupted: not started: %s", strings.Join(skipped, ", "))
 	}
 	if *basePath != "" {
 		var base []eval.Result
