@@ -51,6 +51,9 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"SweptRunsExpireAndCancelsHold", sweptRunsExpireAndCancelsHold},
 		{"ListNewestFirst", listNewestFirst},
 		{"ListBySource", listBySource},
+		{"ARunIsFoundByItsHold", aRunIsFoundByItsHold},
+		{"AnAnswerIsRecordedOnce", anAnswerIsRecordedOnce},
+		{"AnAnswerOutlivesTheRunsEnd", anAnswerOutlivesTheRunsEnd},
 		{"WhatARunIsNeverChanges", whatARunIsNeverChanges},
 		{"EndedRunsExpire", endedRunsExpire},
 		{"TenantsAreApart", tenantsAreApart},
@@ -825,5 +828,106 @@ func deleteAgentLeavesNothing(t *testing.T, s run.Runs, c *clock) {
 	}
 	if due, _ := s.Due(ctx, c.now(), 10); len(due) != 0 {
 		t.Fatalf("a deleted run is still due")
+	}
+}
+
+// heldOn is a run claimed and paused on one call, which KIFF holds as
+// exception.
+func heldOn(t *testing.T, s run.Runs, c *clock, exception string) run.Run {
+	t.Helper()
+	r, err := run.Save(ctx, s, claimed(t, s, c), c.now(), func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "stripe_refund", Operation: "op-1", Exception: exception,
+			Expires: c.now().Add(10 * time.Minute)}}
+		return nil
+	})
+	check(t, err)
+	return r
+}
+
+// A run is found by the hold KIFF names, in its tenant only. A hold no run
+// has paused on is ErrNotFound.
+func aRunIsFoundByItsHold(t *testing.T, s run.Runs, c *clock) {
+	r := heldOn(t, s, c, "exc_1")
+	got, err := s.ByHold(ctx, "t1", "exc_1")
+	check(t, err)
+	if got.ID != r.ID || got.Status != run.Paused {
+		t.Fatalf("found %+v", got)
+	}
+	for _, k := range [][2]string{{"t2", "exc_1"}, {"t1", "exc_2"}} {
+		if _, err := s.ByHold(ctx, k[0], k[1]); !errors.Is(err, run.ErrNotFound) {
+			t.Fatalf("%v: err = %v, want ErrNotFound", k, err)
+		}
+	}
+	check(t, s.Delete(ctx, "t1", r.ID))
+	if _, err := s.ByHold(ctx, "t1", "exc_1"); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("a deleted run's hold: err = %v", err)
+	}
+}
+
+// KIFF's answer is recorded on the requirement once: a repeat changes
+// nothing. An answer for a hold no run has paused on yet is ErrNotFound, so
+// the alert comes again.
+func anAnswerIsRecordedOnce(t *testing.T, s run.Runs, c *clock) {
+	if _, err := run.Answer(ctx, s, "t1", "exc_1", "approved", c.now()); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("an answer before the pause: err = %v, want ErrNotFound", err)
+	}
+	r := heldOn(t, s, c, "exc_1")
+	answered, err := run.Answer(ctx, s, "t1", "exc_1", "approved", c.now())
+	check(t, err)
+	q := answered.Requirements[0]
+	if !q.Answered.Equal(c.now()) || q.Answer != "approved" || answered.Version != r.Version+1 || !q.Resolved(c.now()) {
+		t.Fatalf("answered %+v", answered)
+	}
+	c.add(time.Minute)
+	again, err := run.Answer(ctx, s, "t1", "exc_1", "refused", c.now())
+	check(t, err)
+	if !reflect.DeepEqual(again, answered) || !reflect.DeepEqual(get(t, s, r), answered) {
+		t.Fatalf("a repeat changed the run: %+v", again)
+	}
+	if _, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(time.Minute), c.now()); err != nil {
+		t.Fatalf("claiming it once answered: %v", err)
+	}
+}
+
+// A run that ended before KIFF's answer came is still found by its hold, and
+// the answer changes nothing; the hold goes when the run does.
+func anAnswerOutlivesTheRunsEnd(t *testing.T, s run.Runs, c *clock) {
+	r := heldOn(t, s, c, "exc_1")
+	r, err := run.Claim(ctx, s, "t1", r.ID, "i2", c.now().Add(time.Hour), c.now().Add(11*time.Minute))
+	check(t, err)
+	c.add(11 * time.Minute) // the hold expired: resolved
+	ended, err := run.Save(ctx, s, r, c.now(), func(n *run.Run) error {
+		n.Status, n.Requirements, n.Expires = run.Completed, nil, c.now().Add(time.Hour)
+		return nil
+	})
+	check(t, err)
+	got, err := run.Answer(ctx, s, "t1", "exc_1", "expired", c.now())
+	check(t, err)
+	if !reflect.DeepEqual(got, ended) {
+		t.Fatalf("an answer for an ended run changed it: %+v", got)
+	}
+	c.add(time.Hour + time.Second)
+	if _, err := s.ByHold(ctx, "t1", "exc_1"); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("an expired run's hold: err = %v", err)
+	}
+
+	// The sweep ends a run with its requirements still on it: an answer
+	// then changes nothing either, and is no error (KIFF would deliver it
+	// again for nothing).
+	held := heldOn(t, s, c, "exc_2")
+	held, err = run.Claim(ctx, s, "t1", held.ID, "i3", c.now(), c.now().Add(11*time.Minute))
+	check(t, err)
+	c.add(11*time.Minute + run.LeaseGrace + time.Second)
+	if _, err := (run.Sweeper{Runs: s}).Sweep(ctx, c.now(), 10); err != nil {
+		t.Fatal(err)
+	}
+	swept := get(t, s, held)
+	if swept.Status != run.Error || len(swept.Requirements) != 1 {
+		t.Fatalf("swept %+v", swept)
+	}
+	got, err = run.Answer(ctx, s, "t1", "exc_2", "approved", c.now())
+	if err != nil || !reflect.DeepEqual(got, swept) {
+		t.Fatalf("an answer for a swept run: %+v, %v", got, err)
 	}
 }

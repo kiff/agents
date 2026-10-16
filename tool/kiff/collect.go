@@ -46,7 +46,7 @@ func Collect(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agen
 		if err != nil {
 			return nil, fmt.Errorf("kiff: collecting call %s: %w", q.CallID, err)
 		}
-		if m.Retry == "same_call" {
+		if m.Retry == "same_call" || res.Held() { // held says so on its own too
 			return nil, fmt.Errorf("%w: call %s is %s", ErrNotFinal, q.CallID, m.State)
 		}
 		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: res})

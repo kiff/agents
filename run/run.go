@@ -120,6 +120,10 @@ type Requirement struct {
 	Expires time.Time `json:"expires"`
 	// Answered is when KIFF reported the hold answered; zero until then.
 	Answered time.Time `json:"answered,omitzero"`
+	// Answer is what KIFF reported: approved, refused, expired, or
+	// invalidated (withdrawn). The outcome itself is collected from the
+	// gateway (Operation).
+	Answer string `json:"answer,omitempty"`
 }
 
 // Resolved reports whether KIFF has resolved the requirement as of now: it

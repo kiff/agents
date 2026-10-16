@@ -229,3 +229,64 @@ func TestABigTurnIsNeverReadTorn(t *testing.T) {
 		t.Fatalf("read version %d (%d y bytes), want the new turn at version 2", got.Version, ys)
 	}
 }
+
+// A hold item points at its run, takes the run's TTL when the run ends (its
+// requirements gone), and is removed with the run.
+func TestHoldItems(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	at := now()
+	rs := dynamodb.NewRunsAt(db, name, func() time.Time { return at })
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	if err := rs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Claim(ctx, rs, "t1", r.ID, "i1", at.Add(15*time.Minute), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = run.Save(ctx, rs, r, at, func(n *run.Run) error {
+		n.Status = run.Paused
+		n.Requirements = []run.Requirement{{CallID: "c1", Tool: "refund", Exception: "exc_1", Answered: at}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by := scan(t, db, name); len(by["H"]) != 1 || by["H"][0]["ttl"] != nil {
+		t.Fatalf("a paused run: %d hold items, ttl %v", len(by["H"]), by["H"])
+	}
+	r, err = run.Claim(ctx, rs, "t1", r.ID, "i2", at.Add(15*time.Minute), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := at.Add(24 * time.Hour)
+	if _, err := run.Save(ctx, rs, r, at, func(n *run.Run) error {
+		n.Status, n.Requirements, n.Expires = run.Completed, nil, expires
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	by := scan(t, db, name)
+	if len(by["H"]) != 1 {
+		t.Fatalf("an ended run: %d hold items, want 1", len(by["H"]))
+	}
+	if got, ok := by["H"][0]["ttl"].(*types.AttributeValueMemberN); !ok || got.Value != itoa(expires.Unix()) {
+		t.Fatalf("an ended run's hold: ttl %v, want %d", by["H"][0]["ttl"], expires.Unix())
+	}
+
+	paused := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	paused.Status = run.Paused
+	paused.Requirements = []run.Requirement{{CallID: "c1", Tool: "refund", Exception: "exc_2"}}
+	if err := rs.Create(ctx, paused); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Delete(ctx, "t1", paused.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range scan(t, db, name)["H"] {
+		if pk := item["pk"].(*types.AttributeValueMemberS).Value; pk != "H|2:t1|5:exc_1" {
+			t.Fatalf("a deleted run's hold is left: %v", item["pk"])
+		}
+	}
+}

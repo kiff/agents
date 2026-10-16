@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/kiff/agents/model"
@@ -108,6 +109,11 @@ type Runs interface {
 	// Delete removes a run; DeleteAgent, all of an agent's runs.
 	Delete(ctx context.Context, tenant, id string) error
 	DeleteAgent(ctx context.Context, tenant, agent string) error
+	// ByHold returns the tenant's run that paused on the call KIFF holds as
+	// exception (a requirement's Exception), for as long as the run exists:
+	// after it ended too, when its requirements are gone. ErrNotFound when
+	// no run has held it (or not yet: its pause isn't stored).
+	ByHold(ctx context.Context, tenant, exception string) (Run, error)
 }
 
 // New is a PENDING run, ready to Create.
@@ -321,4 +327,32 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, nil // it moved on meanwhile: not ours to mark
 	}
 	return err == nil, err
+}
+
+// Answer records KIFF's answer on the requirement whose hold is exception:
+// when, and what (approved, refused, expired, invalidated). It returns the
+// run as stored. Recording an answer again changes nothing, and so does an
+// answer for a run that has ended: the run moved on without it. A run that hasn't paused on that hold yet is ErrNotFound, so
+// the alert is delivered again later.
+func Answer(ctx context.Context, runs Runs, tenant, exception, answer string, now time.Time) (Run, error) {
+	if exception == "" || answer == "" {
+		return Run{}, errors.New("run: an answer names its hold and what KIFF answered")
+	}
+	for try := 1; ; try++ {
+		r, err := runs.ByHold(ctx, tenant, exception)
+		if err != nil {
+			return r, err
+		}
+		i := slices.IndexFunc(r.Requirements, func(q Requirement) bool { return q.Exception == exception })
+		if i < 0 || !r.Requirements[i].Answered.IsZero() || r.Status.Final() {
+			return r, nil // nothing left to record it on
+		}
+		next, err := Change(ctx, runs, r, now, func(n *Run) error {
+			n.Requirements[i].Answered, n.Requirements[i].Answer = now.UTC(), answer
+			return nil
+		})
+		if !errors.Is(err, ErrConflict) || try == SaveTries {
+			return next, err
+		}
+	}
 }
