@@ -89,7 +89,7 @@ rn := &runner.Runner{Runs: runs, Sessions: sessions, Builder: builder, Collect: 
 r, err := rn.Execute(ctx, "t1", pausedRunID, emit) // collects, then continues
 ```
 
-**What the model reads (#PR, for #69).** The model last saw KIFF hold the
+**What the model reads (#72, for #69).** The model last saw KIFF hold the
 call, and its Card, which the call was outside. A bare tool answer then
 reads as KIFF having sent a call it should have held; the first live run's
 report told the owner exactly that. So each collected result opens with
