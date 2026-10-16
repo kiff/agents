@@ -175,10 +175,14 @@ func (rt *runtime) config(job string, d registry.Definition) {
 		Price: price, Instructions: fmt.Sprintf("%d bytes, sha256 %x", len(d.Instructions), sum[:6]), Tools: slices.Clone(rt.tools)})
 }
 
-// note puts the owner's note for the case, <notes>/<case>.md, in the agent's
-// memory, as the owner would have left it: the agent reads it with its
-// memory tool. A case with no note file starts with none.
+// note starts the agent's memory over with only the owner's note for the
+// case, <notes>/<case>.md, as the owner would have left it: the agent reads
+// it with its memory tool. A case with no note file starts with none. What an
+// earlier run wrote is forgotten, so each run starts from the same fixture.
 func (rt *runtime) note(ctx context.Context, name string) error {
+	if err := rt.sessions.DeleteNotes(ctx, evalTenant, name); err != nil {
+		return fmt.Errorf("%s: the agent's memory: %w", name, err)
+	}
 	text := rt.notesFor[name]
 	if rt.notes != "" {
 		b, err := os.ReadFile(filepath.Join(rt.notes, name+".md"))
@@ -379,6 +383,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		case *seedEach && env("STRIPE_API_KEY") == "":
 			return errors.New("set STRIPE_API_KEY to a test-mode key for -seed")
 		}
+		for _, arg := range fs.Args() { // before anything runs
+			switch _, known := scenarios[arg]; {
+			case !known:
+				return fmt.Errorf("%q: want a case, refunds or chargebacks", arg)
+			case *seedEach && arg != "chargebacks":
+				return fmt.Errorf("-seed: %s has no seeder yet: give -ids", arg)
+			}
+		}
 		base := registry.Definition{Tenant: evalTenant, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY", MaxCost: int64(*maxCost * 1_000_000)}
 		if *defsDir != "" {
 			if *modelID != "" || *price != "" || *jobs != "" || *skillPath != "" {
@@ -440,17 +452,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			break
 		}
 		if rt != nil {
-			s, known := scenarios[arg]
-			if !known {
-				return fmt.Errorf("%q: want a case, refunds or chargebacks", arg)
-			}
+			s := scenarios[arg] // checked above
 			for rep := range *repeat {
 				if rep > 0 && ctx.Err() != nil {
 					skipped = append(skipped, fmt.Sprintf("%s (runs %d to %d)", arg, rep+1, *repeat))
 					break
 				}
 				s := s.WithIDs(ids)
-				if *seedEach && s.Name == "chargebacks" {
+				if *seedEach {
 					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
 					if err != nil {
 						return fmt.Errorf("%s: seed: %w", s.Name, err)
@@ -509,7 +518,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		if err := readJSON(*basePath, &base); err != nil {
 			return err
 		}
-		lower = eval.Lower(base, eval.Means(results))
+		lower = eval.Lower(eval.Means(base), eval.Means(results)) // a baseline from -repeat holds its mean too
 	}
 	if *reportPath != "" {
 		var cfgs []eval.Config

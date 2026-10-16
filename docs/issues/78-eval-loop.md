@@ -75,11 +75,16 @@ KIFF's skill, not the eval.
 **Repeats, a fresh seed each, a report and a baseline.** One run says
 little: the same case has scored 2/6 and 4/6 on the same day. So:
 
-- `-repeat N` runs each case N times, and `-baseline` holds each case's
-  **mean** score (`eval.Means`), not each run.
+- `-repeat N` runs each case N times, and `-baseline` compares each
+  case's **mean** score (`eval.Means`) with the baseline's mean, so a
+  `-out` file from repeated runs works as a baseline.
+- Each run starts with only the owner's note in the agent's memory: what
+  an earlier run wrote is forgotten.
 - `-seed` seeds the case in Stripe test mode before each of its runs
   (`STRIPE_API_KEY`, test keys only), instead of `-ids`. The seed's owner
-  note goes in the agent's memory unless `-notes` has one.
+  note goes in the agent's memory unless `-notes` has one. Only
+  Chargebacks has a seeder: `-seed refunds` is refused before anything
+  runs.
 - `-report file.md`: each job's configuration (definition source, model,
   effort, max tokens, price, instructions' size and digest, the tools KIFF
   listed), each case over its runs, and each run's checks with why.

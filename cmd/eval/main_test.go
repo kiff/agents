@@ -80,6 +80,17 @@ func TestRunGradesAndComparesWithTheBaseline(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "lower than the baseline: refunds") {
 		t.Fatalf("err %v; want a lower score to fail", err)
 	}
+
+	// A baseline from -repeat holds each case's mean, not its last run: 0.33
+	// is above a mean of 0.30, and below one of 0.35 (#78).
+	for scores, lower := range map[string]bool{"0.2, 0.4": false, "0.5, 0.2": true} {
+		a, b, _ := strings.Cut(scores, ", ")
+		_ = os.WriteFile(base, []byte(`[{"case": "refunds", "score": `+a+`}, {"case": "refunds", "score": `+b+`}]`), 0o644)
+		err = run(context.Background(), []string{"-baseline", base, "refunds=sesn_r"}, io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+		if got := err != nil && strings.Contains(err.Error(), "lower than the baseline: refunds"); got != lower {
+			t.Errorf("a baseline of %s: %v", scores, err)
+		}
+	}
 }
 
 // passing is a judge model that passes everything, for 1M input tokens a turn.
@@ -558,10 +569,10 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // note in memory; the report and the baseline hold the case over its runs,
 // against its mean score (#78).
 func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
-	var replies []model.Reply
-	for range 2 {
-		replies = append(replies, calls(call("c1", "memory", `{"action":"list"}`)),
-			model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn})
+	done := model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn}
+	replies := []model.Reply{ // the first run writes a note the second must not see
+		calls(call("c1", "memory", `{"action":"list"}`), call("c2", "memory", `{"action":"write","name":"left","text":"dp_from_run_1"}`)), done,
+		calls(call("c1", "memory", `{"action":"list"}`)), done,
 	}
 	m := &script{replies: replies}
 	withAgent(t, m)
@@ -602,6 +613,9 @@ func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
 			t.Fatalf("run %d: the seed's owner note isn't in memory: %s", i+1, b)
 		}
 	}
+	if b, _ := json.Marshal(m.asked[3].Messages); strings.Contains(string(b), "dp_from_run_1") {
+		t.Fatalf("run 2 saw what run 1 wrote in memory: %s", b)
+	}
 	md, _ := os.ReadFile(report)
 	for _, want := range []string{"**Lower than the baseline:** chargebacks", "## Configuration: chargebacks",
 		"| Definition | kiff/tafs@1d1ed42e64e8 |", "| Effort | high |", "| Price | 4000000,20000000,200000,5000000 |",
@@ -611,7 +625,8 @@ func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
 		}
 	}
 
-	// -seed and -ids together, or -seed without a Stripe key, are refused.
+	// -seed and -ids together, -seed without a Stripe key, or -seed for a
+	// case with no seeder, are refused before anything runs.
 	for name, c := range map[string]struct {
 		args []string
 		env  map[string]string
@@ -619,9 +634,14 @@ func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
 		"-ids too":      {[]string{"-run", "-definitions", defs, "-seed", "-ids", base, "chargebacks"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}},
 		"no Stripe key": {[]string{"-run", "-definitions", defs, "-seed", "chargebacks"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}},
 		"-repeat 0":     {[]string{"-run", "-definitions", defs, "-repeat", "0", "chargebacks"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}},
+		"no seeder":     {[]string{"-run", "-definitions", defs, "-seed", "chargebacks", "refunds"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}},
 	} {
+		m.asked, f.n, f.seeds = nil, 0, 0
 		if err := run(context.Background(), c.args, io.Discard, io.Discard, env(c.env)); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+		if len(m.asked) != 0 || f.n != 0 {
+			t.Errorf("%s: ran %d model turns and %d Stripe requests first", name, len(m.asked), f.n)
 		}
 	}
 }
