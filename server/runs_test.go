@@ -696,8 +696,9 @@ func (f *runFixture) answered(r run.Run) {
 	}
 }
 
-// A paused run continues once KIFF has resolved it, streamed like a start;
-// before that, and once it went on, a continue is 409.
+// A paused run continues once KIFF has resolved it, streamed like a start,
+// with only what it records from then on; before that, and once it went on,
+// a continue is 409.
 func TestContinueAPausedRun(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
@@ -707,8 +708,14 @@ func TestContinueAPausedRun(t *testing.T) {
 	f.want(409, code, body, "a run still waiting for KIFF")
 	code, body = f.do("t2", "POST", path, nil)
 	f.want(404, code, body, "another tenant's run")
+	f.record(r, 1, 3) // its turns before it paused
 	f.answered(r)
 	code, events := f.stream("t1", "POST", path, "")
+	for _, e := range events {
+		if e.name == "event" && (e.id == "1" || e.id == "2" || e.id == "3") {
+			t.Fatalf("the continue replayed event %s, recorded before the pause: %s", e.id, names(events))
+		}
+	}
 	if code != 200 || len(events) == 0 || events[0].name != "run" || events[0].data["status"] != string(run.Paused) {
 		t.Fatalf("got %d %s", code, names(events))
 	}

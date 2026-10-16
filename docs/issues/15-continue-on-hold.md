@@ -312,15 +312,16 @@ POST /agents/rae/runs/5c4c…/continue  {"background": true}
 | `background` and the hand-off fails | 500; the run stays PAUSED and the sweep continues it |
 | no `Runner` | 404: the route isn't served |
 
-An answer is never taken from the request: only KIFF resolves a
-requirement. The run is claimed once, so a continue racing an alert's or the
+The stream carries only what the run records after the pause; what came
+before, the caller has (`resume?after=0` replays it). An answer is never
+taken from the request: only KIFF resolves a requirement. The run is claimed once, so a continue racing an alert's or the
 sweep's executes it once; a held call is never collected twice. A repeat of
 the same KIFF alert is 200 at `/kiff/alerts` (#50); a repeat here is 409, and
 the caller reads the run.
 
 | Rule | Guarded by |
 |---|---|
-| waits for KIFF: 409; resolved: streamed to COMPLETED; then 409; running: 409; no `Runner`: 404 | `server` `TestContinueAPausedRun` |
+| waits for KIFF: 409; resolved: streamed to COMPLETED, without the events recorded before the pause; then 409; running: 409; no `Runner`: 404 | `server` `TestContinueAPausedRun` |
 | `background`: 202, handed on and not run here; a failed hand-off is 500 and leaves it PAUSED; no dispatcher: 503; unknown fields: 400 | `TestContinueInTheBackground` |
 
 ## Still to deliver

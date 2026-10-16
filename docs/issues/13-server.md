@@ -45,7 +45,7 @@ it is not the kind of the agent event inside it.
 |---|---|---|---|
 | `run` | none | The run as stored | Once, first; start and continue only |
 | `delta` | none | An `agent.Event`: text as it's written, tool calls and their results as they happen. For showing only; what's kept is in the recorded events | Start and continue in the foreground only |
-| `event` | the event's `Seq` | One recorded session event of the run | As it's recorded; resume replays them |
+| `event` | the event's `Seq` | One recorded session event of the run | As it's recorded; resume replays them. Continue sends only what's recorded after the pause |
 | `end` | none | The run as stored at its stop. Its status is empty when the run couldn't be read back, and the client reads it | Once, last, when the stream finishes normally |
 
 A client that loses the stream calls `resume?after=` with the last `id` it
