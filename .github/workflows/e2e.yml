@@ -34,9 +34,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        shell: bash # with pipefail, so tee keeps the test's exit status
-        run: go run ./cmd/e2e -max-cost 3 | tee e2e.log
-      - name: The log as the job summary
-        if: always()
-        run: |
-          { echo '```'; cat e2e.log 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        # This log is public: in CI the test writes only its steps and the
+        # outcome, and masks every id it learns (cmd/e2e, redacting). Run it
+        # by hand for the details.
+        run: go run ./cmd/e2e -max-cost 3

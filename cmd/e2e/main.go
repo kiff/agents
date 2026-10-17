@@ -82,17 +82,25 @@ type config struct {
 	log                                             io.Writer
 }
 
-// redacting writes what the test says with the account and the vendor's
-// address left out: the nightly log is public (AGENTS.md), and GitHub masks
-// a secret only as a whole string.
+// redacting writes what the test says with what it learns (the account,
+// the vendor's address, grant, draft and Card ids) left out: the nightly
+// log is public (AGENTS.md), and GitHub masks a secret only as a whole
+// string. In CI each value is also masked for the runner (::add-mask::),
+// and only the steps and the outcome are written: no ids, nothing the
+// agents wrote, nothing the vendor received.
 type redacting struct {
 	w     io.Writer
+	ci    bool
 	pairs []string
 }
 
 func (r *redacting) hide(value, as string) {
-	if value != "" {
-		r.pairs = append(r.pairs, value, as)
+	if value == "" {
+		return
+	}
+	r.pairs = append(r.pairs, value, as)
+	if r.ci {
+		fmt.Fprintf(r.w, "::add-mask::%s\n", value)
 	}
 }
 
@@ -105,6 +113,7 @@ func (r *redacting) Write(p []byte) (int, error) {
 
 func run(ctx context.Context, args []string, stdout *redacting, env func(string) string) error {
 	fs := flag.NewFlagSet("e2e", flag.ContinueOnError)
+	stdout.ci = env("CI") == "true"
 	cfg := config{log: stdout}
 	fs.StringVar(&cfg.setupDef, "setup", "", "the setup agent's definition (JSON, from kiff/tafs' setupdef.ts); empty: the built-in one")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
@@ -173,7 +182,12 @@ type test struct {
 	taf      string // the taf's agent id, once handed over
 }
 
-func (t *test) logf(format string, args ...any) { fmt.Fprintf(t.cfg.log, "  "+format+"\n", args...) }
+// logf is a detail of a step, for a run by hand only (see redacting).
+func (t *test) logf(format string, args ...any) {
+	if !t.out.ci {
+		fmt.Fprintf(t.cfg.log, "  "+format+"\n", args...)
+	}
+}
 
 func (t *test) scenario(ctx context.Context, m model.Model) error {
 	fmt.Fprintln(t.cfg.log, "== setup")
@@ -289,6 +303,7 @@ func (t *test) clearEarlierRuns(ctx context.Context) error {
 		return err
 	}
 	for _, g := range gs {
+		t.out.hide(g.ID, "<a grant>")
 		if g.Status == "connected" || g.Status == "signed_in" {
 			if err := t.phone.disconnect(ctx, g.ID); err != nil {
 				return fmt.Errorf("disconnecting an earlier run's grant %s: %w", g.ID, err)
@@ -361,6 +376,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	msg := fmt.Sprintf("Handle refunds from my payments account. Its MCP server is %s. "+
 		"Refund with its create_refund tool (charge, and amount in cents). Each refund may be at most 500 cents; anything above must be refused. "+
 		"Call the taf Refunds, with agent id refunds-%s.", t.cfg.vendor, t.run)
+	t.out.hide("refunds-"+t.run, "<the taf>")
 	answered := map[string]string{}
 	approvedGrant := ""
 	for turn := 0; turn < t.cfg.maxTurns; turn++ {
@@ -420,6 +436,8 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 	if c.Grant == "" {
 		return fmt.Errorf("an %s with no grant", c.Type)
 	}
+	t.out.hide(c.Grant, "<a grant>")
+	t.out.hide(c.Draft, "<a draft>")
 	g, err := t.phone.grant(ctx, c.Grant)
 	if err != nil {
 		return err
@@ -449,6 +467,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 	if ids, ok := d.Body["card_ids"].([]any); ok {
 		for _, id := range ids {
 			if s, ok := id.(string); ok {
+				t.out.hide(s, "<a Card>")
 				t.cardIDs = append(t.cardIDs, s)
 			}
 		}
@@ -593,8 +612,13 @@ func (t *test) checkRecords(ctx context.Context) error {
 					return fmt.Errorf("a secret reached %s's %s event", s.Agent, e.Kind)
 				}
 			}
-			if strings.Contains(body, "kiff_claim_") {
-				return fmt.Errorf("a claim secret reached %s's %s event", s.Agent, e.Kind)
+			// A second net, for a secret the test never saw (another
+			// agent's key, say): KIFF's keys, sessions, OAuth tokens and
+			// claim secrets each start with their prefix.
+			for _, prefix := range []string{"kiff_live_", "kiff_dev_", "kiff_oat_", "kiff_ort_", "kiff_claim_"} {
+				if strings.Contains(body, prefix) {
+					return fmt.Errorf("a KIFF secret (%s…) reached %s's %s event", prefix, s.Agent, e.Kind)
+				}
 			}
 		}
 	}

@@ -19,3 +19,16 @@ func TestTheLogHidesTheAccountAndTheVendor(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// In CI the runner masks each value too, and only the steps are written.
+func TestInCIOnlyTheStepsAreWrittenAndEveryIdIsMasked(t *testing.T) {
+	var b bytes.Buffer
+	out := &redacting{w: &b, ci: true}
+	out.hide("grt_abc", "<a grant>")
+	tt := &test{out: out, cfg: config{log: out}}
+	tt.logf("grant %s approved", "grt_abc")
+	fmt.Fprintln(out, "FAIL: the grant grt_abc: 409")
+	if got, want := b.String(), "::add-mask::grt_abc\nFAIL: the grant <a grant>: 409\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
