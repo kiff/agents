@@ -81,6 +81,9 @@ type phone struct {
 	key     *ecdsa.PrivateKey
 	planque *client
 	tenant  string
+	// signIn completes the vendor's sign-in and returns the code from the
+	// app's link: on its own at the fake vendor, by a person at Stripe.
+	signIn func(ctx context.Context, link string) (string, error)
 }
 
 // parsePhone reads a base64 PKCS#8 P-256 key: the test's stable phone, so
@@ -102,7 +105,7 @@ func parsePhone(b64 string) (*ecdsa.PrivateKey, error) {
 }
 
 func newPhone(key *ecdsa.PrivateKey, planqueURL, tenant string, hc *http.Client) *phone {
-	p := &phone{key: key, tenant: tenant}
+	p := &phone{key: key, tenant: tenant, signIn: signIn}
 	base := strings.TrimRight(planqueURL, "/")
 	p.planque = &client{base: base, http: hc, auth: func(req *http.Request, body []byte) {
 		// To the nanosecond: planque refuses a signed request made twice, so
@@ -127,13 +130,21 @@ func (p *phone) accountPath() string { return "/v1/accounts/" + url.PathEscape(p
 
 // grant is a grant as the phone reads it.
 type grant struct {
-	ID     string          `json:"id"`
-	Status string          `json:"status"`
-	Text   string          `json:"text"`
-	Digest string          `json:"digest"`
-	Tools  []string        `json:"tools"`
-	Reason string          `json:"reason"`
-	Raw    json.RawMessage `json:"-"`
+	ID     string   `json:"id"`
+	Status string   `json:"status"`
+	Text   string   `json:"text"`
+	Digest string   `json:"digest"`
+	Tools  []string `json:"tools"`
+	Reason string   `json:"reason"`
+	// Request is what the owner approved: the tools, as asked for.
+	Request struct {
+		Tools []struct {
+			Tool  string         `json:"tool"`
+			Name  string         `json:"name"`
+			Fixed map[string]any `json:"fixed_arguments"`
+		} `json:"tools"`
+	} `json:"request"`
+	Raw json.RawMessage `json:"-"`
 }
 
 func (p *phone) grants(ctx context.Context) ([]grant, error) {
@@ -166,31 +177,40 @@ func (p *phone) grant(ctx context.Context, id string) (grant, error) {
 
 // approveAndSignIn is the owner approving a grant on the phone, signing in
 // at the vendor in a browser that follows redirects up to the app's return
-// link, and the phone confirming with the code that link carries.
-func (p *phone) approveAndSignIn(ctx context.Context, g grant) error {
+// link, and the phone confirming with the code that link carries. A grant
+// whose sign-in planque already holds (its tools set after connecting
+// first) connects on approval, with no sign-in. It returns the status.
+func (p *phone) approveAndSignIn(ctx context.Context, g grant) (string, error) {
 	a, err := p.planque.do(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/approve", map[string]string{"digest": g.Digest})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := a.err(); err != nil {
-		return fmt.Errorf("approve: %w", err)
+		return "", fmt.Errorf("approve: %w", err)
+	}
+	if st, _ := a.Body["status"].(string); st == "connected" {
+		return "connected, with no second sign-in", nil
 	}
 	link, _ := a.Body["sign_in_url"].(string)
-	code, err := signIn(ctx, link)
+	code, err := p.signIn(ctx, link)
 	if err != nil {
-		return err
+		return "", err
 	}
 	a, err = p.planque.do(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/confirm", map[string]string{"confirm": code})
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := a.err(); err != nil {
-		return fmt.Errorf("confirm: %w", err)
+		return "", fmt.Errorf("confirm: %w", err)
 	}
-	if st, _ := a.Body["status"].(string); st != "connected" {
-		return fmt.Errorf("after confirm the grant is %q", st)
+	switch st, _ := a.Body["status"].(string); st {
+	case "connected":
+		return "signed in at the vendor, confirmed: connected", nil
+	case "listed":
+		return "signed in at the vendor, confirmed: listed (the vendor's tools, for Setup to choose from)", nil
+	default:
+		return "", fmt.Errorf("after confirm the grant is %q", st)
 	}
-	return nil
 }
 
 // signIn follows a vendor sign-in link as a browser would, until planque
