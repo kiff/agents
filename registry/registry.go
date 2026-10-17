@@ -73,6 +73,10 @@ type Definition struct {
 	// Show gives the agent the show tool: UI components in the owner's chat
 	// (kiff/agents#91). Off unless set.
 	Show bool `json:"show,omitempty"`
+	// Drafts gives the agent the kiff_draft tool: submit a taf's KIFF draft,
+	// whose claim secret the model never sees (kiff/agents#91). Off unless
+	// set; the server must offer drafts.
+	Drafts bool `json:"drafts,omitempty"`
 	// Planque is the planque the agent asks for vendor access through
 	// (kiff/agents#91), e.g. https://planque.kiff.dev. Off unless set; the
 	// server must allow it, as it does gateways.
@@ -174,6 +178,10 @@ type Secrets interface {
 // ErrGateway means a definition names a gateway the server doesn't allow.
 var ErrGateway = errors.New("registry: the gateway is not one this server allows")
 
+// ErrNoDrafts means a definition asks for the draft tool this build can't
+// give.
+var ErrNoDrafts = errors.New("registry: the agent needs the draft tool, and this build has none")
+
 // ErrPlanque means a definition names a planque the server doesn't allow.
 var ErrPlanque = errors.New("registry: the planque is not one this server allows")
 
@@ -197,6 +205,9 @@ type Builder struct {
 	// Workspace, when set, returns the workspace tool for one run of an
 	// agent whose definition asks for one.
 	Workspace func(tenant, run string) tool.Tool
+	// Drafts, when set, returns the draft tool for an agent whose KIFF key
+	// is key.
+	Drafts func(tenant, key string) tool.Tool
 	// Planques are the planque URLs a definition may name, exactly.
 	Planques []string
 	// Planque returns the planque tool for an agent whose KIFF key is key.
@@ -245,6 +256,12 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 	}
 	if d.Show {
 		tools = append(tools, show.New())
+	}
+	if d.Drafts {
+		if b.Drafts == nil {
+			return agent.Agent{}, d, ErrNoDrafts
+		}
+		tools = append(tools, b.Drafts(tenant, key))
 	}
 	if d.Planque != "" {
 		tools = append(tools, b.Planque(d.Planque, tenant, key))

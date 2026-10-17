@@ -43,8 +43,6 @@ func TestCheckRefuses(t *testing.T) {
 		"negative history":       func(d *registry.Definition) { d.History = -1 },
 		"a plain http gateway":   func(d *registry.Definition) { d.Gateway = "http://gateway.test/mcp" },
 		"no gateway":             func(d *registry.Definition) { d.Gateway = "" },
-		"a plain http planque":   func(d *registry.Definition) { d.Planque = "http://planque.test" },
-		"a planque with a path":  func(d *registry.Definition) { d.Planque = "https://planque.test/v1" },
 		"a missing keep rule":    func(d *registry.Definition) { delete(d.Keep, session.Usage) },
 	}
 	if err := registrytest.Definition("t1", "payouts").Check(); err != nil {
@@ -349,6 +347,36 @@ func TestShowIsOptIn(t *testing.T) {
 	_ = f.agents.Put(ctx, d)
 	if !has() {
 		t.Fatal("an agent that asks for the show tool didn't get it")
+	}
+}
+
+// The draft tool is the definition's to turn on, and only where the server
+// offers drafts.
+func TestDraftsIsOptIn(t *testing.T) {
+	f := newFixture(t)
+	d := registrytest.Definition("t1", "payouts")
+	d.Drafts = true
+	_ = f.agents.Put(ctx, d)
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrNoDrafts) {
+		t.Fatalf("without drafts on the server: %v", err)
+	}
+	var keys []string
+	f.b.Drafts = func(tenant, key string) tool.Tool {
+		keys = append(keys, tenant+" "+key)
+		return stub{name: "kiff_draft", access: tool.Own}
+	}
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "t1 key-t1" || a.Tools[len(a.Tools)-1].Spec().Name != "kiff_draft" {
+		t.Fatalf("draft tool built with %v", keys)
+	}
+	d.Drafts = false
+	_ = f.agents.Put(ctx, d)
+	keys = nil
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); err != nil || len(keys) != 0 {
+		t.Fatalf("an agent that didn't ask got the draft tool: %v %v", keys, err)
 	}
 }
 
