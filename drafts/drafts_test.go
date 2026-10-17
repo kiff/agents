@@ -1,9 +1,11 @@
 package drafts_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -43,7 +45,7 @@ func (k *kiff) Claim(_ context.Context, draft, secret string) (drafts.Claimed, e
 	k.claimed[draft] = true
 	k.claims++
 	k.keys["kiff_key_taf"] = k.mint
-	return drafts.Claimed{AgentID: "agt_refunds", Key: "kiff_key_taf"}, nil
+	return drafts.Claimed{AgentID: "agt_refunds", Key: "kiff_key_taf", KeyID: "k_taf"}, nil
 }
 
 func (k *kiff) Me(_ context.Context, key string) (drafts.Me, error) {
@@ -165,5 +167,72 @@ func TestAKeyForAnotherAgentIsNotStored(t *testing.T) {
 		if r, _ := m.Get(ctx, "t1", "drf_1"); r.Secret != "" {
 			t.Fatalf("%+v: the used secret was kept", mint)
 		}
+	}
+}
+
+// flaky fails the first Create, as a throttled Secrets Manager might.
+type flaky struct {
+	*memory.Drafts
+	failed bool
+}
+
+func (f *flaky) Create(ctx context.Context, tenant, ref, key string) error {
+	if !f.failed {
+		f.failed = true
+		return errors.New("throttled")
+	}
+	return f.Drafts.Create(ctx, tenant, ref, key)
+}
+
+// A key KIFF minted is held in the draft's record until it is stored, so a
+// claim that fails after the mint is finished by its retry: KIFF mints a
+// key only once.
+func TestARetryFinishesAfterTheKeyWasMinted(t *testing.T) {
+	k, m := newKIFF(), memory.NewDrafts()
+	s := &drafts.Service{Store: m, Keys: &flaky{Drafts: m}, KIFF: k}
+	submit(t, s)
+	k.confirmed["drf_1"] = true
+	if _, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); err == nil {
+		t.Fatal("the first claim should have failed to store the key")
+	}
+	if r, _ := m.Get(ctx, "t1", "drf_1"); r.Key != "kiff_key_taf" || r.Secret != "" {
+		t.Fatalf("after the failed store the record is %+v", r)
+	}
+	agent, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1")
+	if err != nil || agent != "agt_refunds" || k.claims != 1 {
+		t.Fatalf("retry: %q %v, claims %d", agent, err, k.claims)
+	}
+	if key, ok, _ := m.Key(ctx, "t1", "kiff/taf-1"); !ok || key != "kiff_key_taf" {
+		t.Fatalf("stored %q %v", key, ok)
+	}
+	if r, _ := m.Get(ctx, "t1", "drf_1"); r.Key != "" || !r.Claimed {
+		t.Fatalf("the record still holds the key, or isn't claimed: %+v", r)
+	}
+}
+
+// A key that isn't the draft's agent's is kept in the record, flagged, and
+// logged with what the owner needs to revoke it; it is never stored where a
+// definition can name it, and the claim isn't tried again.
+func TestAMismatchedKeyIsKeptForRevoking(t *testing.T) {
+	s, k, m := newService()
+	var logs bytes.Buffer
+	s.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	submit(t, s)
+	k.confirmed["drf_1"] = true
+	k.mint = drafts.Me{TenantID: "t1", AgentID: "agt_other"}
+	for range 2 {
+		if _, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); !errors.Is(err, drafts.ErrMismatch) {
+			t.Fatalf("got %v, want ErrMismatch", err)
+		}
+	}
+	if k.claims != 1 {
+		t.Fatalf("claimed %d times", k.claims)
+	}
+	r, _ := m.Get(ctx, "t1", "drf_1")
+	if !r.Mismatch || r.Key == "" || r.KeyID != "k_taf" {
+		t.Fatalf("record %+v", r)
+	}
+	if !strings.Contains(logs.String(), "drf_1") || !strings.Contains(logs.String(), "k_taf") {
+		t.Fatalf("log %q", logs.String())
 	}
 }

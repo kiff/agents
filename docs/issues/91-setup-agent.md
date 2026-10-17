@@ -56,17 +56,18 @@ Turning off each guard fails its test.
    - answers the same on a retry with the same `key_ref`, and refuses another one (409);
    - refuses a `key_ref` that holds another agent's key **before** asking KIFF to mint (409);
    - claims the key with the sealed secret (`POST /v1/agent-drafts/{id}/claim`). KIFF's 409 (not confirmed yet, or already claimed or discarded) and 410 (expired) are answered 409 with what to do;
-   - checks with `/v1/me` that the key is bound to the draft's agent on this tenant, and otherwise stores nothing;
+   - **holds the minted key in the draft's record at once,** in place of the claim secret, so a claim that fails after this point is finished by its retry: KIFF mints a key only once;
+   - checks with `/v1/me` that the key is bound to the draft's agent on this tenant. If it isn't, the key is kept in the record, flagged and logged with the draft and key ids for the owner to revoke in KIFF, and it is never stored where a definition can name it;
    - creates the key's secret where the registry reads it, never replacing one;
-   - drops the claim secret, and answers `{"agent_id"}`.
+   - drops the key from the record, and answers `{"agent_id"}`.
 
-   A claim that stored the key and stopped before recording itself is finished by its retry, without a second claim.
+   A claim that stopped anywhere after the mint (before storing the key, or after storing it but before recording itself) is finished by its retry, without a second claim.
 4. **Store:** tafs cloud stores the taf's definition with that `key_ref`.
 
 **Opt-in:** `"drafts": true` on a definition. The server offers drafts only with `AGENTS_DRAFTS_PREFIX` set. That prefix must not overlap the agents' key prefix, so no key reference can name a claim secret. The function's role needs `secretsmanager:CreateSecret` and `PutSecretValue` on both prefixes.
 
 **Tests:**
-- `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestAKeyForAnotherAgentIsNotStored`;
+- `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestARetryFinishesAfterTheKeyWasMinted`, `TestAKeyForAnotherAgentIsNotStored`, `TestAMismatchedKeyIsKeptForRevoking`;
 - `drafts/kiffapi`: `TestClaim`;
 - `tool/drafts`: `TestSubmit`;
 - `server`: `TestClaimRoute`, `TestNoClaimRouteWithoutDrafts`;

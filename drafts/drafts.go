@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -33,6 +34,15 @@ type Record struct {
 	AgentID string `json:"agent_id"`
 	// Secret is the claim secret while the draft is unclaimed; empty after.
 	Secret string `json:"secret,omitempty"`
+	// Key and KeyID are the key KIFF minted, held here from the moment it
+	// is minted until it is stored where tafs cloud asked, so a claim that
+	// stops halfway is finished by its retry: KIFF mints a key only once.
+	Key   string `json:"key,omitempty"`
+	KeyID string `json:"key_id,omitempty"`
+	// Mismatch: KIFF's key is not the draft's agent's on this tenant. It is
+	// kept, never stored where a definition can name it, for the owner to
+	// revoke in KIFF.
+	Mismatch bool `json:"mismatch,omitempty"`
 	// KeyRef and Claimed say where the key went, once claimed.
 	KeyRef  string `json:"key_ref,omitempty"`
 	Claimed bool   `json:"claimed,omitempty"`
@@ -58,6 +68,7 @@ type Keys interface {
 type Claimed struct {
 	AgentID string
 	Key     string
+	KeyID   string
 }
 
 // Me is who a key speaks for, as KIFF answers it.
@@ -101,6 +112,9 @@ type Service struct {
 	Store Store
 	Keys  Keys
 	KIFF  KIFF
+	// Log, when set, records a minted key that isn't the draft's agent's,
+	// with what the owner needs to revoke it.
+	Log *slog.Logger
 }
 
 // Submit creates the draft with the submitting agent's key and keeps its
@@ -124,19 +138,22 @@ func (s *Service) Submit(ctx context.Context, tenant, key string, body json.RawM
 // another, ErrOtherRef.
 //
 // KIFF mints the key once, so everything that can refuse is checked first:
-// the draft is this tenant's and unclaimed, and keyRef is free. Then the key
-// is claimed, checked to be the draft's agent's on this tenant, stored, and
-// the secret dropped.
+// the draft is this tenant's and unclaimed, and keyRef is free. The minted
+// key is then held in the draft's record before anything else can fail, so
+// a retry finishes the claim from there: it is checked to be the draft's
+// agent's on this tenant, created under keyRef, and dropped from the record.
 func (s *Service) Claim(ctx context.Context, tenant, draft, keyRef string) (string, error) {
 	rec, err := s.Store.Get(ctx, tenant, draft)
 	if err != nil {
 		return "", err
 	}
-	if rec.Claimed {
-		if rec.KeyRef != keyRef {
-			return "", ErrOtherRef
-		}
+	switch {
+	case rec.Claimed && rec.KeyRef != keyRef:
+		return "", ErrOtherRef
+	case rec.Claimed:
 		return rec.AgentID, nil
+	case rec.Mismatch:
+		return "", ErrMismatch
 	}
 	if held, found, err := s.Keys.Key(ctx, tenant, keyRef); err != nil {
 		return "", err
@@ -144,28 +161,45 @@ func (s *Service) Claim(ctx context.Context, tenant, draft, keyRef string) (stri
 		// A claim that stored the key and stopped before recording itself
 		// left this draft's own key here: finish it. Anything else is
 		// another agent's key, and stays.
-		if me, err := s.KIFF.Me(ctx, held); err == nil && me.TenantID == tenant && me.AgentID != "" && me.AgentID == rec.AgentID {
+		if held == rec.Key && held != "" || s.isDraftsAgent(ctx, tenant, rec, held) {
 			return rec.AgentID, s.Store.Put(ctx, tenant, draft, Record{AgentID: rec.AgentID, KeyRef: keyRef, Claimed: true})
 		}
 		return "", ErrTaken
 	}
-	c, err := s.KIFF.Claim(ctx, draft, rec.Secret)
-	if err != nil {
-		return "", err
+	if rec.Key == "" {
+		c, err := s.KIFF.Claim(ctx, draft, rec.Secret)
+		if err != nil {
+			return "", err
+		}
+		rec = Record{AgentID: rec.AgentID, Key: c.Key, KeyID: c.KeyID}
+		if c.AgentID != rec.AgentID {
+			rec.Mismatch = true
+		}
+		if err := s.Store.Put(ctx, tenant, draft, rec); err != nil {
+			return "", fmt.Errorf("drafts: holding the minted key: %w", err)
+		}
 	}
-	me, err := s.KIFF.Me(ctx, c.Key)
-	if err != nil {
-		return "", fmt.Errorf("drafts: asking KIFF who the new key is: %w", err)
-	}
-	if me.TenantID != tenant || me.AgentID == "" || me.AgentID != rec.AgentID || c.AgentID != rec.AgentID {
-		_ = s.Store.Put(ctx, tenant, draft, Record{AgentID: rec.AgentID})
+	if rec.Mismatch || !s.isDraftsAgent(ctx, tenant, rec, rec.Key) {
+		rec.Mismatch = true
+		_ = s.Store.Put(ctx, tenant, draft, rec)
+		if s.Log != nil {
+			s.Log.ErrorContext(ctx, "drafts: KIFF minted a key that isn't the draft's agent's; revoke it in KIFF",
+				"tenant", tenant, "draft", draft, "key_id", rec.KeyID, "agent", rec.AgentID)
+		}
 		return "", ErrMismatch
 	}
-	if err := s.Keys.Create(ctx, tenant, keyRef, c.Key); err != nil {
+	if err := s.Keys.Create(ctx, tenant, keyRef, rec.Key); err != nil {
 		return "", fmt.Errorf("drafts: storing the key: %w", err)
 	}
 	if err := s.Store.Put(ctx, tenant, draft, Record{AgentID: rec.AgentID, KeyRef: keyRef, Claimed: true}); err != nil {
 		return "", fmt.Errorf("drafts: recording the claim: %w", err)
 	}
 	return rec.AgentID, nil
+}
+
+// isDraftsAgent reports whether KIFF says key speaks for the draft's agent
+// on tenant.
+func (s *Service) isDraftsAgent(ctx context.Context, tenant string, rec Record, key string) bool {
+	me, err := s.KIFF.Me(ctx, key)
+	return err == nil && me.TenantID == tenant && me.AgentID != "" && me.AgentID == rec.AgentID
 }

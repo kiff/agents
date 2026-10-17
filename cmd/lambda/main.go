@@ -181,7 +181,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			return nil, fmt.Errorf("lambda: AGENTS_DRAFTS_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap: a key reference could name a claim secret", dp, prefix)
 		}
 		claims = &drafts.Service{Store: secretsmanager.NewDrafts(secrets, dp), Keys: secretsmanager.NewKeys(keys, secrets),
-			KIFF: draftsapi.New(kiffAPI, nil)}
+			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
 		Agents: agents, Secrets: keys,

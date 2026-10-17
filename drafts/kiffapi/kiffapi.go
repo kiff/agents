@@ -99,6 +99,7 @@ func (c *Client) Submit(ctx context.Context, key string, body json.RawMessage) (
 func (c *Client) Claim(ctx context.Context, draft, secret string) (drafts.Claimed, error) {
 	var out struct {
 		AgentID   string `json:"agent_id"`
+		KeyID     string `json:"key_id"`
 		Plaintext string `json:"plaintext"`
 	}
 	err := c.do(ctx, http.MethodPost, "/v1/agent-drafts/"+url.PathEscape(draft)+"/claim", secret, []byte("{}"), &out)
@@ -115,7 +116,7 @@ func (c *Client) Claim(ctx context.Context, draft, secret string) (drafts.Claime
 	if out.Plaintext == "" || out.AgentID == "" {
 		return drafts.Claimed{}, errors.New("kiffapi: KIFF's claim answer has no key or agent")
 	}
-	return drafts.Claimed{AgentID: out.AgentID, Key: out.Plaintext}, nil
+	return drafts.Claimed{AgentID: out.AgentID, Key: out.Plaintext, KeyID: out.KeyID}, nil
 }
 
 // Me says who key speaks for (GET /v1/me).
