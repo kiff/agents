@@ -44,7 +44,10 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"action":{"type":"string","enum":["submit"]},` +
 			`"agent_id":{"type":"string","description":"the taf's KIFF agent id"},` +
 			`"label":{"type":"string","description":"the taf's name, at most 100 characters"},` +
-			`"cards":{"type":"array","items":{"type":"object"},"description":"the taf's Cards, on the gateway domain"}},` +
+			`"cards":{"type":"array","items":{"type":"object"},"description":"the taf's Cards, on the gateway domain, each as KIFF issues it: ` +
+			`{id, subject (the agent id), domain: \"gateway\", grants: [{action (a connected tool's name), per_action_max?: [{quantity: \"sum(<numeric argument>)\", max}]}], ` +
+			`aggregates (at least one): [{quantity: \"count\" or \"sum(<numeric argument>)\", limit, window: \"calendar_day\", \"rolling_1h\", \"rolling_24h\" or \"lifetime\"}], ` +
+			`on_exceed?: \"owner\" (held for the owner, the default) or \"refuse\"}"}},` +
 			`"required":["action","agent_id","cards"]}`),
 	}
 }

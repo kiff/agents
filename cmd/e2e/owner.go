@@ -1,0 +1,233 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// client is a JSON client for one service, with a way to authenticate each
+// request.
+type client struct {
+	base string
+	auth func(req *http.Request, body []byte)
+	http *http.Client
+}
+
+// answer is a JSON answer, with its status.
+type answer struct {
+	Status int
+	Body   map[string]any
+	Raw    string
+}
+
+func (a answer) err() error {
+	if a.Status >= 200 && a.Status < 300 {
+		return nil
+	}
+	msg, _ := a.Body["error"].(string)
+	if m, _ := a.Body["message"].(string); m != "" {
+		msg = m
+	}
+	return fmt.Errorf("%d: %s", a.Status, msg)
+}
+
+func (c *client) do(ctx context.Context, method, path string, body any) (answer, error) {
+	var b []byte
+	if body != nil {
+		var err error
+		if b, err = json.Marshal(body); err != nil {
+			return answer{}, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(b))
+	if err != nil {
+		return answer{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if b != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.auth != nil {
+		c.auth(req, b)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return answer{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	a := answer{Status: resp.StatusCode, Raw: string(raw)}
+	_ = json.Unmarshal(raw, &a.Body)
+	return a, nil
+}
+
+// phone is the owner's phone toward planque: a P-256 key, as tafs'
+// ApprovalSigner, signing each call (contract 2 on kiff/planque#1).
+type phone struct {
+	key     *ecdsa.PrivateKey
+	planque *client
+	tenant  string
+}
+
+// parsePhone reads a base64 PKCS#8 P-256 key: the test's stable phone, so
+// planque keeps it enrolled from one night to the next.
+func parsePhone(b64 string) (*ecdsa.PrivateKey, error) {
+	der, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, errors.New("E2E_PHONE_KEY is base64 PKCS#8")
+	}
+	k, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, err
+	}
+	ec, ok := k.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("E2E_PHONE_KEY is not an ECDSA key")
+	}
+	return ec, nil
+}
+
+func newPhone(key *ecdsa.PrivateKey, planqueURL, tenant string, hc *http.Client) *phone {
+	p := &phone{key: key, tenant: tenant}
+	base := strings.TrimRight(planqueURL, "/")
+	p.planque = &client{base: base, http: hc, auth: func(req *http.Request, body []byte) {
+		at := time.Now().UTC().Format(time.RFC3339)
+		sum := sha256.Sum256(body)
+		msg := strings.Join([]string{"planque.request.v1", base, tenant, req.Method, req.URL.RequestURI(),
+			hex.EncodeToString(sum[:]), at}, "\n")
+		digest := sha256.Sum256([]byte(msg))
+		sig, _ := ecdsa.SignASN1(rand.Reader, key, digest[:])
+		req.Header.Set("Planque-Device-Signature", "t="+at+",v1="+base64.StdEncoding.EncodeToString(sig))
+	}}
+	return p
+}
+
+func (p *phone) publicKey() string {
+	der, _ := x509.MarshalPKIXPublicKey(&p.key.PublicKey)
+	return base64.StdEncoding.EncodeToString(der)
+}
+
+func (p *phone) accountPath() string { return "/v1/accounts/" + url.PathEscape(p.tenant) }
+
+// grant is a grant as the phone reads it.
+type grant struct {
+	ID     string          `json:"id"`
+	Status string          `json:"status"`
+	Text   string          `json:"text"`
+	Digest string          `json:"digest"`
+	Tools  []string        `json:"tools"`
+	Reason string          `json:"reason"`
+	Raw    json.RawMessage `json:"-"`
+}
+
+func (p *phone) grants(ctx context.Context) ([]grant, error) {
+	a, err := p.planque.do(ctx, http.MethodGet, p.accountPath()+"/grants", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.err(); err != nil {
+		return nil, fmt.Errorf("planque grants: %w", err)
+	}
+	var out struct {
+		Grants []grant `json:"grants"`
+	}
+	_ = json.Unmarshal([]byte(a.Raw), &out)
+	return out.Grants, nil
+}
+
+func (p *phone) grant(ctx context.Context, id string) (grant, error) {
+	gs, err := p.grants(ctx)
+	if err != nil {
+		return grant{}, err
+	}
+	for _, g := range gs {
+		if g.ID == id {
+			return g, nil
+		}
+	}
+	return grant{}, fmt.Errorf("planque has no grant %s for this account", id)
+}
+
+// approveAndSignIn is the owner approving a grant on the phone, signing in
+// at the vendor in a browser that follows redirects up to the app's return
+// link, and the phone confirming with the code that link carries.
+func (p *phone) approveAndSignIn(ctx context.Context, g grant) error {
+	a, err := p.planque.do(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/approve", map[string]string{"digest": g.Digest})
+	if err != nil {
+		return err
+	}
+	if err := a.err(); err != nil {
+		return fmt.Errorf("approve: %w", err)
+	}
+	link, _ := a.Body["sign_in_url"].(string)
+	code, err := signIn(ctx, link)
+	if err != nil {
+		return err
+	}
+	a, err = p.planque.do(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/confirm", map[string]string{"confirm": code})
+	if err != nil {
+		return err
+	}
+	if err := a.err(); err != nil {
+		return fmt.Errorf("confirm: %w", err)
+	}
+	if st, _ := a.Body["status"].(string); st != "connected" {
+		return fmt.Errorf("after confirm the grant is %q", st)
+	}
+	return nil
+}
+
+// signIn follows a vendor sign-in link as a browser would, until planque
+// sends it to the owner's app (tafs://planque/signed-in), and returns the
+// confirmation code. The fake vendor consents on its own.
+func signIn(ctx context.Context, link string) (string, error) {
+	if link == "" {
+		return "", errors.New("approve gave no sign-in link")
+	}
+	hc := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" || len(via) > 10 {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil || loc.Scheme != "tafs" {
+		return "", fmt.Errorf("the sign-in ended at %d %q, not at the app's link", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	code := loc.Query().Get("confirm")
+	if code == "" {
+		return "", errors.New("the app's link carries no confirmation code")
+	}
+	return code, nil
+}
+
+func (p *phone) disconnect(ctx context.Context, id string) error {
+	a, err := p.planque.do(ctx, http.MethodDelete, p.accountPath()+"/grants/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	return a.err()
+}
