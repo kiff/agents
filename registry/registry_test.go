@@ -379,3 +379,40 @@ func TestDraftsIsOptIn(t *testing.T) {
 		t.Fatalf("an agent that didn't ask got the draft tool: %v %v", keys, err)
 	}
 }
+
+// A definition can't send its key to a planque the server doesn't allow;
+// one it allows gets the planque tool, with the agent's own key.
+func TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque(t *testing.T) {
+	f := newFixture(t)
+	var built []string
+	f.b.Planques = []string{"https://planque.test"}
+	f.b.Planque = func(base, tenant, key string) tool.Tool {
+		built = append(built, base+" "+tenant+" "+key)
+		return stub{name: "planque", access: tool.Own}
+	}
+	d := registrytest.Definition("t1", "payouts")
+	d.Planque = "https://elsewhere.test"
+	_ = f.agents.Put(ctx, d)
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrPlanque) {
+		t.Fatalf("got %v, want ErrPlanque", err)
+	}
+	if f.secrets.calls != 0 || len(built) != 0 {
+		t.Fatal("the key was looked up, or a planque tool built, for a planque that isn't allowed")
+	}
+	d.Planque = "https://planque.test"
+	_ = f.agents.Put(ctx, d)
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(built) != 1 || !strings.HasPrefix(built[0], "https://planque.test t1 ") {
+		t.Fatalf("planque tools built: %v", built)
+	}
+	found := false
+	for _, tl := range a.Tools {
+		found = found || tl.Spec().Name == "planque"
+	}
+	if !found {
+		t.Fatal("the agent has no planque tool")
+	}
+}

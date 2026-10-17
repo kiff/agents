@@ -23,7 +23,7 @@ the runner, chat and evals) and [registry.md](registry.md).
 | [#16](https://github.com/kiff/agents/issues/16) Registry | 5 | Delivered | [16-registry.md](issues/16-registry.md) |
 | [#17](https://github.com/kiff/agents/issues/17) Schedules | 6 | Delivered: firings, firing by hand, triggers (`/agents/{id}/events`) | [17-schedules.md](issues/17-schedules.md) |
 | [#68](https://github.com/kiff/agents/issues/68) Opus 5.5 in the model adapter | — | Delivered: effort per agent, thinking kept, refusals | [68-opus55-model.md](issues/68-opus55-model.md) |
-| [#91](https://github.com/kiff/agents/issues/91) The setup agent (kiff/tafs#50) | — | In progress: `show` (#92, merged), the `planque` tool (#93), the draft tool and its claim; the nightly simulated-owner test next. The workspace is out (#86 stays open) | [91-setup-agent.md](issues/91-setup-agent.md) |
+| [#91](https://github.com/kiff/agents/issues/91) The setup agent (kiff/tafs#50) | — | In progress: `show` (#92) and the `planque` tool (#93), merged; the draft tool and its claim; the nightly simulated-owner test next. The workspace is out (#86 stays open) | [91-setup-agent.md](issues/91-setup-agent.md) |
 | [kiff/tafs#42](https://github.com/kiff/tafs/issues/42) tafs switches over | 7 | Waits on #13, #15, #16 | — |
 
 ## What blocks what

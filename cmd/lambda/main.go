@@ -90,6 +90,7 @@ import (
 	tooldrafts "github.com/kiff/agents/tool/drafts"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
+	"github.com/kiff/agents/tool/planque"
 )
 
 func main() {
@@ -149,6 +150,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	if v := strings.TrimSpace(os.Getenv("AGENTS_GATEWAYS")); v != "" {
 		gateways = split(v)
 	}
+	// Planques an agent may ask for vendor access through (#91); none
+	// unless set, so no agent gets the planque tool by default.
+	planques := split(os.Getenv("AGENTS_PLANQUES"))
 	maxActive, err := tenantRuns(os.Getenv("AGENTS_TENANT_RUNS"))
 	if err != nil {
 		return nil, err
@@ -189,8 +193,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
-		Own:    func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
-		Drafts: draftTool(claims),
+		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
+		Drafts:   draftTool(claims),
+		Planques: planques,
+		Planque: func(base, tenant, key string) tool.Tool {
+			return planque.New(base, tenant, key, nil)
+		},
 	}, Collect: kiff.Collect}
 	schedules := &schedule.Service{
 		Store:     dynamodb.NewSchedules(db, table),

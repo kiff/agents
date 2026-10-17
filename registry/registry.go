@@ -77,6 +77,10 @@ type Definition struct {
 	// whose claim secret the model never sees (kiff/agents#91). Off unless
 	// set; the server must offer drafts.
 	Drafts bool `json:"drafts,omitempty"`
+	// Planque is the planque the agent asks for vendor access through
+	// (kiff/agents#91), e.g. https://planque.kiff.dev. Off unless set; the
+	// server must allow it, as it does gateways.
+	Planque string `json:"planque,omitempty"`
 }
 
 // Check refuses a definition that can't be stored or run safely.
@@ -103,6 +107,11 @@ func (d Definition) Check() error {
 	}
 	if u, err := url.Parse(d.Gateway); err != nil || u.Scheme != "https" || u.Host == "" {
 		return errors.New("registry: the gateway is an https URL")
+	}
+	if d.Planque != "" {
+		if u, err := url.Parse(d.Planque); err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" {
+			return errors.New("registry: planque is an https URL with no path")
+		}
 	}
 	if err := d.Keep.Check(); err != nil {
 		return fmt.Errorf("registry: %w", err)
@@ -173,6 +182,9 @@ var ErrGateway = errors.New("registry: the gateway is not one this server allows
 // give.
 var ErrNoDrafts = errors.New("registry: the agent needs the draft tool, and this build has none")
 
+// ErrPlanque means a definition names a planque the server doesn't allow.
+var ErrPlanque = errors.New("registry: the planque is not one this server allows")
+
 // ErrNoWorkspace means a definition asks for a workspace this build can't
 // give: the server has none, or the agent is built for no run.
 var ErrNoWorkspace = errors.New("registry: the agent needs a workspace, and this build has none")
@@ -196,6 +208,10 @@ type Builder struct {
 	// Drafts, when set, returns the draft tool for an agent whose KIFF key
 	// is key.
 	Drafts func(tenant, key string) tool.Tool
+	// Planques are the planque URLs a definition may name, exactly.
+	Planques []string
+	// Planque returns the planque tool for an agent whose KIFF key is key.
+	Planque func(base, tenant, key string) tool.Tool
 }
 
 // Build returns the tenant's agent, ready to run, and the definition it was
@@ -223,6 +239,10 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 	if !slices.Contains(b.Gateways, d.Gateway) {
 		return agent.Agent{}, d, ErrGateway
 	}
+	// Like the gateway, a planque is checked before the key is looked up.
+	if d.Planque != "" && (b.Planque == nil || !slices.Contains(b.Planques, d.Planque)) {
+		return agent.Agent{}, d, ErrPlanque
+	}
 	key, err := b.Secrets.Key(ctx, tenant, d.KeyRef)
 	if err != nil {
 		return agent.Agent{}, d, fmt.Errorf("registry: the agent's KIFF key: %w", err)
@@ -242,6 +262,9 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 			return agent.Agent{}, d, ErrNoDrafts
 		}
 		tools = append(tools, b.Drafts(tenant, key))
+	}
+	if d.Planque != "" {
+		tools = append(tools, b.Planque(d.Planque, tenant, key))
 	}
 	if d.Workspace {
 		if b.Workspace == nil || run == "" {
