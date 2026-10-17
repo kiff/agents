@@ -106,5 +106,5 @@ show the shape; the measured Chargebacks run goes on #77.)
 
 ## Next
 
-- Trimming old tool results past a threshold, measured in the evals first.
+- Trimming old tool results waits until a case needs it (Chargebacks peaks at ~27.5k input tokens with ~972k room). Then it uses the API's own context editing (`clear_tool_uses`) behind a per-agent setting, measured in the evals first: editing the history on our side would break the cache and preserved thinking.
 - Chargebacks before and after, same score, lower cost.
