@@ -21,7 +21,7 @@ what was approved.
 | `confirm` | `text`; `options`: `[{value, label}]`, 2 to 4 |
 | `approval` | `grant` (planque), `draft` (KIFF, optional) |
 | `sign_in` | `grant`, `service` |
-| `result` | `taf`: `{agent, name}`; `text`; `tools` |
+| `result` | `taf`: `{agent, name, job, draft}` (`job` is one of tafs' jobs, such as `refunds`; `draft` is the KIFF draft the owner confirmed: what tafs cloud starts the taf from); `text`; `tools` |
 
 - **Checks:** every component has a `type` and an `id` (1 to 64 of `a-z 0-9 - _`). The tool refuses anything else, as a result the model can correct: a field another type uses, an unknown field, a text over 2,000 characters, more than 20 steps, or outside 2 to 4 options.
 - **Updates:** showing an `id` again replaces that component in the app.
