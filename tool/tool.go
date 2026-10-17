@@ -44,6 +44,10 @@ type Result struct {
 	// answer is announced and withdrawn, and when it stops waiting. Set only
 	// when State is StateHeld.
 	Hold *Hold `json:"hold,omitempty"`
+	// Component is a UI component the tool shows the owner (the show tool,
+	// kiff/agents#91). The run records it as its own event, kept like the
+	// agent's messages; it is not part of the tool's recorded result.
+	Component json.RawMessage `json:"-"`
 }
 
 // Hold is KIFF's handle on a held call. A field KIFF didn't send, or sent in

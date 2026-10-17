@@ -44,10 +44,27 @@ func (p Policy) Check() error {
 			return fmt.Errorf("session: rule for %q: retention applies only to kept events, and is never negative", k)
 		}
 	}
+	for k := range Defaulted {
+		if r, ok := p[k]; ok && (r.Keep < Never || r.Keep > Kept || r.Retention < 0 || (r.Retention > 0 && r.Keep != Kept)) {
+			return fmt.Errorf("session: rule for %q is not a valid rule", k)
+		}
+	}
 	if p[ToolCall] != p[ToolResult] {
 		return fmt.Errorf("session: %q and %q must share one rule", ToolCall, ToolResult)
 	}
 	return nil
+}
+
+// Rule is the rule for kind: the policy's own, or for a Defaulted kind it
+// leaves out, the rule of the kind it defaults to.
+func (p Policy) Rule(kind EventKind) Rule {
+	if r, ok := p[kind]; ok {
+		return r
+	}
+	if d, ok := Defaulted[kind]; ok {
+		return p[d]
+	}
+	return Rule{}
 }
 
 // DefaultPolicy keeps tool calls and what they return only while the run

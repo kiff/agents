@@ -112,6 +112,7 @@ const (
 	TextDelta  EventKind = "text"        // more of the agent's answer
 	CallStart  EventKind = "tool_call"   // the agent calls a tool
 	CallResult EventKind = "tool_result" // a tool answered
+	Shown      EventKind = "component"   // the agent showed the owner a component
 )
 
 // Event is streamed to the caller as the run goes.
@@ -122,6 +123,8 @@ type Event struct {
 	Tool   string          `json:"tool,omitempty"`
 	Input  json.RawMessage `json:"input,omitempty"`
 	Result *tool.Result    `json:"result,omitempty"`
+	// Component is what Shown shows: the component as the show tool checked it.
+	Component json.RawMessage `json:"component,omitempty"`
 }
 
 // Stop is why a run stopped.
@@ -478,6 +481,12 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			return nil, err
 		}
 		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
+		if len(r.Component) > 0 && !r.IsError {
+			if err := rec.Record(session.Component, r.Component); err != nil {
+				return nil, err
+			}
+			emit(Event{Kind: Shown, CallID: r.CallID, Component: r.Component})
+		}
 	}
 	return results, nil
 }
