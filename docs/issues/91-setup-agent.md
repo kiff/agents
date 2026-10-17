@@ -28,13 +28,16 @@ what was approved.
 - **Access:** it is an `Own` tool, so `tool.Check` is unchanged.
 
 **A new event kind, `component`.**
-- **Recording:** when a tool's result carries a component (`tool.Result.Component`, kept out of the tool result's own event), the loop records it as a `component` event and streams it as `{"kind":"component","component":{…}}`. The app reads it from the stream and from `GET /sessions/{id}`.
+- **Recording:** when the `show` tool's result carries a component (`tool.Result.Component`, kept out of the tool result's own event), the loop records it as a `component` event. Only a tool that implements `tool.Shower` can put a component in the chat; `show` is the only one.
+- **Two shapes, by where the app reads it:**
+  - **the live stream** carries an `agent.Event`: `{"kind":"component","call_id":"…","component":{…}}`;
+  - **`GET /sessions/{id}`** carries a `session.Event`: `{"kind":"component","seq":12,"time":"…","body":{…}}`.
 - **Keeping:** a component is kept like the agent's messages. A keep policy may leave components out (`session.Defaulted`); they then take `agent_message`'s rule, so every definition stored before this keeps working. A rule of their own is checked like any other.
 - **History:** the model sees what it showed. `chat.Conversation` brings each component back as `[shown] {…}`, so an answer such as `[approval connect-stripe] approved` can be followed up with the grant it named.
 
 **Tests:**
 - `tool/show`: `TestEveryComponentIsShown`, `TestWhatDoesNotFitIsRefused`;
-- `agent`: `TestAShownComponentIsKept` (kept after the run, while the call that showed it isn't; streamed; a refused component records nothing);
+- `agent`: `TestAShownComponentIsKept` (kept after the run, while the call that showed it isn't; streamed; a refused component records nothing), `TestOnlyShowPutsAComponentInTheChat`;
 - `session`: `TestAComponentDefaultsToTheMessagesRule`;
 - `chat`: `TestHistoryKeepsWhatWasShown`.
 

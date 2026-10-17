@@ -481,7 +481,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			return nil, err
 		}
 		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
-		if len(r.Component) > 0 && !r.IsError {
+		if len(r.Component) > 0 && !r.IsError && shows(byName[r.Tool]) {
 			if err := rec.Record(session.Component, r.Component); err != nil {
 				return nil, err
 			}
@@ -489,6 +489,12 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}
 	}
 	return results, nil
+}
+
+// shows reports whether t may put a component in the owner's chat.
+func shows(t tool.Tool) bool {
+	s, ok := t.(tool.Shower)
+	return ok && s.Shows()
 }
 
 // call runs one tool. A missing tool or a failed call is an error result the

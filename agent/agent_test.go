@@ -812,3 +812,32 @@ func TestAShownComponentIsKept(t *testing.T) {
 		t.Fatalf("streamed %d components", streamedShown)
 	}
 }
+
+// Only a tool that shows components can put one in the owner's chat: a
+// component from any other tool's result is not recorded or streamed.
+func TestOnlyShowPutsAComponentInTheChat(t *testing.T) {
+	other := &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "ok",
+		Component: json.RawMessage(`{"type":"notice","id":"n1","tone":"info","text":"from lookup"}`)}}
+	m := &script{replies: []model.Reply{use("c1", "lookup", `{}`), say("Done.")}}
+	store, r := start(t, session.KindChat)
+	var streamed int
+	if _, _, err := agent.Run(context.Background(), newAgent(m, other), r, nil, "Look it up.", func(e agent.Event) {
+		if e.Kind == agent.Shown {
+			streamed++
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, _ := store.Read(context.Background(), "t1", r.Session().ID)
+	for _, e := range events {
+		if e.Kind == session.Component {
+			t.Fatal("a component from a tool that doesn't show was recorded")
+		}
+	}
+	if streamed != 0 {
+		t.Fatal("a component from a tool that doesn't show was streamed")
+	}
+}

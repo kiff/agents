@@ -65,6 +65,13 @@ type Hold struct {
 	Expires time.Time `json:"expires"`
 }
 
+// Shower is a tool whose results may carry a component for the owner's
+// chat. Only a Shower's component is recorded: the owner sees it as coming
+// from the agent, and the show tool checks each against contract 1.
+type Shower interface {
+	Shows() bool
+}
+
 // Held reports whether KIFF holds the call for its owner.
 func (r Result) Held() bool { return r.State == StateHeld }
 

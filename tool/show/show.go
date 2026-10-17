@@ -99,6 +99,9 @@ func New() Tool { return Tool{} }
 func (Tool) Access() tool.Access { return tool.Own }
 func (Tool) Gateway() bool       { return false }
 
+// Shows: the show tool's components go to the owner's chat.
+func (Tool) Shows() bool { return true }
+
 func (Tool) Spec() model.ToolSpec {
 	return model.ToolSpec{
 		Name: Name,
