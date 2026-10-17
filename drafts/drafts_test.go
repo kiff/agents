@@ -23,6 +23,7 @@ type kiff struct {
 	claims    int
 	keys      map[string]drafts.Me // key → who it speaks for
 	mint      drafts.Me            // who the next minted key speaks for
+	meFails   int                  // how many /v1/me calls fail before answering
 }
 
 func newKIFF() *kiff {
@@ -49,6 +50,10 @@ func (k *kiff) Claim(_ context.Context, draft, secret string) (drafts.Claimed, e
 }
 
 func (k *kiff) Me(_ context.Context, key string) (drafts.Me, error) {
+	if k.meFails > 0 {
+		k.meFails--
+		return drafts.Me{}, errors.New("503: KIFF is busy")
+	}
 	me, ok := k.keys[key]
 	if !ok {
 		return drafts.Me{}, errors.New("401")
@@ -234,5 +239,43 @@ func TestAMismatchedKeyIsKeptForRevoking(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "drf_1") || !strings.Contains(logs.String(), "k_taf") {
 		t.Fatalf("log %q", logs.String())
+	}
+}
+
+// KIFF failing to say who a key is, right after the claim, is not a
+// mismatch: the key stays held, and the retry asks again and finishes.
+func TestKIFFFailingAfterTheClaimIsNotAMismatch(t *testing.T) {
+	s, k, m := newService()
+	submit(t, s)
+	k.confirmed["drf_1"] = true
+	k.meFails = 1
+	if _, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); err == nil || errors.Is(err, drafts.ErrMismatch) {
+		t.Fatalf("got %v, want KIFF's error", err)
+	}
+	if r, _ := m.Get(ctx, "t1", "drf_1"); r.Mismatch || r.Key != "kiff_key_taf" {
+		t.Fatalf("after the failed /v1/me the record is %+v", r)
+	}
+	agent, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1")
+	if err != nil || agent != "agt_refunds" || k.claims != 1 {
+		t.Fatalf("retry: %q %v, claims %d", agent, err, k.claims)
+	}
+	if key, ok, _ := m.Key(ctx, "t1", "kiff/taf-1"); !ok || key != "kiff_key_taf" {
+		t.Fatalf("stored %q %v", key, ok)
+	}
+}
+
+// KIFF failing to say whose key is already under the reference is an
+// error to retry, not a reason to refuse the reference.
+func TestKIFFFailingOnAHeldRefIsNotTaken(t *testing.T) {
+	s, k, m := newService()
+	submit(t, s)
+	_ = m.Create(ctx, "t1", "kiff/taf-1", "kiff_key_taf")
+	k.keys["kiff_key_taf"] = drafts.Me{TenantID: "t1", AgentID: "agt_refunds"}
+	k.meFails = 1
+	if _, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); err == nil || errors.Is(err, drafts.ErrTaken) {
+		t.Fatalf("got %v, want KIFF's error", err)
+	}
+	if agent, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); err != nil || agent != "agt_refunds" {
+		t.Fatalf("retry: %q %v", agent, err)
 	}
 }

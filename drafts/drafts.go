@@ -161,7 +161,13 @@ func (s *Service) Claim(ctx context.Context, tenant, draft, keyRef string) (stri
 		// A claim that stored the key and stopped before recording itself
 		// left this draft's own key here: finish it. Anything else is
 		// another agent's key, and stays.
-		if held == rec.Key && held != "" || s.isDraftsAgent(ctx, tenant, rec, held) {
+		ours := held == rec.Key && held != ""
+		if !ours {
+			if ours, err = s.isDraftsAgent(ctx, tenant, rec, held); err != nil {
+				return "", err
+			}
+		}
+		if ours {
 			return rec.AgentID, s.Store.Put(ctx, tenant, draft, Record{AgentID: rec.AgentID, KeyRef: keyRef, Claimed: true})
 		}
 		return "", ErrTaken
@@ -179,8 +185,16 @@ func (s *Service) Claim(ctx context.Context, tenant, draft, keyRef string) (stri
 			return "", fmt.Errorf("drafts: holding the minted key: %w", err)
 		}
 	}
-	if rec.Mismatch || !s.isDraftsAgent(ctx, tenant, rec, rec.Key) {
-		rec.Mismatch = true
+	if !rec.Mismatch {
+		// KIFF couldn't be asked: the key stays held, and the retry asks
+		// again. Only KIFF naming another tenant or agent is a mismatch.
+		ours, err := s.isDraftsAgent(ctx, tenant, rec, rec.Key)
+		if err != nil {
+			return "", err
+		}
+		rec.Mismatch = !ours
+	}
+	if rec.Mismatch {
 		_ = s.Store.Put(ctx, tenant, draft, rec)
 		if s.Log != nil {
 			s.Log.ErrorContext(ctx, "drafts: KIFF minted a key that isn't the draft's agent's; revoke it in KIFF",
@@ -198,8 +212,11 @@ func (s *Service) Claim(ctx context.Context, tenant, draft, keyRef string) (stri
 }
 
 // isDraftsAgent reports whether KIFF says key speaks for the draft's agent
-// on tenant.
-func (s *Service) isDraftsAgent(ctx context.Context, tenant string, rec Record, key string) bool {
+// on tenant. An error means KIFF couldn't be asked, not that it said no.
+func (s *Service) isDraftsAgent(ctx context.Context, tenant string, rec Record, key string) (bool, error) {
 	me, err := s.KIFF.Me(ctx, key)
-	return err == nil && me.TenantID == tenant && me.AgentID != "" && me.AgentID == rec.AgentID
+	if err != nil {
+		return false, fmt.Errorf("drafts: asking KIFF who the key is: %w", err)
+	}
+	return me.TenantID == tenant && me.AgentID != "" && me.AgentID == rec.AgentID, nil
 }

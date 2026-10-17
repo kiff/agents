@@ -57,7 +57,7 @@ Turning off each guard fails its test.
    - refuses a `key_ref` that holds another agent's key **before** asking KIFF to mint (409);
    - claims the key with the sealed secret (`POST /v1/agent-drafts/{id}/claim`). KIFF's 409 (not confirmed yet, or already claimed or discarded) and 410 (expired) are answered 409 with what to do;
    - **holds the minted key in the draft's record at once,** in place of the claim secret, so a claim that fails after this point is finished by its retry: KIFF mints a key only once;
-   - checks with `/v1/me` that the key is bound to the draft's agent on this tenant. If it isn't, the key is kept in the record, flagged and logged with the draft and key ids for the owner to revoke in KIFF, and it is never stored where a definition can name it;
+   - checks with `/v1/me` that the key is bound to the draft's agent on this tenant. If KIFF can't be asked (a timeout, a 5xx), the claim returns that error, keeps the key held, and the retry asks again. Only KIFF naming another tenant or agent is a mismatch: then the key is kept in the record, flagged and logged with the draft and key ids for the owner to revoke in KIFF, and it is never stored where a definition can name it;
    - creates the key's secret where the registry reads it, never replacing one;
    - drops the key from the record, and answers `{"agent_id"}`.
 
@@ -67,7 +67,7 @@ Turning off each guard fails its test.
 **Opt-in:** `"drafts": true` on a definition. The server offers drafts only with `AGENTS_DRAFTS_PREFIX` set. That prefix must not overlap the agents' key prefix, so no key reference can name a claim secret. The function's role needs `secretsmanager:CreateSecret` and `PutSecretValue` on both prefixes.
 
 **Tests:**
-- `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestARetryFinishesAfterTheKeyWasMinted`, `TestAKeyForAnotherAgentIsNotStored`, `TestAMismatchedKeyIsKeptForRevoking`;
+- `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestARetryFinishesAfterTheKeyWasMinted`, `TestAKeyForAnotherAgentIsNotStored`, `TestAMismatchedKeyIsKeptForRevoking`, `TestKIFFFailingAfterTheClaimIsNotAMismatch`, `TestKIFFFailingOnAHeldRefIsNotTaken`;
 - `drafts/kiffapi`: `TestClaim`;
 - `tool/drafts`: `TestSubmit`;
 - `server`: `TestClaimRoute`, `TestNoClaimRouteWithoutDrafts`;
