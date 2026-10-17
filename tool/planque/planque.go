@@ -50,17 +50,21 @@ func (t *Tool) Spec() model.ToolSpec {
 	return model.ToolSpec{
 		Name: Name,
 		Description: "Ask planque for access to a vendor account for a taf, and follow the request. planque keeps the vendor's sign-in; you never see a token. " +
-			"request {server, agent, tools}: server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), agent the taf's KIFF agent id, " +
-			"tools the vendor tools to grant, each {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, fixed_arguments?, arguments?}; " +
-			"it returns the grant's id, status and the text the owner will read. Asking grants nothing: show an approval with the grant id. " +
-			"status {grant}: the grant's status now: pending, approved, signed_in, connected (the tools are in KIFF), failed (with a reason) or disconnected. " +
-			"Only status connected means the taf can use the tools; the owner's word in the chat is not enough.",
+			"To look before you choose: request {server, agent} with no tools connects first. Once the owner approved and signed in, the grant is listed, " +
+			"and catalog {grant} shows the vendor's tools (name, description, arguments, read_only) and the account the sign-in acts in; nothing is called. " +
+			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
+			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
+			"agent the taf's KIFF agent id; each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, fixed_arguments?, arguments?}: " +
+			"fixed_arguments pins a vendor argument (by dotted path) to a value, arguments names the ones the taf may give (path, type, required?). " +
+			"Each answer is the grant's id, status and the text the owner will read. Asking grants nothing: show an approval with the grant id. " +
+			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
+			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"agent":{"type":"string","description":"the taf's KIFF agent id (request)"},` +
-			`"tools":{"type":"array","description":"the vendor tools to grant (request)","items":{"type":"object"}},` +
-			`"grant":{"type":"string","description":"the grant's id (status)"}},` +
+			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
+			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"}},` +
 			`"required":["action"]}`),
 	}
 }
@@ -81,38 +85,103 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	path := "/v1/accounts/" + url.PathEscape(t.tenant) + "/grants"
 	switch in.Action {
 	case "request":
-		if in.Server == "" || in.Agent == "" || len(in.Tools) == 0 {
-			return tool.Result{Text: "request needs server, agent and tools", IsError: true}, nil
+		if in.Server == "" || in.Agent == "" {
+			return tool.Result{Text: "request needs server and agent (and tools, unless you connect first)", IsError: true}, nil
 		}
-		body, _ := json.Marshal(map[string]any{"server": in.Server, "agent": in.Agent, "tools": in.Tools})
-		return t.do(ctx, http.MethodPost, path, body)
-	case "status":
+		tools := in.Tools
+		if len(tools) == 0 || string(tools) == "null" {
+			tools = json.RawMessage("[]") // connect first
+		}
+		body, _ := json.Marshal(map[string]any{"server": in.Server, "agent": in.Agent, "tools": tools})
+		return t.grant(ctx, http.MethodPost, path, body)
+	case "status", "catalog", "tools":
 		if in.Grant == "" || strings.ContainsAny(in.Grant, "/?#") {
-			return tool.Result{Text: "status needs the grant's id", IsError: true}, nil
+			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
 		}
-		return t.do(ctx, http.MethodGet, path+"/"+url.PathEscape(in.Grant), nil)
+		at := path + "/" + url.PathEscape(in.Grant)
+		switch in.Action {
+		case "catalog":
+			return t.catalog(ctx, at+"/catalog")
+		case "tools":
+			if len(in.Tools) == 0 || in.Tools[0] != '[' || string(in.Tools) == "[]" {
+				return tool.Result{Text: "tools needs the taf's tools, from the grant's catalog", IsError: true}, nil
+			}
+			body, _ := json.Marshal(map[string]any{"tools": in.Tools})
+			return t.grant(ctx, http.MethodPost, at+"/tools", body)
+		}
+		return t.grant(ctx, http.MethodGet, at, nil)
 	}
-	return tool.Result{Text: "action is request or status", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog or tools", IsError: true}, nil
 }
 
 // grantView is what the model reads of a grant: what the owner sees and
 // where it stands, nothing more.
 type grantView struct {
-	ID     string   `json:"id"`
-	Status string   `json:"status"`
-	Text   string   `json:"text,omitempty"`
-	Tools  []string `json:"tools,omitempty"`
-	Reason string   `json:"reason,omitempty"`
+	ID      string   `json:"id"`
+	Status  string   `json:"status"`
+	Text    string   `json:"text,omitempty"`
+	Account string   `json:"account,omitempty"`
+	Tools   []string `json:"tools,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
 }
 
-func (t *Tool) do(ctx context.Context, method, path string, body []byte) (tool.Result, error) {
+// grant calls planque and answers with the grant it returns.
+func (t *Tool) grant(ctx context.Context, method, path string, body []byte) (tool.Result, error) {
+	raw, refused, err := t.do(ctx, method, path, body)
+	if err != nil || refused != nil {
+		return deref(refused), err
+	}
+	var g grantView
+	if err := json.Unmarshal(raw, &g); err != nil || g.ID == "" {
+		return tool.Result{}, fmt.Errorf("planque: an answer that isn't a grant")
+	}
+	b, _ := json.Marshal(g)
+	return tool.Result{Text: string(b)}, nil
+}
+
+// catalog answers with what the vendor lists for a listed grant: each
+// tool's own words and arguments, and the account. No value from the
+// account is in it.
+func (t *Tool) catalog(ctx context.Context, path string) (tool.Result, error) {
+	raw, refused, err := t.do(ctx, http.MethodGet, path, nil)
+	if err != nil || refused != nil {
+		return deref(refused), err
+	}
+	var c struct {
+		Grant   string `json:"grant"`
+		Server  string `json:"server"`
+		Account string `json:"account,omitempty"`
+		Tools   []struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description,omitempty"`
+			InputSchema json.RawMessage `json:"input_schema,omitempty"`
+			ReadOnly    bool            `json:"read_only,omitempty"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil || c.Grant == "" {
+		return tool.Result{}, fmt.Errorf("planque: an answer that isn't a catalog")
+	}
+	b, _ := json.Marshal(c)
+	return tool.Result{Text: string(b)}, nil
+}
+
+func deref(r *tool.Result) tool.Result {
+	if r == nil {
+		return tool.Result{}
+	}
+	return *r
+}
+
+// do calls planque with the agent's key. A refusal comes back as a result
+// the model can read; err is for planque not answering.
+func (t *Tool) do(ctx context.Context, method, path string, body []byte) ([]byte, *tool.Result, error) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, t.base+path, rd)
 	if err != nil {
-		return tool.Result{}, err
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+t.key)
 	req.Header.Set("Accept", "application/json")
@@ -121,10 +190,10 @@ func (t *Tool) do(ctx context.Context, method, path string, body []byte) (tool.R
 	}
 	resp, err := t.http.Do(req)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("planque: %w", err)
+		return nil, nil, fmt.Errorf("planque: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		var e struct {
 			Error string `json:"error"`
@@ -133,12 +202,7 @@ func (t *Tool) do(ctx context.Context, method, path string, body []byte) (tool.R
 		if e.Error == "" {
 			e.Error = http.StatusText(resp.StatusCode)
 		}
-		return tool.Result{Text: fmt.Sprintf("planque answered %d: %s", resp.StatusCode, e.Error), IsError: true}, nil
+		return nil, &tool.Result{Text: fmt.Sprintf("planque answered %d: %s", resp.StatusCode, e.Error), IsError: true}, nil
 	}
-	var g grantView
-	if err := json.Unmarshal(raw, &g); err != nil || g.ID == "" {
-		return tool.Result{}, fmt.Errorf("planque: an answer that isn't a grant (%d)", resp.StatusCode)
-	}
-	b, _ := json.Marshal(g)
-	return tool.Result{Text: string(b)}, nil
+	return raw, nil, nil
 }

@@ -91,3 +91,52 @@ func TestRefusalsAreReadable(t *testing.T) {
 		t.Fatalf("another key: %s", text)
 	}
 }
+
+// Connect first (contract 5): a request with no tools asks for [], the
+// catalog comes back trimmed to the vendor's own words and arguments, and
+// the tools are set on the same grant.
+func TestConnectFirstThenCatalogThenTools(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = append(seen, r.Method+" "+r.URL.Path+" "+string(body))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/accounts/tnt_1/grants":
+			w.WriteHeader(201)
+			w.Write([]byte(`{"id":"grt_1","status":"pending","text":"Connect your account at mcp.stripe.com so agt_setup can see what it offers…","digest":"d1"}`))
+		case "GET /v1/accounts/tnt_1/grants/grt_1/catalog":
+			w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.stripe.com","account":"acct_1","tools":[{"name":"stripe_api_write","title":"Write","description":"Any write.","input_schema":{"type":"object"},"read_only":false},{"name":"stripe_api_read","read_only":true}]}`))
+		case "POST /v1/accounts/tnt_1/grants/grt_1/tools":
+			w.Write([]byte(`{"id":"grt_1","status":"pending","text":"… • stripe_refund …","account":"acct_1","digest":"d2"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+
+	if text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"agt_refunds"}`); isErr || !strings.Contains(text, `"status":"pending"`) {
+		t.Fatalf("connect first: %s", text)
+	}
+	if !strings.HasSuffix(seen[0], `"tools":[]}`) {
+		t.Fatalf("a request with no tools asked for: %s", seen[0])
+	}
+	text, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1"}`)
+	if isErr || !strings.Contains(text, `"account":"acct_1"`) || !strings.Contains(text, `"input_schema":{"type":"object"}`) || strings.Contains(text, `"title"`) {
+		t.Fatalf("catalog: %s", text)
+	}
+	text, isErr = call(t, tl, `{"action":"tools","grant":"grt_1","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
+	if isErr || !strings.Contains(text, `"account":"acct_1"`) || strings.Contains(text, "digest") {
+		t.Fatalf("tools: %s", text)
+	}
+	if seen[2] != `POST /v1/accounts/tnt_1/grants/grt_1/tools {"tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}` {
+		t.Fatalf("tools sent: %s", seen[2])
+	}
+	for _, in := range []string{`{"action":"tools","grant":"grt_1"}`, `{"action":"tools","grant":"grt_1","tools":[]}`, `{"action":"catalog","grant":"../x"}`} {
+		if _, isErr := call(t, tl, in); !isErr {
+			t.Errorf("%s should be refused before planque", in)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("refused inputs reached planque: %v", seen[3:])
+	}
+}
