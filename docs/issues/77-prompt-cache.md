@@ -1,6 +1,6 @@
 # Prompt caching and a context report: what #77 delivers
 
-**Issue:** [#77](https://github.com/kiff/agents/issues/77) · **Status:** in progress (caching and the context report delivered; trimming is next).
+**Issue:** [#77](https://github.com/kiff/agents/issues/77) · **Status:** caching and the context report delivered. Left: the same score on repeated runs (#78). Trimming old tool results waits until a case needs it, and then uses the API's own context editing (see #77).
 **PRs:** #80, #83 (was #81)
 
 ## What it's for

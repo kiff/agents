@@ -207,10 +207,11 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   with a compare-and-set and takes a lease that ends a minute after the
   invocation's own deadline: a healthy run can't outlive it, so it needs no
   heartbeat, and every write the run makes checks it still holds the lease. A
-  crash or a timeout can't write ERROR itself, so two things do: for a
-  background run, the function's on-failure destination; for any run, a
-  scheduled sweep that marks ERROR a RUNNING run whose lease ran out, or a
-  PENDING run no invocation claimed in time. The same sweep asks KIFF about
+  crash or a timeout can't write ERROR itself, so a scheduled sweep (every
+  minute) does: it marks ERROR a RUNNING run whose lease ran out, or a PENDING
+  run no invocation claimed in time. The function has no on-failure
+  destination: the sweep covers a failed background invocation within a
+  minute of its lease ending. The same sweep asks KIFF about
   paused runs whose holds expired with no answer recorded. A run is never left RUNNING. Runs
   must fit Lambda's 15 minutes; the turn and cost caps keep them well inside.
 - **Schedules** are EventBridge Scheduler entries that start ordinary background
