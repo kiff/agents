@@ -26,6 +26,7 @@ what was approved.
 - **Checks:** every component has a `type` and an `id` (1 to 64 of `a-z 0-9 - _`). The tool refuses anything else, as a result the model can correct: a field another type uses, an unknown field, a text over 2,000 characters, more than 20 steps, or outside 2 to 4 options.
 - **Updates:** showing an `id` again replaces that component in the app.
 - **Access:** it is an `Own` tool, so `tool.Check` is unchanged.
+- **Opt-in:** a definition turns it on with `"show": true`; it is off unless set (`TestShowIsOptIn`).
 
 **A new event kind, `component`.**
 - **Recording:** when the `show` tool's result carries a component (`tool.Result.Component`, kept out of the tool result's own event), the loop records it as a `component` event. Only a tool that implements `tool.Shower` can put a component in the chat; `show` is the only one.

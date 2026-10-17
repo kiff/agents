@@ -21,6 +21,7 @@ import (
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/show"
 )
 
 // MaxSize bounds a definition as stored (Encode), in bytes, so it always fits
@@ -69,6 +70,9 @@ type Definition struct {
 	// Workspace gives each of the agent's runs a workspace: files and
 	// commands, with no credentials and no way out (#86). Off unless set.
 	Workspace bool `json:"workspace,omitempty"`
+	// Show gives the agent the show tool: UI components in the owner's chat
+	// (kiff/agents#91). Off unless set.
+	Show bool `json:"show,omitempty"`
 }
 
 // Check refuses a definition that can't be stored or run safely.
@@ -218,6 +222,9 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 	}
 	if b.Own != nil {
 		tools = append(tools, b.Own(tenant, id)...)
+	}
+	if d.Show {
+		tools = append(tools, show.New())
 	}
 	if d.Workspace {
 		if b.Workspace == nil || run == "" {
