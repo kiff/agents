@@ -323,3 +323,29 @@ func TestBuildGivesAWorkspaceOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
 		t.Fatalf("a server with no workspaces: %v, want ErrNoWorkspace", err)
 	}
 }
+
+// The show tool is the definition's to turn on; it is off unless set.
+func TestShowIsOptIn(t *testing.T) {
+	f := newFixture(t)
+	has := func() bool {
+		a, _, err := f.b.Build(ctx, "t1", "payouts")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tl := range a.Tools {
+			if tl.Spec().Name == "show" {
+				return true
+			}
+		}
+		return false
+	}
+	if has() {
+		t.Fatal("an agent got the show tool without asking for it")
+	}
+	d := registrytest.Definition("t1", "payouts")
+	d.Show = true
+	_ = f.agents.Put(ctx, d)
+	if !has() {
+		t.Fatal("an agent that asks for the show tool didn't get it")
+	}
+}

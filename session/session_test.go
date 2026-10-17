@@ -29,6 +29,31 @@ func TestPolicyNeedsEveryKind(t *testing.T) {
 	}
 }
 
+// A policy written before components existed has no rule for them: it still
+// works, and a component is kept as the agent's messages are. A rule for
+// components, when given, is checked like any other.
+func TestAComponentDefaultsToTheMessagesRule(t *testing.T) {
+	p := session.DefaultPolicy(time.Hour)
+	p[session.AgentMessage] = session.Rule{Keep: session.Kept, Retention: 3 * time.Hour}
+	if _, ok := p[session.Component]; ok {
+		t.Fatal("the default policy names components; it should leave them to the messages' rule")
+	}
+	if err := p.Check(); err != nil {
+		t.Fatalf("a policy without a component rule: %v", err)
+	}
+	if got := p.Rule(session.Component); got != p[session.AgentMessage] {
+		t.Fatalf("component rule %+v, want the messages' %+v", got, p[session.AgentMessage])
+	}
+	p[session.Component] = session.Rule{Keep: session.Never}
+	if got := p.Rule(session.Component); got.Keep != session.Never {
+		t.Fatalf("a component rule of its own was not used: %+v", got)
+	}
+	p[session.Component] = session.Rule{Keep: session.UntilEnd, Retention: time.Hour}
+	if err := p.Check(); err == nil {
+		t.Fatal("a bad component rule was accepted")
+	}
+}
+
 func TestPolicyRefusesRetentionOnUnkept(t *testing.T) {
 	p := session.DefaultPolicy(0)
 	p[session.Report] = session.Rule{Keep: session.UntilEnd, Retention: time.Hour}

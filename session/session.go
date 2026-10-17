@@ -59,10 +59,19 @@ const (
 	MemoryNote   EventKind = "memory_note"   // a note the agent wrote to its memory
 	Usage        EventKind = "usage"         // tokens and cost of one model call
 	Error        EventKind = "error"         // what went wrong
+	// Component is a UI component the agent showed the owner (steps, an
+	// approval, a result), drawn by the app in the chat (kiff/agents#91).
+	Component EventKind = "component"
 )
 
-// EventKinds lists every kind, so a Policy can be checked for gaps.
+// EventKinds lists every kind a Policy must have a rule for, so it can be
+// checked for gaps.
 var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, Report, MemoryNote, Usage, Error}
+
+// Defaulted are kinds a Policy may leave out: each takes the rule of the kind
+// named here. A kind added later goes here, so a stored policy written before
+// it keeps working. A component is kept like the agent's messages.
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires

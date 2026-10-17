@@ -47,19 +47,28 @@ func Conversation(events []session.Event) []model.Message {
 	var msgs []model.Message
 	for _, e := range events {
 		var role model.Role
+		var text string
 		switch e.Kind {
 		case session.OwnerMessage:
 			role = model.User
 		case session.AgentMessage, session.Report:
 			role = model.Assistant
+		case session.Component:
+			// What the agent showed stays in its history, so an answer
+			// that names a component ("[approval connect-stripe] approved")
+			// can be followed up: the grant it named, the options it gave.
+			role, text = model.Assistant, "[shown] "+string(e.Body)
 		default:
 			continue
 		}
-		var body agent.TextBody
-		if json.Unmarshal(e.Body, &body) != nil || body.Text == "" {
-			continue
+		if text == "" {
+			var body agent.TextBody
+			if json.Unmarshal(e.Body, &body) != nil || body.Text == "" {
+				continue
+			}
+			text = body.Text
 		}
-		block := model.Block{Kind: model.Text, Text: body.Text}
+		block := model.Block{Kind: model.Text, Text: text}
 		if n := len(msgs); n > 0 && msgs[n-1].Role == role {
 			msgs[n-1].Blocks = append(msgs[n-1].Blocks, block)
 			continue

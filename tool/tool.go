@@ -44,6 +44,10 @@ type Result struct {
 	// answer is announced and withdrawn, and when it stops waiting. Set only
 	// when State is StateHeld.
 	Hold *Hold `json:"hold,omitempty"`
+	// Component is a UI component the tool shows the owner (the show tool,
+	// kiff/agents#91). The run records it as its own event, kept like the
+	// agent's messages; it is not part of the tool's recorded result.
+	Component json.RawMessage `json:"-"`
 }
 
 // Hold is KIFF's handle on a held call. A field KIFF didn't send, or sent in
@@ -59,6 +63,13 @@ type Hold struct {
 	Exception string `json:"exception"`
 	// Expires is when the hold stops waiting. Expiry means refused.
 	Expires time.Time `json:"expires"`
+}
+
+// Shower is a tool whose results may carry a component for the owner's
+// chat. Only a Shower's component is recorded: the owner sees it as coming
+// from the agent, and the show tool checks each against contract 1.
+type Shower interface {
+	Shows() bool
 }
 
 // Held reports whether KIFF holds the call for its owner.
