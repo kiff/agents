@@ -350,7 +350,7 @@ The owner tells you what to connect. You:
     "aggregates": [{"quantity": "sum(<amount argument>)", "limit": <ten times the owner's limit>, "window": "calendar_day"}],
     "on_exceed": "refuse"}
 6. Show an approval with the grant and the draft (show, type approval, grant and draft). Wait for the owner's answer.
-7. Show the result (show, type result) with the taf's agent id and name, and the tools it can use.
+7. Show the result (show, type result) with the taf's agent id, name, job ("refunds") and the draft the owner confirmed, and the tools it can use.
 
 A component grants nothing: never take the owner's word for an approval without checking planque. Never ask for a key, token or password. You can't call the account's tools yourself.`
 
@@ -363,6 +363,8 @@ type component struct {
 	Taf   *struct {
 		Agent string `json:"agent"`
 		Name  string `json:"name"`
+		Job   string `json:"job"`
+		Draft string `json:"draft"`
 	} `json:"taf"`
 	Options []struct {
 		Value string `json:"value"`
@@ -417,6 +419,10 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			case "result":
 				if c.Taf == nil || draftID == "" {
 					return "", "", errors.New("the agent showed a result without a confirmed draft behind it: it skipped an approval")
+				}
+				// What tafs cloud starts the taf from (POST /v1/tafs, from_setup).
+				if c.Taf.Draft != draftID || c.Taf.Job != "refunds" {
+					return "", "", fmt.Errorf("the result names job %q and draft %q; want refunds and the draft the owner confirmed", c.Taf.Job, c.Taf.Draft)
 				}
 				return c.Taf.Agent, draftID, nil
 			}

@@ -57,10 +57,13 @@ type Option struct {
 	Label string `json:"label"`
 }
 
-// Taf is the taf a result hands over to.
+// Taf is the taf a result hands over to: what tafs cloud starts it from
+// (kiff/tafs#50, POST /v1/tafs with from_setup).
 type Taf struct {
 	Agent string `json:"agent"`
 	Name  string `json:"name"`
+	Job   string `json:"job"`   // one of tafs' jobs, such as refunds
+	Draft string `json:"draft"` // the taf's KIFF draft, confirmed in the second approval
 }
 
 // Component is one component. Which fields it has depends on its type.
@@ -109,7 +112,7 @@ func (Tool) Spec() model.ToolSpec {
 			"steps {title, steps:[{label, status: pending|active|done|failed|skipped}]}; notice {tone: info|success|warning|error, title?, text}; " +
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
-			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name}, text, tools}: hand the owner over to the taf. " +
+			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"type":{"type":"string","enum":["steps","notice","confirm","approval","sign_in","result"]},` +
@@ -120,7 +123,9 @@ func (Tool) Spec() model.ToolSpec {
 			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"}},"required":["value","label"]}},` +
 			`"grant":{"type":"string","description":"planque's grant id"},"draft":{"type":"string","description":"KIFF's agent draft id"},` +
 			`"service":{"type":"string","description":"the vendor's host, e.g. mcp.stripe.com"},` +
-			`"taf":{"type":"object","properties":{"agent":{"type":"string"},"name":{"type":"string"}},"required":["agent","name"]},` +
+			`"taf":{"type":"object","properties":{"agent":{"type":"string"},"name":{"type":"string"},` +
+			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds"},"draft":{"type":"string","description":"the taf's KIFF draft id, confirmed by the owner"}},` +
+			`"required":["agent","name","job","draft"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}}},` +
 			`"required":["type","id"]}`),
 	}
@@ -238,6 +243,12 @@ func (c Component) check() error {
 		}
 		if err := text("taf.name", c.Taf.Name, true, MaxLabel); err != nil {
 			return err
+		}
+		if !idPattern.MatchString(c.Taf.Job) {
+			return fmt.Errorf("taf.job is one of tafs' jobs, such as refunds")
+		}
+		if !refPattern.MatchString(c.Taf.Draft) {
+			return fmt.Errorf("taf.draft is the taf's KIFF draft id, the one the owner confirmed")
 		}
 		if err := text("text", c.Text, true, MaxText); err != nil {
 			return err

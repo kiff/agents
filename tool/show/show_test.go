@@ -27,7 +27,7 @@ func TestEveryComponentIsShown(t *testing.T) {
 		`{"type":"confirm","id":"plan-ok","text":"Go ahead?","options":[{"value":"yes","label":"Go ahead"},{"value":"no","label":"Not now"}]}`,
 		`{"type":"approval","id":"connect-stripe","grant":"grt_AbC-1","draft":"draft_9"}`,
 		`{"type":"sign_in","id":"connect-stripe","grant":"grt_AbC-1","service":"mcp.stripe.com"}`,
-		`{"type":"result","id":"done","taf":{"agent":"refunds","name":"Refunds"},"text":"Refunds is ready.","tools":["stripe_refund"]}`,
+		`{"type":"result","id":"done","taf":{"agent":"refunds","name":"Refunds","job":"refunds","draft":"drf_01"},"text":"Refunds is ready.","tools":["stripe_refund"]}`,
 	} {
 		r := call(t, in)
 		if r.IsError || r.Component == nil {
@@ -66,6 +66,8 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"approval","id":"a","grant":"grt_1","text":"Approve me"}`:                                           `has no field "text"`,
 		`{"type":"sign_in","id":"a","grant":"grt_1"}`:                                                                "service is",
 		`{"type":"result","id":"a","text":"done"}`:                                                                   "taf.agent",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1"},"text":"done"}`:                    "taf.job",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds"},"text":"done"}`:                    "taf.draft",
 		`not json`: "a JSON object",
 	} {
 		r := call(t, in)
