@@ -105,7 +105,9 @@ func newPhone(key *ecdsa.PrivateKey, planqueURL, tenant string, hc *http.Client)
 	p := &phone{key: key, tenant: tenant}
 	base := strings.TrimRight(planqueURL, "/")
 	p.planque = &client{base: base, http: hc, auth: func(req *http.Request, body []byte) {
-		at := time.Now().UTC().Format(time.RFC3339)
+		// To the nanosecond: planque refuses a signed request made twice, so
+		// two reads in one second must differ.
+		at := time.Now().UTC().Format(time.RFC3339Nano)
 		sum := sha256.Sum256(body)
 		msg := strings.Join([]string{"planque.request.v1", base, tenant, req.Method, req.URL.RequestURI(),
 			hex.EncodeToString(sum[:]), at}, "\n")

@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -58,8 +59,9 @@ import (
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Getenv); err != nil {
-		fmt.Fprintln(os.Stdout, "FAIL:", err)
+	out := &redacting{w: os.Stdout}
+	if err := run(ctx, os.Args[1:], out, os.Getenv); err != nil {
+		fmt.Fprintln(out, "FAIL:", err)
 		os.Exit(1)
 	}
 	fmt.Fprintln(os.Stdout, "PASS")
@@ -80,7 +82,28 @@ type config struct {
 	log                                             io.Writer
 }
 
-func run(ctx context.Context, args []string, stdout io.Writer, env func(string) string) error {
+// redacting writes what the test says with the account and the vendor's
+// address left out: the nightly log is public (AGENTS.md), and GitHub masks
+// a secret only as a whole string.
+type redacting struct {
+	w     io.Writer
+	pairs []string
+}
+
+func (r *redacting) hide(value, as string) {
+	if value != "" {
+		r.pairs = append(r.pairs, value, as)
+	}
+}
+
+func (r *redacting) Write(p []byte) (int, error) {
+	if _, err := io.WriteString(r.w, strings.NewReplacer(r.pairs...).Replace(string(p))); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func run(ctx context.Context, args []string, stdout *redacting, env func(string) string) error {
 	fs := flag.NewFlagSet("e2e", flag.ContinueOnError)
 	cfg := config{log: stdout}
 	fs.StringVar(&cfg.setupDef, "setup", "", "the setup agent's definition (JSON, from kiff/tafs' setupdef.ts); empty: the built-in one")
@@ -108,6 +131,10 @@ func run(ctx context.Context, args []string, stdout io.Writer, env func(string) 
 	}
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	cfg.vendor, cfg.vendorToken = env("E2E_VENDOR"), env("E2E_VENDOR_TOKEN")
+	if u, err := url.Parse(cfg.vendor); err == nil && u.Host != "" {
+		stdout.hide(strings.TrimRight(cfg.vendor, "/"), "<the vendor>/mcp")
+		stdout.hide(u.Host, "<the vendor>")
+	}
 	cfg.planque = env("E2E_PLANQUE")
 	if cfg.planque == "" {
 		cfg.planque = "https://planque.kiff.dev"
@@ -118,7 +145,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, env func(string) 
 			return fmt.Errorf("%s is required", name)
 		}
 	}
-	t := &test{cfg: cfg, hc: &http.Client{Timeout: 60 * time.Second}, run: time.Now().UTC().Format("0102-1504")}
+	t := &test{cfg: cfg, out: stdout, hc: &http.Client{Timeout: 60 * time.Second}, run: time.Now().UTC().Format("0102-1504")}
 	defer t.cleanup()
 	return t.scenario(ctx, anthropic.New())
 }
@@ -126,6 +153,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, env func(string) 
 // test is one run of the scenario, and what it must clean up.
 type test struct {
 	cfg    config
+	out    *redacting
 	hc     *http.Client
 	run    string // names this run's agents and keys
 	tenant string
@@ -160,6 +188,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		return fmt.Errorf("KIFF didn't take the phone's session (it lasts 90 days; renew it with -signin): %v %v", err, me.err())
 	}
 	t.tenant, _ = me.Body["tenant_id"].(string)
+	t.out.hide(t.tenant, "<the account>")
 	t.kiff = kiffSession(kiff.APIURL, t.cfg.session, t.tenant, pk, t.hc)
 	t.phone = newPhone(pk, t.cfg.planque, t.tenant, t.hc)
 	if err := t.enrol(ctx); err != nil {
@@ -204,7 +233,7 @@ func (t *test) enrol(ctx context.Context) error {
 	}
 	switch {
 	case a.Status == http.StatusOK:
-		t.logf("the phone is enrolled with planque (%s)", t.tenant)
+		t.logf("the phone is enrolled with planque")
 		return nil
 	case a.Status != http.StatusForbidden:
 		return fmt.Errorf("planque doesn't take the test phone (another phone is enrolled for this account?): %w", a.err())
@@ -220,7 +249,7 @@ func (t *test) enrol(ctx context.Context) error {
 	if err != nil || a.err() != nil {
 		return fmt.Errorf("enrolling the phone with planque: %v %v", err, a.err())
 	}
-	t.logf("the phone enrolled with planque, with a connector key it minted (%s)", t.tenant)
+	t.logf("the phone enrolled with planque, with a connector key it minted")
 	return nil
 }
 
@@ -483,13 +512,12 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if err := t.agents.Put(ctx, taf); err != nil {
 		return err
 	}
-	before, err := t.vendorCalls(ctx)
-	if err != nil {
-		return err
-	}
+	// This run's charges, so only its own calls count: the vendor keeps
+	// every run's for a week.
+	in, out := "ch_e2e_in_"+t.run, "ch_e2e_out_"+t.run
 	for _, ask := range []string{
-		"Refund charge ch_e2e_in for 300 cents.",
-		"Refund charge ch_e2e_out for 90000 cents.",
+		"Refund charge " + in + " for 300 cents.",
+		"Refund charge " + out + " for 90000 cents.",
 	} {
 		ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: tafID}
 		r, err := ch.Send(ctx, ask, nil)
@@ -499,14 +527,19 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		_, text, _ := t.latest(ctx, ch.Session, r.ID)
 		t.logf("owner: %s → taf: %s", ask, oneLine(text))
 	}
-	after, err := t.vendorCalls(ctx)
+	calls, err := t.vendorCalls(ctx)
 	if err != nil {
 		return err
 	}
-	got := after[len(before):]
-	t.logf("the vendor received %d call(s): %v", len(got), got)
-	if len(got) != 1 || !strings.Contains(got[0], "ch_e2e_in") || !strings.Contains(got[0], "300") {
-		return fmt.Errorf("the vendor received %v; want exactly the refund of ch_e2e_in for 300", got)
+	var got []string
+	for _, c := range calls {
+		if strings.Contains(c, in) || strings.Contains(c, out) {
+			got = append(got, c)
+		}
+	}
+	t.logf("the vendor received %d call(s) for this run: %v", len(got), got)
+	if len(got) != 1 || !strings.Contains(got[0], `"charge":"`+in+`"`) || !strings.Contains(got[0], `"amount":300`) {
+		return fmt.Errorf("the vendor received %v; want exactly the refund of %s for 300", got, in)
 	}
 	return nil
 }
@@ -591,8 +624,8 @@ func (t *test) cleanup() {
 
 func oneLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 240 {
-		s = s[:240] + "…"
+	if r := []rune(s); len(r) > 240 {
+		s = string(r[:240]) + "…"
 	}
 	return s
 }

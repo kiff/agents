@@ -93,7 +93,7 @@ func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setu
 	if token == "" {
 		return errors.New("nobody approved the sign-in in time")
 	}
-	fmt.Fprintf(say, "signed in to KIFF account %s; the session is bound to the test phone's key\n", tenant)
+	fmt.Fprintln(say, "signed in to KIFF; the session is bound to the test phone's key")
 
 	k := kiffSession(apiBase, token, tenant, key, hc)
 	d, err := k.do(ctx, http.MethodPost, "/v1/me/agent-drafts", map[string]any{"agent_id": setupAgent, "label": "Setup (e2e)", "cards": []any{}, "no_tools": true})
