@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -104,6 +105,9 @@ func (k *Keys) Key(ctx context.Context, tenant, ref string) (string, bool, error
 	if errors.Is(err, ErrNotFound) {
 		return "", false, nil
 	}
+	if deleting(err) {
+		return "", false, drafts.ErrTaken
+	}
 	if err != nil {
 		return "", false, err
 	}
@@ -120,11 +124,19 @@ func (k *Keys) Create(ctx context.Context, tenant, ref, key string) error {
 	_, err = k.api.CreateSecret(ctx, &sm.CreateSecretInput{Name: aws.String(name), SecretString: aws.String(key),
 		Description: aws.String("an agent's KIFF key, claimed from its confirmed draft (kiff/agents#91)")})
 	var exists *types.ResourceExistsException
-	if errors.As(err, &exists) {
+	if errors.As(err, &exists) || deleting(err) {
 		return drafts.ErrTaken
 	}
 	if err != nil {
 		return fmt.Errorf("secretsmanager: storing the key: %w", err)
 	}
 	return nil
+}
+
+// deleting is Secrets Manager refusing a secret scheduled for deletion (a
+// removed agent's key, until its recovery window ends): its name is still
+// taken, and it can be neither read nor created.
+func deleting(err error) bool {
+	var inv *types.InvalidRequestException
+	return errors.As(err, &inv) && strings.Contains(strings.ToLower(inv.ErrorMessage()), "deletion")
 }

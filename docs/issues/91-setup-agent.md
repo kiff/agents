@@ -1,6 +1,6 @@
 # The setup agent: what #91 delivers
 
-**Issue:** [#91](https://github.com/kiff/agents/issues/91) · **Status:** in progress (the `show` components, merged in #92; the `planque` tool, merged in #93; the draft tool and its claim; the nightly simulated-owner test is next).
+**Issue:** [#91](https://github.com/kiff/agents/issues/91) · **Status:** in progress (the `show` components, merged in #92; the `planque` tool, merged in #93; the draft tool and its claim, merged in #94; the nightly simulated-owner test, merged in #96; a run against Stripe in test mode is left).
 
 ## What it's for
 
@@ -87,16 +87,31 @@ Turning off each guard fails its test: the allowlist, the URL check, the agent's
 - `drafts/kiffapi`: `TestClaim`;
 - `tool/drafts`: `TestSubmit`;
 - `server`: `TestClaimRoute`, `TestNoClaimRouteWithoutDrafts`;
-- `registry/secretsmanager`: `TestDraftRecords`, `TestKeysAreCreatedNeverReplaced`;
+- `registry/secretsmanager`: `TestDraftRecords`, `TestKeysAreCreatedNeverReplaced`, `TestARefBeingDeletedIsTaken` (a removed taf's key, scheduled for deletion, is taken: 409, not 500);
 - `registry`: `TestDraftsIsOptIn`.
 
 Turning off each guard fails its test.
 
+**The setup agent itself (kiff/tafs#53, kiff-cloud#1255 and #1256).**
+- **Its definition:** `setupdef.ts` in kiff/tafs: `show`, `planque` and `drafts` on, KIFF's gateway, and a cost cap per run.
+- **Its key:** it holds no tools. Its key comes from a no-tools draft (kiff-cloud#1255) and carries no role, so it can call none of the account's tools. KIFF's gateway lists it only KIFF's own (`kiff_card`, `kiff_pending`; kiff-cloud#1256). That replaces "its own Card allows setup only": no Card is needed for an agent that can call nothing.
+- **What `kiff_draft` tells the model:** a Card as KIFF issues it (`count` or `sum(<argument>)`, the windows `calendar_day`, `rolling_1h`, `rolling_24h` and `lifetime`, at least one aggregate, `on_exceed`). Without it, the model guessed formats KIFF refuses.
+
+**The simulated-owner end-to-end test (`cmd/e2e`, #96).** A scripted owner talks to the setup agent and ends with a Refunds taf. The runtime runs in the test's process, at the commit tested. The model, KIFF (a test account), planque and the vendor are the real services.
+- **The flow:**
+  - the owner's phone (a stable P-256 key) approves planque's grant;
+  - it signs in at kiff/planque's fake vendor (an MCP server behind its own OAuth, which consents on its own and registers only planque's callback);
+  - it confirms the sign-in, then the taf's draft;
+  - the taf's key is claimed into the agents' keys.
+- **It fails if:**
+  - the agent shows a result without a confirmed draft (a skipped approval);
+  - any key, session, token or claim secret appears in what either agent's runs recorded, by value or by KIFF's prefixes;
+  - the vendor receives anything but the one refund inside the Card (300 cents). The 90000-cent one is refused by the Card.
+- **Nightly:** `.github/workflows/e2e.yml` at 03:17 UTC, and on demand; never on pull requests. The log is public, so in CI it carries only the steps and the outcome, and every id the test learns is masked.
+- **The one-time setup:** `-signin`. A person approves KIFF's device sign-in for the test phone (90 days), and the setup agent is made from a no-tools draft.
+
 ## Left
 
-- **The `planque` tool:** ask for a grant and follow it, with the agent's own KIFF key.
-- **The setup agent's definition** (`setupdef.ts` in kiff/tafs) and its Card.
-- **The simulated-owner end-to-end test:** nightly against planque's fake vendor, and on demand against Stripe in test mode.
-- **The setup agent's own Card:** a KIFF change for a Card with no account tools (asked on #91).
+- **On demand against Stripe in test mode:** the same scenario at `mcp.stripe.com`, with a person completing Stripe's sign-in.
 
 **Out of #91:** the workspace host. It served the relay that planque replaced; #86 stays open.

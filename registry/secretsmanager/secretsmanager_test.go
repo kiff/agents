@@ -20,6 +20,8 @@ type fake struct {
 	secrets map[string]*sm.GetSecretValueOutput
 	asked   []string
 	fail    error
+	// createFail, when set, is what CreateSecret answers (writable).
+	createFail error
 }
 
 func (f *fake) GetSecretValue(_ context.Context, in *sm.GetSecretValueInput, _ ...func(*sm.Options)) (*sm.GetSecretValueOutput, error) {

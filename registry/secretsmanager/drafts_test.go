@@ -19,6 +19,9 @@ type writable struct{ *fake }
 
 func (w writable) CreateSecret(_ context.Context, in *sm.CreateSecretInput, _ ...func(*sm.Options)) (*sm.CreateSecretOutput, error) {
 	name := aws.ToString(in.Name)
+	if w.createFail != nil {
+		return nil, w.createFail
+	}
 	if _, ok := w.secrets[name]; ok {
 		return nil, &types.ResourceExistsException{Message: aws.String("exists")}
 	}
@@ -81,5 +84,24 @@ func TestKeysAreCreatedNeverReplaced(t *testing.T) {
 	}
 	if err := k.Create(ctx, "t1", "../t2/kiff/x", "k"); err == nil {
 		t.Fatal("a ref outside the tenant was written")
+	}
+}
+
+// A reference whose secret is scheduled for deletion (a removed taf's) is
+// taken: the claim answers 409 and names another, not 500.
+func TestARefBeingDeletedIsTaken(t *testing.T) {
+	w := writable{newFake()}
+	k := secretsmanager.NewKeys(secretsmanager.New(w, "agents/"), w)
+	w.fail = &types.InvalidRequestException{Message: aws.String("You can't perform this operation on the secret because it was marked for deletion.")}
+	if _, _, err := k.Key(ctx, "t1", "kiff/old-taf"); !errors.Is(err, drafts.ErrTaken) {
+		t.Fatalf("reading: %v", err)
+	}
+	w.createFail = &types.InvalidRequestException{Message: aws.String("You can't create this secret because a secret with this name is already scheduled for deletion.")}
+	if err := k.Create(ctx, "t1", "kiff/old-taf", "kiff_key_new"); !errors.Is(err, drafts.ErrTaken) {
+		t.Fatalf("creating: %v", err)
+	}
+	w.createFail = &types.InvalidRequestException{Message: aws.String("something else")}
+	if err := k.Create(ctx, "t1", "kiff/old-taf", "kiff_key_new"); err == nil || errors.Is(err, drafts.ErrTaken) {
+		t.Fatalf("another invalid request is not taken: %v", err)
 	}
 }
