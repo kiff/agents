@@ -91,25 +91,24 @@ func (s *stripe) refunds(ctx context.Context, intent string) ([]int64, error) {
 	return out, nil
 }
 
-// stripeRefundTool is the one tool the grant asks for: Stripe's write tool
-// narrowed to refunds, on this account, in test mode (as planque's live
-// check asks for it).
-func stripeRefundTool(account string) map[string]any {
-	return map[string]any{"tool": "stripe_api_write", "name": "stripe_refund", "amount_argument": "amount", "amount_unit": "EUR", "amount_scale": 2,
-		"fixed_arguments": map[string]any{"stripe_api_operation_id": "PostRefunds", "stripe_context": account, "livemode": false},
-		"arguments": map[string]any{
-			"payment_intent": map[string]any{"path": "parameters.payment_intent", "type": "string", "required": true},
-			"amount":         map[string]any{"path": "parameters.amount", "type": "integer", "required": true},
-		}}
+// stripeAsk is the owner's first message in the setup chat, against
+// Stripe: the outcome, in their words, as against the fake vendor.
+func stripeAsk() string {
+	return "I want our customers to be able to get their refunds. We take payments with Stripe, in test mode for now; " +
+		"its MCP server is " + stripeMCP + ". Call the taf Refunds."
 }
 
-// stripeAsk is the owner's first message in the setup chat, against Stripe.
-func stripeAsk(account, run string) string {
-	tool, _ := json.Marshal(stripeRefundTool(account))
-	return fmt.Sprintf("Handle refunds from my Stripe account (test mode). Its MCP server is %s. "+
-		"Ask planque for exactly this one tool, as written: %s. "+
-		"Each refund may be at most 500 cents (the tool's amount argument); anything above must be refused. "+
-		"Call the taf Refunds, with agent id refunds-%s.", stripeMCP, tool, run)
+// checkStripeGrant is what Setup chose from Stripe's generic tools: the
+// write tool narrowed to refunds, pinned to this account and to test mode.
+func checkStripeGrant(g grant, account string) error {
+	for _, t := range g.Request.Tools {
+		f := t.Fixed
+		if t.Tool == "stripe_api_write" && f["stripe_api_operation_id"] == "PostRefunds" && f["stripe_context"] == account && f["livemode"] == false {
+			return nil
+		}
+	}
+	b, _ := json.Marshal(g.Request.Tools)
+	return fmt.Errorf("Setup's grant isn't stripe_api_write pinned to PostRefunds, this account and test mode: %s", b)
 }
 
 // waitForSignIn is a person signing in at the vendor: the link is printed,

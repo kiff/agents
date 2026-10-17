@@ -130,13 +130,21 @@ func (p *phone) accountPath() string { return "/v1/accounts/" + url.PathEscape(p
 
 // grant is a grant as the phone reads it.
 type grant struct {
-	ID     string          `json:"id"`
-	Status string          `json:"status"`
-	Text   string          `json:"text"`
-	Digest string          `json:"digest"`
-	Tools  []string        `json:"tools"`
-	Reason string          `json:"reason"`
-	Raw    json.RawMessage `json:"-"`
+	ID     string   `json:"id"`
+	Status string   `json:"status"`
+	Text   string   `json:"text"`
+	Digest string   `json:"digest"`
+	Tools  []string `json:"tools"`
+	Reason string   `json:"reason"`
+	// Request is what the owner approved: the tools, as asked for.
+	Request struct {
+		Tools []struct {
+			Tool  string         `json:"tool"`
+			Name  string         `json:"name"`
+			Fixed map[string]any `json:"fixed_arguments"`
+		} `json:"tools"`
+	} `json:"request"`
+	Raw json.RawMessage `json:"-"`
 }
 
 func (p *phone) grants(ctx context.Context) ([]grant, error) {

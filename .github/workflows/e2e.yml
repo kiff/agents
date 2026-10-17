@@ -37,4 +37,4 @@ jobs:
         # This log is public: in CI the test writes only its steps and the
         # outcome, and masks every id it learns (cmd/e2e, redacting). Run it
         # by hand for the details.
-        run: go run ./cmd/e2e -max-cost 3
+        run: go run ./cmd/e2e -max-cost 4 -owner-turns 14

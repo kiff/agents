@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -138,5 +139,53 @@ func TestConnectFirstThenCatalogThenTools(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatalf("refused inputs reached planque: %v", seen[3:])
+	}
+}
+
+// A vendor's catalog is bounded before the model reads it: long
+// descriptions are cut, and the arguments that don't fit are left out,
+// each marked shortened; one tool can still be read in full.
+func TestALargeCatalogIsBounded(t *testing.T) {
+	long := strings.Repeat("d", 5000)
+	schema := `{"type":"object","properties":{"p":{"type":"string","description":"` + strings.Repeat("s", 4000) + `"}}}`
+	var tools []string
+	for i := range 60 {
+		tools = append(tools, `{"name":"tool_`+strconv.Itoa(i)+`","description":"`+long+`","input_schema":`+schema+`}`)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.vendor.test","tools":[` + strings.Join(tools, ",") + `]}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+
+	text, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1"}`)
+	var c struct {
+		Truncated bool `json:"truncated"`
+		Tools     []struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			InputSchema json.RawMessage `json:"input_schema"`
+			Shortened   bool            `json:"shortened"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(text), &c); isErr || err != nil {
+		t.Fatalf("catalog: %v %.200s", err, text)
+	}
+	if len(text) > planque.MaxCatalog || !c.Truncated || len(c.Tools) != 60 {
+		t.Fatalf("catalog of %d bytes, truncated %v, %d tools", len(text), c.Truncated, len(c.Tools))
+	}
+	if n := len([]rune(c.Tools[0].Description)); n > planque.MaxDescription+1 || !c.Tools[0].Shortened {
+		t.Fatalf("a description of %d characters", n)
+	}
+	if last := c.Tools[59]; last.InputSchema != nil || !last.Shortened {
+		t.Fatalf("the last tool kept its arguments in a full catalog: %v", last.Shortened)
+	}
+
+	text, isErr = call(t, tl, `{"action":"catalog","grant":"grt_1","tool":"tool_59"}`)
+	if isErr || !strings.Contains(text, `"name":"tool_59"`) || !strings.Contains(text, long) || strings.Contains(text, "tool_58") {
+		t.Fatalf("one tool in full: %.200s", text)
+	}
+	if _, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1","tool":"tool_x"}`); !isErr {
+		t.Fatal("a tool the catalog doesn't have")
 	}
 }
