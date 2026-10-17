@@ -73,6 +73,10 @@ type Definition struct {
 	// Show gives the agent the show tool: UI components in the owner's chat
 	// (kiff/agents#91). Off unless set.
 	Show bool `json:"show,omitempty"`
+	// Drafts gives the agent the kiff_draft tool: submit a taf's KIFF draft,
+	// whose claim secret the model never sees (kiff/agents#91). Off unless
+	// set; the server must offer drafts.
+	Drafts bool `json:"drafts,omitempty"`
 }
 
 // Check refuses a definition that can't be stored or run safely.
@@ -165,6 +169,10 @@ type Secrets interface {
 // ErrGateway means a definition names a gateway the server doesn't allow.
 var ErrGateway = errors.New("registry: the gateway is not one this server allows")
 
+// ErrNoDrafts means a definition asks for the draft tool this build can't
+// give.
+var ErrNoDrafts = errors.New("registry: the agent needs the draft tool, and this build has none")
+
 // ErrNoWorkspace means a definition asks for a workspace this build can't
 // give: the server has none, or the agent is built for no run.
 var ErrNoWorkspace = errors.New("registry: the agent needs a workspace, and this build has none")
@@ -185,6 +193,9 @@ type Builder struct {
 	// Workspace, when set, returns the workspace tool for one run of an
 	// agent whose definition asks for one.
 	Workspace func(tenant, run string) tool.Tool
+	// Drafts, when set, returns the draft tool for an agent whose KIFF key
+	// is key.
+	Drafts func(tenant, key string) tool.Tool
 }
 
 // Build returns the tenant's agent, ready to run, and the definition it was
@@ -225,6 +236,12 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 	}
 	if d.Show {
 		tools = append(tools, show.New())
+	}
+	if d.Drafts {
+		if b.Drafts == nil {
+			return agent.Agent{}, d, ErrNoDrafts
+		}
+		tools = append(tools, b.Drafts(tenant, key))
 	}
 	if d.Workspace {
 		if b.Workspace == nil || run == "" {

@@ -1,6 +1,6 @@
 # The setup agent: what #91 delivers
 
-**Issue:** [#91](https://github.com/kiff/agents/issues/91) · **Status:** in progress (the `show` components; the planque and draft tools, the workspace host and the simulated-owner test are next).
+**Issue:** [#91](https://github.com/kiff/agents/issues/91) · **Status:** in progress (the `show` components, merged in #92; the `planque` tool in #93; the draft tool and its claim; the nightly simulated-owner test is next).
 
 ## What it's for
 
@@ -44,10 +44,42 @@ what was approved.
 
 Turning off each guard fails its test.
 
+**The draft tool and its claim (agreed on kiff/tafs#50, option b).** The setup agent submits a taf's KIFF draft (its agent and Cards). KIFF answers with the draft's claim secret, shown once, which mints the taf's key. The key never passes through the model, the phone or tafs cloud.
+
+1. **Submit (`kiff_draft`, `submit {agent_id, label, cards}`):**
+   - the tool posts `POST /v1/me/agent-drafts` with the setup agent's own key;
+   - it keeps the claim secret sealed under the tenant (`drafts.Store`, on Secrets Manager under `AGENTS_DRAFTS_PREFIX`);
+   - the model reads only the draft's `id`, `agent_id`, `status` and `card_ids`, and KIFF's refusals.
+2. **Confirm:** the phone confirms the draft behind the approval's Face ID (contract 4, in the app).
+3. **Claim (`POST /drafts/{draft_id}/claim {"key_ref"}`):** tafs cloud asks, with its verified tenant call. kiff/agents, in this order:
+   - refuses a draft another tenant submitted (404);
+   - answers the same on a retry with the same `key_ref`, and refuses another one (409);
+   - refuses a `key_ref` that holds another agent's key **before** asking KIFF to mint (409);
+   - claims the key with the sealed secret (`POST /v1/agent-drafts/{id}/claim`). KIFF's 409 (not confirmed yet, or already claimed or discarded) and 410 (expired) are answered 409 with what to do;
+   - checks with `/v1/me` that the key is bound to the draft's agent on this tenant, and otherwise stores nothing;
+   - creates the key's secret where the registry reads it, never replacing one;
+   - drops the claim secret, and answers `{"agent_id"}`.
+
+   A claim that stored the key and stopped before recording itself is finished by its retry, without a second claim.
+4. **Store:** tafs cloud stores the taf's definition with that `key_ref`.
+
+**Opt-in:** `"drafts": true` on a definition. The server offers drafts only with `AGENTS_DRAFTS_PREFIX` set. That prefix must not overlap the agents' key prefix, so no key reference can name a claim secret. The function's role needs `secretsmanager:CreateSecret` and `PutSecretValue` on both prefixes.
+
+**Tests:**
+- `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestAKeyForAnotherAgentIsNotStored`;
+- `drafts/kiffapi`: `TestClaim`;
+- `tool/drafts`: `TestSubmit`;
+- `server`: `TestClaimRoute`, `TestNoClaimRouteWithoutDrafts`;
+- `registry/secretsmanager`: `TestDraftRecords`, `TestKeysAreCreatedNeverReplaced`;
+- `registry`: `TestDraftsIsOptIn`.
+
+Turning off each guard fails its test.
+
 ## Left
 
 - **The `planque` tool:** ask for a grant and follow it, with the agent's own KIFF key.
-- **A draft tool:** submit and follow the taf's KIFF agent draft. KIFF's gateway has no draft tool, and a draft grants nothing until the phone confirms it.
 - **The setup agent's definition** (`setupdef.ts` in kiff/tafs) and its Card.
-- **The workspace host:** the AWS adapter, which closes #86.
-- **The simulated-owner end-to-end test:** Stripe in test mode through planque.
+- **The simulated-owner end-to-end test:** nightly against planque's fake vendor, and on demand against Stripe in test mode.
+- **The setup agent's own Card:** a KIFF change for a Card with no account tools (asked on #91).
+
+**Out of #91:** the workspace host. It served the relay that planque replaced; #86 stays open.
