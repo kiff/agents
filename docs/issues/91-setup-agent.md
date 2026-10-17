@@ -1,6 +1,6 @@
 # The setup agent: what #91 delivers
 
-**Issue:** [#91](https://github.com/kiff/agents/issues/91) · **Status:** in progress (the `show` components; the planque and draft tools, the workspace host and the simulated-owner test are next).
+**Issue:** [#91](https://github.com/kiff/agents/issues/91) · **Status:** in progress (the `show` components, merged in #92, and the `planque` tool; the draft tool and its claim, and the nightly simulated-owner test, are next).
 
 ## What it's for
 
@@ -44,10 +44,26 @@ what was approved.
 
 Turning off each guard fails its test.
 
+**The `planque` tool (contract 2, on kiff/planque#1).** The agent asks planque for access to a vendor account for a taf, and follows the request.
+
+- **`request {server, agent, tools}`:** `POST /v1/accounts/{tenant}/grants` with the agent's own KIFF key, which planque checks with KIFF. Each tool may be narrowed with `fixed_arguments` and `arguments`, as planque takes them.
+- **`status {grant}`:** `GET …/grants/{id}`. It is `pending`, `approved`, `signed_in`, `connected`, `failed` (with a reason) or `disconnected`.
+- **What the model reads:** the grant's `id`, `status`, `text` (what the owner will read), `tools` and `reason`; not its digest, request or audience.
+- **Refusals:** planque's errors come back as readable results, for example `409` before the owner's phone is enrolled. A malformed ask, or a grant id with `/`, `?` or `#`, never leaves the tool.
+- **Access:** asking grants nothing, so it is an `Own` tool; the agent never sees a vendor token.
+
+**Opt-in per definition: `planque`.** A definition names planque's URL (https, no path). The server allows it exactly, as it does gateways (`AGENTS_PLANQUES` on Lambda; none by default), and checks it before the agent's key is looked up, so a key is never sent to a planque the server doesn't allow.
+
+**Tests:**
+- `tool/planque`: `TestRequestAndStatus`, `TestRefusalsAreReadable`;
+- `registry`: `TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque`, and `TestCheckRefuses` for an http planque and a planque with a path.
+
+Turning off each guard fails its test: the allowlist, the URL check, the agent's own key, the trimmed view, the grant id's path, and readable refusals.
+
 ## Left
 
-- **The `planque` tool:** ask for a grant and follow it, with the agent's own KIFF key.
-- **A draft tool:** submit and follow the taf's KIFF agent draft. KIFF's gateway has no draft tool, and a draft grants nothing until the phone confirms it.
-- **The setup agent's definition** (`setupdef.ts` in kiff/tafs) and its Card.
-- **The workspace host:** the AWS adapter, which closes #86.
-- **The simulated-owner end-to-end test:** Stripe in test mode through planque.
+- **A draft tool:** submit the taf's KIFF agent draft, keep its claim secret from the model, and claim the taf's key into Secrets Manager when tafs cloud asks (agreed on kiff/tafs#50, option b).
+- **The setup agent's definition** (`setupdef.ts`, in kiff/tafs#53) and its Card.
+- **The simulated-owner end-to-end test:** nightly against planque's fake vendor, and on demand against Stripe in test mode.
+
+**Out of #91:** the workspace host. It served the relay that planque replaced; #86 stays open for when a scenario needs it.
