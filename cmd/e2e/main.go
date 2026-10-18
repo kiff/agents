@@ -47,6 +47,7 @@ import (
 	"github.com/kiff/agents/chat"
 	"github.com/kiff/agents/drafts"
 	draftsapi "github.com/kiff/agents/drafts/kiffapi"
+	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
@@ -82,6 +83,8 @@ type config struct {
 	stripeKey, signInFile                           string
 	phone                                           string
 	setupDef                                        string
+	owner                                           string      // the owner's language: "en" or "es"
+	judge                                           *eval.Judge // grades the setup chat (-grade); nil: not graded
 	maxTurns                                        int
 	maxCost                                         int64
 	keep                                            bool
@@ -123,6 +126,10 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	cfg := config{log: stdout}
 	fs.StringVar(&cfg.setupDef, "setup", "", "the setup agent's definition (JSON, from kiff/tafs' setupdef.ts); empty: the built-in one")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
+	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es")
+	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, brevity, no ids asked, the agent's name, choices")
+	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
+	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
 	maxCost := fs.Float64("max-cost", 3, "the most the whole test may spend on the model, in US dollars")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
@@ -132,6 +139,16 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		return err
 	}
 	cfg.maxCost = int64(*maxCost * 1e6)
+	if _, ok := owners[cfg.owner]; !ok {
+		return fmt.Errorf("-owner %q: en or es", cfg.owner)
+	}
+	if *grade {
+		var in, out int64
+		if _, err := fmt.Sscanf(*judgePrice, "%d,%d", &in, &out); err != nil || in <= 0 || out <= 0 {
+			return fmt.Errorf("-judge-price %q: input,output", *judgePrice)
+		}
+		cfg.judge = &eval.Judge{Model: anthropic.New(), ModelID: *judgeModel, Price: model.Price{Input: in, Output: out}}
+	}
 	cfg.phone = env("E2E_PHONE_KEY")
 	if *signin != "" {
 		key, err := parsePhone(cfg.phone)
@@ -197,6 +214,7 @@ type test struct {
 	cardIDs  []string // Cards the taf's draft issued
 	draftIDs []string
 	taf      string // the taf's agent id, once handed over
+	said     said   // what Setup wrote, for -grade
 }
 
 // logf is a detail of a step, for a run by hand only (see redacting).
@@ -258,6 +276,11 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	tafID, draftID, err := t.converse(ctx)
 	if err != nil {
 		return err
+	}
+	if t.cfg.judge != nil {
+		if err := t.grade(ctx, tafID); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintln(t.cfg.log, "== the taf")
@@ -403,8 +426,11 @@ type component struct {
 		Job   string `json:"job"`
 		Draft string `json:"draft"`
 	} `json:"taf"`
+	Title   string `json:"title"`
+	Text    string `json:"text"`
 	Options []struct {
 		Value string `json:"value"`
+		Label string `json:"label"`
 	} `json:"options"`
 }
 
@@ -412,22 +438,14 @@ type component struct {
 // each component the agent shows, until it shows the result.
 func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) {
 	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup"}
-	msg := ""
+	o := owners[t.cfg.owner]
+	// What an owner would say: the outcome, in their words and language.
+	msg := o.ask(t.cfg.vendor)
 	if t.stripe != nil {
 		msg = stripeAsk()
-	} else {
-		// What an owner would say: the outcome, in their words.
-		msg = fmt.Sprintf("I want our customers to be able to get their refunds. We sell online and our payments go through "+
-			"our payments provider; its MCP server is %s. Call the taf Refunds.", t.cfg.vendor)
 	}
 	// What the owner answers when Setup asks in words rather than with a choice.
-	facts := []string{
-		// Ask, not Stop (kiff/tafs#31): a refund over the per-call limit waits
-		// for the owner, who answers it on the phone.
-		"A single refund over 5 euros (500 cents) should come to me to approve on my phone first. Over a day, 50 euros at most. " +
-			"The taf should only make refunds, nothing else. Yes, you can connect to it.",
-		"Yes, that's right. Go ahead.",
-	}
+	facts := o.facts
 	answered := map[string]string{}
 	toldFacts := false
 	approvedGrant := ""
@@ -446,6 +464,16 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 		}
 		if text != "" {
 			t.logf("agent: %s", oneLine(text))
+		}
+		if t.cfg.judge != nil {
+			msgs, err := t.messagesOf(ctx, ch.Session, r.ID)
+			if err != nil {
+				return "", "", err
+			}
+			t.said.messages = append(t.said.messages, msgs...)
+			for _, c := range shown {
+				t.said.card(c)
+			}
 		}
 		msg = ""
 		for _, c := range shown {
@@ -591,6 +619,58 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 		}
 	}
 	return shown, text, nil
+}
+
+// messagesOf is every message the agent wrote in one run, in order: what
+// -grade reads (latest keeps only the last).
+func (t *test) messagesOf(ctx context.Context, sessionID, runID string) ([]string, error) {
+	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range events {
+		if e.Run != runID || (e.Kind != session.AgentMessage && e.Kind != session.Report) {
+			continue
+		}
+		var b agent.TextBody
+		if json.Unmarshal(e.Body, &b) == nil && strings.TrimSpace(b.Text) != "" {
+			out = append(out, b.Text)
+		}
+	}
+	return out, nil
+}
+
+// grade grades the setup chat (-grade), prints each check's name and
+// outcome (a failure's reason only outside CI: it quotes the chat), and
+// fails the test when a check failed.
+func (t *test) grade(ctx context.Context, tafAgent string) error {
+	fmt.Fprintf(t.cfg.log, "== the setup chat, graded (owner in %s)\n", owners[t.cfg.owner].language)
+	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent)
+	if err != nil {
+		return fmt.Errorf("grading the setup chat: %w", err)
+	}
+	var failed []string
+	passed := 0
+	for _, c := range checks {
+		mark := "pass"
+		if !c.Pass {
+			mark, failed = "FAIL", append(failed, c.Name)
+		} else {
+			passed++
+		}
+		line := fmt.Sprintf("  %s  %s", mark, c.Name)
+		if !c.Pass && c.Why != "" && !t.out.ci {
+			line += ": " + oneLine(c.Why)
+		}
+		fmt.Fprintln(t.cfg.log, line)
+	}
+	fmt.Fprintf(t.cfg.log, "setup  %d/%d  %d messages, %d components  judge $%.4f\n", passed, len(checks),
+		len(t.said.messages), len(t.said.order), float64(t.cfg.judge.Spent())/1e6)
+	if len(failed) > 0 {
+		return fmt.Errorf("the setup chat failed: %s", strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // useTaf is tafs cloud and the owner after the hand-over: the taf's key is
