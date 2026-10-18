@@ -94,6 +94,12 @@ COMPLETED, ERROR and CANCELLED are final.
   KIFF forwards always has a record here. Removing an agent does the same
   before it deletes anything; tafs also revokes the taf's Cards first, which
   withdraws every hold that names them.
+- **Steer** (#102) keeps a message the owner wrote on a run that hasn't
+  ended, as a cancel is kept. The loop takes it at its next checkpoint (before
+  a model turn, and once more when the agent has answered), marks it taken,
+  records it as an owner message and gives it to the model after what it read
+  last. A paused run takes it once it continues. One never taken, because the
+  run ended first, stays on the run, not taken, for the caller to send next.
 - **A paused run never expires**, and neither does its session: retention
   starts again when the run ends.
 
@@ -139,6 +145,7 @@ verified; the phone never calls it directly.
 | `GET /agents/{id}/runs/{run_id}` | A run: status, output, stop reason, requirements, cost |
 | `POST /agents/{id}/runs/{run_id}/resume` | Pick a stream back up from the last event index seen |
 | `POST /agents/{id}/runs/{run_id}/cancel` | Cancel |
+| `POST /agents/{id}/runs/{run_id}/messages` | Steer: a message the owner wrote while the run goes, taken at its next checkpoint (202). 409 for a run that ended or was asked to stop: send it as a new run |
 | `POST /agents/{id}/runs/{run_id}/continue` | Continue a paused run whose requirements KIFF has resolved |
 | `GET /sessions?agent_id=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their runs |
 | `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |

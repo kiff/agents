@@ -132,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
+	route("POST /agents/{id}/runs/{run_id}/messages", s.steerRun)
 	mux.HandleFunc("POST /agents/{id}/runs/{run_id}/resume", s.resumeRun)
 	s.opsRoutes(mux)
 	return jsonErrors{mux}

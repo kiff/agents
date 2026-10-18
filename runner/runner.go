@@ -180,6 +180,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
 	a.Cancel = x.cancelled
+	a.Steer = x.steered
 	sess, events, err := rn.Sessions.Read(ctx, tenant, r.Session)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
@@ -385,6 +386,38 @@ func (x *execution) cancelled(ctx context.Context) (bool, error) {
 		return false, run.ErrLeaseLost
 	}
 	return r.Cancel, nil
+}
+
+// steered is the loop's other checkpoint: what the owner wrote to the run
+// while it went and it hasn't taken, now marked taken, in order. It is
+// marked taken before the loop records it, so a message is never taken
+// twice; the run then sees it at its next model turn. A read or a write that
+// fails otherwise (a passing store error, or the owner writing faster than
+// the write's tries) takes nothing: the next checkpoint tries again. A lost
+// claim stops the run, as at Cancel.
+func (x *execution) steered(ctx context.Context) ([]string, error) {
+	r, err := x.rn.Runs.Get(ctx, x.tenant, x.id)
+	if err != nil || len(r.Untaken()) == 0 {
+		return nil, nil
+	}
+	var took []string
+	_, err = x.save(ctx, func(n *run.Run) error {
+		took = nil // the change may be applied again, to the run as stored
+		for i := range n.Steering {
+			if !n.Steering[i].Taken {
+				n.Steering[i].Taken = true
+				took = append(took, n.Steering[i].Text)
+			}
+		}
+		return nil
+	})
+	switch {
+	case err == nil:
+		return took, nil
+	case errors.Is(err, run.ErrLeaseLost), errors.Is(err, run.ErrNotFound):
+		return nil, err
+	}
+	return nil, nil
 }
 
 // saveStop is save for the writes a run's outcome depends on (where it

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -52,7 +53,18 @@ type Agent struct {
 	// call pauses the run instead: its held calls are withdrawn in KIFF
 	// before a paused run is cancelled.
 	Cancel func(ctx context.Context) (bool, error)
+	// Steer, when set, takes the messages the owner wrote to the run while it
+	// went (#102), and marks them taken. The loop asks at each checkpoint,
+	// after Cancel, and once more when the agent has answered: a message that
+	// came while it wrote its answer gets a turn of its own. Each one taken is
+	// recorded as an owner message, streamed as Steered, and added to what the
+	// model reads next, never inside a tool's result.
+	Steer func(ctx context.Context) ([]string, error)
 }
+
+// SteerNote opens a message the owner wrote while the run went, as the model
+// reads it: it comes between the agent's turns, not as a new request.
+const SteerNote = "The owner wrote this while you were working:\n\n"
 
 // Check refuses an agent that can't run safely: no model or id, no cost cap,
 // or a write tool outside KIFF's gateway.
@@ -109,10 +121,11 @@ type ErrorBody struct {
 type EventKind string
 
 const (
-	TextDelta  EventKind = "text"        // more of the agent's answer
-	CallStart  EventKind = "tool_call"   // the agent calls a tool
-	CallResult EventKind = "tool_result" // a tool answered
-	Shown      EventKind = "component"   // the agent showed the owner a component
+	TextDelta  EventKind = "text"          // more of the agent's answer
+	CallStart  EventKind = "tool_call"     // the agent calls a tool
+	CallResult EventKind = "tool_result"   // a tool answered
+	Shown      EventKind = "component"     // the agent showed the owner a component
+	Steered    EventKind = "owner_message" // the run took a message the owner wrote while it went
 )
 
 // Event is streamed to the caller as the run goes.
@@ -221,8 +234,14 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		}
 		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
 	}
+	// What the owner wrote while the run went, before it paused, follows its
+	// input: the continued run doesn't see the turns between them.
+	asked := []model.Block{{Kind: model.Text, Text: r.Input}}
+	for _, text := range r.Taken() {
+		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + text})
+	}
 	msgs := append(append([]model.Message(nil), history...),
-		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: r.Input}}},
+		model.Message{Role: model.User, Blocks: asked},
 		r.Paused.Reply,
 		model.Message{Role: model.User, Blocks: results})
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost, Turns: r.Turns}, emit)
@@ -300,6 +319,9 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 				return out, msgs, nil
 			}
 		}
+		if _, err := a.steer(ctx, rec, &msgs, emit); err != nil {
+			return out, msgs, err
+		}
 		reply, err := a.turn(ctx, rec, msgs, specs, false, &out, emit)
 		if err != nil {
 			return out, msgs, err
@@ -319,10 +341,22 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 			return out, msgs, err
 		}
 		if len(calls) == 0 {
-			out.Stop = Answered
 			if reply.Stop == model.MaxTokens {
 				out.Stop = TooLong
+				return out, msgs, nil
 			}
+			// A message that came while the agent answered gets its turn,
+			// if the caps leave one.
+			if a.capped(out) == "" {
+				took, err := a.steer(ctx, rec, &msgs, emit)
+				if err != nil {
+					return out, msgs, err
+				}
+				if took {
+					continue
+				}
+			}
+			out.Stop = Answered
 			return out, msgs, nil
 		}
 
@@ -341,6 +375,37 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 	}
+}
+
+// steer takes what the owner wrote while the run went: each message recorded
+// as an owner message, streamed, and added after what the model read last,
+// in the same user turn when that ends the conversation (a tool batch's
+// results, or the run's input). It reports whether it took any.
+func (a Agent) steer(ctx context.Context, rec *session.Recording, msgs *[]model.Message, emit func(Event)) (bool, error) {
+	if a.Steer == nil {
+		return false, nil
+	}
+	texts, err := a.Steer(ctx)
+	if err != nil || len(texts) == 0 {
+		return false, err
+	}
+	var blocks []model.Block
+	for _, text := range texts {
+		if err := rec.Record(session.OwnerMessage, TextBody{Text: text}); err != nil {
+			return false, err
+		}
+		emit(Event{Kind: Steered, Text: text})
+		blocks = append(blocks, model.Block{Kind: model.Text, Text: SteerNote + text})
+	}
+	m := *msgs
+	if n := len(m); n > 0 && m[n-1].Role == model.User {
+		// Its own copy of the blocks: the caller's history may share them.
+		m[n-1].Blocks = append(slices.Clone(m[n-1].Blocks), blocks...)
+	} else {
+		m = append(m, model.Message{Role: model.User, Blocks: blocks})
+	}
+	*msgs = m
+	return true, nil
 }
 
 // pause stops the run in turn, whose calls returned results: a requirement

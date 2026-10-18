@@ -523,6 +523,69 @@ func TestCancelRun(t *testing.T) {
 	}
 }
 
+// The owner's message to a run that hasn't ended is kept on it, for its next
+// checkpoint (#102): 202 with the run. An ended run, or one asked to stop,
+// is a conflict, so the caller sends it as a new run; so is one full of
+// messages. Another tenant's or agent's run isn't found.
+func TestSteerRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "other")
+	cases := []struct {
+		status run.Status
+		code   int
+	}{
+		{run.Pending, 202},
+		{run.Running, 202},
+		{run.Paused, 202},
+		{run.Completed, 409},
+		{run.Cancelled, 409},
+	}
+	for _, c := range cases {
+		r := f.stored(c.status)
+		path := "/agents/payouts/runs/" + r.ID + "/messages"
+		code, body := f.do("t2", "POST", path, map[string]any{"text": "only the €20 one"})
+		f.want(404, code, body, "another tenant's run")
+		code, body = f.do("t1", "POST", "/agents/other/runs/"+r.ID+"/messages", map[string]any{"text": "only the €20 one"})
+		f.want(404, code, body, "another agent's run")
+		code, body = f.do("t1", "POST", path, map[string]any{"text": "only the €20 one"})
+		f.want(c.code, code, body, "steer "+string(c.status))
+		got, _ := f.runs.Get(ctx, "t1", r.ID)
+		if c.code == 202 {
+			if got.Status != c.status || !slices.Equal(got.Untaken(), []string{"only the €20 one"}) {
+				t.Errorf("%s: stored %+v", c.status, got)
+			}
+			steering, _ := body["steering"].([]any)
+			if len(steering) != 1 {
+				t.Errorf("%s: the run shown has steering %v", c.status, body["steering"])
+			}
+		} else if len(got.Steering) != 0 {
+			t.Errorf("%s: an ended run took a message", c.status)
+		}
+	}
+
+	r := f.stored(run.Running)
+	path := "/agents/payouts/runs/" + r.ID + "/messages"
+	for _, text := range []string{"", "   "} {
+		code, body := f.do("t1", "POST", path, map[string]any{"text": text})
+		f.want(400, code, body, "an empty message")
+	}
+	if _, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	code, body := f.do("t1", "POST", path, map[string]any{"text": "wait"})
+	f.want(409, code, body, "a run asked to stop")
+
+	full := f.stored(run.Running)
+	for range run.MaxSteering {
+		if _, err := run.Steer(ctx, f.runs, "t1", full.ID, "more", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+full.ID+"/messages", map[string]any{"text": "one too many"})
+	f.want(409, code, body, "a run full of messages")
+}
+
 // heldOn puts a run of t1's payouts PAUSED on one held call per exception.
 func (f *runFixture) heldOn(exceptions ...string) run.Run {
 	f.t.Helper()

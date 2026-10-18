@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -839,5 +840,156 @@ func TestOnlyShowPutsAComponentInTheChat(t *testing.T) {
 	}
 	if streamed != 0 {
 		t.Fatal("a component from a tool that doesn't show was streamed")
+	}
+}
+
+// hookTool is a fakeTool that does something first, as the owner writing to
+// the run while one of its tools runs.
+type hookTool struct {
+	*fakeTool
+	before func()
+}
+
+func (h hookTool) Call(ctx context.Context, in json.RawMessage) (tool.Result, error) {
+	h.before()
+	return h.fakeTool.Call(ctx, in)
+}
+
+// only is the kind of each event that is one of of, in order.
+func only(events []session.Event, of ...session.EventKind) []session.EventKind {
+	var out []session.EventKind
+	for _, e := range events {
+		if slices.Contains(of, e.Kind) {
+			out = append(out, e.Kind)
+		}
+	}
+	return out
+}
+
+// A message the owner wrote while the run went is taken at the next
+// checkpoint: recorded as an owner message, streamed, and read by the model
+// after the tool batch's results, in that same user turn (#102).
+func TestAnOwnersMessageIsTakenAtTheNextCheckpoint(t *testing.T) {
+	m := &script{replies: []model.Reply{use("c1", "lookup", `{}`), say("Only the €20 one, then.")}}
+	var waiting []string
+	lookup := hookTool{
+		fakeTool: &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "found two"}},
+		before:   func() { waiting = []string{"only the €20 one"} },
+	}
+	a := newAgent(m, lookup)
+	a.Steer = func(context.Context) ([]string, error) {
+		took := waiting
+		waiting = nil
+		return took, nil
+	}
+	var steered []string
+	store, rec := start(t, session.KindChat)
+	out, _, err := agent.Run(context.Background(), a, rec, nil, "refund order 12", func(e agent.Event) {
+		if e.Kind == agent.Steered {
+			steered = append(steered, e.Text)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Answered || len(m.reqs) != 2 {
+		t.Fatalf("stopped %+v after %d turns", out, len(m.reqs))
+	}
+	if n := len(m.reqs[0].Messages); n != 1 {
+		t.Fatalf("the first turn read %d messages, want the input alone", n)
+	}
+	last := m.reqs[1].Messages[len(m.reqs[1].Messages)-1]
+	if last.Role != model.User || len(last.Blocks) != 2 || last.Blocks[0].Kind != model.ToolResult ||
+		last.Blocks[1].Text != agent.SteerNote+"only the €20 one" {
+		t.Fatalf("the model read %+v, want the results, then the owner's message", last)
+	}
+	if !equal(steered, []string{"only the €20 one"}) {
+		t.Fatalf("streamed %q", steered)
+	}
+	if err := rec.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", rec.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []session.EventKind{session.OwnerMessage, session.ToolCall, session.ToolResult, session.OwnerMessage, session.AgentMessage}
+	if got := only(events, want...); !equal(got, want) {
+		t.Fatalf("recorded %v, want %v", got, want)
+	}
+
+	// A checkpoint that fails stops the run, as Cancel's does.
+	a.Steer = func(context.Context) ([]string, error) { return nil, errors.New("the claim is gone") }
+	_, rec = start(t, session.KindChat)
+	if _, _, err := agent.Run(context.Background(), a, rec, nil, "again", nil); err == nil {
+		t.Fatal("a failed steer checkpoint didn't stop the run")
+	}
+}
+
+// A message that came while the agent wrote its answer gets a turn of its
+// own; with no turn left, the answer ends the run and the message isn't
+// asked for (it stays not taken, for the caller).
+func TestAMessageDuringTheAnswerGetsATurn(t *testing.T) {
+	m := &script{replies: []model.Reply{say("Refunded."), say("It was €20.")}}
+	a := newAgent(m)
+	asked := 0
+	a.Steer = func(context.Context) ([]string, error) {
+		asked++
+		if asked == 2 { // the check once the first answer is in
+			return []string{"how much was it?"}, nil
+		}
+		return nil, nil
+	}
+	_, rec := start(t, session.KindChat)
+	out, _, err := agent.Run(context.Background(), a, rec, nil, "refund order 12", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Answered || out.Text != "It was €20." || len(m.reqs) != 2 {
+		t.Fatalf("stopped %+v after %d turns", out, len(m.reqs))
+	}
+	msgs := m.reqs[1].Messages
+	if len(msgs) != 3 || msgs[1].Role != model.Assistant || msgs[2].Role != model.User ||
+		msgs[2].Blocks[0].Text != agent.SteerNote+"how much was it?" {
+		t.Fatalf("the second turn read %+v", msgs)
+	}
+
+	m = &script{replies: []model.Reply{say("Refunded.")}}
+	a = newAgent(m)
+	a.MaxTurns = 1
+	asked = 0
+	a.Steer = func(context.Context) ([]string, error) { asked++; return nil, nil }
+	_, rec = start(t, session.KindChat)
+	if out, _, err = agent.Run(context.Background(), a, rec, nil, "refund order 12", nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Answered || asked != 1 {
+		t.Fatalf("at the turn cap: %+v, asked %d times, want once, before the turn", out, asked)
+	}
+}
+
+// A paused run continues knowing what the owner wrote before it paused: it
+// follows the input, as the turns between them aren't carried on.
+func TestAContinuedRunKnowsWhatTheOwnerWrote(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("Refunded ch_big.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	stored.Steering = []run.Steering{{Text: "only ch_big", Taken: true}, {Text: "not yet", Taken: false}}
+	r, err := rec.Resume(context.Background(), s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.Continue(context.Background(), a, r, nil, stored, approved(), nil); err != nil {
+		t.Fatal(err)
+	}
+	first := m.reqs[2].Messages[0]
+	if first.Role != model.User || len(first.Blocks) != 2 || first.Blocks[0].Text != stored.Input ||
+		first.Blocks[1].Text != agent.SteerNote+"only ch_big" {
+		t.Fatalf("the continued run read %+v first, want the input and the message it took", first)
 	}
 }

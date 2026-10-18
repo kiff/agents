@@ -1330,3 +1330,76 @@ func TestARefusedRunRecordsWhy(t *testing.T) {
 		t.Fatalf("stored %s, stop %q, refusal %q", got.Status, got.Stop, got.Refusal)
 	}
 }
+
+// A message the owner writes while the run goes is taken at its next
+// checkpoint, marked taken on the run, recorded and read by the model; one
+// written while the run is paused is taken once it continues (#102).
+func TestTheOwnerSteersARunThatGoes(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Refunded €20 only."))
+	r := f.start(server.Start{Input: "refund order 12"})
+	f.refund.onCall = func() {
+		if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "only the €20 one", f.clock.now()); err != nil {
+			t.Error(err)
+		}
+	}
+	var steered []string
+	got, err := f.r.Execute(ctx, "t1", r.ID, func(e agent.Event) {
+		if e.Kind == agent.Steered {
+			steered = append(steered, e.Text)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || !slices.Equal(got.Taken(), []string{"only the €20 one"}) || len(got.Untaken()) != 0 {
+		t.Fatalf("ended %+v", got)
+	}
+	reqs := f.model.requests()
+	last := reqs[1].Messages[len(reqs[1].Messages)-1]
+	if len(last.Blocks) != 2 || last.Blocks[1].Text != agent.SteerNote+"only the €20 one" {
+		t.Fatalf("the model read %+v", last)
+	}
+	if !slices.Equal(steered, []string{"only the €20 one"}) {
+		t.Fatalf("streamed %q", steered)
+	}
+	owner := 0
+	for _, k := range f.events(got) {
+		if k == session.OwnerMessage {
+			owner++
+		}
+	}
+	if owner != 2 {
+		t.Fatalf("recorded %d owner messages, want the input and the one taken", owner)
+	}
+}
+
+// A message written while the run is paused waits on it, and the run takes
+// it at its first checkpoint once it continues.
+func TestAPausedRunTakesWhatTheOwnerWroteWhenItContinues(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Waiting."), say("Done, and noted."))
+	r := f.start(server.Start{Input: "refund"})
+	paused := f.pause(r)
+	if paused.Status != run.Paused {
+		t.Fatalf("paused %+v", paused)
+	}
+	if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "note it for next time", f.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded", State: "forwarded"}}}, nil
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || !slices.Equal(got.Taken(), []string{"note it for next time"}) {
+		t.Fatalf("ended %+v", got)
+	}
+	reqs := f.model.requests()
+	last := reqs[len(reqs)-1].Messages
+	tail := last[len(last)-1]
+	if tail.Blocks[len(tail.Blocks)-1].Text != agent.SteerNote+"note it for next time" {
+		t.Fatalf("the continued run read %+v last", tail)
+	}
+}
