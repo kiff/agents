@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kiff/agents/drafts"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/schedule"
@@ -55,6 +56,8 @@ type Server struct {
 	// Runner starts and executes runs. Without one, runs can be read,
 	// cancelled and followed, but not started.
 	Runner Runner
+	// Drafts claims a confirmed taf draft's key (#91); nil: no such route.
+	Drafts Drafts
 	// Background has the run executed by another invocation, and returns
 	// once that invocation is on its way.
 	Background func(ctx context.Context, tenant, id string) error
@@ -123,6 +126,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /agents/{id}/runs/{run_id}/continue", s.continueRun)
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 		route("POST /agents/{id}/events", s.startEvent)
+	}
+	if s.Drafts != nil {
+		route("POST /drafts/{draft_id}/claim", s.claimDraft)
 	}
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
@@ -247,7 +253,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ErrUnauthorized):
 		status, msg = http.StatusUnauthorized, "the caller is not verified"
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
-		errors.Is(err, run.ErrNotFound):
+		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound):
 		status, msg = http.StatusNotFound, "not found"
 	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):
 		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"

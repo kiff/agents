@@ -1,0 +1,40 @@
+name: E2E
+# The simulated-owner end-to-end test of the tafs setup chat (#91): a
+# scripted owner asks the setup agent to connect a vendor's refunds, answers
+# what it shows, and ends with a Refunds taf whose refund inside its Card
+# reaches the vendor and whose refund outside it doesn't. The agents run on
+# this commit's runtime, in the job; the model, KIFF (a test account),
+# planque and the fake vendor are real services.
+#
+# Every night and by hand. It doesn't gate pull requests: it spends money
+# and depends on live services.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: The simulated owner
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+        # This log is public: in CI the test writes only its steps and the
+        # outcome, and masks every id it learns (cmd/e2e, redacting). Run it
+        # by hand for the details.
+        run: go run ./cmd/e2e -max-cost 4 -owner-turns 14

@@ -15,6 +15,7 @@ import (
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	toolmemory "github.com/kiff/agents/tool/memory"
@@ -217,5 +218,34 @@ func TestTheMemoryToolKeepsNotes(t *testing.T) {
 	}
 	if mem.Access() != tool.Own || mem.Gateway() {
 		t.Fatal("memory must be Own, outside the gateway")
+	}
+}
+
+// What the agent showed stays in its history, so the owner's answer to a
+// component can be followed up; tool calls and their results still don't.
+func TestHistoryKeepsWhatWasShown(t *testing.T) {
+	ev := func(kind session.EventKind, body string) session.Event {
+		return session.Event{Kind: kind, Body: json.RawMessage(body)}
+	}
+	msgs := chat.Conversation([]session.Event{
+		ev(session.OwnerMessage, `{"text":"Connect my Stripe."}`),
+		ev(session.ToolCall, `{"call_id":"c1","tool":"show"}`),
+		ev(session.Component, `{"type":"approval","id":"connect-stripe","grant":"grt_1"}`),
+		ev(session.AgentMessage, `{"text":"Approve it on your phone."}`),
+		ev(session.OwnerMessage, `{"text":"[approval connect-stripe] approved, signed in"}`),
+		ev(session.AgentMessage, `{"text":"Checking planque."}`),
+	})
+	if len(msgs) != 4 || msgs[1].Role != model.Assistant || len(msgs[1].Blocks) != 2 {
+		t.Fatalf("history %+v", msgs)
+	}
+	if got := msgs[1].Blocks[0].Text; got != `[shown] {"type":"approval","id":"connect-stripe","grant":"grt_1"}` {
+		t.Fatalf("shown as %q", got)
+	}
+	for _, m := range msgs {
+		for _, b := range m.Blocks {
+			if strings.Contains(b.Text, `"call_id"`) {
+				t.Fatal("a tool call reached the history")
+			}
+		}
 	}
 }

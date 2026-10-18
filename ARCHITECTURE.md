@@ -29,7 +29,7 @@ did, under keep rules the operator sets, and never decides on KIFF's behalf.
 | **Agent** | A stored definition: instructions, model and price, tools, keep rules, cost and turn caps, how much history to bring along. Built afresh for each request, for its tenant. | A taf |
 | **Session** | A thread of runs for one agent. It holds the runs, in order. | A chat conversation; or the one scheduled run and its continuations |
 | **Run** | One execution of the agent: one owner message, or one scheduled or triggered job. It has a stable ID and a status for its whole life, through any number of pauses. | One message, or one job |
-| **Event** | One thing that happened in a run: a message, a tool call and result, usage, a status change. Numbered without gaps; streamed as it happens; kept by the keep rules. | What the app shows of a run |
+| **Event** | One thing that happened in a run: a message, a tool call and result, a component the agent showed, usage, a status change. Numbered without gaps; streamed as it happens; kept by the keep rules. | What the app shows of a run |
 | **Requirement** | What a paused run waits for. Here, one call KIFF holds for the owner. | A held call on the "Needs you" screen |
 | **Memory** | Notes an agent keeps across sessions, by name; the owner can read and forget each. | What a taf remembers |
 | **Schedule** | When an agent runs by itself: cron, time zone, the input, on or off. Each firing is an ordinary run. | A taf's schedule |
@@ -111,6 +111,9 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `chat` | A conversation: one chat session, each message a run through `server.Runner`; `Conversation` turns finished runs into history | Built (#2, #12): a thin layer over the runner (`Start` in the conversation's session, then `Execute`); `cmd/chat` runs on the same runner |
 | `model`, `model/anthropic` | The model port; Anthropic first | Built (#2) |
 | `workspace`, `tool/workspace` | A run's workspace: files and commands, no credentials, no way out; the `workspace` tool on it (an `Own` tool), opt-in per definition | Port, tool and the in-memory adapter, `workspace/inmemory` (#86). Next: the AWS adapter (its own function, no permissions, no route out) and its infra |
+| `drafts`, `drafts/kiffapi`, `tool/drafts` | A taf's KIFF draft: the setup agent submits it (`kiff_draft`), its claim secret is kept from the model, and tafs cloud has its key claimed into the agents' secrets (`POST /drafts/{id}/claim`) | Built (#91) |
+| `tool/show` | The `show` tool: UI components (steps, notice, confirm, approval, sign-in, result) recorded as `component` events, kept like messages, and drawn by the app (contract 1 on #91) | Built (#91) |
+| `tool/planque` | The `planque` tool: ask planque for a vendor grant for a taf, and follow it, with the agent's own KIFF key; opt-in per definition, on the server's list of planques | Built (#91) |
 | `tool`, `tool/kiff`, `tool/memory` | Tools; KIFF's gateway over MCP; memory notes | Built (#2). Step 4: `tool/kiff` records a held call's operation ID, exception ID and expiry (#44); collecting the outcome by the operation ID is next |
 | `hook` | Before a run (input checks), around each tool call, after a run (output checks); background hooks for notifications | To build, when a check needs it |
 | `registry` | Stored agent definitions, each bounded as stored; built per request for their tenant, with its gateway on the server's list and its KIFF key by reference; ports `Agents`, `Secrets` | Built (#16): definitions, `Build`, memory and DynamoDB stores, the routes, removing an agent and what is kept for it, the Secrets Manager adapter (`registry/secretsmanager`; by example in [docs/registry.md](docs/registry.md)). Removing an agent withdraws its paused runs' holds first (#15) |
@@ -204,10 +207,12 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   with a compare-and-set and takes a lease that ends a minute after the
   invocation's own deadline: a healthy run can't outlive it, so it needs no
   heartbeat, and every write the run makes checks it still holds the lease. A
-  crash or a timeout can't write ERROR itself, so two things do: for a
-  background run, the function's on-failure destination; for any run, a
-  scheduled sweep that marks ERROR a RUNNING run whose lease ran out, or a
-  PENDING run no invocation claimed in time. The same sweep asks KIFF about
+  crash or a timeout can't write ERROR itself, so a scheduled sweep (every
+  minute) does: it marks ERROR a RUNNING run whose lease ran out, or a PENDING
+  run no invocation claimed in time. The function has no on-failure
+  destination: the sweep ends a run whose invocation failed within a minute of
+  its lease ending, or, when it failed before claiming the run, once the
+  PENDING run has waited 5 minutes. The same sweep asks KIFF about
   paused runs whose holds expired with no answer recorded. A run is never left RUNNING. Runs
   must fit Lambda's 15 minutes; the turn and cost caps keep them well inside.
 - **Schedules** are EventBridge Scheduler entries that start ordinary background

@@ -18,6 +18,8 @@
 //	SCHEDULE_ROLE     the role EventBridge Scheduler invokes it with
 //	AGENTS_SECRETS_PREFIX    the name prefix of the agents' KIFF keys in Secrets Manager (registry/secretsmanager)
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
+//	AGENTS_DRAFTS_PREFIX     the name prefix of taf drafts' claim secrets (#91); not under AGENTS_SECRETS_PREFIX.
+//	                         Unset: no agent gets the draft tool, and POST /drafts/{id}/claim isn't served
 //
 // An EventBridge Scheduler schedule sends {"sweep":{}} every minute, through
 // SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end, and
@@ -72,6 +74,8 @@ import (
 	sch "github.com/aws/aws-sdk-go-v2/service/scheduler"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
+	"github.com/kiff/agents/drafts"
+	draftsapi "github.com/kiff/agents/drafts/kiffapi"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
@@ -83,8 +87,10 @@ import (
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/store/dynamodb"
 	"github.com/kiff/agents/tool"
+	tooldrafts "github.com/kiff/agents/tool/drafts"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
+	"github.com/kiff/agents/tool/planque"
 )
 
 func main() {
@@ -144,6 +150,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	if v := strings.TrimSpace(os.Getenv("AGENTS_GATEWAYS")); v != "" {
 		gateways = split(v)
 	}
+	// Planques an agent may ask for vendor access through (#91); none
+	// unless set, so no agent gets the planque tool by default.
+	planques := split(os.Getenv("AGENTS_PLANQUES"))
 	maxActive, err := tenantRuns(os.Getenv("AGENTS_TENANT_RUNS"))
 	if err != nil {
 		return nil, err
@@ -170,13 +179,26 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		make: func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) },
 	}
 	keys := secretsmanager.New(secrets, prefix)
+	var claims *drafts.Service
+	if dp := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); dp != "" {
+		if strings.HasPrefix(dp, prefix) || strings.HasPrefix(prefix, dp) {
+			return nil, fmt.Errorf("lambda: AGENTS_DRAFTS_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap: a key reference could name a claim secret", dp, prefix)
+		}
+		claims = &drafts.Service{Store: secretsmanager.NewDrafts(secrets, dp), Keys: secretsmanager.NewKeys(keys, secrets),
+			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
+	}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
 		Agents: agents, Secrets: keys,
 		Model: llm, Gateways: gateways,
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
-		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
+		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
+		Drafts:   draftTool(claims),
+		Planques: planques,
+		Planque: func(base, tenant, key string) tool.Tool {
+			return planque.New(base, tenant, key, nil)
+		},
 	}, Collect: kiff.Collect}
 	schedules := &schedule.Service{
 		Store:     dynamodb.NewSchedules(db, table),
@@ -194,7 +216,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims)},
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,
@@ -209,6 +231,23 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
 	return f, nil
+}
+
+// draftTool is the draft tool on claims, or nil when drafts are off.
+func draftTool(claims *drafts.Service) func(tenant, key string) tool.Tool {
+	if claims == nil {
+		return nil
+	}
+	return func(tenant, key string) tool.Tool { return tooldrafts.New(claims, tenant, key) }
+}
+
+// claimsOrNil keeps a nil service a nil interface, so the claim route is
+// not served.
+func claimsOrNil(claims *drafts.Service) server.Drafts {
+	if claims == nil {
+		return nil
+	}
+	return claims
 }
 
 // defaultTenantRuns is how many runs a tenant may have going at once when

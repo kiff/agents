@@ -39,6 +39,11 @@ tool/               the tool port; Check refuses a write tool outside KIFF's gat
 tool/kiff           adapter: MCP client to KIFF's gateway, with the agent's own key
 tool/memory         adapter: the agent's notes, on session.Notes
 tool/workspace      adapter: the workspace tool, on workspace.Workspaces (an Own tool)
+tool/show           the show tool: UI components the app draws in the chat (an Own tool)
+drafts/             a taf's KIFF draft: submit, keep its claim secret, claim its key; ports Store, Keys, KIFF
+drafts/kiffapi      adapter: drafts.KIFF over KIFF's API
+tool/drafts         the kiff_draft tool: submit a taf's draft (an Own tool)
+tool/planque        the planque tool: ask planque for a vendor grant and follow it (an Own tool)
 workspace/          a run's workspace: files and commands, no credentials, no way out; port Workspaces
 workspace/workspacetest the checks every Workspaces must pass
 workspace/inmemory  adapter: Workspaces in memory, for tests and local runs

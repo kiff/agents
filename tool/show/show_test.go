@@ -1,0 +1,78 @@
+package show_test
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/show"
+)
+
+func call(t *testing.T, input string) tool.Result {
+	t.Helper()
+	r, err := show.New().Call(context.Background(), json.RawMessage(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// Each of contract 1's components, as the agent sends it, is shown as is.
+func TestEveryComponentIsShown(t *testing.T) {
+	for _, in := range []string{
+		`{"type":"steps","id":"plan","title":"Connect Stripe","steps":[{"label":"Ask for access","status":"done"},{"label":"Sign in","status":"active"}]}`,
+		`{"type":"notice","id":"n1","tone":"warning","text":"The link expired."}`,
+		`{"type":"confirm","id":"plan-ok","text":"Go ahead?","options":[{"value":"yes","label":"Go ahead"},{"value":"no","label":"Not now"}]}`,
+		`{"type":"approval","id":"connect-stripe","grant":"grt_AbC-1","draft":"draft_9"}`,
+		`{"type":"sign_in","id":"connect-stripe","grant":"grt_AbC-1","service":"mcp.stripe.com"}`,
+		`{"type":"result","id":"done","taf":{"agent":"refunds","name":"Refunds","job":"refunds","draft":"drf_01"},"text":"Refunds is ready.","tools":["stripe_refund"]}`,
+	} {
+		r := call(t, in)
+		if r.IsError || r.Component == nil {
+			t.Fatalf("%s: %+v", in, r)
+		}
+		var got, want map[string]any
+		_ = json.Unmarshal(r.Component, &got)
+		_ = json.Unmarshal([]byte(in), &want)
+		if g, _ := json.Marshal(got); string(g) != mustJSON(want) {
+			t.Errorf("shown %s, want %s", g, mustJSON(want))
+		}
+	}
+}
+
+func mustJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// What doesn't fit the contract comes back as an error the model can fix,
+// and nothing is shown.
+func TestWhatDoesNotFitIsRefused(t *testing.T) {
+	long := strings.Repeat("x", show.MaxText+1)
+	for in, want := range map[string]string{
+		`{"type":"banner","id":"a"}`:                                                                                 "type must be one of",
+		`{"type":"notice","id":"Bad Id","tone":"info","text":"x"}`:                                                   "id must be",
+		`{"type":"notice","id":"a","tone":"loud","text":"x"}`:                                                        "tone is one of",
+		`{"type":"notice","id":"a","tone":"info","text":"` + long + `"}`:                                             "at most",
+		`{"type":"notice","id":"a","tone":"info","text":"x","grant":"grt_1"}`:                                        `has no field "grant"`,
+		`{"type":"notice","id":"a","tone":"info","text":"x","html":"<b>"}`:                                           "unknown",
+		`{"type":"steps","id":"a","steps":[]}`:                                                                       "1 to 20 steps",
+		`{"type":"steps","id":"a","steps":[{"label":"x","status":"maybe"}]}`:                                         "status is one of",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"}]}`:                               "2 to 4",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"y","label":"Again"}]}`: "different",
+		`{"type":"approval","id":"a","grant":"grt 1"}`:                                                               "planque's grant id",
+		`{"type":"approval","id":"a","grant":"grt_1","text":"Approve me"}`:                                           `has no field "text"`,
+		`{"type":"sign_in","id":"a","grant":"grt_1"}`:                                                                "service is",
+		`{"type":"result","id":"a","text":"done"}`:                                                                   "taf.agent",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1"},"text":"done"}`:                    "taf.job",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds"},"text":"done"}`:                    "taf.draft",
+		`not json`: "a JSON object",
+	} {
+		r := call(t, in)
+		if !r.IsError || r.Component != nil || !strings.Contains(r.Text, want) {
+			t.Errorf("%s: %+v, want an error with %q", in, r, want)
+		}
+	}
+}

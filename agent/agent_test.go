@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/show"
 )
 
 // script is a fake model: it answers each turn with the next reply, and keeps
@@ -759,5 +761,83 @@ func TestEachTurnRecordsWhatItsInputWasMadeOf(t *testing.T) {
 		got[1].SystemBytes != len("You refund orders.") || got[1].ToolsBytes == 0 || got[1].MessagesBytes != size.Messages ||
 		got[1].ToolResultsBytes != len("refunded re_1") || got[0].ToolResultsBytes != 0 {
 		t.Fatalf("context %+v", got)
+	}
+}
+
+// A component the agent shows is recorded as its own event, kept like the
+// agent's messages after the run ends (the call that showed it is not), and
+// streamed. A refused component records nothing.
+func TestAShownComponentIsKept(t *testing.T) {
+	m := &script{replies: []model.Reply{
+		use("c1", "show", `{"type":"notice","id":"n1","tone":"info","text":"Asking planque."}`),
+		use("c2", "show", `{"type":"notice","id":"n2","tone":"loud","text":"x"}`),
+		say("Done."),
+	}}
+	store, r := start(t, session.KindChat)
+	var streamed []agent.Event
+	if _, _, err := agent.Run(context.Background(), newAgent(m, show.New()), r, nil, "Connect Stripe.", func(e agent.Event) { streamed = append(streamed, e) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown []string
+	for _, e := range events {
+		if e.Kind == session.Component {
+			shown = append(shown, string(e.Body))
+		}
+	}
+	if len(shown) != 1 || !strings.Contains(shown[0], `"id":"n1"`) || !strings.Contains(shown[0], `"text":"Asking planque."`) {
+		t.Fatalf("kept components %v, want only n1", shown)
+	}
+	for _, e := range events {
+		if e.Kind == session.ToolCall || e.Kind == session.ToolResult {
+			t.Fatalf("the show call outlived its run: %s", e.Kind)
+		}
+	}
+	var streamedShown int
+	for _, e := range streamed {
+		if e.Kind == agent.Shown {
+			streamedShown++
+			if !strings.Contains(string(e.Component), `"id":"n1"`) {
+				t.Fatalf("streamed %s", e.Component)
+			}
+		}
+	}
+	if streamedShown != 1 {
+		t.Fatalf("streamed %d components", streamedShown)
+	}
+}
+
+// Only a tool that shows components can put one in the owner's chat: a
+// component from any other tool's result is not recorded or streamed.
+func TestOnlyShowPutsAComponentInTheChat(t *testing.T) {
+	other := &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "ok",
+		Component: json.RawMessage(`{"type":"notice","id":"n1","tone":"info","text":"from lookup"}`)}}
+	m := &script{replies: []model.Reply{use("c1", "lookup", `{}`), say("Done.")}}
+	store, r := start(t, session.KindChat)
+	var streamed int
+	if _, _, err := agent.Run(context.Background(), newAgent(m, other), r, nil, "Look it up.", func(e agent.Event) {
+		if e.Kind == agent.Shown {
+			streamed++
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, _ := store.Read(context.Background(), "t1", r.Session().ID)
+	for _, e := range events {
+		if e.Kind == session.Component {
+			t.Fatal("a component from a tool that doesn't show was recorded")
+		}
+	}
+	if streamed != 0 {
+		t.Fatal("a component from a tool that doesn't show was streamed")
 	}
 }

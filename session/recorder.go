@@ -138,7 +138,7 @@ func (rec *Recording) Run() string { return rec.run }
 // recorded as an OmittedBody. Record fails only after Pause or End, or when
 // body can't be encoded; write errors come from Flush, Pause and End.
 func (rec *Recording) Record(kind EventKind, body any) error {
-	rule := rec.r.policy[kind]
+	rule := rec.r.policy.Rule(kind)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
