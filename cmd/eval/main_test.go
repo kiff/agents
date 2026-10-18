@@ -724,6 +724,7 @@ func TestAPublicLogNamesNothing(t *testing.T) {
 // stops before seeding, and says which tool, what's left and when it resets.
 func TestARunTheCardsCantFundIsNotGraded(t *testing.T) {
 	ctx := context.Background()
+	one := cases.Chargebacks.Room["update_dispute"] // what one run needs
 	rt := newRuntime(&script{}, "kiff-k", registry.Definition{Tenant: evalTenant, Gateway: "https://gateway.test/mcp"}, "", "", io.Discard)
 	old := cardRoom
 	t.Cleanup(func() { cardRoom = old })
@@ -745,19 +746,19 @@ func TestARunTheCardsCantFundIsNotGraded(t *testing.T) {
 
 	cardRoom = room(1000)
 	err := rt.checkRoom(ctx, cases.Chargebacks, 1)
-	if !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "update_dispute has 1000 of 1000000 left on its Card (sum(amount) calendar_day, resets at 2026-10-19T00:00:00Z); 1 runs need 58500") {
+	if !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), fmt.Sprintf("update_dispute has 1000 of 1000000 left on its Card (sum(amount) calendar_day, resets at 2026-10-19T00:00:00Z); 1 runs need %d", one)) {
 		t.Fatalf("err %v", err)
 	}
 	if len(asked) != 1 || asked[0] != "https://gateway.test/mcp kiff-k" {
 		t.Fatalf("asked %v", asked)
 	}
 
-	cardRoom = room(58500)
+	cardRoom = room(one)
 	if err := rt.checkRoom(ctx, cases.Chargebacks, 1); err != nil {
 		t.Fatalf("exactly enough: %v", err)
 	}
 	// Room for one run isn't room for a night of three: it stops before the first.
-	if err := rt.checkRoom(ctx, cases.Chargebacks, 3); !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "3 runs need 175500") {
+	if err := rt.checkRoom(ctx, cases.Chargebacks, 3); !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), fmt.Sprintf("3 runs need %d", 3*one)) {
 		t.Fatalf("one run's room for three: %v", err)
 	}
 
@@ -801,7 +802,7 @@ func TestANightTheCardsCantFundStopsBeforeTheFirstSeed(t *testing.T) {
 
 	err := run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-seed", "-repeat", "3", "chargebacks"},
 		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}))
-	if !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "3 runs need 175500") {
+	if !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), fmt.Sprintf("3 runs need %d", 3*cases.Chargebacks.Room["update_dispute"])) {
 		t.Fatalf("err %v", err)
 	}
 	if f.seeds != 0 || len(m.asked) != 0 {
