@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,6 +79,17 @@ func TestRunGradesAndComparesWithTheBaseline(t *testing.T) {
 	err = run(context.Background(), []string{"-baseline", base, "refunds=sesn_r"}, &stdout, &stderr, env(map[string]string{"ANTHROPIC_API_KEY": "k"}))
 	if err == nil || !strings.Contains(err.Error(), "lower than the baseline: refunds") {
 		t.Fatalf("err %v; want a lower score to fail", err)
+	}
+
+	// A baseline from -repeat holds each case's mean, not its last run: 0.33
+	// is above a mean of 0.30, and below one of 0.35 (#78).
+	for scores, lower := range map[string]bool{"0.2, 0.4": false, "0.5, 0.2": true} {
+		a, b, _ := strings.Cut(scores, ", ")
+		_ = os.WriteFile(base, []byte(`[{"case": "refunds", "score": `+a+`}, {"case": "refunds", "score": `+b+`}]`), 0o644)
+		err = run(context.Background(), []string{"-baseline", base, "refunds=sesn_r"}, io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+		if got := err != nil && strings.Contains(err.Error(), "lower than the baseline: refunds"); got != lower {
+			t.Errorf("a baseline of %s: %v", scores, err)
+		}
 	}
 }
 
@@ -531,5 +546,109 @@ func TestACaseRunsAsTafsDefinesIt(t *testing.T) {
 		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}))
 	if err == nil || !strings.Contains(err.Error(), "one or the other") {
 		t.Fatalf("-definitions with -model: %v", err)
+	}
+}
+
+// fakeStripe answers just enough for a Chargebacks seed, and counts seeds.
+type fakeStripe struct {
+	mu    sync.Mutex
+	n     int
+	seeds int
+}
+
+func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_ = r.ParseForm()
+	f.n++
+	switch {
+	case r.Method == "GET" && r.URL.Path == "/v1/disputes" && r.Form.Get("payment_intent") != "":
+		fmt.Fprintf(w, `{"data": [{"id": "dp_%d"}], "has_more": false}`, f.n)
+	case r.Method == "GET" && r.URL.Path == "/v1/disputes":
+		f.seeds++ // each seed starts by closing what the last one left
+		fmt.Fprint(w, `{"data": [], "has_more": false}`)
+	default:
+		fmt.Fprintf(w, `{"id": "x_%d", "latest_charge": "ch_%d"}`, f.n, f.n)
+	}
+}
+
+// -seed seeds the case before each of -repeat runs, with the case's owner
+// note in memory; the report and the baseline hold the case over its runs,
+// against its mean score (#78).
+func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
+	done := model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn}
+	replies := []model.Reply{ // the first run writes a note the second must not see
+		calls(call("c1", "memory", `{"action":"list"}`), call("c2", "memory", `{"action":"write","name":"left","text":"dp_from_run_1"}`)), done,
+		calls(call("c1", "memory", `{"action":"list"}`)), done,
+	}
+	m := &script{replies: replies}
+	withAgent(t, m)
+	f := &fakeStripe{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	old := stripeURL
+	stripeURL = srv.URL
+	t.Cleanup(func() { stripeURL = old })
+
+	dir := t.TempDir()
+	defs := filepath.Join(dir, "defs")
+	_ = os.Mkdir(defs, 0o755)
+	_ = os.WriteFile(filepath.Join(defs, "chargebacks.json"), []byte(`{"instructions": "You work the disputes.", "model": "claude-opus-5-5",
+		"price": {"Input": 4000000, "Output": 20000000, "CacheRead": 200000, "CacheWrite": 5000000}, "max_tokens": 16000, "effort": "high", "history": 10}`), 0o644)
+	_ = os.WriteFile(filepath.Join(defs, "source.json"), []byte(`{"repo": "kiff/tafs", "commit": "1d1ed42e64e88083f9fceb52c51eec81db1adbd8"}`), 0o644)
+	base := filepath.Join(dir, "baseline.json")
+	_ = os.WriteFile(base, []byte(`[{"case": "chargebacks", "score": 1}]`), 0o644)
+	report := filepath.Join(dir, "report.md")
+
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp",
+		"-seed", "-repeat", "2", "-report", report, "-baseline", base, "chargebacks"}, &stdout, io.Discard,
+		env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}))
+	if err == nil || !strings.Contains(err.Error(), "lower than the baseline: chargebacks") {
+		t.Fatalf("against a baseline of 1: %v", err)
+	}
+	var results []eval.Result
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil || len(results) != 2 {
+		t.Fatalf("results %s: %v", stdout.String(), err)
+	}
+	if f.seeds != 2 {
+		t.Fatalf("seeded %d times for 2 runs", f.seeds)
+	}
+	for i := range 2 {
+		b, _ := json.Marshal(m.asked[2*i+1].Messages)
+		if !strings.Contains(string(b), "Gus Regular") {
+			t.Fatalf("run %d: the seed's owner note isn't in memory: %s", i+1, b)
+		}
+	}
+	if b, _ := json.Marshal(m.asked[3].Messages); strings.Contains(string(b), "dp_from_run_1") {
+		t.Fatalf("run 2 saw what run 1 wrote in memory: %s", b)
+	}
+	md, _ := os.ReadFile(report)
+	for _, want := range []string{"**Lower than the baseline:** chargebacks", "## Configuration: chargebacks",
+		"| Definition | kiff/tafs@1d1ed42e64e8 |", "| Effort | high |", "| Price | 4000000,20000000,200000,5000000 |",
+		"| Tools | create_refund |", "| chargebacks | 2 |", "### chargebacks, run 2"} {
+		if !strings.Contains(string(md), want) {
+			t.Errorf("no %q in the report:\n%s", want, md)
+		}
+	}
+
+	// -seed and -ids together, -seed without a Stripe key, or -seed for a
+	// case with no seeder, are refused before anything runs.
+	for name, c := range map[string]struct {
+		args []string
+		env  map[string]string
+	}{
+		"-ids too":      {[]string{"-run", "-definitions", defs, "-seed", "-ids", base, "chargebacks"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}},
+		"no Stripe key": {[]string{"-run", "-definitions", defs, "-seed", "chargebacks"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}},
+		"-repeat 0":     {[]string{"-run", "-definitions", defs, "-repeat", "0", "chargebacks"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k"}},
+		"no seeder":     {[]string{"-run", "-definitions", defs, "-seed", "chargebacks", "refunds"}, map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}},
+	} {
+		m.asked, f.n, f.seeds = nil, 0, 0
+		if err := run(context.Background(), c.args, io.Discard, io.Discard, env(c.env)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		if len(m.asked) != 0 || f.n != 0 {
+			t.Errorf("%s: ran %d model turns and %d Stripe requests first", name, len(m.asked), f.n)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kiff/agents/eval"
@@ -81,12 +82,17 @@ func TestRunCallsAndReport(t *testing.T) {
 // fakeModel answers every turn with text and usage.
 type fakeModel struct {
 	text string
+	stop model.Stop // EndTurn when empty
 	reqs []model.Request
 }
 
 func (m *fakeModel) Turn(_ context.Context, req model.Request, _ func(string)) (model.Reply, error) {
 	m.reqs = append(m.reqs, req)
-	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: m.text}}, Stop: model.EndTurn,
+	stop := m.stop
+	if stop == "" {
+		stop = model.EndTurn
+	}
+	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: m.text}}, Stop: stop,
 		Usage: model.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}}, nil
 }
 
@@ -106,6 +112,24 @@ func TestJudgeAsk(t *testing.T) {
 	req := m.reqs[0]
 	if req.Model != "judge-model" || len(req.Tools) != 0 || len(req.Messages) != 1 {
 		t.Errorf("request %+v", req)
+	}
+}
+
+// The judge has room to think before its verdict, at low effort: models
+// that always think spend output tokens on it, and a verdict cut short is
+// said to be, not misread (#78: 300 tokens cut one off live).
+func TestJudgeHasRoomToThink(t *testing.T) {
+	m := &fakeModel{text: `{"pass": true, "why": "The evidence says it was prepared by an AI`, stop: model.MaxTokens}
+	j := &eval.Judge{Model: m, ModelID: "judge-model", Price: model.Price{Input: 1, Output: 2}}
+	_, err := j.Ask(context.Background(), "the rule", "text")
+	if !errors.Is(err, eval.ErrVerdict) || !strings.Contains(err.Error(), "ran out of room") {
+		t.Fatalf("a cut-off verdict: %v", err)
+	}
+	if j.Spent() != 3 {
+		t.Errorf("a cut-off verdict still costs: spent %d", j.Spent())
+	}
+	if req := m.reqs[0]; req.MaxTokens < 2048 || req.Effort != "low" {
+		t.Errorf("the judge asked with %d max tokens at effort %q", req.MaxTokens, req.Effort)
 	}
 }
 
