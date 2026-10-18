@@ -2,7 +2,7 @@
 // package in the Agent Skills format, a SKILL.md with a name and a
 // description, and files beside it. A definition names its skills by name
 // and version; the agent's context carries each one's name and description,
-// and the skill tool reads a skill's body, or one of its files, on demand.
+// and the read_skill tool reads a skill's body, or one of its files, on demand.
 //
 // A skill is text. It adds no tool and widens nothing: KIFF still decides
 // every call the agent makes.
@@ -78,17 +78,31 @@ func Parse(skillMD string) (name, description, body string, err error) {
 		if !found {
 			continue
 		}
-		switch strings.TrimSpace(k) {
+		key, value := strings.TrimSpace(k), strings.TrimSpace(v)
+		if (key == "name" || key == "description") && blockScalar(value) {
+			return "", "", "", fmt.Errorf("skill: SKILL.md's %s is a YAML block (%s): write it on one line", key, value)
+		}
+		switch key {
 		case "name":
-			name = unquote(strings.TrimSpace(v))
+			name = unquote(value)
 		case "description":
-			description = unquote(strings.TrimSpace(v))
+			description = unquote(value)
 		}
 	}
 	if name == "" || description == "" {
 		return "", "", "", errors.New("skill: SKILL.md's frontmatter needs a name and a description")
 	}
 	return name, description, strings.TrimLeft(rest, "\n"), nil
+}
+
+// blockScalar reports whether a frontmatter value starts a YAML block (">",
+// "|", with a chomping or indent indicator): its text is on the lines after,
+// which this reader doesn't take, so it would store the indicator itself.
+func blockScalar(v string) bool {
+	if v == "" || (v[0] != '>' && v[0] != '|') {
+		return false
+	}
+	return strings.Trim(v[1:], "+-0123456789") == ""
 }
 
 func unquote(s string) string {
@@ -236,7 +250,7 @@ func Catalog(ps []Package) string {
 		return ""
 	}
 	var b bytes.Buffer
-	b.WriteString("# Skills\n\nKnow-how you can read when a task needs it, with the skill tool " +
+	b.WriteString("# Skills\n\nKnow-how you can read when a task needs it, with the " + ToolName + " tool " +
 		"({\"name\": …} for a skill, {\"name\": …, \"file\": …} for one of its files). " +
 		"Read a skill before doing what its description covers. A skill is guidance: " +
 		"it gives you no tool and widens no Card.\n")

@@ -11,8 +11,10 @@ import (
 	"github.com/kiff/agents/tool"
 )
 
-// ToolName is the skill tool's name, as the model sees it.
-const ToolName = "skill"
+// ToolName is the skill tool's name, as the model sees it. Not "skill": a
+// vendor's MCP server could expose a tool by that name, and two tools of one
+// name fail the agent's build (tool.Check).
+const ToolName = "read_skill"
 
 // Tool reads the agent's skills: a skill's body, or one of its files. It
 // reads only the packages the definition names, and changes nothing.

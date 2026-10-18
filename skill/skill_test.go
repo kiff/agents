@@ -23,6 +23,14 @@ func TestParseReadsTheFrontmatterAndBody(t *testing.T) {
 	if _, _, _, err := skill.Parse(strings.ReplaceAll(kiffMD, "\n", "\r\n")); err != nil {
 		t.Fatalf("CRLF: %v", err)
 	}
+	// A YAML block's text is on the lines after its indicator, which this reader
+	// doesn't take: refused, rather than stored as the description ">".
+	for _, block := range []string{">", "|", ">-", "|+", ">2"} {
+		md := "---\nname: kiff\ndescription: " + block + "\n  Work with KIFF.\n---\nbody"
+		if _, _, _, err := skill.Parse(md); err == nil || !strings.Contains(err.Error(), "write it on one line") {
+			t.Errorf("description %q: %v", block, err)
+		}
+	}
 	for _, bad := range []string{"# no frontmatter", "---\nname: kiff\n", "---\nname: kiff\n---\nbody", "---\ndescription: d\n---\nbody"} {
 		if _, _, _, err := skill.Parse(bad); err == nil {
 			t.Errorf("parsed %q", bad)

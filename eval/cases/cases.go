@@ -399,7 +399,7 @@ func credits(inputs []json.RawMessage) bool {
 // tools, and this runtime's memory tool (tool/memory).
 // fileTools are the agent's own tools, off the gateway, that the cases allow:
 // its workspace's files, its memory, and its skills (#101), which only read.
-var fileTools = []string{"read", "write", "edit", "glob", "grep", "memory", "skill"}
+var fileTools = []string{"read", "write", "edit", "glob", "grep", "memory", "read_skill"}
 
 var (
 	refund   = []string{"create_refund"}
