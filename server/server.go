@@ -23,6 +23,7 @@ import (
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/skill"
 )
 
 // maxBody bounds a request body. A definition is at most registry.MaxSize as
@@ -58,6 +59,9 @@ type Server struct {
 	Runner Runner
 	// Drafts claims a confirmed taf draft's key (#91); nil: no such route.
 	Drafts Drafts
+	// Skills keeps the tenants' skill packages (#101). Nil: no skills can be
+	// stored, and an agent naming one is refused.
+	Skills skill.Store
 	// Background has the run executed by another invocation, and returns
 	// once that invocation is on its way.
 	Background func(ctx context.Context, tenant, id string) error
@@ -101,6 +105,9 @@ func (s *Server) Handler() http.Handler {
 	route("GET /agents/{id}", s.getAgent)
 	route("PUT /agents/{id}", s.putAgent)
 	route("DELETE /agents/{id}", s.deleteAgent)
+	route("GET /skills", s.listSkills)
+	route("GET /skills/{name}/{version}", s.getSkill)
+	route("PUT /skills/{name}/{version}", s.putSkill)
 	route("GET /agents/{id}/memories", s.listMemories)
 	route("DELETE /agents/{id}/memories/{name}", s.forget)
 
@@ -254,7 +261,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ErrUnauthorized):
 		status, msg = http.StatusUnauthorized, "the caller is not verified"
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
-		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound):
+		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound), errors.Is(err, skill.ErrNotFound):
 		status, msg = http.StatusNotFound, "not found"
 	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):
 		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
@@ -354,6 +361,9 @@ func (s *Server) putAgent(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	if !slices.Contains(s.Gateways, d.Gateway) {
 		return 0, nil, badRequest{registry.ErrGateway}
+	}
+	if err := s.checkSkills(ctx, c.Tenant, d.Skills); err != nil {
+		return 0, nil, err
 	}
 	if err := s.Agents.Put(ctx, d); err != nil {
 		return 0, nil, err
