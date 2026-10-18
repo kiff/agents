@@ -1448,3 +1448,49 @@ func TestAMessageNoTurnReadIsGivenBack(t *testing.T) {
 		t.Fatalf("steering %+v, want the message given back", got.Steering)
 	}
 }
+
+// A message taken once the agent answered is read by the turn it's given,
+// before any checkpoint: if that turn fails, it's given back, not taken.
+func TestAMessageTakenAfterTheAnswerIsGivenBack(t *testing.T) {
+	f := newFixture(t, say("Done.")) // the turn after the answer fails: no more replies
+	r := f.start(server.Start{Input: "refund"})
+	f.model.onTurn = func(n int) {
+		if n == 1 {
+			if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "only the €20 one", f.clock.now()); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error {
+		t.Fatalf("ended %+v, %v, want an error", got, err)
+	}
+	if !slices.Equal(got.Untaken(), []string{"only the €20 one"}) {
+		t.Fatalf("steering %+v, want the message given back", got.Steering)
+	}
+}
+
+// A run asked to stop while the agent answered keeps its answer: a message
+// that came meanwhile gets no turn, and stays not taken.
+func TestACancelDuringTheAnswerTakesNoMessage(t *testing.T) {
+	f := newFixture(t, say("Done."), say("never said"))
+	r := f.start(server.Start{Input: "refund"})
+	f.model.onTurn = func(n int) {
+		if n != 1 {
+			return
+		}
+		if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "and the other one", f.clock.now()); err != nil {
+			t.Error(err)
+		}
+		if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+			t.Error(err)
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output != "Done." || got.Turns != 1 || !slices.Equal(got.Untaken(), []string{"and the other one"}) {
+		t.Fatalf("ended %+v", got)
+	}
+}

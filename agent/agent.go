@@ -295,6 +295,12 @@ func resultBlock(r ToolResultBody) model.Block {
 
 // loop runs model turns on msgs until the run stops, counting on from out.
 func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, emit func(Event)) (Outcome, []model.Message, error) {
+	return a.loopFrom(ctx, rec, msgs, out, emit, false)
+}
+
+// loopFrom is loop; checked says its first checkpoint was done already
+// (More), so it starts at the model's turn.
+func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, emit func(Event), checked bool) (Outcome, []model.Message, error) {
 	if emit == nil {
 		emit = func(Event) {}
 	}
@@ -304,23 +310,25 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		byName[t.Spec().Name] = t
 		specs = append(specs, t.Spec())
 	}
-	for {
-		if stop := a.capped(out); stop != "" {
-			out.Stop = stop
-			return out, msgs, nil
-		}
-		if a.Cancel != nil {
-			stop, err := a.Cancel(ctx)
-			if err != nil {
-				return out, msgs, err
-			}
-			if stop {
-				out.Stop = Cancelled
+	for first := true; ; first = false {
+		if !(first && checked) {
+			if stop := a.capped(out); stop != "" {
+				out.Stop = stop
 				return out, msgs, nil
 			}
-		}
-		if _, err := a.steer(ctx, rec, &msgs, emit); err != nil {
-			return out, msgs, err
+			if a.Cancel != nil {
+				stop, err := a.Cancel(ctx)
+				if err != nil {
+					return out, msgs, err
+				}
+				if stop {
+					out.Stop = Cancelled
+					return out, msgs, nil
+				}
+			}
+			if _, err := a.steer(ctx, rec, &msgs, emit); err != nil {
+				return out, msgs, err
+			}
 		}
 		reply, err := a.turn(ctx, rec, msgs, specs, false, &out, emit)
 		if err != nil {
@@ -381,7 +389,9 @@ func More(ctx context.Context, a Agent, rec *session.Recording, msgs []model.Mes
 	if err != nil || !took {
 		return out, msgs, err
 	}
-	return a.loop(ctx, rec, msgs, out, emit)
+	// This was the checkpoint (the caps above, the caller's cancel check, the
+	// steer): the loop starts at the turn, so what was taken is read first.
+	return a.loopFrom(ctx, rec, msgs, out, emit, true)
 }
 
 // steer takes what the owner wrote while the run went: each message recorded

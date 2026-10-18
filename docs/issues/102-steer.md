@@ -25,7 +25,9 @@ and requirements.
 - **When:** before each model turn, after `Cancel`. Then one last look when
   the agent has answered, right before the run is stored: the runner reads
   the run once (`more`), and a message that came while the agent wrote its
-  answer gets a turn of its own (`agent.More`), if the caps leave one.
+  answer gets a turn of its own (`agent.More`), if the caps leave one and
+  the run wasn't asked to stop. `More` starts the loop at that turn, since it
+  just did the checkpoint's work.
 - **One read for both:** the steer check uses the checkpoint's own read, and
   storing the stop uses the last look's. So a run nobody steers reads the
   store no more than before.
@@ -71,6 +73,8 @@ resolves a requirement.
 | `More`: one that came during the answer gets a turn; none taken with no turn left | `agent.TestAMessageDuringTheAnswerGetsATurn` |
 | Through the runner, a message written during the answer gets a turn | `runner.TestAMessageWrittenDuringTheAnswerGetsATurn` |
 | A message no turn read is given back when the run fails | `runner.TestAMessageNoTurnReadIsGivenBack` |
+| One taken after the answer is read by its turn first, or given back | `runner.TestAMessageTakenAfterTheAnswerIsGivenBack` |
+| Asked to stop while it answered: the answer stands, the message isn't taken | `runner.TestACancelDuringTheAnswerTakesNoMessage` |
 | A continued run reads what it took before the pause | `agent.TestAContinuedRunKnowsWhatTheOwnerWrote` |
 | Through the store: marked taken, read by the model, recorded | `runner.TestTheOwnerSteersARunThatGoes` |
 | Written while paused, taken when it continues | `runner.TestAPausedRunTakesWhatTheOwnerWroteWhenItContinues` |

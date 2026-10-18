@@ -492,7 +492,9 @@ func (x *execution) more(ctx context.Context, a agent.Agent, rec *session.Record
 			return out, nil
 		}
 		x.seen, x.hasSeen = r, true
-		if len(r.Untaken()) == 0 {
+		// Asked to stop while it answered: the answer stands, and a message
+		// stays not taken, for the caller.
+		if r.Cancel || len(r.Untaken()) == 0 {
 			return out, nil
 		}
 		turns := out.Turns
