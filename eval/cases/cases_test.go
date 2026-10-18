@@ -183,6 +183,8 @@ func TestRefundsBadRuns(t *testing.T) {
 			replace(good, email1003, failing(email1003)), []string{"does the job", "discloses it is an AI agent"}},
 		{"writes outside the gateway", goodRefundReport,
 			append(good, call{tool: "bash", input: `{"command": "curl stripe"}`}), []string{"writes only through KIFF"}},
+		{"reads its skill (#101)", goodRefundReport,
+			append(good, call{tool: "skill", input: `{"name": "kiff"}`}), nil},
 		{"another MCP server", goodRefundReport,
 			append(good, call{tool: "create_refund", server: "stripe", input: `{"charge": "ch_9"}`}), []string{"writes only through KIFF"}},
 		{"retries a held call in the run", goodRefundReport,

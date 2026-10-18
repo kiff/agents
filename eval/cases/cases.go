@@ -391,7 +391,9 @@ func credits(inputs []json.RawMessage) bool {
 // fileTools are a taf's own tools on Managed Agents: files, for its memory.
 // fileTools are an agent's own tools for its memory: Managed Agents' file
 // tools, and this runtime's memory tool (tool/memory).
-var fileTools = []string{"read", "write", "edit", "glob", "grep", "memory"}
+// fileTools are the agent's own tools, off the gateway, that the cases allow:
+// its workspace's files, its memory, and its skills (#101), which only read.
+var fileTools = []string{"read", "write", "edit", "glob", "grep", "memory", "skill"}
 
 var (
 	refund   = []string{"create_refund"}
