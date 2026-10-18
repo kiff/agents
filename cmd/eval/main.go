@@ -109,10 +109,12 @@ var cardRoom = func(ctx context.Context, gateway, key string) ([]kiff.Room, erro
 // errNotGraded means a run can't be graded fairly, so it isn't run.
 var errNotGraded = errors.New("not graded")
 
-// checkRoom refuses a run the agent's Cards can't fund (#78): with less room
-// than the case needs, the run would measure the Card's day so far, not the
-// agent. Every limit covering an action must have the room.
-func (rt *runtime) checkRoom(ctx context.Context, s cases.Scenario) error {
+// checkRoom refuses runs the agent's Cards can't fund (#78): with less room
+// than the case needs, a run would measure the Card's day so far, not the
+// agent. It checks runs of them at once, before the first: a night is funded
+// in full or doesn't start, so no graded run's results are lost to a later
+// one that couldn't run. Every limit covering an action must have the room.
+func (rt *runtime) checkRoom(ctx context.Context, s cases.Scenario, runs int) error {
 	if len(s.Room) == 0 {
 		return nil
 	}
@@ -126,7 +128,7 @@ func (rt *runtime) checkRoom(ctx context.Context, s cases.Scenario) error {
 	}
 	slices.Sort(actions)
 	for _, action := range actions {
-		need, found := s.Room[action], false
+		need, found := s.Room[action]*int64(runs), false
 		for _, r := range rooms {
 			if r.Action != action {
 				continue
@@ -137,8 +139,8 @@ func (rt *runtime) checkRoom(ctx context.Context, s cases.Scenario) error {
 				if !r.ResetsAt.IsZero() {
 					resets = ", resets at " + r.ResetsAt.Format(time.RFC3339)
 				}
-				return fmt.Errorf("%s: %w: %s has %d of %d left on its Card (%s %s%s); a run needs %d",
-					s.Name, errNotGraded, action, r.Remaining, r.Limit, r.Quantity, r.Window, resets, need)
+				return fmt.Errorf("%s: %w: %s has %d of %d left on its Card (%s %s%s); %d runs need %d",
+					s.Name, errNotGraded, action, r.Remaining, r.Limit, r.Quantity, r.Window, resets, runs, need)
 			}
 		}
 		if !found {
@@ -538,16 +540,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		}
 		if rt != nil {
 			s := scenarios[arg] // checked above
+			// Before the first seed: a night the Cards can't fund isn't worth one.
+			if err := rt.checkRoom(ctx, s, *repeat); err != nil {
+				return err
+			}
 			for rep := range *repeat {
 				if rep > 0 && ctx.Err() != nil {
 					skipped = append(skipped, fmt.Sprintf("%s (runs %d to %d)", arg, rep+1, *repeat))
 					break
 				}
 				s := s.WithIDs(ids)
-				// Before the seed: a run the Cards can't fund isn't worth one.
-				if err := rt.checkRoom(ctx, s); err != nil {
-					return err
-				}
 				if *seedEach {
 					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
 					if err != nil {

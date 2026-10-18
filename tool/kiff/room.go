@@ -58,7 +58,8 @@ func (c *Client) CardRoom(ctx context.Context) ([]Room, error) {
 			if l.Forecast.ResetsAt != "" {
 				t, err := time.Parse(time.RFC3339Nano, l.Forecast.ResetsAt)
 				if err != nil {
-					return nil, fmt.Errorf("kiff: kiff_card: card %s: resets_at %q: %w", card.ID, l.Forecast.ResetsAt, err)
+					// No Card id: this error can reach a public log.
+					return nil, fmt.Errorf("kiff: kiff_card: a limit's resets_at %q: %w", l.Forecast.ResetsAt, err)
 				}
 				resets = t.UTC()
 			}

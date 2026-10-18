@@ -166,11 +166,13 @@ whose Cards the case expects), and `AWS_EVAL_ROLE`.
 
 **A run the Cards can't fund isn't graded.** A case says what one run needs
 left on the agent's Cards (`Scenario.Room`; Chargebacks: $585 of evidence,
-$12 of accepts, and its reads). Before each seed, `eval -run` reads the room
-through the gateway's read-only `kiff_card` and stops when any limit is short:
+$12 of accepts, and its reads). Before the first seed, `eval -run` reads the
+room through the gateway's read-only `kiff_card` and stops when any limit is
+short of what all of `-repeat`'s runs need: a night is funded in full or
+doesn't start, so no graded run's results are lost to a later one.
 
 ```
-eval: chargebacks: not graded: update_dispute has 1000 of 1000000 left on its Card (sum(amount) calendar_day, resets at 2026-10-19T00:00:00Z); a run needs 58500
+eval: chargebacks: not graded: update_dispute has 1000 of 1000000 left on its Card (sum(amount) calendar_day, resets at 2026-10-19T00:00:00Z); 3 runs need 175500
 ```
 
 Found on 2026-10-18: a day of by-hand runs used up the test agent's $10,000
