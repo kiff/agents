@@ -2,6 +2,7 @@ package dynamodb_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -411,5 +412,44 @@ func TestPausedListItems(t *testing.T) {
 	}
 	if paused, err := rs.ListPaused(ctx, 0); err != nil || len(paused) != 0 {
 		t.Fatalf("listed %d paused runs from an entry left behind, err = %v", len(paused), err)
+	}
+}
+
+// A run holding the most it takes while it goes (run.MaxSteeringBytes), with
+// the longest input and a long answer, still fits its item: it saves its stop,
+// and its messages come back whole (#102).
+func TestARunFullOfMessagesStillSaves(t *testing.T) {
+	db := local(t)
+	at := now()
+	rs := dynamodb.NewRunsAt(db, table(t, db), func() time.Time { return at })
+	r := run.New("t1", "refunds", "s1", run.ByOwner, strings.Repeat("i", 32_000), at)
+	if err := rs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Claim(ctx, rs, "t1", r.ID, "i1", at.Add(time.Minute), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if r, err = run.Steer(ctx, rs, "t1", r.ID, strings.Repeat("m", run.MaxSteeringBytes/2), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := run.Steer(ctx, rs, "t1", r.ID, "one more", at); !errors.Is(err, run.ErrFull) {
+		t.Fatalf("past the budget: %v, want ErrFull", err)
+	}
+	done, err := run.Save(ctx, rs, r, at, func(n *run.Run) error {
+		n.Status, n.Stop, n.Output = run.Completed, "answered", strings.Repeat("o", 128_000)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("storing the stop of a run full of messages: %v", err)
+	}
+	got, err := rs.Get(ctx, "t1", done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steering) != 2 || len(got.Steering[0].Text) != run.MaxSteeringBytes/2 || got.Status != run.Completed {
+		t.Fatalf("read back %d messages, status %s", len(got.Steering), got.Status)
 	}
 }

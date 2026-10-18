@@ -200,7 +200,7 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	case errors.Is(err, run.ErrTransition):
 		return 0, nil, conflict("the run has ended, or was asked to stop: send the message as a new run")
 	case errors.Is(err, run.ErrFull):
-		return 0, nil, conflict(fmt.Sprintf("the run has taken %d messages while it goes: wait for it to end", run.MaxSteering))
+		return 0, nil, conflict("the run holds as many messages as it takes while it goes: wait for it to end, or stop it")
 	case err != nil:
 		return 0, nil, err
 	}

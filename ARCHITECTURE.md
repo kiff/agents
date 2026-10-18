@@ -95,8 +95,9 @@ COMPLETED, ERROR and CANCELLED are final.
   before it deletes anything; tafs also revokes the taf's Cards first, which
   withdraws every hold that names them.
 - **Steer** (#102) keeps a message the owner wrote on a run that hasn't
-  ended, as a cancel is kept. The loop takes it at its next checkpoint (before
-  a model turn, and once more when the agent has answered), marks it taken,
+  ended, as a cancel is kept (at most 20 messages, 64,000 bytes together). The
+  loop takes it at its next checkpoint (before a model turn, and once more,
+  last, when the agent has answered), marks it taken,
   records it as an owner message and gives it to the model after what it read
   last. A paused run takes it once it continues. One never taken, because the
   run ended first, stays on the run, not taken, for the caller to send next.

@@ -28,11 +28,13 @@ import (
 var ctx = context.Background()
 
 // script is a fake model: it answers each turn with the next reply, and keeps
-// the requests it was sent.
+// the requests it was sent. onTurn, if set, runs as each turn is answered,
+// with its number from 1: what the owner does while the model writes.
 type script struct {
 	mu      sync.Mutex
 	replies []model.Reply
 	reqs    []model.Request
+	onTurn  func(n int)
 }
 
 func (s *script) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
@@ -50,6 +52,9 @@ func (s *script) Turn(ctx context.Context, req model.Request, onText func(string
 		if b.Kind == model.Text && onText != nil {
 			onText(b.Text)
 		}
+	}
+	if s.onTurn != nil {
+		s.onTurn(len(s.reqs))
 	}
 	return r, nil
 }
@@ -1401,5 +1406,45 @@ func TestAPausedRunTakesWhatTheOwnerWroteWhenItContinues(t *testing.T) {
 	tail := last[len(last)-1]
 	if tail.Blocks[len(tail.Blocks)-1].Text != agent.SteerNote+"note it for next time" {
 		t.Fatalf("the continued run read %+v last", tail)
+	}
+}
+
+// A message written while the agent writes its answer is taken before the run
+// is stored as answered, and gets a turn of its own.
+func TestAMessageWrittenDuringTheAnswerGetsATurn(t *testing.T) {
+	f := newFixture(t, say("Refunded."), say("It was €20."))
+	r := f.start(server.Start{Input: "refund order 12"})
+	f.model.onTurn = func(n int) {
+		if n == 1 {
+			if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "how much was it?", f.clock.now()); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || got.Output != "It was €20." || got.Turns != 2 || !slices.Equal(got.Taken(), []string{"how much was it?"}) {
+		t.Fatalf("ended %+v", got)
+	}
+}
+
+// A message taken right before a turn that fails is given back, not taken, so
+// the caller sends it on: no turn read it.
+func TestAMessageNoTurnReadIsGivenBack(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`)) // the turn after the tool fails: no more replies
+	r := f.start(server.Start{Input: "refund"})
+	f.refund.onCall = func() {
+		if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "only the €20 one", f.clock.now()); err != nil {
+			t.Error(err)
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error {
+		t.Fatalf("ended %+v, %v, want an error", got, err)
+	}
+	if !slices.Equal(got.Untaken(), []string{"only the €20 one"}) {
+		t.Fatalf("steering %+v, want the message given back", got.Steering)
 	}
 }

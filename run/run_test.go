@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,6 +240,18 @@ func TestSteerKeepsMessagesForARunThatGoes(t *testing.T) {
 	}
 	if _, err := run.Steer(ctx, runs, "t1", r.ID, "one too many", at); !errors.Is(err, run.ErrFull) {
 		t.Fatalf("past MaxSteering: %v, want ErrFull", err)
+	}
+
+	// The text together is bounded too: a run's item has room for it.
+	long := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	if err := runs.Create(ctx, long); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", long.ID, strings.Repeat("m", run.MaxSteeringBytes), at); err != nil {
+		t.Fatalf("a message of the whole budget: %v", err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", long.ID, "m", at); !errors.Is(err, run.ErrFull) {
+		t.Fatalf("past MaxSteeringBytes: %v, want ErrFull", err)
 	}
 
 	cancelled, err := run.Change(ctx, runs, r, at, func(n *run.Run) error { n.Cancel = true; return nil })

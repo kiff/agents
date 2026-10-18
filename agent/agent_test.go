@@ -927,44 +927,43 @@ func TestAnOwnersMessageIsTakenAtTheNextCheckpoint(t *testing.T) {
 }
 
 // A message that came while the agent wrote its answer gets a turn of its
-// own; with no turn left, the answer ends the run and the message isn't
-// asked for (it stays not taken, for the caller).
+// own, through More, which the runner asks last; with no turn left, or none
+// waiting, More returns the answer as it was (the message stays not taken,
+// for the caller).
 func TestAMessageDuringTheAnswerGetsATurn(t *testing.T) {
 	m := &script{replies: []model.Reply{say("Refunded."), say("It was €20.")}}
 	a := newAgent(m)
-	asked := 0
+	var waiting []string
 	a.Steer = func(context.Context) ([]string, error) {
-		asked++
-		if asked == 2 { // the check once the first answer is in
-			return []string{"how much was it?"}, nil
-		}
-		return nil, nil
+		took := waiting
+		waiting = nil
+		return took, nil
 	}
 	_, rec := start(t, session.KindChat)
-	out, _, err := agent.Run(context.Background(), a, rec, nil, "refund order 12", nil)
-	if err != nil {
-		t.Fatal(err)
+	out, msgs, err := agent.Run(context.Background(), a, rec, nil, "refund order 12", nil)
+	if err != nil || out.Stop != agent.Answered || len(m.reqs) != 1 {
+		t.Fatalf("answered %+v, %v, after %d turns", out, err, len(m.reqs))
 	}
-	if out.Stop != agent.Answered || out.Text != "It was €20." || len(m.reqs) != 2 {
-		t.Fatalf("stopped %+v after %d turns", out, len(m.reqs))
+	waiting = []string{"how much was it?"} // came while it answered
+	out, _, err = agent.More(context.Background(), a, rec, msgs, out, nil)
+	if err != nil || out.Stop != agent.Answered || out.Text != "It was €20." || out.Turns != 2 || len(m.reqs) != 2 {
+		t.Fatalf("after More: %+v, %v, %d turns", out, err, len(m.reqs))
 	}
-	msgs := m.reqs[1].Messages
-	if len(msgs) != 3 || msgs[1].Role != model.Assistant || msgs[2].Role != model.User ||
-		msgs[2].Blocks[0].Text != agent.SteerNote+"how much was it?" {
-		t.Fatalf("the second turn read %+v", msgs)
+	second := m.reqs[1].Messages
+	if len(second) != 3 || second[1].Role != model.Assistant || second[2].Role != model.User ||
+		second[2].Blocks[0].Text != agent.SteerNote+"how much was it?" {
+		t.Fatalf("the second turn read %+v", second)
+	}
+	same, _, err := agent.More(context.Background(), a, rec, msgs, out, nil)
+	if err != nil || same.Turns != out.Turns {
+		t.Fatalf("with nothing waiting, More ran: %+v, %v", same, err)
 	}
 
-	m = &script{replies: []model.Reply{say("Refunded.")}}
-	a = newAgent(m)
-	a.MaxTurns = 1
-	asked = 0
-	a.Steer = func(context.Context) ([]string, error) { asked++; return nil, nil }
-	_, rec = start(t, session.KindChat)
-	if out, _, err = agent.Run(context.Background(), a, rec, nil, "refund order 12", nil); err != nil {
-		t.Fatal(err)
-	}
-	if out.Stop != agent.Answered || asked != 1 {
-		t.Fatalf("at the turn cap: %+v, asked %d times, want once, before the turn", out, asked)
+	a.MaxTurns = 2
+	asked := false
+	a.Steer = func(context.Context) ([]string, error) { asked = true; return []string{"one more"}, nil }
+	if same, _, err = agent.More(context.Background(), a, rec, msgs, out, nil); err != nil || same.Turns != 2 || asked {
+		t.Fatalf("at the turn cap: %+v, %v, asked %v, want the answer as it was, nothing taken", same, err, asked)
 	}
 }
 

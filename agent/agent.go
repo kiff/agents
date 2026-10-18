@@ -55,7 +55,7 @@ type Agent struct {
 	Cancel func(ctx context.Context) (bool, error)
 	// Steer, when set, takes the messages the owner wrote to the run while it
 	// went (#102), and marks them taken. The loop asks at each checkpoint,
-	// after Cancel, and once more when the agent has answered: a message that
+	// after Cancel; More asks once the agent has answered, so a message that
 	// came while it wrote its answer gets a turn of its own. Each one taken is
 	// recorded as an owner message, streamed as Steered, and added to what the
 	// model reads next, never inside a tool's result.
@@ -341,22 +341,10 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 			return out, msgs, err
 		}
 		if len(calls) == 0 {
+			out.Stop = Answered
 			if reply.Stop == model.MaxTokens {
 				out.Stop = TooLong
-				return out, msgs, nil
 			}
-			// A message that came while the agent answered gets its turn,
-			// if the caps leave one.
-			if a.capped(out) == "" {
-				took, err := a.steer(ctx, rec, &msgs, emit)
-				if err != nil {
-					return out, msgs, err
-				}
-				if took {
-					continue
-				}
-			}
-			out.Stop = Answered
 			return out, msgs, nil
 		}
 
@@ -375,6 +363,25 @@ func (a Agent) loop(ctx context.Context, rec *session.Recording, msgs []model.Me
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 	}
+}
+
+// More carries on a run the agent has answered, out, with what the owner wrote
+// while it answered: the messages Steer takes now, each given a turn, as at a
+// checkpoint. msgs is the conversation Run or Continue returned. With nothing
+// taken, or no turn left under the caps, it returns out as it was: the caller
+// asks it last, right before it stores the run as answered.
+func More(ctx context.Context, a Agent, rec *session.Recording, msgs []model.Message, out Outcome, emit func(Event)) (Outcome, []model.Message, error) {
+	if out.Stop != Answered || a.capped(out) != "" {
+		return out, msgs, nil
+	}
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	took, err := a.steer(ctx, rec, &msgs, emit)
+	if err != nil || !took {
+		return out, msgs, err
+	}
+	return a.loop(ctx, rec, msgs, out, emit)
 }
 
 // steer takes what the owner wrote while the run went: each message recorded

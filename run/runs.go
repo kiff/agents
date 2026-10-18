@@ -50,14 +50,19 @@ var (
 	ErrNotReady   = errors.New("run: a requirement is still unresolved")
 	ErrFixed      = errors.New("run: what it is can't change")
 	ErrCancelled  = errors.New("run: asked to stop")
-	// ErrFull means a run was given as many messages as it takes while it
-	// goes (MaxSteering).
+	// ErrFull means a run holds as many messages as it takes while it goes
+	// (MaxSteering, or MaxSteeringBytes of text).
 	ErrFull = errors.New("run: no room for another message")
 )
 
-// MaxSteering bounds the messages one run takes while it goes: past it, the
-// owner waits for the run to end, or stops it.
-const MaxSteering = 20
+// MaxSteering and MaxSteeringBytes bound what one run takes while it goes:
+// the messages, and their text together. Past either, the owner waits for
+// the run to end, or stops it. The bytes keep a run well inside a store's
+// item (DynamoDB's is 400 KB), with its input, output and requirements.
+const (
+	MaxSteering      = 20
+	MaxSteeringBytes = 64_000
+)
 
 // Same reports whether two versions of a run are the same run: the same
 // tenant, ID, agent, session, trigger, source and creation time. None of
@@ -370,7 +375,7 @@ func Steer(ctx context.Context, runs Runs, tenant, id, text string, now time.Tim
 			switch {
 			case n.Status.Final() || n.Cancel:
 				return fmt.Errorf("%w: the run has ended, or was asked to stop", ErrTransition)
-			case len(n.Steering) >= MaxSteering:
+			case len(n.Steering) >= MaxSteering || steeringBytes(n.Steering)+len(text) > MaxSteeringBytes:
 				return ErrFull
 			}
 			n.Steering = append(n.Steering, Steering{Text: text, At: now.UTC()})
@@ -381,6 +386,14 @@ func Steer(ctx context.Context, runs Runs, tenant, id, text string, now time.Tim
 		}
 		return next, err
 	}
+}
+
+func steeringBytes(s []Steering) int {
+	n := 0
+	for _, m := range s {
+		n += len(m.Text)
+	}
+	return n
 }
 
 // Sweeper marks ended the runs nobody is left to end: a RUNNING run whose
