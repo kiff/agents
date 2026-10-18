@@ -53,6 +53,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -129,6 +130,7 @@ type runtime struct {
 	kiffKey  string            // the agent's KIFF key
 	kiffAPI  string            // KIFF's API, where held calls are withdrawn
 	log      io.Writer
+	public   bool // the log is public (-public): no ids, no run's details
 }
 
 // envKey is the agent's KIFF key, from the environment.
@@ -289,11 +291,34 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 		if _, gerr := rt.runs.Get(ctx, evalTenant, r.ID); gerr != nil {
 			return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
 		}
-		fmt.Fprintf(rt.log, "eval: %s: the run failed, graded as it stopped: %v\n", s.Name, err)
+		fmt.Fprintf(rt.log, "eval: %s: the run failed, graded as it stopped: %v\n", s.Name, rt.say(err))
 	}
 	rt.withdrawHeld(s.Name, r.ID)
 	return eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
 }
+
+// id is an id as the log shows it: hidden when the log is public.
+func (rt *runtime) id(s string) string {
+	if rt.public {
+		return "…"
+	}
+	return s
+}
+
+// say is an error as the log shows it: its ids hidden when the log is public.
+func (rt *runtime) say(err error) string {
+	if rt.public {
+		return redactIDs(err.Error())
+	}
+	return err.Error()
+}
+
+// idPattern matches the ids a run's log could carry: Stripe's (dp_, ch_,
+// pi_, cus_, acct_, re_, …), KIFF's (exc_, …) and this runtime's (sesn_,
+// run_). A public log shows none of them.
+var idPattern = regexp.MustCompile(`\b[a-z]{2,5}_[A-Za-z0-9]{6,}\b`)
+
+func redactIDs(s string) string { return idPattern.ReplaceAllString(s, "…") }
 
 var stripeURL = ""
 
@@ -316,18 +341,18 @@ func (rt *runtime) withdrawHeld(name, id string) {
 		w, err := withdraw(ctx, rt.kiffAPI, rt.kiffKey, q.Exception)
 		switch {
 		case errors.Is(err, kiff.ErrNoHold):
-			fmt.Fprintf(rt.log, "eval: %s: KIFF no longer holds %s (%s)\n", name, q.Tool, q.Exception)
+			fmt.Fprintf(rt.log, "eval: %s: KIFF no longer holds %s (%s)\n", name, q.Tool, rt.id(q.Exception))
 		case err != nil:
-			fmt.Fprintf(rt.log, "eval: %s: couldn't withdraw %s (%s): %v: refuse it in KIFF\n", name, q.Tool, q.Exception, err)
+			fmt.Fprintf(rt.log, "eval: %s: couldn't withdraw %s (%s): %v: refuse it in KIFF\n", name, q.Tool, rt.id(q.Exception), rt.say(err))
 		case w.Withdrawn:
-			fmt.Fprintf(rt.log, "eval: %s: withdrew KIFF's hold on %s (%s)\n", name, q.Tool, q.Exception)
+			fmt.Fprintf(rt.log, "eval: %s: withdrew KIFF's hold on %s (%s)\n", name, q.Tool, rt.id(q.Exception))
 		default:
-			fmt.Fprintf(rt.log, "eval: %s: KIFF's hold on %s (%s) was already %s\n", name, q.Tool, q.Exception, w.Status)
+			fmt.Fprintf(rt.log, "eval: %s: KIFF's hold on %s (%s) was already %s\n", name, q.Tool, rt.id(q.Exception), w.Status)
 		}
 	}
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) error {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) (err error) {
 	if len(args) > 0 && args[0] == "seed" {
 		return runSeed(ctx, args[1:], stdout, stderr, env)
 	}
@@ -351,8 +376,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	seedEach := fs.Bool("seed", false, "-run: seed the case in Stripe test mode (STRIPE_API_KEY) before each of its runs, instead of -ids")
 	reportPath := fs.String("report", "", "write a Markdown report here: the configuration, each case over its runs, and each run's checks")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
+	public := fs.Bool("public", false, "the log is public (CI): print each run's score, cost and failed checks' names only, with no ids or reasons, and no results on stdout; -out and -report hold the rest")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *public {
+		stdout = io.Discard
+		defer func() {
+			if err != nil {
+				err = errors.New(redactIDs(err.Error()))
+			}
+		}()
 	}
 	if fs.NArg() == 0 {
 		if *runHere {
@@ -433,6 +467,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			rt.notesFor = map[string]string{"chargebacks": seed.ChargebacksNote}
 		}
 		rt.notes = *notesDir
+		rt.public = *public
 		if u, err := url.Parse(*kiffAPI); err != nil || u.Scheme != "https" || u.Host == "" {
 			return errors.New("-kiff-api is an https URL: the agent's key goes there")
 		}
@@ -478,7 +513,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 					return err
 				}
 				results = append(results, res)
-				printResult(stderr, res)
+				printResult(stderr, res, *public)
 			}
 			continue
 		}
@@ -496,7 +531,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			return err
 		}
 		results = append(results, res)
-		printResult(stderr, res)
+		printResult(stderr, res, *public)
 	}
 
 	out, err := json.MarshalIndent(results, "", "  ")
@@ -542,10 +577,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	return nil
 }
 
-// printResult says how one run graded.
-func printResult(stderr io.Writer, res eval.Result) {
+// printResult says how one run graded. A public log (-public) shows no
+// session and no check's reason: the reason is the judge's prose about the
+// run, which can quote its ids and amounts.
+func printResult(stderr io.Writer, res eval.Result, public bool) {
+	session := res.Session
+	if public {
+		session = "…"
+	}
 	fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
-		res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), res.Session)
+		res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), session)
 	if cx := res.Context; cx.Turns > 0 {
 		room := "unknown"
 		if cx.LeastRoomTokens >= 0 {
@@ -563,7 +604,7 @@ func printResult(stderr io.Writer, res eval.Result) {
 			mark = "FAIL"
 		}
 		fmt.Fprintf(stderr, "  %s  %s", mark, c.Name)
-		if c.Why != "" {
+		if c.Why != "" && !public {
 			fmt.Fprintf(stderr, ": %s", c.Why)
 		}
 		fmt.Fprintln(stderr)

@@ -272,5 +272,32 @@ aws iam put-role-policy --role-name "$DEPLOY_ROLE" --policy-name deploy-agents -
 # The workflow reads the role from the secret AWS_DEPLOY_ROLE, never from code.
 echo "deploy role: set it as the secret AWS_DEPLOY_ROLE: aws iam get-role --role-name $DEPLOY_ROLE --query Role.Arn --output text | gh secret set AWS_DEPLOY_ROLE --repo kiff/agents" >&2
 
+# --- The eval's reports, private (#78) --------------------------------------
+
+# The nightly eval's log is public, so its full report (each run's checks and
+# why, with the run's ids) goes to this bucket instead: private, encrypted,
+# kept 90 days. Its role may only write reports, from main's workflow runs.
+REPORTS=${AGENTS_EVAL_BUCKET:-kiff-agents-eval-reports}
+EVAL_ROLE=agents-github-eval
+if ! aws s3api head-bucket --bucket "$REPORTS" >/dev/null 2>&1; then
+  aws s3api create-bucket --bucket "$REPORTS" --create-bucket-configuration LocationConstraint="$REGION" >/dev/null
+  say "created bucket $REPORTS"
+fi
+aws s3api put-public-access-block --bucket "$REPORTS" --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3api put-bucket-ownership-controls --bucket "$REPORTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
+aws s3api put-bucket-encryption --bucket "$REPORTS" --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+aws s3api put-bucket-lifecycle-configuration --bucket "$REPORTS" --lifecycle-configuration \
+  '{"Rules":[{"ID":"reports-90-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}'
+role "$EVAL_ROLE" "$(cat <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"$OIDC"},"Action":"sts:AssumeRoleWithWebIdentity",
+ "Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com","token.actions.githubusercontent.com:sub":"$SUB:ref:refs/heads/main"}}}]}
+EOF
+)"
+aws iam put-role-policy --role-name "$EVAL_ROLE" --policy-name eval-reports --policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::'"$REPORTS"'/reports/*"}]}'
+echo "eval role: set it as the secret AWS_EVAL_ROLE: aws iam get-role --role-name $EVAL_ROLE --query Role.Arn --output text | gh secret set AWS_EVAL_ROLE --repo kiff/agents" >&2
+
 echo "api:    $(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl)"
 echo "alerts: $(aws lambda get-function-url-config --function-name "$ALERTS_FN" --query FunctionUrl)kiff/alerts"

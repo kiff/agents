@@ -652,3 +652,55 @@ func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
 		}
 	}
 }
+
+// A public log (-public, in CI) shows each run's score, cost and failed
+// checks' names, and nothing that names the run: no session, no check's
+// reason, no hold's exception, no results on stdout. -out still holds them
+// all, and an error keeps its words with its ids hidden (#78).
+func TestAPublicLogNamesNothing(t *testing.T) {
+	withReader(t, fakeReader{"sesn_r": emptyRun("sesn_r")})
+	out := filepath.Join(t.TempDir(), "results.json")
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"-public", "-out", out, "refunds=sesn_r"}, &stdout, &stderr, env(map[string]string{"ANTHROPIC_API_KEY": "k"})); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout %q, want nothing", stdout.String())
+	}
+	log := stderr.String()
+	if !strings.Contains(log, "refunds  2/6  $1.4000 a run, $0.2000 an item, judge $0.0000  (…)") || !strings.Contains(log, "FAIL  does the job\n") {
+		t.Errorf("log:\n%s", log)
+	}
+	if strings.Contains(log, "sesn_r") || strings.Contains(log, "missed") {
+		t.Errorf("the public log names the run or a reason:\n%s", log)
+	}
+	if b, _ := os.ReadFile(out); !bytes.Contains(b, []byte(`"sesn_r"`)) {
+		t.Errorf("-out lost the details: %s", b)
+	}
+
+	// An error's ids are hidden, its words kept.
+	if got := redactIDs("seed: dispute dp_1Qx2Y3z4 on charge ch_3URYjrHcvoaK not found (exc_01HABCDEF)"); got != "seed: dispute … on charge … not found (…)" {
+		t.Errorf("redacted %q", got)
+	}
+
+	// A hold's exception isn't named either.
+	turns := []model.Reply{agentTurns()[0], {Blocks: []model.Block{{Kind: model.Text, Text: "Waiting on the owner."}}, Stop: model.EndTurn}}
+	m := &script{replies: slices.Clone(turns)}
+	withAgent(t, m)
+	connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{heldTool{}}, nil }
+	old := withdraw
+	withdraw = func(context.Context, string, string, string) (kiff.Withdrawal, error) {
+		return kiff.Withdrawal{Withdrawn: true, Status: "invalidated"}, nil
+	}
+	t.Cleanup(func() { withdraw = old })
+	var rlog bytes.Buffer
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", MaxCost: 2_000_000, History: 20}, jobsDir(t), "", &rlog)
+	rt.public = true
+	if _, err := rt.Run(context.Background(), cases.Refunds); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rlog.String(), "withdrew KIFF's hold on create_refund (…)") || strings.Contains(rlog.String(), "ex_1") {
+		t.Fatalf("log %q", rlog.String())
+	}
+}

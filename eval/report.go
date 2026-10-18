@@ -144,6 +144,11 @@ func WriteReport(w io.Writer, cfgs []Config, results []Result, lower []string) e
 			}
 			b.WriteString("\n")
 		}
+		report := strings.TrimSpace(r.Report)
+		if report == "" {
+			report = "(none: the agent said nothing last)"
+		}
+		fmt.Fprintf(&b, "\nIts report, as the checks read it:\n\n> %s\n", strings.ReplaceAll(report, "\n", "\n> "))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
