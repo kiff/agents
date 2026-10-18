@@ -5,7 +5,8 @@
 #	infra/eval-definitions.sh <tafs checkout> <out dir>
 #
 # <out>/<job>.json is tafdef.ts' definition() for the job, with no owner
-# notes; <out>/source.json names the tafs commit it came from. Check out
+# notes; <out>/setup.json is setupdef.ts' setup agent; <out>/source.json
+# names the tafs commit it came from. Check out
 # tafs at eval/tafs.ref first, so the eval runs what that commit runs:
 #
 #	git clone https://github.com/kiff/tafs && git -C tafs checkout "$(cat eval/tafs.ref)"
@@ -26,6 +27,9 @@ const { JOBS } = await import(pathToFileURL(join(dist, "jobs.js")).href);
 for (const job of JOBS) {
   writeFileSync(join(out, `${job.id}.json`), JSON.stringify(definition(`eval-${job.id}`, job), null, 2) + "\n");
 }
+// Setup too (#78's setup case): its definition, for cmd/e2e -setup.
+const { setupDefinition } = await import(pathToFileURL(join(dist, "cloud/setupdef.js")).href);
+writeFileSync(join(out, "setup.json"), JSON.stringify(setupDefinition("eval-setup"), null, 2) + "\n");
 writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", commit, jobs: JOBS.map((j) => j.id) }, null, 2) + "\n");
-console.log(`wrote ${JOBS.length} definitions from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
+console.log(`wrote ${JOBS.length} job definitions and Setup's from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
 JS
