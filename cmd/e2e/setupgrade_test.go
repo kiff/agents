@@ -31,7 +31,7 @@ func (v *verdicts) Turn(_ context.Context, req model.Request, _ func(string)) (m
 func TestTheSetupChatIsGraded(t *testing.T) {
 	var s said
 	s.messages = []string{"¿Con qué proveedor cobras?", strings.Repeat("palabra ", maxWords+1)}
-	c := component{Type: "confirm", ID: "modo", Title: "Modo de Stripe", Text: "¿Prueba o real?"}
+	c := component{Type: "confirm", ID: "modo", Title: "Modo de Stripe", Text: "¿Prueba o real?", Note: "Puedes cambiarlo luego."}
 	c.Options = append(c.Options, struct {
 		Value string `json:"value"`
 		Label string `json:"label"`
@@ -60,7 +60,8 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 		t.Fatalf("cards %v", s.order)
 	}
 	// The language check reads Setup's cards too: their title, text and labels.
-	if !strings.Contains(v.asked[0], "Spanish") || !strings.Contains(v.asked[0], "Modo de Stripe") || !strings.Contains(v.asked[0], "Prueba") {
+	if !strings.Contains(v.asked[0], "Spanish") || !strings.Contains(v.asked[0], "Modo de Stripe") || !strings.Contains(v.asked[0], "Prueba") ||
+		!strings.Contains(v.asked[0], "Puedes cambiarlo luego.") {
 		t.Fatalf("the language check read %q", v.asked[0])
 	}
 	// So does the id check: a confirm can ask for an id too.

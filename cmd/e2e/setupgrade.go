@@ -70,12 +70,13 @@ func (s *said) card(c component) {
 }
 
 // texts is every piece of text Setup showed the owner, numbered: its
-// messages, then each card's title, text and option labels.
+// messages, then each card's title, text, button words, note and option
+// labels.
 func (s *said) texts() []string {
 	out := append([]string(nil), s.messages...)
 	for _, id := range s.order {
 		c := s.cards[id]
-		for _, t := range []string{c.Title, c.Text} {
+		for _, t := range []string{c.Title, c.Text, c.Yes, c.No, c.Note} {
 			if strings.TrimSpace(t) != "" {
 				out = append(out, t)
 			}
@@ -115,7 +116,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 
 	// 1. The owner's language, in everything Setup wrote.
 	g, err := j.Ask(ctx, fmt.Sprintf("Every numbered text below is written in %s. Proper names, product and company names, ids, "+
-		"URLs, amounts and tool names don't count against it.", o.language), numbered(s.texts()))
+		"URLs, amounts and tool names don't count against it, nor does the word taf (tafs' word for an agent, in every language).", o.language), numbered(s.texts()))
 	if err != nil {
 		return nil, err
 	}
