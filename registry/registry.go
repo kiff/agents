@@ -20,6 +20,7 @@ import (
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/skill"
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/show"
 )
@@ -81,6 +82,10 @@ type Definition struct {
 	// (kiff/agents#91), e.g. https://planque.kiff.dev. Off unless set; the
 	// server must allow it, as it does gateways.
 	Planque string `json:"planque,omitempty"`
+	// Skills are the tenant's skills the agent may read when it needs them
+	// (#101), each a stored version: the context carries their names and
+	// descriptions, and the skill tool their text.
+	Skills []skill.Ref `json:"skills,omitempty"`
 }
 
 // Check refuses a definition that can't be stored or run safely.
@@ -114,6 +119,9 @@ func (d Definition) Check() error {
 		}
 	}
 	if err := d.Keep.Check(); err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	if err := skill.CheckRefs(d.Skills); err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
@@ -150,6 +158,28 @@ func validID(id string) bool {
 		}
 	}
 	return true
+}
+
+// ErrNoSkills means a definition names skills and the builder has no store
+// to read them from.
+var ErrNoSkills = errors.New("registry: the agent names skills and none can be read here")
+
+// LoadSkills reads the packages a definition names, in its order. A version
+// the tenant doesn't have is an error naming it: a definition is stored only
+// with skills that exist (the server checks), and a version never changes.
+func LoadSkills(ctx context.Context, store skill.Store, tenant string, refs []skill.Ref) ([]skill.Package, error) {
+	if store == nil {
+		return nil, ErrNoSkills
+	}
+	ps := make([]skill.Package, 0, len(refs))
+	for _, r := range refs {
+		p, err := store.Get(ctx, tenant, r.Name, r.Version)
+		if err != nil {
+			return nil, fmt.Errorf("registry: skill %s: %w", r, err)
+		}
+		ps = append(ps, p)
+	}
+	return ps, nil
 }
 
 // ErrNotFound means the tenant has no agent with that ID.
@@ -212,6 +242,9 @@ type Builder struct {
 	Planques []string
 	// Planque returns the planque tool for an agent whose KIFF key is key.
 	Planque func(base, tenant, key string) tool.Tool
+	// Skills holds the tenants' skill packages, for definitions that name
+	// some (#101). Without it, such a definition doesn't build.
+	Skills skill.Store
 }
 
 // Build returns the tenant's agent, ready to run, and the definition it was
@@ -272,8 +305,17 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 		}
 		tools = append(tools, b.Workspace(tenant, run))
 	}
+	system := d.Instructions
+	if len(d.Skills) > 0 {
+		ps, err := LoadSkills(ctx, b.Skills, tenant, d.Skills)
+		if err != nil {
+			return agent.Agent{}, d, err
+		}
+		system += "\n\n" + skill.Catalog(ps)
+		tools = append(tools, skill.NewTool(ps))
+	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price,
-		MaxTokens: d.MaxTokens, Effort: d.Effort, System: d.Instructions, Tools: tools, MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
+		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}

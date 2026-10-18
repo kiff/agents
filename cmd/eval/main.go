@@ -72,6 +72,7 @@ import (
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/skill"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
@@ -164,6 +165,7 @@ const evalKeep = 24 * time.Hour
 // runtime runs cases on this runtime, kept in memory.
 type runtime struct {
 	agents   *memory.Agents
+	skills   *memory.Skills // the packages -skills loaded, which definitions may name (#101)
 	sessions *memory.Store
 	runs     *memory.Runs
 	rn       *runner.Runner
@@ -190,8 +192,9 @@ func (k envKey) Key(context.Context, string, string) (string, error) { return st
 func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, skill string, log io.Writer) *runtime {
 	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill,
 		kiffKey: kiffKey, kiffAPI: kiff.APIURL, log: log}
+	rt.skills = memory.NewSkills()
 	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
-		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect,
+		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect, Skills: rt.skills,
 		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent)} },
 	}}
 	return rt
@@ -223,7 +226,7 @@ func (rt *runtime) config(job string, d registry.Definition) {
 	}
 	sum := sha256.Sum256([]byte(d.Instructions))
 	rt.configs = append(rt.configs, eval.Config{Job: job, Source: rt.source, Model: d.Model, Effort: d.Effort, MaxTokens: d.MaxTokens,
-		Price: price, Instructions: fmt.Sprintf("%d bytes, sha256 %x", len(d.Instructions), sum[:6]), Tools: slices.Clone(rt.tools)})
+		Price: price, Instructions: fmt.Sprintf("%d bytes, sha256 %x", len(d.Instructions), sum[:6]), Tools: slices.Clone(rt.tools), Skills: refs(d.Skills)})
 }
 
 // note starts the agent's memory over with only the owner's note for the
@@ -274,6 +277,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 			return d, fmt.Errorf("%s: the job's agent has a workspace, and the eval gives none yet", s.Name)
 		}
 		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.Instructions
+		d.Skills = t.Skills // read from -skills: a skill it names that isn't there fails the build
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
 		if err != nil {
@@ -287,6 +291,67 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 	d.ID = s.Name
 	d.Keep = eval.Policy(evalKeep)
 	return d, nil
+}
+
+func refs(rs []skill.Ref) []string {
+	var out []string
+	for _, r := range rs {
+		out = append(out, r.String())
+	}
+	return out
+}
+
+// loadSkills stores every skill under dir for the eval's tenant (#101):
+// <dir>/<name>/<version>/SKILL.md, and the files beside it, at any depth.
+func (rt *runtime) loadSkills(ctx context.Context, dir string) error {
+	versions, err := filepath.Glob(filepath.Join(dir, "*", "*", "SKILL.md"))
+	if err != nil {
+		return err
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("-skills: no <name>/<version>/SKILL.md under %s", dir)
+	}
+	for _, path := range versions {
+		root := filepath.Dir(path)
+		md, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		name, description, body, err := skill.Parse(string(md))
+		if err != nil {
+			return fmt.Errorf("-skills: %s: %w", path, err)
+		}
+		if name != filepath.Base(filepath.Dir(root)) {
+			return fmt.Errorf("-skills: %s names %q: its directory must be named so", path, name)
+		}
+		files := map[string]string{}
+		err = filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
+			if err != nil || e.IsDir() || p == path {
+				return err
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(root, p)
+			files[filepath.ToSlash(rel)] = string(b)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		p := skill.Package{Tenant: evalTenant, Name: name, Version: filepath.Base(root), Description: description, Body: body}
+		if len(files) > 0 {
+			p.Files = files
+		}
+		if err := p.Check(); err != nil {
+			return fmt.Errorf("-skills: %s: %w", root, err)
+		}
+		if err := rt.skills.Put(ctx, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // cancel asks a run to stop, re-reading it if it changed meanwhile.
@@ -425,6 +490,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	seedEach := fs.Bool("seed", false, "-run: seed the case in Stripe test mode (STRIPE_API_KEY) before each of its runs, instead of -ids")
 	reportPath := fs.String("report", "", "write a Markdown report here: the configuration, each case over its runs, and each run's checks")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
+	skillsDir := fs.String("skills", "", "-run: a directory of skills, <name>/<version>/SKILL.md each, that the definitions may name (#101)")
 	public := fs.Bool("public", false, "the log is public (CI): print each run's score, cost and failed checks' names only, with no ids or reasons, and no results on stdout; -out and -report hold the rest")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -516,6 +582,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			rt.notesFor = map[string]string{"chargebacks": seed.ChargebacksNote}
 		}
 		rt.notes = *notesDir
+		if *skillsDir != "" {
+			if err := rt.loadSkills(ctx, *skillsDir); err != nil {
+				return err
+			}
+		}
 		rt.public = *public
 		if u, err := url.Parse(*kiffAPI); err != nil || u.Scheme != "https" || u.Host == "" {
 			return errors.New("-kiff-api is an https URL: the agent's key goes there")

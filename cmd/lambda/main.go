@@ -172,6 +172,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	db := ddb.NewFromConfig(cfg)
 	store := dynamodb.New(db, table)
 	agents := dynamodb.NewAgents(db, table)
+	skills := dynamodb.NewSkills(db, table)
 	runs := dynamodb.NewRuns(db, table)
 	secrets := sm.NewFromConfig(cfg)
 	llm := &keyedModel{
@@ -188,7 +189,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
-		Agents: agents, Secrets: keys,
+		Agents: agents, Secrets: keys, Skills: skills,
 		Model: llm, Gateways: gateways,
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
@@ -216,7 +217,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims)},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills},
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,

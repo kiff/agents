@@ -85,6 +85,7 @@ type Config struct {
 	Price        string   // as -price takes it
 	Instructions string   // its size and digest
 	Tools        []string // as KIFF's gateway listed them
+	Skills       []string // the skills it names, name@version (#101)
 }
 
 // WriteReport writes the run as Markdown: each job's configuration, each
@@ -106,7 +107,7 @@ func WriteReport(w io.Writer, cfgs []Config, results []Result, lower []string) e
 		for _, row := range [][2]string{
 			{"Definition", cfg.Source}, {"Model", cfg.Model}, {"Effort", effort},
 			{"Max tokens", fmt.Sprint(cfg.MaxTokens)}, {"Price", cfg.Price},
-			{"Instructions", cfg.Instructions}, {"Tools", strings.Join(tools, ", ")},
+			{"Instructions", cfg.Instructions}, {"Tools", strings.Join(tools, ", ")}, {"Skills", strings.Join(cfg.Skills, ", ")},
 		} {
 			fmt.Fprintf(&b, "| %s | %s |\n", row[0], cell(row[1]))
 		}

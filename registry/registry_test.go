@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/kiff/agents/skill"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -414,5 +415,63 @@ func TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the agent has no planque tool")
+	}
+}
+
+// A definition that names skills (#101) builds with their catalog after its
+// instructions and the skill tool over exactly those versions. A version the
+// tenant doesn't have, or no store to read it from, fails the build.
+func TestBuildGivesTheSkillsItNames(t *testing.T) {
+	f := newFixture(t)
+	skills := memory.NewSkills()
+	for _, p := range []skill.Package{
+		{Tenant: "t1", Name: "kiff", Version: "v1", Description: "What KIFF's results mean.", Body: "# KIFF v1"},
+		{Tenant: "t1", Name: "kiff", Version: "v2", Description: "What KIFF's results mean, again.", Body: "# KIFF v2"},
+		{Tenant: "t2", Name: "refunds", Version: "v1", Description: "t2's.", Body: "# t2"},
+	} {
+		if err := skills.Put(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := registrytest.Definition("t1", "payouts")
+	d.Skills = []skill.Ref{{Name: "kiff", Version: "v1"}}
+	_ = f.agents.Put(ctx, d)
+
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrNoSkills) {
+		t.Fatalf("no store: %v, want ErrNoSkills", err)
+	}
+	f.b.Skills = skills
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(a.System, d.Instructions+"\n\n# Skills") || !strings.Contains(a.System, "- kiff: What KIFF's results mean.") || strings.Contains(a.System, "again") {
+		t.Fatalf("system:\n%s", a.System)
+	}
+	var reader tool.Tool
+	for _, tl := range a.Tools {
+		if tl.Spec().Name == skill.ToolName {
+			reader = tl
+		}
+	}
+	if reader == nil {
+		t.Fatal("no skill tool")
+	}
+	if r, err := reader.Call(ctx, json.RawMessage(`{"name":"kiff"}`)); err != nil || r.Text != "# KIFF v1" {
+		t.Fatalf("read %+v, %v; want the named version", r, err)
+	}
+
+	// Another tenant's skill of that name isn't the agent's.
+	d.Skills = []skill.Ref{{Name: "refunds", Version: "v1"}}
+	_ = f.agents.Put(ctx, d)
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, skill.ErrNotFound) {
+		t.Fatalf("another tenant's skill: %v, want ErrNotFound", err)
+	}
+
+	// Without skills, nothing is added.
+	d.Skills = nil
+	_ = f.agents.Put(ctx, d)
+	if a, _, err := f.b.Build(ctx, "t1", "payouts"); err != nil || a.System != d.Instructions {
+		t.Fatalf("no skills: %q, %v", a.System, err)
 	}
 }
