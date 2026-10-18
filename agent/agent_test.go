@@ -225,6 +225,18 @@ func TestAHeldCallPausesTheRun(t *testing.T) {
 	if m.reqs[0].NoToolUse {
 		t.Fatal("a working turn forbade tool use")
 	}
+	// That turn is told the run pauses and to report, after the results (#78);
+	// the results the run keeps for Continue carry no note.
+	last := m.reqs[1].Messages[len(m.reqs[1].Messages)-1]
+	if n := len(last.Blocks); n != 3 || last.Blocks[0].Kind != model.ToolResult || last.Blocks[1].Kind != model.ToolResult ||
+		last.Blocks[2].Kind != model.Text || last.Blocks[2].Text != agent.PauseNote {
+		t.Fatalf("the turn after a hold read %+v", last)
+	}
+	for _, b := range out.Turn.Results {
+		if b.Kind == model.Text {
+			t.Fatalf("the kept results carry the note: %+v", out.Turn.Results)
+		}
+	}
 }
 
 // A run whose caps are reached in the turn KIFF holds a call still pauses,
