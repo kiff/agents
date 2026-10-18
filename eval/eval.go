@@ -75,6 +75,9 @@ type Result struct {
 	PerItemMicro  int64         `json:"cost_per_item_micro_usd"`
 	JudgeMicroUSD int64         `json:"judge_cost_micro_usd"`
 	Context       Context       `json:"context"`
+	// Report is what the agent said last, which the checks read: kept so a
+	// check that fails on it ("the report doesn't name …") can be read.
+	Report string `json:"report,omitempty"`
 }
 
 // Context is what the run's turns read, from its Usage events: the tokens
@@ -128,6 +131,9 @@ func (c Case) Grade(ctx context.Context, r Run, j *Judge) (Result, error) {
 		return Result{}, fmt.Errorf("eval: %s: cost: %w", c.Name, err)
 	}
 	res := Result{Case: c.Name, Session: r.Session.ID, CostMicroUSD: cost}
+	if res.Report, err = r.Report(); err != nil {
+		return Result{}, fmt.Errorf("eval: %s: report: %w", c.Name, err)
+	}
 	if res.Context, err = contextOf(r.Events); err != nil {
 		return Result{}, fmt.Errorf("eval: %s: context: %w", c.Name, err)
 	}

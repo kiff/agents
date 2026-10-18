@@ -48,6 +48,7 @@ func TestWriteReport(t *testing.T) {
 		Price: "4000000,20000000,200000,5000000", Instructions: "17353 bytes, sha256 ab12", Tools: []string{"update_dispute", "close_dispute"}}
 	r := result("chargebacks", 0.5, 384_200, "stops on held")
 	r.Checks[0].Why = "wrote T-2005 again | with update_dispute"
+	r.Report = "Answered T-2001.\nT-2004 waits for you."
 	if err := eval.WriteReport(&b, []eval.Config{cfg}, []eval.Result{r}, []string{"chargebacks: 0.50, was 0.67"}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +57,7 @@ func TestWriteReport(t *testing.T) {
 		"| Definition | kiff/tafs@1d1ed42e64e8 |", "| Effort | high |", "| Tools | close_dispute, update_dispute |",
 		"| chargebacks | 1 | 0.50 | 0.50–0.50 | 0.3842 |", "stops on held (1)",
 		"- **FAIL** stops on held: wrote T-2005 again | with update_dispute", "- skip skipped",
+		"Its report, as the checks read it:\n\n> Answered T-2001.\n> T-2004 waits for you.\n",
 	} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("no %q in\n%s", want, b.String())
