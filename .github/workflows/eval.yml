@@ -1,0 +1,67 @@
+name: Eval
+# The eval loop (#78): each night, the Chargebacks case runs on this commit's
+# runtime as kiff/tafs defines its job (eval/tafs.ref), three times on a
+# fresh Stripe test-mode seed each, is graded, and fails on a mean below
+# eval/baseline.json. The agent's KIFF key, the model and Stripe's test mode
+# are real.
+#
+# This log is public, and so are a public repository's artifacts. So the eval
+# prints only each run's score, cost and failed checks' names (-public), and
+# the full report (each check's why, the runs' ids) goes to a private bucket,
+# written by a role that may only put reports there (infra/aws.sh). The log
+# names only the report's key.
+#
+# Every night and by hand. It doesn't gate pull requests: it spends money
+# and depends on live services.
+on:
+  schedule:
+    - cron: "7 4 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: eval
+  cancel-in-progress: false
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      REPORTS: kiff-agents-eval-reports
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: tafs' definitions, at eval/tafs.ref
+        run: |
+          git clone --quiet https://github.com/kiff/tafs tafs
+          git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
+          infra/eval-definitions.sh tafs defs
+      - name: Chargebacks, three seeded runs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+        run: |
+          go run ./cmd/eval -run -public -definitions defs -seed -repeat 3 \
+            -baseline eval/baseline.json \
+            -judge-model claude-opus-5-5 -judge-price 4000000,20000000 \
+            -out results.json -report report.md chargebacks
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: always()
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
+      - name: The full report, to the private bucket
+        if: always()
+        run: |
+          key="reports/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+          for f in report.md results.json; do
+            [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
+          done
+          echo "report: s3://$REPORTS/$key/"
