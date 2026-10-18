@@ -490,7 +490,12 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			}
 			switch c.Type {
 			case "confirm":
-				if len(c.Options) > 0 {
+				if approvedGrant != "" && !toldFacts {
+					// Once Setup can look, the owner's first answer is their facts,
+					// typed (a confirm takes words too): tapping Setup's suggested
+					// limits would set a Card the taf's steps don't expect.
+					msg, toldFacts = facts[0], true
+				} else if len(c.Options) > 0 {
 					msg = fmt.Sprintf("[confirm %s] %s", c.ID, c.Options[0].Value)
 				}
 			case "approval", "sign_in":
