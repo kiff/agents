@@ -647,7 +647,7 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) ([]strin
 }
 
 // grade grades the setup chat (-grade), prints each check's name and
-// outcome (a failure's reason only outside CI: it quotes the chat), and
+// outcome (a judged failure's reason only outside CI: it quotes the chat), and
 // fails the test when a check failed.
 func (t *test) grade(ctx context.Context, tafAgent string) error {
 	fmt.Fprintf(t.cfg.log, "== the setup chat, graded (owner in %s)\n", owners[t.cfg.owner].language)
@@ -665,7 +665,8 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			passed++
 		}
 		line := fmt.Sprintf("  %s  %s", mark, c.Name)
-		if !c.Pass && c.Why != "" && !t.out.ci {
+		// A judged check's reason quotes the chat: not in a public log.
+		if !c.Pass && c.Why != "" && (!t.out.ci || counted[c.Name]) {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)

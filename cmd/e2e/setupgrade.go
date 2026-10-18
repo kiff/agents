@@ -103,6 +103,10 @@ func slug(name string) string {
 	return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }), "-")
 }
 
+// counted are the checks graded without the judge. Their reasons never
+// quote the chat (a word count, the slug wanted), so a public log prints them.
+var counted = map[string]bool{"brief": true, "names the agent from the taf's name": true}
+
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.
 func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string) ([]eval.CheckResult, error) {
@@ -130,9 +134,11 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		add("brief", eval.Grade{Pass: true})
 	}
 
-	// 3. It never asks the owner for an id, a key or JSON.
-	g, err = j.Ask(ctx, "None of these messages asks the owner to give, type or choose an id, an identifier, an agent name for "+
-		"a system, a key, a token or JSON. Naming one the agent chose itself is fine.", numbered(s.messages))
+	// 3. It never asks the owner for an id, a key or JSON: in a message or in
+	// a component (a confirm can ask too).
+	g, err = j.Ask(ctx, "None of these texts (messages, and the titles, texts and options of what was shown) asks the owner to give, "+
+		"type or choose an id, an identifier, an agent name for a system, a key, a token or JSON. Naming one the agent chose itself is fine.",
+		numbered(s.texts()))
 	if err != nil {
 		return nil, err
 	}

@@ -63,6 +63,13 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	if !strings.Contains(v.asked[0], "Spanish") || !strings.Contains(v.asked[0], "Modo de Stripe") || !strings.Contains(v.asked[0], "Prueba") {
 		t.Fatalf("the language check read %q", v.asked[0])
 	}
+	// So does the id check: a confirm can ask for an id too.
+	if !strings.Contains(v.asked[1], "asks the owner to give") || !strings.Contains(v.asked[1], "Modo de Stripe") {
+		t.Fatalf("the id check read %q", v.asked[1])
+	}
+	if !counted["brief"] || counted["asks for no id"] {
+		t.Fatal("only the checks graded without the judge print their reasons in CI")
+	}
 
 	// An agent id that doesn't carry the taf's name fails the naming check.
 	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-x7k3")
