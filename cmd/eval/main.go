@@ -101,6 +101,53 @@ var withdraw = func(ctx context.Context, apiURL, key, exception string) (kiff.Wi
 	return kiff.Withdraw(ctx, nil, apiURL, key, exception)
 }
 
+// cardRoom reads what the agent's Cards have left, through KIFF's gateway.
+var cardRoom = func(ctx context.Context, gateway, key string) ([]kiff.Room, error) {
+	return kiff.New(gateway, key, nil).CardRoom(ctx)
+}
+
+// errNotGraded means a run can't be graded fairly, so it isn't run.
+var errNotGraded = errors.New("not graded")
+
+// checkRoom refuses a run the agent's Cards can't fund (#78): with less room
+// than the case needs, the run would measure the Card's day so far, not the
+// agent. Every limit covering an action must have the room.
+func (rt *runtime) checkRoom(ctx context.Context, s cases.Scenario) error {
+	if len(s.Room) == 0 {
+		return nil
+	}
+	rooms, err := cardRoom(ctx, rt.base.Gateway, rt.kiffKey)
+	if err != nil {
+		return fmt.Errorf("%s: reading the Cards' room: %w", s.Name, err)
+	}
+	actions := make([]string, 0, len(s.Room))
+	for a := range s.Room {
+		actions = append(actions, a)
+	}
+	slices.Sort(actions)
+	for _, action := range actions {
+		need, found := s.Room[action], false
+		for _, r := range rooms {
+			if r.Action != action {
+				continue
+			}
+			found = true
+			if r.Remaining < need {
+				resets := ""
+				if !r.ResetsAt.IsZero() {
+					resets = ", resets at " + r.ResetsAt.Format(time.RFC3339)
+				}
+				return fmt.Errorf("%s: %w: %s has %d of %d left on its Card (%s %s%s); a run needs %d",
+					s.Name, errNotGraded, action, r.Remaining, r.Limit, r.Quantity, r.Window, resets, need)
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s: %w: no Card of the agent's covers %s", s.Name, errNotGraded, action)
+		}
+	}
+	return nil
+}
+
 // connect lists the agent's tools through KIFF's gateway.
 var connect = func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 	return kiff.New(gateway, key, nil).Tools(ctx)
@@ -497,6 +544,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 					break
 				}
 				s := s.WithIDs(ids)
+				// Before the seed: a run the Cards can't fund isn't worth one.
+				if err := rt.checkRoom(ctx, s); err != nil {
+					return err
+				}
 				if *seedEach {
 					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
 					if err != nil {

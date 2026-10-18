@@ -164,6 +164,18 @@ chargebacks  4/6  $0.2604 a run, $0.0372 an item, judge $0.0108  (…)
 (a `gateway_agent` key bound to `chargebacks-eval` on KIFF's test account,
 whose Cards the case expects), and `AWS_EVAL_ROLE`.
 
+**A run the Cards can't fund isn't graded.** A case says what one run needs
+left on the agent's Cards (`Scenario.Room`; Chargebacks: $585 of evidence,
+$12 of accepts, and its reads). Before each seed, `eval -run` reads the room
+through the gateway's read-only `kiff_card` and stops when any limit is short:
+
+```
+eval: chargebacks: not graded: update_dispute has 1000 of 1000000 left on its Card (sum(amount) calendar_day, resets at 2026-10-19T00:00:00Z); a run needs 58500
+```
+
+Found on 2026-10-18: a day of by-hand runs used up the test agent's $10,000
+of evidence, and the runs after scored 0.44 for that alone.
+
 ## Next
 
 - **A fresh KIFF agent per run.** The eval reuses `chargebacks-eval`, and
