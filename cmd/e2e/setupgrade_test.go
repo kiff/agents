@@ -83,3 +83,57 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 		t.Fatalf("slug %q", slug("Reembolsos de Tienda"))
 	}
 }
+
+// The owner never meets planque, and a plan once shown keeps its steps
+// (kiff/tafs#82). Both are counted, and say why without quoting the chat.
+func TestNoPlanqueAndAStablePlan(t *testing.T) {
+	step := func(label, status string) struct {
+		Label  string `json:"label"`
+		Status string `json:"status"`
+	} {
+		return struct {
+			Label  string `json:"label"`
+			Status string `json:"status"`
+		}{label, status}
+	}
+	grade := func(s said) map[string]eval.CheckResult {
+		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]eval.CheckResult{}
+		for _, c := range checks {
+			out[c.Name] = c
+		}
+		return out
+	}
+
+	var ok said
+	ok.messages = []string{"Conecto tu Stripe."}
+	plan := component{Type: "steps", ID: "plan"}
+	plan.Steps = append(plan.Steps, step("Conectar Stripe", "active"), step("Dar su Card", "pending"))
+	ok.card(plan)
+	plan.Steps = nil
+	plan.Steps = append(plan.Steps, step("Conectar Stripe", "done"), step("Dar su Card", "active"))
+	ok.card(plan) // only the statuses moved
+	got := grade(ok)
+	if !got["names no planque"].Pass || !got["keeps its plan"].Pass {
+		t.Fatalf("a plan whose statuses moved: %+v", got)
+	}
+
+	var bad said
+	bad.messages = []string{"Abre planque en la app."}
+	plan = component{Type: "steps", ID: "plan"}
+	plan.Steps = append(plan.Steps, step("Conectar Stripe", "active"), step("Dar su Card", "pending"))
+	bad.card(plan)
+	plan.Steps = nil
+	plan.Steps = append(plan.Steps, step("Revisar herramientas", "active"), step("Dar su Card", "pending"), step("Poner a trabajar", "pending"))
+	bad.card(plan)
+	got = grade(bad)
+	if c := got["names no planque"]; c.Pass || c.Why != "text 1 names planque" || !counted[c.Name] {
+		t.Fatalf("planque named: %+v", c)
+	}
+	if c := got["keeps its plan"]; c.Pass || c.Why != "the plan 2 steps, then 3" || !counted[c.Name] || strings.Contains(c.Why, "Revisar") {
+		t.Fatalf("a plan that changed: %+v", c)
+	}
+}

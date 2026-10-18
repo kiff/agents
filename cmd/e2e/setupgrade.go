@@ -57,6 +57,7 @@ type said struct {
 	messages []string
 	cards    map[string]component // by id, its latest version
 	order    []string             // card ids, as first shown
+	plans    map[string][]string  // a steps card's labels, as first shown, by id
 }
 
 func (s *said) card(c component) {
@@ -65,6 +66,12 @@ func (s *said) card(c component) {
 	}
 	if _, seen := s.cards[c.ID]; !seen {
 		s.order = append(s.order, c.ID)
+		if c.Type == "steps" {
+			if s.plans == nil {
+				s.plans = map[string][]string{}
+			}
+			s.plans[c.ID] = labels(c)
+		}
 	}
 	s.cards[c.ID] = c
 }
@@ -76,7 +83,7 @@ func (s *said) texts() []string {
 	out := append([]string(nil), s.messages...)
 	for _, id := range s.order {
 		c := s.cards[id]
-		for _, t := range []string{c.Title, c.Text, c.Yes, c.No, c.Note} {
+		for _, t := range append([]string{c.Title, c.Text, c.Yes, c.No, c.Note}, labels(c)...) {
 			if strings.TrimSpace(t) != "" {
 				out = append(out, t)
 			}
@@ -104,9 +111,19 @@ func slug(name string) string {
 	return strings.Join(strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }), "-")
 }
 
+// labels are a steps card's step labels, in order.
+func labels(c component) []string {
+	var out []string
+	for _, st := range c.Steps {
+		out = append(out, st.Label)
+	}
+	return out
+}
+
 // counted are the checks graded without the judge. Their reasons never
 // quote the chat (a word count, the slug wanted), so a public log prints them.
-var counted = map[string]bool{"brief": true, "names the agent from the taf's name": true}
+var counted = map[string]bool{"brief": true, "names the agent from the taf's name": true,
+	"names no planque": true, "keeps its plan": true}
 
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.
@@ -161,6 +178,44 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		return nil, err
 	}
 	add("offers choices to tap", g)
+
+	// 6. The owner never meets planque (kiff/tafs#82): they connect tafs.
+	var named []string
+	for i, t := range s.texts() {
+		if strings.Contains(strings.ToLower(t), "planque") {
+			named = append(named, fmt.Sprintf("text %d", i+1))
+		}
+	}
+	if len(named) > 0 {
+		add("names no planque", eval.Grade{Why: strings.Join(named, ", ") + " names planque"})
+	} else {
+		add("names no planque", eval.Grade{Pass: true})
+	}
+
+	// 7. A plan, once shown, keeps its steps: only their status moves
+	// (kiff/tafs#82). The reason gives counts and positions, never the chat.
+	var moved []string
+	for _, id := range s.order {
+		first, ok := s.plans[id]
+		if !ok {
+			continue
+		}
+		now := labels(s.cards[id])
+		if len(now) != len(first) {
+			moved = append(moved, fmt.Sprintf("%d steps, then %d", len(first), len(now)))
+			continue
+		}
+		for i := range now {
+			if now[i] != first[i] {
+				moved = append(moved, fmt.Sprintf("step %d changed", i+1))
+			}
+		}
+	}
+	if len(moved) > 0 {
+		add("keeps its plan", eval.Grade{Why: "the plan " + strings.Join(moved, "; ")})
+	} else {
+		add("keeps its plan", eval.Grade{Pass: true})
+	}
 	return out, nil
 }
 
