@@ -66,6 +66,13 @@ type Agent struct {
 // reads it: it comes between the agent's turns, not as a new request.
 const SteerNote = "The owner wrote this while you were working:\n\n"
 
+// PauseNote follows the results of a turn whose call KIFF holds, in the turn
+// the agent gets to say what it waits for: without it, the tool results alone
+// end the conversation, and with tools forbidden a model may answer with no
+// text, leaving the run with no report (#78).
+const PauseNote = "KIFF holds a call above for the owner, so your run pauses here until they answer, and you can't call tools now. " +
+	"Write your report: what you did, what waits for the owner, and what you didn't do and why, naming each item."
+
 // Check refuses an agent that can't run safely: no model or id, no cost cap,
 // or a write tool outside KIFF's gateway.
 func (a Agent) Check() error {
@@ -455,7 +462,11 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	if a.capped(out) != "" {
 		return out, msgs, nil
 	}
-	reply, err := a.turn(ctx, rec, msgs, specs, true, &out, emit)
+	// The turn that says what it waits for is told so; the results the run
+	// keeps, and Continue sends, stay as they are.
+	asked := slices.Clone(msgs)
+	asked[len(asked)-1].Blocks = append(slices.Clone(blocks), model.Block{Kind: model.Text, Text: PauseNote})
+	reply, err := a.turn(ctx, rec, asked, specs, true, &out, emit)
 	if err != nil {
 		return out, msgs, err
 	}
