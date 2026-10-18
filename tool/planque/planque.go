@@ -13,6 +13,7 @@ package planque
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,7 +57,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"A large catalog is shortened (truncated: true): catalog {grant, tool} shows one tool in full. " +
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
-			"agent the taf's KIFF agent id; each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, fixed_arguments?, arguments?}: " +
+			"agent a short name for the taf's KIFF agent, from the taf's name (e.g. refunds): the tool adds a random part so the agent is new, " +
+			"and the answer's agent is the taf's KIFF agent id, to use from then on (its draft, its result). Each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, fixed_arguments?, arguments?}: " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}, " +
 			`e.g. {"tool":"create_refund","amount_argument":"amount","amount_unit":"EUR","amount_scale":2,` +
 			`"arguments":{"charge":{"path":"charge","type":"string","required":true},"amount":{"path":"amount","type":"integer","required":true}}} ` +
@@ -67,7 +69,7 @@ func (t *Tool) Spec() model.ToolSpec {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"action":{"type":"string","enum":["request","status","catalog","tools"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
-			`"agent":{"type":"string","description":"the taf's KIFF agent id (request)"},` +
+			`"agent":{"type":"string","description":"a short name for the taf's KIFF agent, from the taf's name (request); the answer gives its id"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog)"}},` +
@@ -99,8 +101,17 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if len(tools) == 0 || string(tools) == "null" {
 			tools = json.RawMessage("[]") // connect first
 		}
-		body, _ := json.Marshal(map[string]any{"server": in.Server, "agent": in.Agent, "tools": tools})
-		return t.grant(ctx, http.MethodPost, path, body)
+		agent := AgentID(in.Agent)
+		body, _ := json.Marshal(map[string]any{"server": in.Server, "agent": agent, "tools": tools})
+		res, err := t.grant(ctx, http.MethodPost, path, body)
+		if err != nil || res.IsError {
+			return res, err
+		}
+		var g grantView
+		_ = json.Unmarshal([]byte(res.Text), &g)
+		g.Agent = agent
+		b, _ := json.Marshal(g)
+		return tool.Result{Text: string(b)}, nil
 	case "status", "catalog", "tools":
 		if in.Grant == "" || strings.ContainsAny(in.Grant, "/?#") {
 			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
@@ -121,10 +132,51 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	return tool.Result{Text: "action is request, status, catalog or tools", IsError: true}, nil
 }
 
+// AgentID is a new KIFF agent id from the name the model gave: the name as
+// an id (lowercase letters, digits and dashes) and a random part, at most 40
+// characters. The random part (40 bits) comes from here, not the model,
+// which repeats its "random" choices across Setups (kiff/tafs#78).
+func AgentID(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		if i := strings.IndexRune(accented, r); i >= 0 {
+			r = rune(plain[len([]rune(accented[:i]))])
+		}
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			if dash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			b.WriteRune(r)
+			dash = false
+		default:
+			dash = true
+		}
+	}
+	base := b.String()
+	if len(base) > 31 {
+		base = strings.TrimRight(base[:31], "-")
+	}
+	if base == "" {
+		base = "taf"
+	}
+	return base + "-" + strings.ToLower(rand.Text()[:8])
+}
+
+// accented letters an owner's name for a taf may have, and the plain
+// letters an id carries for them, in order.
+const (
+	accented = "áàâäãåéèêëíìîïóòôöõúùûüñçý"
+	plain    = "aaaaaaeeeeiiiiooooouuuuncy"
+)
+
 // grantView is what the model reads of a grant: what the owner sees and
-// where it stands, nothing more.
+// where it stands, nothing more. Agent is set on a request: the taf's KIFF
+// agent id, with its random part.
 type grantView struct {
 	ID      string   `json:"id"`
+	Agent   string   `json:"agent,omitempty"`
 	Status  string   `json:"status"`
 	Text    string   `json:"text,omitempty"`
 	Account string   `json:"account,omitempty"`

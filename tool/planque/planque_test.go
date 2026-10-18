@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,11 +58,15 @@ func call(t *testing.T, tl *planque.Tool, in string) (string, bool) {
 func TestRequestAndStatus(t *testing.T) {
 	srv, seen := fake(t, true)
 	tl := planque.New(srv.URL+"/", "tnt_1", "k_setup", nil)
-	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"agt_refunds","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
-	if isErr || text != `{"id":"grt_1","status":"pending","text":"Connect your account at mcp.stripe.com…"}` {
+	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"Refunds","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
+	var g struct{ Agent string }
+	json.Unmarshal([]byte(text), &g)
+	if isErr || !regexp.MustCompile(`^refunds-[a-z2-7]{8}$`).MatchString(g.Agent) ||
+		text != `{"id":"grt_1","agent":"`+g.Agent+`","status":"pending","text":"Connect your account at mcp.stripe.com…"}` {
 		t.Fatalf("request: %s %v", text, isErr)
 	}
-	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"agt_refunds","server":"https://mcp.stripe.com","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`
+	// planque is asked for the agent the model reads back, random part and all.
+	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"` + g.Agent + `","server":"https://mcp.stripe.com","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`
 	if (*seen)[0] != want {
 		t.Fatalf("sent %s\nwant %s", (*seen)[0], want)
 	}
@@ -187,5 +192,29 @@ func TestALargeCatalogIsBounded(t *testing.T) {
 	}
 	if _, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1","tool":"tool_x"}`); !isErr {
 		t.Fatal("a tool the catalog doesn't have")
+	}
+}
+
+// The random part of a taf's agent id comes from the tool, not the model,
+// which repeats its "random" choices (kiff/tafs#78): the same name twice is
+// two agents. The name is made an id, and the whole is at most 40.
+func TestAgentIDIsNewEachTime(t *testing.T) {
+	a, b := planque.AgentID("reembolsos"), planque.AgentID("reembolsos")
+	if a == b || !strings.HasPrefix(a, "reembolsos-") {
+		t.Fatalf("%s and %s", a, b)
+	}
+	id := regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	for name, prefix := range map[string]string{
+		"Reembolsos de Tienda":  "reembolsos-de-tienda-",
+		"agt_refunds":           "agt-refunds-",
+		"  ¡Pagos!  ":           "pagos-",
+		"Facturación Ñandú":     "facturacion-nandu-",
+		"":                      "taf-",
+		strings.Repeat("a", 60): strings.Repeat("a", 31) + "-",
+	} {
+		got := planque.AgentID(name)
+		if !strings.HasPrefix(got, prefix) || len(got) > 40 || !id.MatchString(got) {
+			t.Errorf("%q: %q", name, got)
+		}
 	}
 }
