@@ -1,6 +1,6 @@
 # Prompt caching and a context report: what #77 delivers
 
-**Issue:** [#77](https://github.com/kiff/agents/issues/77) · **Status:** in progress (caching and the context report delivered; trimming is next).
+**Issue:** [#77](https://github.com/kiff/agents/issues/77) · **Status:** caching and the context report delivered. Left: the same score on repeated runs (#78). Trimming old tool results waits until a case needs it, and then uses the API's own context editing (see #77).
 **PRs:** #80, #83 (was #81)
 
 ## What it's for
@@ -106,5 +106,5 @@ show the shape; the measured Chargebacks run goes on #77.)
 
 ## Next
 
-- Trimming old tool results past a threshold, measured in the evals first.
+- Trimming old tool results waits until a case needs it (Chargebacks peaks at ~27.5k input tokens with ~972k room). Then it uses the API's own context editing (`clear_tool_uses`) behind a per-agent setting, measured in the evals first: editing the history on our side would break the cache and preserved thinking.
 - Chargebacks before and after, same score, lower cost.
