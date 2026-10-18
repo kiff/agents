@@ -190,7 +190,21 @@ func withAgent(t *testing.T, m *script) {
 		}
 		return []tool.Tool{refundTool{}}, nil
 	}
-	t.Cleanup(func() { newModel, connect = oldModel, oldConnect })
+	// Every Card has room unless a test says otherwise.
+	oldRoom := cardRoom
+	cardRoom = func(context.Context, string, string) ([]kiff.Room, error) { return plenty(), nil }
+	t.Cleanup(func() { newModel, connect, cardRoom = oldModel, oldConnect, oldRoom })
+}
+
+// plenty is room for any case, on every tool the cases use.
+func plenty() []kiff.Room {
+	var out []kiff.Room
+	for _, s := range []cases.Scenario{cases.Refunds, cases.Chargebacks} {
+		for action := range s.Room {
+			out = append(out, kiff.Room{Card: "c-" + action, Action: action, Quantity: "count", Window: "calendar_day", Limit: 1 << 40, Remaining: 1 << 40})
+		}
+	}
+	return out
 }
 
 func jobsDir(t *testing.T) string {
@@ -702,5 +716,95 @@ func TestAPublicLogNamesNothing(t *testing.T) {
 	}
 	if !strings.Contains(rlog.String(), "withdrew KIFF's hold on create_refund (…)") || strings.Contains(rlog.String(), "ex_1") {
 		t.Fatalf("log %q", rlog.String())
+	}
+}
+
+// A run its Cards can't fund isn't run or graded (#78): with less room than
+// the case needs on any limit of a tool it uses, or no Card for one, -run
+// stops before seeding, and says which tool, what's left and when it resets.
+func TestARunTheCardsCantFundIsNotGraded(t *testing.T) {
+	ctx := context.Background()
+	rt := newRuntime(&script{}, "kiff-k", registry.Definition{Tenant: evalTenant, Gateway: "https://gateway.test/mcp"}, "", "", io.Discard)
+	old := cardRoom
+	t.Cleanup(func() { cardRoom = old })
+	reset := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
+	var asked []string
+	room := func(update int64) func(context.Context, string, string) ([]kiff.Room, error) {
+		return func(_ context.Context, gateway, key string) ([]kiff.Room, error) {
+			asked = append(asked, gateway+" "+key)
+			rooms := plenty()
+			for i := range rooms {
+				if rooms[i].Action == "update_dispute" {
+					rooms[i] = kiff.Room{Card: "chargebacks-eval-update-dispute", Action: "update_dispute", Quantity: "sum(amount)",
+						Window: "calendar_day", Limit: 1000000, Remaining: update, ResetsAt: reset}
+				}
+			}
+			return rooms, nil
+		}
+	}
+
+	cardRoom = room(1000)
+	err := rt.checkRoom(ctx, cases.Chargebacks, 1)
+	if !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "update_dispute has 1000 of 1000000 left on its Card (sum(amount) calendar_day, resets at 2026-10-19T00:00:00Z); 1 runs need 58500") {
+		t.Fatalf("err %v", err)
+	}
+	if len(asked) != 1 || asked[0] != "https://gateway.test/mcp kiff-k" {
+		t.Fatalf("asked %v", asked)
+	}
+
+	cardRoom = room(58500)
+	if err := rt.checkRoom(ctx, cases.Chargebacks, 1); err != nil {
+		t.Fatalf("exactly enough: %v", err)
+	}
+	// Room for one run isn't room for a night of three: it stops before the first.
+	if err := rt.checkRoom(ctx, cases.Chargebacks, 3); !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "3 runs need 175500") {
+		t.Fatalf("one run's room for three: %v", err)
+	}
+
+	cardRoom = func(context.Context, string, string) ([]kiff.Room, error) { return nil, nil }
+	if err := rt.checkRoom(ctx, cases.Chargebacks, 1); !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "no Card of the agent's covers") {
+		t.Fatalf("no Cards: %v", err)
+	}
+
+	// A case that says nothing about room isn't checked.
+	cardRoom = func(context.Context, string, string) ([]kiff.Room, error) { t.Fatal("read the room"); return nil, nil }
+	if err := rt.checkRoom(ctx, cases.Scenario{Name: "plain"}, 3); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A night the Cards can fund one run of, asked for three, stops before the
+// first seed: nothing is seeded, run or graded, so no run's results are lost
+// to a later one that couldn't run.
+func TestANightTheCardsCantFundStopsBeforeTheFirstSeed(t *testing.T) {
+	m := &script{}
+	withAgent(t, m)
+	cardRoom = func(context.Context, string, string) ([]kiff.Room, error) {
+		rooms := plenty()
+		for i := range rooms {
+			if rooms[i].Action == "update_dispute" {
+				rooms[i].Remaining = cases.Chargebacks.Room["update_dispute"] // one run's
+			}
+		}
+		return rooms, nil
+	}
+	f := &fakeStripe{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	old := stripeURL
+	stripeURL = srv.URL
+	t.Cleanup(func() { stripeURL = old })
+	defs := filepath.Join(t.TempDir(), "defs")
+	_ = os.Mkdir(defs, 0o755)
+	_ = os.WriteFile(filepath.Join(defs, "chargebacks.json"), []byte(`{"instructions": "You work the disputes.", "model": "claude-opus-5-5",
+		"price": {"Input": 4000000, "Output": 20000000}, "max_tokens": 16000, "history": 10}`), 0o644)
+
+	err := run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-seed", "-repeat", "3", "chargebacks"},
+		io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}))
+	if !errors.Is(err, errNotGraded) || !strings.Contains(err.Error(), "3 runs need 175500") {
+		t.Fatalf("err %v", err)
+	}
+	if f.seeds != 0 || len(m.asked) != 0 {
+		t.Fatalf("seeded %d times and asked the model %d times before stopping", f.seeds, len(m.asked))
 	}
 }
