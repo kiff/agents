@@ -28,11 +28,13 @@ import (
 var ctx = context.Background()
 
 // script is a fake model: it answers each turn with the next reply, and keeps
-// the requests it was sent.
+// the requests it was sent. onTurn, if set, runs as each turn is answered,
+// with its number from 1: what the owner does while the model writes.
 type script struct {
 	mu      sync.Mutex
 	replies []model.Reply
 	reqs    []model.Request
+	onTurn  func(n int)
 }
 
 func (s *script) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
@@ -50,6 +52,9 @@ func (s *script) Turn(ctx context.Context, req model.Request, onText func(string
 		if b.Kind == model.Text && onText != nil {
 			onText(b.Text)
 		}
+	}
+	if s.onTurn != nil {
+		s.onTurn(len(s.reqs))
 	}
 	return r, nil
 }
@@ -1328,5 +1333,164 @@ func TestARefusedRunRecordsWhy(t *testing.T) {
 	}
 	if got.Status != run.Completed || got.Stop != string(agent.Refused) || got.Refusal != "cyber" {
 		t.Fatalf("stored %s, stop %q, refusal %q", got.Status, got.Stop, got.Refusal)
+	}
+}
+
+// A message the owner writes while the run goes is taken at its next
+// checkpoint, marked taken on the run, recorded and read by the model; one
+// written while the run is paused is taken once it continues (#102).
+func TestTheOwnerSteersARunThatGoes(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Refunded €20 only."))
+	r := f.start(server.Start{Input: "refund order 12"})
+	f.refund.onCall = func() {
+		if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "only the €20 one", f.clock.now()); err != nil {
+			t.Error(err)
+		}
+	}
+	var steered []string
+	got, err := f.r.Execute(ctx, "t1", r.ID, func(e agent.Event) {
+		if e.Kind == agent.Steered {
+			steered = append(steered, e.Text)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || !slices.Equal(got.Taken(), []string{"only the €20 one"}) || len(got.Untaken()) != 0 {
+		t.Fatalf("ended %+v", got)
+	}
+	reqs := f.model.requests()
+	last := reqs[1].Messages[len(reqs[1].Messages)-1]
+	if len(last.Blocks) != 2 || last.Blocks[1].Text != agent.SteerNote+"only the €20 one" {
+		t.Fatalf("the model read %+v", last)
+	}
+	if !slices.Equal(steered, []string{"only the €20 one"}) {
+		t.Fatalf("streamed %q", steered)
+	}
+	owner := 0
+	for _, k := range f.events(got) {
+		if k == session.OwnerMessage {
+			owner++
+		}
+	}
+	if owner != 2 {
+		t.Fatalf("recorded %d owner messages, want the input and the one taken", owner)
+	}
+}
+
+// A message written while the run is paused waits on it, and the run takes
+// it at its first checkpoint once it continues.
+func TestAPausedRunTakesWhatTheOwnerWroteWhenItContinues(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Waiting."), say("Done, and noted."))
+	r := f.start(server.Start{Input: "refund"})
+	paused := f.pause(r)
+	if paused.Status != run.Paused {
+		t.Fatalf("paused %+v", paused)
+	}
+	if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "note it for next time", f.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded", State: "forwarded"}}}, nil
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || !slices.Equal(got.Taken(), []string{"note it for next time"}) {
+		t.Fatalf("ended %+v", got)
+	}
+	reqs := f.model.requests()
+	last := reqs[len(reqs)-1].Messages
+	tail := last[len(last)-1]
+	if tail.Blocks[len(tail.Blocks)-1].Text != agent.SteerNote+"note it for next time" {
+		t.Fatalf("the continued run read %+v last", tail)
+	}
+}
+
+// A message written while the agent writes its answer is taken before the run
+// is stored as answered, and gets a turn of its own.
+func TestAMessageWrittenDuringTheAnswerGetsATurn(t *testing.T) {
+	f := newFixture(t, say("Refunded."), say("It was €20."))
+	r := f.start(server.Start{Input: "refund order 12"})
+	f.model.onTurn = func(n int) {
+		if n == 1 {
+			if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "how much was it?", f.clock.now()); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || got.Output != "It was €20." || got.Turns != 2 || !slices.Equal(got.Taken(), []string{"how much was it?"}) {
+		t.Fatalf("ended %+v", got)
+	}
+}
+
+// A message taken right before a turn that fails is given back, not taken, so
+// the caller sends it on: no turn read it.
+func TestAMessageNoTurnReadIsGivenBack(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`)) // the turn after the tool fails: no more replies
+	r := f.start(server.Start{Input: "refund"})
+	f.refund.onCall = func() {
+		if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "only the €20 one", f.clock.now()); err != nil {
+			t.Error(err)
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error {
+		t.Fatalf("ended %+v, %v, want an error", got, err)
+	}
+	if !slices.Equal(got.Untaken(), []string{"only the €20 one"}) {
+		t.Fatalf("steering %+v, want the message given back", got.Steering)
+	}
+}
+
+// A message taken once the agent answered is read by the turn it's given,
+// before any checkpoint: if that turn fails, it's given back, not taken.
+func TestAMessageTakenAfterTheAnswerIsGivenBack(t *testing.T) {
+	f := newFixture(t, say("Done.")) // the turn after the answer fails: no more replies
+	r := f.start(server.Start{Input: "refund"})
+	f.model.onTurn = func(n int) {
+		if n == 1 {
+			if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "only the €20 one", f.clock.now()); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error {
+		t.Fatalf("ended %+v, %v, want an error", got, err)
+	}
+	if !slices.Equal(got.Untaken(), []string{"only the €20 one"}) {
+		t.Fatalf("steering %+v, want the message given back", got.Steering)
+	}
+}
+
+// A run asked to stop while the agent answered keeps its answer: a message
+// that came meanwhile gets no turn, and stays not taken.
+func TestACancelDuringTheAnswerTakesNoMessage(t *testing.T) {
+	f := newFixture(t, say("Done."), say("never said"))
+	r := f.start(server.Start{Input: "refund"})
+	f.model.onTurn = func(n int) {
+		if n != 1 {
+			return
+		}
+		if _, err := run.Steer(ctx, f.runs, "t1", r.ID, "and the other one", f.clock.now()); err != nil {
+			t.Error(err)
+		}
+		if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+			t.Error(err)
+		}
+	}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output != "Done." || got.Turns != 1 || !slices.Equal(got.Untaken(), []string{"and the other one"}) {
+		t.Fatalf("ended %+v", got)
 	}
 }

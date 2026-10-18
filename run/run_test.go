@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,5 +196,81 @@ func BenchmarkContinue(b *testing.B) {
 		}); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The owner's messages to a run that hasn't ended are kept on it, in order,
+// until it takes them; one that has ended, or was asked to stop, takes none,
+// and none past MaxSteering (#102).
+func TestSteerKeepsMessagesForARunThatGoes(t *testing.T) {
+	ctx := context.Background()
+	runs := memory.NewRuns()
+	at := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "refund order 12", at)
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Claim(ctx, runs, "t1", r.ID, "i1", at.Add(time.Minute), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"only the €20 one", "and tell me when it's done"} {
+		if r, err = run.Steer(ctx, runs, "t1", r.ID, text, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.Status != run.Running || r.Claim != "i1" {
+		t.Fatalf("steering moved the run: %+v", r)
+	}
+	if got := r.Untaken(); !reflect.DeepEqual(got, []string{"only the €20 one", "and tell me when it's done"}) || len(r.Taken()) != 0 {
+		t.Fatalf("untaken %q, taken %q", got, r.Taken())
+	}
+	r, err = run.Save(ctx, runs, r, at, func(n *run.Run) error { n.Steering[0].Taken = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(r.Taken(), []string{"only the €20 one"}) || !reflect.DeepEqual(r.Untaken(), []string{"and tell me when it's done"}) {
+		t.Fatalf("taken %q, untaken %q", r.Taken(), r.Untaken())
+	}
+
+	for len(r.Steering) < run.MaxSteering {
+		if r, err = run.Steer(ctx, runs, "t1", r.ID, "more", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := run.Steer(ctx, runs, "t1", r.ID, "one too many", at); !errors.Is(err, run.ErrFull) {
+		t.Fatalf("past MaxSteering: %v, want ErrFull", err)
+	}
+
+	// The text together is bounded too: a run's item has room for it.
+	long := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	if err := runs.Create(ctx, long); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", long.ID, strings.Repeat("m", run.MaxSteeringBytes), at); err != nil {
+		t.Fatalf("a message of the whole budget: %v", err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", long.ID, "m", at); !errors.Is(err, run.ErrFull) {
+		t.Fatalf("past MaxSteeringBytes: %v, want ErrFull", err)
+	}
+
+	cancelled, err := run.Change(ctx, runs, r, at, func(n *run.Run) error { n.Cancel = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", cancelled.ID, "wait", at); !errors.Is(err, run.ErrTransition) {
+		t.Fatalf("a run asked to stop: %v, want ErrTransition", err)
+	}
+
+	done := run.New("t1", "refunds", "s1", run.ByOwner, "go", at)
+	done.Status = run.Completed
+	if err := runs.Create(ctx, done); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", done.ID, "wait", at); !errors.Is(err, run.ErrTransition) {
+		t.Fatalf("an ended run: %v, want ErrTransition", err)
+	}
+	if _, err := run.Steer(ctx, runs, "t1", "nope", "wait", at); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("no such run: %v", err)
 	}
 }

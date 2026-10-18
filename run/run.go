@@ -88,6 +88,12 @@ type Run struct {
 	// Cancel records that the run was asked to stop: a running run stops at
 	// its next checkpoint (before a model turn, after a tool batch).
 	Cancel bool `json:"cancel,omitempty"`
+	// Steering is what the owner wrote to the run while it went (#102). The
+	// run takes each message at its next checkpoint, as it would a cancel,
+	// and records it then as an owner message. One it never took, because it
+	// ended first, stays here not taken: the caller sends it as the next
+	// message, so nothing the owner wrote is dropped.
+	Steering []Steering `json:"steering,omitempty"`
 
 	// Claim names the invocation running the run, and Lease is when its claim
 	// ends: a minute after that invocation's own deadline. Every write the run
@@ -147,6 +153,30 @@ type Requirement struct {
 // expiry was recorded waits, visibly, rather than continuing unanswered.
 func (r Requirement) Resolved(now time.Time) bool {
 	return !r.Answered.IsZero() || (!r.Expires.IsZero() && !now.Before(r.Expires))
+}
+
+// Steering is one message the owner wrote to a run while it went.
+type Steering struct {
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+	// Taken is set when the run took the message, at a checkpoint.
+	Taken bool `json:"taken,omitempty"`
+}
+
+// Taken is the text of each message the run has taken, in order.
+func (r Run) Taken() []string { return r.steering(true) }
+
+// Untaken is the text of each message the run hasn't taken (yet), in order.
+func (r Run) Untaken() []string { return r.steering(false) }
+
+func (r Run) steering(taken bool) []string {
+	var out []string
+	for _, s := range r.Steering {
+		if s.Taken == taken {
+			out = append(out, s.Text)
+		}
+	}
+	return out
 }
 
 // Turn is the turn a run paused in: the model's message, with its tool calls,

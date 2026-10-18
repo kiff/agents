@@ -180,6 +180,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
 	a.Cancel = x.cancelled
+	a.Steer = x.steered
 	sess, events, err := rn.Sessions.Read(ctx, tenant, r.Session)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
@@ -198,7 +199,8 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		if err != nil {
 			return x.notRun(ctx, r, false, d.Keep, FailedStart, fmt.Errorf("starting its recording: %w", err))
 		}
-		out, _, err := agent.Run(loop, a, recording, history, r.Input, emit)
+		out, msgs, err := agent.Run(loop, a, recording, history, r.Input, emit)
+		out, err = x.more(loop, a, recording, msgs, out, err, emit)
 		return x.stop(ctx, recording, d.Keep, out, err)
 	}
 	// The recording resumes before KIFF is asked: collecting forwards an
@@ -219,7 +221,8 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 			}
 		}
 	}
-	out, _, err := agent.Continue(loop, a, recording, history, r, held, emit)
+	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
+	out, err = x.more(loop, a, recording, msgs, out, err, emit)
 	return x.stop(ctx, recording, d.Keep, out, err)
 }
 
@@ -370,6 +373,15 @@ type execution struct {
 	rn         *Runner
 	tenant, id string
 	claim      string
+	// seen is the run as the last read left it, for the next use of it: the
+	// steer check right after a checkpoint, or storing the stop right after
+	// the check once the agent answered. One read for both.
+	seen    run.Run
+	hasSeen bool
+	// unread are the messages taken at the last checkpoint that no model
+	// turn has read yet. A run that fails before one does gives them back
+	// (stop), so the caller sends them on.
+	unread []int
 }
 
 // cancelled is the loop's checkpoint: whether the run was asked to stop. A
@@ -384,7 +396,50 @@ func (x *execution) cancelled(ctx context.Context) (bool, error) {
 	if r.Status != run.Running || r.Claim != x.claim || !x.rn.now().Before(r.Lease) {
 		return false, run.ErrLeaseLost
 	}
+	// A turn ran since the last checkpoint: what it took has been read.
+	x.seen, x.hasSeen, x.unread = r, true, nil
 	return r.Cancel, nil
+}
+
+// steered is the loop's other checkpoint: what the owner wrote to the run
+// while it went and it hasn't taken, now marked taken, in order. It is
+// marked taken before the loop records it, so a message is never taken
+// twice; the run then sees it at its next model turn. A read or a write that
+// fails otherwise (a passing store error, or the owner writing faster than
+// the write's tries) takes nothing: the next checkpoint tries again. A lost
+// claim stops the run, as at Cancel.
+func (x *execution) steered(ctx context.Context) ([]string, error) {
+	// The read just made: the checkpoint's, or the one once the agent answered.
+	r, ok := x.take()
+	if !ok {
+		var err error
+		if r, err = x.rn.Runs.Get(ctx, x.tenant, x.id); err != nil {
+			return nil, nil
+		}
+	}
+	if len(r.Untaken()) == 0 {
+		return nil, nil
+	}
+	var took []string
+	var at []int
+	_, err := x.save(ctx, func(n *run.Run) error {
+		took, at = nil, nil // the change may be applied again, to the run as stored
+		for i := range n.Steering {
+			if !n.Steering[i].Taken {
+				n.Steering[i].Taken = true
+				took, at = append(took, n.Steering[i].Text), append(at, i)
+			}
+		}
+		return nil
+	})
+	switch {
+	case err == nil:
+		x.unread = append(x.unread, at...)
+		return took, nil
+	case errors.Is(err, run.ErrLeaseLost), errors.Is(err, run.ErrNotFound):
+		return nil, err
+	}
+	return nil, nil
 }
 
 // saveStop is save for the writes a run's outcome depends on (where it
@@ -417,13 +472,51 @@ func lasting(err error) bool {
 	return false
 }
 
+// take is the run as the last read left it, once: what the next step reads
+// instead of reading again.
+func (x *execution) take() (run.Run, bool) {
+	r, ok := x.seen, x.hasSeen
+	x.seen, x.hasSeen = run.Run{}, false
+	return r, ok
+}
+
+// more gives the agent's answer one last look before the run stops (#102):
+// a message the owner wrote while it answered is taken, and gets a turn. It
+// reads the run once, and storing the stop uses that read, so a run that
+// nobody steers reads no more than before. A message that comes after it is
+// left on the run, not taken, for the caller to send.
+func (x *execution) more(ctx context.Context, a agent.Agent, rec *session.Recording, msgs []model.Message, out agent.Outcome, err error, emit func(agent.Event)) (agent.Outcome, error) {
+	for err == nil && out.Stop == agent.Answered {
+		r, gerr := x.rn.Runs.Get(ctx, x.tenant, x.id)
+		if gerr != nil {
+			return out, nil
+		}
+		x.seen, x.hasSeen = r, true
+		// Asked to stop while it answered: the answer stands, and a message
+		// stays not taken, for the caller.
+		if r.Cancel || len(r.Untaken()) == 0 {
+			return out, nil
+		}
+		turns := out.Turns
+		out, msgs, err = agent.More(ctx, a, rec, msgs, out, emit)
+		if out.Turns == turns { // nothing taken (no turn left, or a passing failure)
+			return out, err
+		}
+	}
+	return out, err
+}
+
 // save stores change on the run while this invocation holds it. The
-// execution keeps no copy of the run, so it reads it first; run.Save then
-// reads it again if a cancel changes it before the write.
+// execution keeps no copy of the run, so it reads it first, unless the step
+// before it just did; run.Save then reads it again if a cancel or a message
+// changes it before the write.
 func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.Run, error) {
-	r, err := x.rn.Runs.Get(ctx, x.tenant, x.id)
-	if err != nil {
-		return r, err
+	r, ok := x.take()
+	if !ok {
+		var err error
+		if r, err = x.rn.Runs.Get(ctx, x.tenant, x.id); err != nil {
+			return r, err
+		}
 	}
 	if r.Claim != x.claim {
 		return r, run.ErrLeaseLost
@@ -465,6 +558,12 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		switch {
 		case runErr != nil:
 			n.Status, n.Stop, n.Error = run.Error, "", failed(runErr)
+			// Taken, but no turn read them: given back, for the caller to send on.
+			for _, i := range x.unread {
+				if i < len(n.Steering) {
+					n.Steering[i].Taken = false
+				}
+			}
 		case out.Stop == agent.Cancelled:
 			n.Status, n.Stop, n.Output = run.Cancelled, string(out.Stop), out.Text
 		default:

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,14 +90,18 @@ type runView struct {
 	Turns           int               `json:"turns"`
 	Requirements    []run.Requirement `json:"requirements,omitempty"`
 	CancelRequested bool              `json:"cancel_requested,omitempty"`
-	Created         time.Time         `json:"created"`
-	Updated         time.Time         `json:"updated"`
+	// Steering is what the owner wrote to the run while it went, each marked
+	// once the run took it. One not taken when the run has ended is the
+	// caller's to send as the next message.
+	Steering []run.Steering `json:"steering,omitempty"`
+	Created  time.Time      `json:"created"`
+	Updated  time.Time      `json:"updated"`
 }
 
 func viewRun(r run.Run) runView {
 	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements,
-		CancelRequested: r.Cancel && !r.Status.Final(), Created: r.Created, Updated: r.Updated}
+		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, Created: r.Created, Updated: r.Updated}
 }
 
 // agentRun is the tenant's run of the agent in the path; a run of another
@@ -165,6 +170,41 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 		}
 		return http.StatusOK, viewRun(next), nil
 	}
+}
+
+// steerBody is what POST /agents/{id}/runs/{run_id}/messages takes.
+type steerBody struct {
+	Text string `json:"text"`
+}
+
+// steerRun gives a run that hasn't ended a message the owner wrote while it
+// goes (#102): it is taken at the run's next checkpoint, before a model
+// turn, and streamed then as a delta (owner_message). It answers 202 with the
+// run. A run that has ended, or was asked to stop, is a conflict: the caller
+// starts a new run with the message, as for any message. So is one that has
+// taken run.MaxSteering messages.
+func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	var body steerBody
+	if err := decode(r, &body); err != nil {
+		return 0, nil, err
+	}
+	if strings.TrimSpace(body.Text) == "" || len(body.Text) > MaxInput {
+		return 0, nil, bad("the text is 1 to %d bytes", MaxInput)
+	}
+	rn, err := s.agentRun(ctx, c, r)
+	if err != nil {
+		return 0, nil, err
+	}
+	next, err := run.Steer(ctx, s.Runs, c.Tenant, rn.ID, body.Text, s.now())
+	switch {
+	case errors.Is(err, run.ErrTransition):
+		return 0, nil, conflict("the run has ended, or was asked to stop: send the message as a new run")
+	case errors.Is(err, run.ErrFull):
+		return 0, nil, conflict("the run holds as many messages as it takes while it goes: wait for it to end, or stop it")
+	case err != nil:
+		return 0, nil, err
+	}
+	return http.StatusAccepted, viewRun(next), nil
 }
 
 // cancelPaused records the cancel on a paused run first, then withdraws
@@ -254,7 +294,8 @@ type startBody struct {
 //	event: event  one recorded session event of the run, its id the event's
 //	              Seq: the cursor resume?after= takes
 //	event: delta  what the agent does as it does it (an agent.Event): text as
-//	              it is written, tool calls as they are made. No id: it is for
+//	              it is written, tool calls as they are made, an owner's
+//	              message as the run takes it (POST …/messages). No id: it is for
 //	              showing, and the recorded events carry what is kept. Start
 //	              and continue only, in the foreground
 //	event: end    the run as stored at its stop; its status is empty when

@@ -50,6 +50,18 @@ var (
 	ErrNotReady   = errors.New("run: a requirement is still unresolved")
 	ErrFixed      = errors.New("run: what it is can't change")
 	ErrCancelled  = errors.New("run: asked to stop")
+	// ErrFull means a run holds as many messages as it takes while it goes
+	// (MaxSteering, or MaxSteeringBytes of text).
+	ErrFull = errors.New("run: no room for another message")
+)
+
+// MaxSteering and MaxSteeringBytes bound what one run takes while it goes:
+// the messages, and their text together. Past either, the owner waits for
+// the run to end, or stops it. The bytes keep a run well inside a store's
+// item (DynamoDB's is 400 KB), with its input, output and requirements.
+const (
+	MaxSteering      = 20
+	MaxSteeringBytes = 64_000
 )
 
 // Same reports whether two versions of a run are the same run: the same
@@ -248,6 +260,7 @@ func HoldsOf(runs ...Run) []string {
 func (r Run) clone() Run {
 	c := r
 	c.Holds = slices.Clone(r.Holds)
+	c.Steering = slices.Clone(r.Steering)
 	c.Requirements = nil
 	for _, q := range r.Requirements {
 		q.Input = bytes.Clone(q.Input)
@@ -317,8 +330,8 @@ const SaveTries = 5
 // A run that changed since r was read but is still this invocation's is read
 // again and change applied to it as stored, so change may run more than once,
 // each time on the run as stored. Today the only writer that changes a RUNNING
-// run under its claimant is a cancel (answers are recorded on PAUSED runs,
-// which hold no claim). The run Save returns shows what changed meanwhile: a
+// run under its claimant is a cancel or a message the owner wrote (Steer);
+// answers are recorded on PAUSED runs, which hold no claim. The run Save returns shows what changed meanwhile: a
 // claimant that finds Cancel set ends the run CANCELLED at its next
 // checkpoint. A pause onto a run asked to stop is stored, Cancel set: KIFF
 // holds a call, so the run waits for it, is claimed again once KIFF has
@@ -344,6 +357,43 @@ func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run
 		}
 		r = stored
 	}
+}
+
+// Steer gives a run that hasn't ended, and wasn't asked to stop, a message
+// the owner wrote while it goes. The run takes it at its next checkpoint,
+// before a model turn: a running run as it goes, a pending one when it
+// starts, a paused one when it continues. A run that ended, or was asked to
+// stop, is ErrTransition: the caller sends the text as a new run, as for any
+// message. It returns the run as stored.
+func Steer(ctx context.Context, runs Runs, tenant, id, text string, now time.Time) (Run, error) {
+	for try := 1; ; try++ {
+		r, err := runs.Get(ctx, tenant, id)
+		if err != nil {
+			return r, err
+		}
+		next, err := Change(ctx, runs, r, now, func(n *Run) error {
+			switch {
+			case n.Status.Final() || n.Cancel:
+				return fmt.Errorf("%w: the run has ended, or was asked to stop", ErrTransition)
+			case len(n.Steering) >= MaxSteering || steeringBytes(n.Steering)+len(text) > MaxSteeringBytes:
+				return ErrFull
+			}
+			n.Steering = append(n.Steering, Steering{Text: text, At: now.UTC()})
+			return nil
+		})
+		if errors.Is(err, ErrConflict) && try < SaveTries {
+			continue
+		}
+		return next, err
+	}
+}
+
+func steeringBytes(s []Steering) int {
+	n := 0
+	for _, m := range s {
+		n += len(m.Text)
+	}
+	return n
 }
 
 // Sweeper marks ended the runs nobody is left to end: a RUNNING run whose
