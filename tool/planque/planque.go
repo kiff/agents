@@ -57,8 +57,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"A large catalog is shortened (truncated: true): catalog {grant, tool} shows one tool in full. " +
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
-			"agent a short name for the taf's KIFF agent, from the taf's name (e.g. refunds): the tool adds a random part so the agent is new, " +
-			"and the answer's agent is the taf's KIFF agent id, to use from then on (its draft, its result). Each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, fixed_arguments?, arguments?}: " +
+			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. refunds): the tool makes the agent's id from it, with a random part so it is new, " +
+			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, fixed_arguments?, arguments?}: " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}, " +
 			`e.g. {"tool":"create_refund","amount_argument":"amount","amount_unit":"EUR","amount_scale":2,` +
 			`"arguments":{"charge":{"path":"charge","type":"string","required":true},"amount":{"path":"amount","type":"integer","required":true}}} ` +
@@ -69,7 +69,8 @@ func (t *Tool) Spec() model.ToolSpec {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"action":{"type":"string","enum":["request","status","catalog","tools"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
-			`"agent":{"type":"string","description":"a short name for the taf's KIFF agent, from the taf's name (request); the answer gives its id"},` +
+			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
+			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request); not with name"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog)"}},` +
@@ -84,6 +85,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Action string          `json:"action"`
 		Server string          `json:"server"`
 		Agent  string          `json:"agent"`
+		Name   string          `json:"name"`
 		Tools  json.RawMessage `json:"tools"`
 		Grant  string          `json:"grant"`
 		Tool   string          `json:"tool"`
@@ -94,14 +96,19 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	path := "/v1/accounts/" + url.PathEscape(t.tenant) + "/grants"
 	switch in.Action {
 	case "request":
-		if in.Server == "" || in.Agent == "" {
-			return tool.Result{Text: "request needs server and agent (and tools, unless you connect first)", IsError: true}, nil
+		if in.Server == "" || (in.Agent == "") == (in.Name == "") {
+			return tool.Result{Text: "request needs server, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first", IsError: true}, nil
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" {
 			tools = json.RawMessage("[]") // connect first
 		}
-		agent := AgentID(in.Agent)
+		// A name makes a new id here (kiff/tafs#78); an agent id is sent as
+		// given, for Setups whose instructions still make their own.
+		agent := in.Agent
+		if in.Name != "" {
+			agent = AgentID(in.Name)
+		}
 		body, _ := json.Marshal(map[string]any{"server": in.Server, "agent": agent, "tools": tools})
 		res, err := t.grant(ctx, http.MethodPost, path, body)
 		if err != nil || res.IsError {

@@ -58,7 +58,7 @@ func call(t *testing.T, tl *planque.Tool, in string) (string, bool) {
 func TestRequestAndStatus(t *testing.T) {
 	srv, seen := fake(t, true)
 	tl := planque.New(srv.URL+"/", "tnt_1", "k_setup", nil)
-	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"Refunds","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
+	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","name":"Refunds","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
 	var g struct{ Agent string }
 	json.Unmarshal([]byte(text), &g)
 	if isErr || !regexp.MustCompile(`^refunds-[a-z2-7]{8}$`).MatchString(g.Agent) ||
@@ -69,6 +69,11 @@ func TestRequestAndStatus(t *testing.T) {
 	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"` + g.Agent + `","server":"https://mcp.stripe.com","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`
 	if (*seen)[0] != want {
 		t.Fatalf("sent %s\nwant %s", (*seen)[0], want)
+	}
+	// An agent id already made (a Setup on older instructions) is sent as given.
+	text, isErr = call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"reembolsos-k7q3x9","tools":[]}`)
+	if isErr || !strings.Contains(text, `"agent":"reembolsos-k7q3x9"`) || !strings.Contains((*seen)[len(*seen)-1], `"agent":"reembolsos-k7q3x9"`) {
+		t.Fatalf("request with an agent id: %s %v, sent %s", text, isErr, (*seen)[len(*seen)-1])
 	}
 	text, isErr = call(t, tl, `{"action":"status","grant":"grt_1"}`)
 	if isErr || text != `{"id":"grt_1","status":"connected","tools":["stripe_refund"]}` {
@@ -84,7 +89,7 @@ func TestRefusalsAreReadable(t *testing.T) {
 	if !isErr || !strings.Contains(text, "409") || !strings.Contains(text, "not enrolled") {
 		t.Fatalf("before enrolment: %s", text)
 	}
-	for _, in := range []string{`{"action":"request","server":"https://x"}`, `{"action":"status"}`, `{"action":"status","grant":"../admin"}`, `{"action":"approve","grant":"grt_1"}`, `nope`} {
+	for _, in := range []string{`{"action":"request","server":"https://x"}`, `{"action":"request","server":"https://x","name":"r","agent":"r-1"}`, `{"action":"status"}`, `{"action":"status","grant":"../admin"}`, `{"action":"approve","grant":"grt_1"}`, `nope`} {
 		if _, isErr := call(t, tl, in); !isErr {
 			t.Errorf("%s was not refused", in)
 		}
