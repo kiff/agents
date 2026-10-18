@@ -81,9 +81,10 @@ type Component struct {
 	Taf     *Taf     `json:"taf,omitempty"`
 	Tools   []string `json:"tools,omitempty"`
 	// The card's own words for its buttons and the line under them, in the
-	// owner's language (kiff/tafs#75): the app keeps no words of its own in
-	// a card. Yes is the main button, No the other, Note the line below. A
-	// card without them shows the app's English.
+	// owner's language (kiff/tafs#75). Yes is the main button, No the other,
+	// Note the line below. A card without them shows the app's words. Never
+	// on an approval: the owner's tap there grants, so its words are the
+	// app's, in the phone's language.
 	Yes  string `json:"yes,omitempty"`
 	No   string `json:"no,omitempty"`
 	Note string `json:"note,omitempty"`
@@ -94,7 +95,7 @@ var fields = map[string][]string{
 	"steps":    {"title", "steps"},
 	"notice":   {"tone", "title", "text"},
 	"confirm":  {"text", "options"},
-	"approval": {"grant", "draft", "yes", "no", "note"}, // what it grants is planque's text, never the agent's
+	"approval": {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
 	"sign_in":  {"grant", "service", "title", "text", "yes", "no", "note"},
 	"result":   {"taf", "text", "tools", "yes"},
 }
@@ -120,8 +121,8 @@ func (Tool) Spec() model.ToolSpec {
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
 			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed. " +
-			"The app keeps no words of its own on a card: an approval takes yes (the main button, e.g. Approve), no (e.g. Decline) and note (the line under them, e.g. that approving asks for Face ID); a sign_in takes title, text, yes, no and note; a result takes yes (the button that opens the taf). " +
-			"Write them in the owner's language. What an approval grants is shown from planque and KIFF, not from your words. " +
+			"The app keeps no words of its own on a card: a sign_in takes title, text, yes (the button that opens the vendor's page), no (e.g. Not now) and note; a result takes yes (the button that opens the taf). " +
+			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"type":{"type":"string","enum":["steps","notice","confirm","approval","sign_in","result"]},` +
@@ -136,9 +137,9 @@ func (Tool) Spec() model.ToolSpec {
 			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds"},"draft":{"type":"string","description":"the taf's KIFF draft id, confirmed by the owner"}},` +
 			`"required":["agent","name","job","draft"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
-			`"yes":{"type":"string","description":"the main button's label (approval, sign_in, result)"},` +
-			`"no":{"type":"string","description":"the other button's label (approval, sign_in)"},` +
-			`"note":{"type":"string","description":"the line under the buttons (approval, sign_in)"}},` +
+			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
+			`"no":{"type":"string","description":"the other button's label (sign_in)"},` +
+			`"note":{"type":"string","description":"the line under the buttons (sign_in)"}},` +
 			`"required":["type","id"]}`),
 	}
 }
