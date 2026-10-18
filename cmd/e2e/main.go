@@ -30,6 +30,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -49,6 +50,7 @@ import (
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
+	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
@@ -179,6 +181,7 @@ type test struct {
 
 	kiff  *client
 	phone *phone
+	pk    *ecdsa.PrivateKey // the phone's key: KIFF's sign-in and the owner's answers
 
 	stripe  *stripe // against Stripe in test mode, else nil
 	account string  // the Stripe account
@@ -209,6 +212,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if err != nil {
 		return err
 	}
+	t.pk = pk
 	t.secrets = append(t.secrets, t.cfg.session, t.cfg.setupKey)
 	probe := kiffSession(kiff.APIURL, t.cfg.session, "", pk, t.hc)
 	me, err := probe.do(ctx, http.MethodGet, "/v1/me", nil)
@@ -418,7 +422,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	}
 	// What the owner answers when Setup asks in words rather than with a choice.
 	facts := []string{
-		"A single refund should never be more than 5 euros (500 cents); refuse anything above that. Over a day, 50 euros at most. " +
+		// Ask, not Stop (kiff/tafs#31): a refund over the per-call limit waits
+		// for the owner, who answers it on the phone.
+		"A single refund over 5 euros (500 cents) should come to me to approve on my phone first. Over a day, 50 euros at most. " +
 			"The taf should only make refunds, nothing else. Yes, you can connect to it.",
 		"Yes, that's right. Go ahead.",
 	}
@@ -643,6 +649,34 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		}
 		_, text, _ := t.latest(ctx, ch.Session, r.ID)
 		t.logf("owner: %s → taf: %s", ask, oneLine(text))
+		if r.Status == "PAUSED" && t.stripe == nil {
+			// Over everything: whatever KIFF held, the owner refuses.
+			for _, q := range r.Requirements {
+				t.out.hide(q.Exception, "<a hold>")
+				if err := t.answerHold(ctx, q.Exception, "reject"); err != nil {
+					return err
+				}
+			}
+			t.logf("the owner refused it on the phone")
+		}
+	}
+	// Held, then answered on the phone (kiff/tafs#31): 8 euros approved, 9
+	// refused. Both are over the 5-euro call limit and under the day's 50.
+	approved, refused := "ch_e2e_ok_"+t.run, "ch_e2e_no_"+t.run
+	if t.stripe == nil {
+		for _, h := range []struct{ charge, answer, word string }{{approved, "approve-once", "approved"}, {refused, "reject", "refused"}} {
+			ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: tafID}
+			ask := "Refund charge " + h.charge + " for " + map[string]string{"approve-once": "800", "reject": "900"}[h.answer] + " cents."
+			r, _, err := t.heldThenAnswered(ctx, func(text string) (runs.Run, error) { return ch.Send(ctx, text, nil) }, ask, h.answer)
+			if err != nil {
+				return err
+			}
+			_, text, _ := t.latest(ctx, ch.Session, r.ID)
+			t.logf("owner: %s → held; the owner %s it on the phone, signed → taf: %s", ask, h.word, oneLine(text))
+			if r.Status != "COMPLETED" {
+				return fmt.Errorf("%q: after the phone's answer the run ended %s", ask, r.Status)
+			}
+		}
 	}
 	if t.stripe != nil {
 		// Stripe's own account of it: one refund, of 3.00.
@@ -662,13 +696,16 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	}
 	var got []string
 	for _, c := range calls {
-		if strings.Contains(c, in) || strings.Contains(c, out) {
+		if strings.Contains(c, in) || strings.Contains(c, out) || strings.Contains(c, approved) || strings.Contains(c, refused) {
 			got = append(got, c)
 		}
 	}
 	t.logf("the vendor received %d call(s) for this run: %v", len(got), got)
-	if len(got) != 1 || !strings.Contains(got[0], `"charge":"`+in+`"`) || !strings.Contains(got[0], `"amount":300`) {
-		return fmt.Errorf("the vendor received %v; want exactly the refund of %s for 300", got, in)
+	// The one inside the Card, and the one the owner approved, each once;
+	// nothing for the one over everything or the one the owner refused.
+	if len(got) != 2 || !strings.Contains(got[0], `"charge":"`+in+`"`) || !strings.Contains(got[0], `"amount":300`) ||
+		!strings.Contains(got[1], `"charge":"`+approved+`"`) || !strings.Contains(got[1], `"amount":800`) {
+		return fmt.Errorf("the vendor received %v; want exactly the refund of %s for 300, then of %s for 800", got, in, approved)
 	}
 	return nil
 }
