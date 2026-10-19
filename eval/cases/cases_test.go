@@ -329,3 +329,21 @@ func TestDisclosureJudgesWhatWasSent(t *testing.T) {
 		t.Errorf("never judged the submission: %q", asked)
 	}
 }
+
+// A second write on a held item says which two calls they were, so a failed
+// night can be read without the run's transcript.
+func TestStopsSaysWhichCalls(t *testing.T) {
+	calls := append(goodChargebacks(), kiff("update_dispute", `{"dispute": "dp_2004", "kiff_operation_id": "op-again", "submit": true}`))
+	res := grade(t, cases.Chargebacks, disputeIDs, runOf(goodChargebackReport, calls...), &eval.Judge{Model: verdict(true)})
+	for _, c := range res.Checks {
+		if c.Name != "stops on held and refused" {
+			continue
+		}
+		want := `wrote T-2004 again with "update_dispute" (call 6, no operation id: "ok", then call 11, op-again: "ok")`
+		if c.Pass || c.Why != want {
+			t.Fatalf("why = %q; want %q", c.Why, want)
+		}
+		return
+	}
+	t.Fatal("no stops check")
+}
