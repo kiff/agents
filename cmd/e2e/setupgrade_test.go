@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 
 	v := &verdicts{fail: []string{"asks the owner to give"}}
 	checks, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge", Price: model.Price{Input: 1, Output: 1}},
-		owners["es"], s, "taf-reembolsos-x7k3", nil)
+		owners["es"], s, "taf-reembolsos-x7k3", modes{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	}
 
 	// An agent id that doesn't carry the taf's name fails the naming check.
-	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-x7k3", nil)
+	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-x7k3", modes{})
 	for _, c := range checks {
 		if c.Name == "names the agent from the taf's name" && c.Pass {
 			t.Fatal("an agent id without the taf's name passed")
@@ -97,7 +98,7 @@ func TestNoPlanqueAndAStablePlan(t *testing.T) {
 		}{label, status}
 	}
 	grade := func(s said) map[string]eval.CheckResult {
-		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3", nil)
+		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3", modes{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,12 +183,12 @@ func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
 		}
 	}
 
-	grade := func(cards []component, live []string) map[string]eval.CheckResult {
+	grade := func(cards []component, m modes) map[string]eval.CheckResult {
 		var s said
 		for _, c := range cards {
 			s.card(c)
 		}
-		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["en"], s, "taf-refunds-x7k3", live)
+		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["en"], s, "taf-refunds-x7k3", m)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,15 +198,31 @@ func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
 		}
 		return out
 	}
-	got := grade([]component{en}, nil)
+	got := grade([]component{en}, modes{})
 	if !got["asks test or live"].Pass || !got["pins the mode the owner chose"].Pass {
 		t.Fatalf("asked, pinned test: %+v", got)
 	}
-	got = grade([]component{other}, []string{"create_refund"})
+	got = grade([]component{other}, modes{live: []string{"create_refund"}})
 	if got["asks test or live"].Pass || got["pins the mode the owner chose"].Pass {
 		t.Fatalf("never asked, pinned live: %+v", got)
 	}
 	if !strings.Contains(got["pins the mode the owner chose"].Why, "create_refund") {
 		t.Fatalf("the reason names no tool: %q", got["pins the mode the owner chose"].Why)
+	}
+	// The vendor said test, and Setup pinned it (kiff/tafs#90): no need to ask.
+	got = grade([]component{other}, modes{read: true, test: true})
+	if !got["asks test or live"].Pass || !got["pins the mode the owner chose"].Pass {
+		t.Fatalf("read and pinned test: %+v", got)
+	}
+	// Pinned test without reading it is a guess: it still had to ask.
+	if got = grade([]component{other}, modes{test: true}); got["asks test or live"].Pass {
+		t.Fatalf("pinned test unread, never asked: %+v", got)
+	}
+	for fixed, want := range map[string]string{`{"mode":"test"}`: "test", `{"livemode":false}`: "test", `{"environment":"sandbox"}`: "test", `{"mode":"live"}`: "live", `{"account":"a"}`: ""} {
+		var f map[string]any
+		_ = json.Unmarshal([]byte(fixed), &f)
+		if got := pinnedMode(f); got != want {
+			t.Errorf("pinnedMode(%s) = %q, want %q", fixed, got, want)
+		}
 	}
 }

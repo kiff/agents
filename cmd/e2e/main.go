@@ -662,20 +662,29 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) ([]strin
 // fails the test when a check failed.
 func (t *test) grade(ctx context.Context, tafAgent string) error {
 	fmt.Fprintf(t.cfg.log, "== the setup chat, graded (owner in %s)\n", owners[t.cfg.owner].language)
-	// The tools Setup pinned to live mode, in the grants this run connected.
-	var livePinned []string
+	// The modes Setup pinned, in the grants this run connected, and whether it
+	// read what the sign-in covers.
+	var m modes
 	for _, id := range t.grants {
 		g, err := t.phone.grant(ctx, id)
 		if err != nil {
 			return err
 		}
 		for _, tool := range g.Request.Tools {
-			if pinnedLive(tool.Fixed) {
-				livePinned = append(livePinned, tool.Tool)
+			switch pinnedMode(tool.Fixed) {
+			case "live":
+				m.live = append(m.live, tool.Tool)
+			case "test":
+				m.test = true
+			}
+		}
+		for _, e := range g.Events {
+			if strings.HasPrefix(e.What, "read ") {
+				m.read = true
 			}
 		}
 	}
-	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent, livePinned)
+	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent, m)
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}

@@ -127,9 +127,17 @@ var counted = map[string]bool{"brief": true, "names the agent from the taf's nam
 
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.
-// gradeSetup grades what Setup wrote; livePinned are the tools it pinned to
-// live mode, though the scripted owner chooses test (kiff/tafs#89).
-func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string, livePinned []string) ([]eval.CheckResult, error) {
+// modes is what the grants this run connected say about test or live
+// (kiff/tafs#89): the scripted owner chooses test, and the fake vendor's
+// sign-in is in test mode.
+type modes struct {
+	live []string // tools pinned to live mode
+	test bool     // a tool pinned to test mode
+	read bool     // Setup read what the sign-in covers (planque describe)
+}
+
+// gradeSetup grades what Setup wrote, and the modes it pinned.
+func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string, m modes) ([]eval.CheckResult, error) {
 	var out []eval.CheckResult
 	add := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
 
@@ -227,13 +235,15 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 			asked = true
 		}
 	}
-	if asked {
+	// Or it read the mode from the vendor and pinned it (kiff/tafs#90): the
+	// vendor knows what the owner signed in to, so it needn't ask.
+	if asked || (m.read && m.test) {
 		add("asks test or live", eval.Grade{Pass: true})
 	} else {
-		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap"})
+		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap, and no mode the vendor reported was pinned"})
 	}
-	if len(livePinned) > 0 {
-		add("pins the mode the owner chose", eval.Grade{Why: "pinned to live mode, though the owner chose test: " + strings.Join(livePinned, ", ")})
+	if len(m.live) > 0 {
+		add("pins the mode the owner chose", eval.Grade{Why: "pinned to live mode, though the owner chose test: " + strings.Join(m.live, ", ")})
 	} else {
 		add("pins the mode the owner chose", eval.Grade{Pass: true})
 	}
@@ -278,14 +288,21 @@ func containsAny(s string, words []string) bool {
 
 // pinnedLive says whether a tool's fixed arguments pin live mode: Stripe's
 // livemode, or a mode or environment set to live.
-func pinnedLive(fixed map[string]any) bool {
+func pinnedLive(fixed map[string]any) bool { return pinnedMode(fixed) == "live" }
+
+// pinnedMode is the mode a tool's fixed arguments pin, "live" or "test", or
+// "" when they pin none.
+func pinnedMode(fixed map[string]any) string {
 	for k, v := range fixed {
 		k, val := strings.ToLower(k), strings.ToLower(fmt.Sprint(v))
-		if strings.Contains(k, "livemode") && val == "true" || (k == "mode" || k == "environment") && val == "live" {
-			return true
+		switch {
+		case strings.Contains(k, "livemode") && val == "true", (k == "mode" || k == "environment") && val == "live":
+			return "live"
+		case strings.Contains(k, "livemode") && val == "false", (k == "mode" || k == "environment") && (val == "test" || val == "sandbox"):
+			return "test"
 		}
 	}
-	return false
+	return ""
 }
 
 // confirms are the choices Setup showed as options to tap.

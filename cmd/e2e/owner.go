@@ -144,6 +144,11 @@ type grant struct {
 			Fixed map[string]any `json:"fixed_arguments"`
 		} `json:"tools"`
 	} `json:"request"`
+	// Events is the grant's record, such as "read list_accounts at …" when
+	// Setup read what the sign-in covers (kiff/planque#14).
+	Events []struct {
+		What string `json:"what"`
+	} `json:"events"`
 	Raw json.RawMessage `json:"-"`
 }
 
