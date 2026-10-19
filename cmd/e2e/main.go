@@ -498,7 +498,10 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			}
 			switch c.Type {
 			case "confirm":
-				if approvedGrant != "" && !toldFacts {
+				if test, ok := modeChoice(c); ok {
+					// Test or live: the owner chooses test (kiff/tafs#89).
+					msg = fmt.Sprintf("[confirm %s] %s", c.ID, test)
+				} else if approvedGrant != "" && !toldFacts {
 					// Once Setup can look, the owner's first answer is their facts,
 					// typed (a confirm takes words too): tapping Setup's suggested
 					// limits would set a Card the taf's steps don't expect.
@@ -659,7 +662,20 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) ([]strin
 // fails the test when a check failed.
 func (t *test) grade(ctx context.Context, tafAgent string) error {
 	fmt.Fprintf(t.cfg.log, "== the setup chat, graded (owner in %s)\n", owners[t.cfg.owner].language)
-	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent)
+	// The tools Setup pinned to live mode, in the grants this run connected.
+	var livePinned []string
+	for _, id := range t.grants {
+		g, err := t.phone.grant(ctx, id)
+		if err != nil {
+			return err
+		}
+		for _, tool := range g.Request.Tools {
+			if pinnedLive(tool.Fixed) {
+				livePinned = append(livePinned, tool.Tool)
+			}
+		}
+	}
+	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent, livePinned)
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}

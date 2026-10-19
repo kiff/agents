@@ -41,7 +41,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 
 	v := &verdicts{fail: []string{"asks the owner to give"}}
 	checks, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge", Price: model.Price{Input: 1, Output: 1}},
-		owners["es"], s, "taf-reembolsos-x7k3")
+		owners["es"], s, "taf-reembolsos-x7k3", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	}
 
 	// An agent id that doesn't carry the taf's name fails the naming check.
-	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-x7k3")
+	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-x7k3", nil)
 	for _, c := range checks {
 		if c.Name == "names the agent from the taf's name" && c.Pass {
 			t.Fatal("an agent id without the taf's name passed")
@@ -97,7 +97,7 @@ func TestNoPlanqueAndAStablePlan(t *testing.T) {
 		}{label, status}
 	}
 	grade := func(s said) map[string]eval.CheckResult {
-		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3")
+		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,5 +135,77 @@ func TestNoPlanqueAndAStablePlan(t *testing.T) {
 	}
 	if c := got["keeps its plan"]; c.Pass || c.Why != "the plan 2 steps, then 3" || !counted[c.Name] || strings.Contains(c.Why, "Revisar") {
 		t.Fatalf("a plan that changed: %+v", c)
+	}
+}
+
+// Test or live is the owner's choice (kiff/tafs#89): the scripted owner taps
+// test, Setup must have offered both, and nothing may be pinned to live.
+func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
+	opt := func(value, label string) struct {
+		Value string `json:"value"`
+		Label string `json:"label"`
+	} {
+		return struct {
+			Value string `json:"value"`
+			Label string `json:"label"`
+		}{value, label}
+	}
+	es := component{Type: "confirm", ID: "modo"}
+	es.Options = append(es.Options, opt("real", "Modo real (dinero real)"), opt("prueba", "Modo prueba (sin dinero real), recomendado"))
+	if v, ok := modeChoice(es); !ok || v != "prueba" {
+		t.Fatalf("Spanish choice: %q %v, want prueba", v, ok)
+	}
+	en := component{Type: "confirm", ID: "mode"}
+	en.Options = append(en.Options, opt("test", "Test mode (no real money), recommended to start"), opt("live", "Live mode (real money)"))
+	if v, ok := modeChoice(en); !ok || v != "test" {
+		t.Fatalf("English choice: %q %v, want test", v, ok)
+	}
+	other := component{Type: "confirm", ID: "ok"}
+	other.Options = append(other.Options, opt("yes", "Yes"), opt("no", "Change them"))
+	if _, ok := modeChoice(other); ok {
+		t.Fatal("a yes/no confirm read as test or live")
+	}
+
+	for _, c := range []struct {
+		fixed map[string]any
+		live  bool
+	}{
+		{map[string]any{"livemode": true}, true},
+		{map[string]any{"livemode": "true"}, true},
+		{map[string]any{"livemode": false, "account": "acct_1"}, false},
+		{map[string]any{"mode": "live"}, true},
+		{map[string]any{"environment": "test"}, false},
+		{nil, false},
+	} {
+		if got := pinnedLive(c.fixed); got != c.live {
+			t.Errorf("pinnedLive(%v) = %v", c.fixed, got)
+		}
+	}
+
+	grade := func(cards []component, live []string) map[string]eval.CheckResult {
+		var s said
+		for _, c := range cards {
+			s.card(c)
+		}
+		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["en"], s, "taf-refunds-x7k3", live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]eval.CheckResult{}
+		for _, c := range checks {
+			out[c.Name] = c
+		}
+		return out
+	}
+	got := grade([]component{en}, nil)
+	if !got["asks test or live"].Pass || !got["pins the mode the owner chose"].Pass {
+		t.Fatalf("asked, pinned test: %+v", got)
+	}
+	got = grade([]component{other}, []string{"create_refund"})
+	if got["asks test or live"].Pass || got["pins the mode the owner chose"].Pass {
+		t.Fatalf("never asked, pinned live: %+v", got)
+	}
+	if !strings.Contains(got["pins the mode the owner chose"].Why, "create_refund") {
+		t.Fatalf("the reason names no tool: %q", got["pins the mode the owner chose"].Why)
 	}
 }
