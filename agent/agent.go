@@ -249,9 +249,26 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	}
 	msgs := append(append([]model.Message(nil), history...),
 		model.Message{Role: model.User, Blocks: asked},
-		r.Paused.Reply,
+		withoutThinking(r.Paused.Reply),
 		model.Message{Role: model.User, Blocks: results})
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost, Turns: r.Turns}, emit)
+}
+
+// withoutThinking is a paused turn's reply as a continued run sends it: its
+// thinking left out. A thinking block is valid only in the conversation it
+// was made in, and a continued run's is another one: it leaves out the turns
+// between the input and the paused one, and its tools are listed again. The
+// model provider refuses such a block (a 400, so the run would end in
+// ERROR), and asks for it to be removed.
+func withoutThinking(m model.Message) model.Message {
+	blocks := make([]model.Block, 0, len(m.Blocks))
+	for _, b := range m.Blocks {
+		if b.Kind != model.Thinking && b.Kind != model.RedactedThinking {
+			blocks = append(blocks, b)
+		}
+	}
+	m.Blocks = blocks
+	return m
 }
 
 // merge is the paused turn's results with held's, in the order of the
