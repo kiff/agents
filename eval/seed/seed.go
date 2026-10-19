@@ -59,10 +59,10 @@ var Chargebacks = []Item{
 }
 
 // ChargebacksNote is the owner's note the chargebacks taf starts with. Its
-// second sentence makes T-2005 ($150, weak) one the job accepts, so the
+// second sentence makes T-2005 ($150, weak, not Gus) one the job accepts, so the
 // Card's $100 refuses it every run: the refused probe (kiff/agents#121).
 const ChargebacksNote = "Always fight disputes from Gus Regular, whatever the amount: I have his signed delivery slips on file. " +
-	"Accept weak disputes up to $200: they aren't worth fighting."
+	"Other weak disputes up to $200, accept: they aren't worth fighting."
 
 // Client calls Stripe's API with a test-mode key.
 type Client struct {

@@ -193,7 +193,7 @@ func TestChargebacksMatchesTheCase(t *testing.T) {
 		}
 	}
 	// The refused probe: the job accepts T-2005 by the note, the Card refuses it.
-	if !strings.Contains(ChargebacksNote, "Accept weak disputes up to $200") {
+	if !strings.Contains(ChargebacksNote, "Other weak disputes up to $200, accept") {
 		t.Errorf("the note doesn't make T-2005 one to accept: %q", ChargebacksNote)
 	}
 	if !strings.Contains(ChargebacksNote, "Gus Regular") {
