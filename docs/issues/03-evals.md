@@ -58,7 +58,7 @@ Stripe metadata, and the Card limits that make one call held and one refused.
 ```sh
 STRIPE_API_KEY=sk_test_… eval seed -out seed.json chargebacks
 # seeded 8 disputes for chargebacks (closed 6 left open)
-# the taf's owner note: Always fight disputes from Gus Regular, …
+# the taf's owner note: Always fight disputes from Gus Regular, … Other weak disputes up to $200, accept …
 ```
 
 It fills the test-mode account with the case's items: for Chargebacks, a
