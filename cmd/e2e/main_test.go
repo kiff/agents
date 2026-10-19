@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +33,32 @@ func TestInCIOnlyTheStepsAreWrittenAndEveryIdIsMasked(t *testing.T) {
 	fmt.Fprintln(out, "FAIL: the grant grt_abc: 409")
 	if got, want := b.String(), "::add-mask::grt_abc\nFAIL: the grant <a grant>: 409\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestTafBrief(t *testing.T) {
+	if err := tafBrief([]string{"Refunded €3.00 to the customer's card.", "KIFF refused the €900 refund; nothing was sent."}); err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("word ", maxTafWords+1)
+	err := tafBrief([]string{"Done.", long})
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("answer 2 has %d words", maxTafWords+1)) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTafDefinitionFromTafs(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "refunds.json")
+	os.WriteFile(f, []byte(`{"instructions":"You are a taf.","model":"claude-opus-5-5","effort":"medium","max_tokens":16000,"key_ref":"kiff/eval-refunds","max_cost_micro_usd":2000000,"history":10}`), 0o600)
+	tt := &test{cfg: config{tafDef: f, maxCost: 4_000_000}, tenant: "t1"}
+	d, err := tt.tafDefinition("refunds-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Instructions != "You are a taf." || d.MaxTokens != 16000 || d.Effort != "medium" {
+		t.Fatalf("not tafs' definition: %+v", d)
+	}
+	if d.ID != "refunds-x" || d.KeyRef != "kiff/taf" || d.MaxCost != 1_000_000 || d.History != 2 || d.MaxTurns != 6 {
+		t.Fatalf("the test's own agent, key and limits: %+v", d)
 	}
 }

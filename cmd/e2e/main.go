@@ -83,6 +83,7 @@ type config struct {
 	stripeKey, signInFile                           string
 	phone                                           string
 	setupDef                                        string
+	tafDef                                          string
 	owner                                           string      // the owner's language: "en" or "es"
 	judge                                           *eval.Judge // grades the setup chat (-grade); nil: not graded
 	maxTurns                                        int
@@ -125,6 +126,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	stdout.ci = env("CI") == "true"
 	cfg := config{log: stdout}
 	fs.StringVar(&cfg.setupDef, "setup", "", "the setup agent's definition (JSON, from kiff/tafs' setupdef.ts); empty: the built-in one")
+	fs.StringVar(&cfg.tafDef, "taf", "", "the taf's definition (JSON, a job of kiff/tafs' tafdef.ts, such as refunds.json): its instructions and effort; its answers in the chat are then checked for brevity. Empty: a short built-in one")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
 	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es")
 	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, brevity, no ids asked, the agent's name, choices")
@@ -213,8 +215,9 @@ type test struct {
 	grants   []string // planque grants this run connected
 	cardIDs  []string // Cards the taf's draft issued
 	draftIDs []string
-	taf      string // the taf's agent id, once handed over
-	said     said   // what Setup wrote, for -grade
+	taf      string   // the taf's agent id, once handed over
+	said     said     // what Setup wrote, for -grade
+	tafSaid  []string // the taf's answers in the chat, checked with -taf
 }
 
 // logf is a detail of a step, for a run by hand only (see redacting).
@@ -286,6 +289,13 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	fmt.Fprintln(t.cfg.log, "== the taf")
 	if err := t.useTaf(ctx, tafID, draftID); err != nil {
 		return err
+	}
+	if t.cfg.tafDef != "" {
+		// The taf as kiff/tafs defines it answers the owner briefly (kiff/tafs#102).
+		if err := tafBrief(t.tafSaid); err != nil {
+			return err
+		}
+		fmt.Fprintf(t.cfg.log, "taf  brief: %d answers, at most %d words each\n", len(t.tafSaid), maxTafWords)
 	}
 	return t.checkRecords(ctx)
 }
@@ -387,6 +397,46 @@ func (t *test) setupDefinition() (registry.Definition, error) {
 	d.Planque, d.Show, d.Drafts, d.Workspace = strings.TrimRight(t.cfg.planque, "/"), true, true, false
 	d.MaxCost = t.cfg.maxCost
 	return d, d.Check()
+}
+
+// tafDefinition is the taf the owner then uses: -taf's definition, as kiff/tafs
+// gives a taf of that job (its instructions and effort), or a short built-in
+// one. Either way it runs as this test's agent, with its key, its limits and
+// every event kept.
+func (t *test) tafDefinition(id string) (registry.Definition, error) {
+	d := registry.Definition{Model: opus, Price: opusPrice, MaxTokens: 4096, Effort: "medium",
+		Instructions: "You are Refunds. When the owner asks for a refund, make it with the refund tool, then say what happened in one sentence. " +
+			"If the tool refuses, say so; don't retry another way."}
+	if t.cfg.tafDef != "" {
+		b, err := os.ReadFile(t.cfg.tafDef)
+		if err != nil {
+			return d, err
+		}
+		if err := json.Unmarshal(b, &d); err != nil {
+			return d, fmt.Errorf("-taf: %w", err)
+		}
+	}
+	d.Tenant, d.ID, d.KeyRef, d.Gateway = t.tenant, id, "kiff/taf", kiff.URL
+	d.Keep, d.MaxCost, d.MaxTurns, d.History = keepAll, t.cfg.maxCost/4, 6, 2
+	return d, d.Check()
+}
+
+// maxTafWords is the most words a taf's answer in the chat may have: kiff/tafs
+// asks for "one or two short sentences (at most about 40 words)".
+const maxTafWords = 50
+
+// tafBrief checks each of the taf's answers in the chat for brevity.
+func tafBrief(said []string) error {
+	var long []string
+	for i, m := range said {
+		if n := len(strings.Fields(m)); n > maxTafWords {
+			long = append(long, fmt.Sprintf("answer %d has %d words", i+1, n))
+		}
+	}
+	if len(long) > 0 {
+		return fmt.Errorf("the taf's answers aren't brief: %s (at most %d)", strings.Join(long, "; "), maxTafWords)
+	}
+	return nil
 }
 
 // setupInstructions are the setup agent's when kiff/tafs' aren't given.
@@ -730,10 +780,10 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	key, _, _ := t.keys.Key(ctx, t.tenant, "kiff/taf")
 	t.secrets = append(t.secrets, key)
 	t.logf("the taf's key claimed into the agents' keys (never shown to anyone)")
-	taf := registry.Definition{Tenant: t.tenant, ID: tafID, Model: opus, Price: opusPrice, MaxTokens: 4096, Effort: "medium",
-		Instructions: "You are Refunds. When the owner asks for a refund, make it with the refund tool, then say what happened in one sentence. " +
-			"If the tool refuses, say so; don't retry another way.",
-		Gateway: kiff.URL, KeyRef: "kiff/taf", Keep: keepAll, MaxCost: t.cfg.maxCost / 4, MaxTurns: 6, History: 2}
+	taf, err := t.tafDefinition(tafID)
+	if err != nil {
+		return err
+	}
 	if err := t.agents.Put(ctx, taf); err != nil {
 		return err
 	}
@@ -768,6 +818,7 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		}
 		_, text, _ := t.latest(ctx, ch.Session, r.ID)
 		t.logf("owner: %s → taf: %s", ask, oneLine(text))
+		t.tafSaid = append(t.tafSaid, text)
 		if r.Status == "PAUSED" && t.stripe == nil {
 			// Over everything: whatever KIFF held, the owner refuses.
 			for _, q := range r.Requirements {
@@ -792,6 +843,7 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 			}
 			_, text, _ := t.latest(ctx, ch.Session, r.ID)
 			t.logf("owner: %s → held; the owner %s it on the phone, signed → taf: %s", ask, h.word, oneLine(text))
+			t.tafSaid = append(t.tafSaid, text)
 			if r.Status != "COMPLETED" {
 				return fmt.Errorf("%q: after the phone's answer the run ended %s", ask, r.Status)
 			}
