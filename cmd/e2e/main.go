@@ -429,9 +429,13 @@ type component struct {
 	Title string `json:"title"`
 	Text  string `json:"text"`
 	// The card's own button words and note (kiff/tafs#75), graded with its text.
-	Yes     string `json:"yes"`
-	No      string `json:"no"`
-	Note    string `json:"note"`
+	Yes   string `json:"yes"`
+	No    string `json:"no"`
+	Note  string `json:"note"`
+	Steps []struct {
+		Label  string `json:"label"`
+		Status string `json:"status"`
+	} `json:"steps"`
 	Options []struct {
 		Value string `json:"value"`
 		Label string `json:"label"`
