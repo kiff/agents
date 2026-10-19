@@ -127,7 +127,9 @@ var counted = map[string]bool{"brief": true, "names the agent from the taf's nam
 
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.
-func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string) ([]eval.CheckResult, error) {
+// gradeSetup grades what Setup wrote; livePinned are the tools it pinned to
+// live mode, though the scripted owner chooses test (kiff/tafs#89).
+func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string, livePinned []string) ([]eval.CheckResult, error) {
 	var out []eval.CheckResult
 	add := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
 
@@ -216,7 +218,74 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	} else {
 		add("keeps its plan", eval.Grade{Pass: true})
 	}
+
+	// 8. Test or live is the owner's choice (kiff/tafs#89): Setup asks, with
+	// both to tap, and pins only what the owner chose (test, scripted).
+	asked := false
+	for _, id := range s.order {
+		if _, ok := modeChoice(s.cards[id]); ok {
+			asked = true
+		}
+	}
+	if asked {
+		add("asks test or live", eval.Grade{Pass: true})
+	} else {
+		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap"})
+	}
+	if len(livePinned) > 0 {
+		add("pins the mode the owner chose", eval.Grade{Why: "pinned to live mode, though the owner chose test: " + strings.Join(livePinned, ", ")})
+	} else {
+		add("pins the mode the owner chose", eval.Grade{Pass: true})
+	}
 	return out, nil
+}
+
+// What tells a test-or-live choice's options apart, in the owners'
+// languages. Test is read first: "Test mode (no real money)" is test.
+var (
+	testWords = []string{"test", "prueba"}
+	liveWords = []string{"live", "real", "producción", "en vivo"}
+)
+
+// modeChoice returns a confirm's test option, when it offers test and live.
+func modeChoice(c component) (test string, ok bool) {
+	if c.Type != "confirm" {
+		return "", false
+	}
+	live := false
+	for _, o := range c.Options {
+		l := strings.ToLower(o.Label + " " + o.Value)
+		switch {
+		case containsAny(l, testWords):
+			if test == "" {
+				test = o.Value
+			}
+		case containsAny(l, liveWords):
+			live = true
+		}
+	}
+	return test, test != "" && live
+}
+
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedLive says whether a tool's fixed arguments pin live mode: Stripe's
+// livemode, or a mode or environment set to live.
+func pinnedLive(fixed map[string]any) bool {
+	for k, v := range fixed {
+		k, val := strings.ToLower(k), strings.ToLower(fmt.Sprint(v))
+		if strings.Contains(k, "livemode") && val == "true" || (k == "mode" || k == "environment") && val == "live" {
+			return true
+		}
+	}
+	return false
 }
 
 // confirms are the choices Setup showed as options to tap.
