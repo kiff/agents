@@ -642,7 +642,11 @@ func TestThinkingGoesBackInPlace(t *testing.T) {
 	}
 }
 
-// A paused turn keeps its thinking, so the continued run sends it back too.
+// A paused turn is stored as it came, thinking too. The continued run sends it
+// without its thinking: a thinking block is bound to the conversation it was
+// made in, and the continued run's is another (the turns before the paused
+// one are left out, and the tools are listed again), so the provider would
+// refuse it.
 func TestAPausedTurnKeepsItsThinking(t *testing.T) {
 	refund := heldRefund()
 	call := use("c1", "stripe_refund", `{"charge":"ch_big"}`)
@@ -657,6 +661,39 @@ func TestAPausedTurnKeepsItsThinking(t *testing.T) {
 	var kept run.Turn
 	if err := json.Unmarshal(b, &kept); err != nil || !reflect.DeepEqual(kept.Reply.Blocks[0], thinking) {
 		t.Fatalf("the paused turn kept %+v, %v", kept.Reply.Blocks, err)
+	}
+}
+
+func TestAContinuedRunSendsNoThinkingFromBeforeThePause(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := both()
+	call.Blocks = append([]model.Block{thinking, {Kind: model.RedactedThinking, Data: "opaque"}}, call.Blocks...)
+	m := &script{replies: []model.Reply{call, say("Waiting for you."), say("Refunded ch_big.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	if stored.Paused.Reply.Blocks[0].Kind != model.Thinking {
+		t.Fatalf("the stored turn lost its thinking: %+v", stored.Paused.Reply.Blocks)
+	}
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.Continue(ctx, a, r, nil, stored, approved(), nil); err != nil {
+		t.Fatal(err)
+	}
+	sent := m.reqs[len(m.reqs)-1].Messages[1].Blocks
+	for _, b := range sent {
+		if b.Kind == model.Thinking || b.Kind == model.RedactedThinking {
+			t.Fatalf("the continued run sent the paused turn's thinking: %+v", sent)
+		}
+	}
+	if len(sent) != 3 || sent[0].Kind != model.Text || sent[1].CallID != "c1" || sent[2].CallID != "c2" {
+		t.Fatalf("the paused turn as sent: %+v", sent)
 	}
 }
 
