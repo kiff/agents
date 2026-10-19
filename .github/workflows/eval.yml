@@ -57,7 +57,9 @@ jobs:
         # KIFF, planque and the fake vendor, with the test phone's signed
         # approvals (cmd/e2e). The owner writes in Spanish; the chat is
         # graded: the owner's language, brevity, no id asked, the agent named
-        # from the taf's name, choices to tap. A failed check fails the night.
+        # from the taf's name, choices to tap. The taf the owner then uses is
+        # kiff/tafs' Refunds (refunds.json), whose answers in the chat must be
+        # brief. A failed check fails the night.
         if: always()
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -66,7 +68,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e -setup defs/setup.json -owner es -grade -max-cost 4 -owner-turns 14
+        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -owner es -grade -max-cost 4 -owner-turns 14
       - uses: aws-actions/configure-aws-credentials@v4
         if: always()
         with:
