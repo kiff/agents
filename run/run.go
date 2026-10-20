@@ -41,6 +41,10 @@ const (
 	BySchedule Trigger = "schedule" // one of the agent's schedules fired
 	ByEvent    Trigger = "event"    // work came in: a payment event, an e-invoice
 	ByEval     Trigger = "eval"     // a case of an eval run
+	// ByTrial is a trial of a version that may not be live (kiff/tafs#107):
+	// its writes are decided by KIFF and never sent, it writes no notes, and
+	// its session is a trial's, apart from the agent's runs and chats.
+	ByTrial Trigger = "trial"
 )
 
 // Run is one execution of an agent, as stored.
@@ -70,6 +74,15 @@ type Run struct {
 	Output string `json:"output,omitempty"`
 	// Error says what went wrong, for an ERROR run.
 	Error string `json:"error,omitempty"`
+	// AgentVersion is the agent's version the run ran (kiff/tafs#107): the
+	// live one when it started, or the version a trial tries. 0 for an agent
+	// with no versions.
+	AgentVersion int `json:"agent_version,omitempty"`
+	// Draft is the KIFF draft a trial's writes are decided against (its
+	// proposed Cards); empty decides them against the live Cards. Only a
+	// trial has one.
+	Draft string `json:"draft,omitempty"`
+
 	// Cost is what the run's model turns cost so far, in millionths of a US
 	// dollar.
 	Cost int64 `json:"cost_micro_usd"`

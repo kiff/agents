@@ -105,6 +105,10 @@ func (s *Server) Handler() http.Handler {
 	route("GET /agents/{id}", s.getAgent)
 	route("PUT /agents/{id}", s.putAgent)
 	route("DELETE /agents/{id}", s.deleteAgent)
+	route("GET /agents/{id}/versions", s.listVersions)
+	route("POST /agents/{id}/versions", s.putVersion)
+	route("POST /agents/{id}/versions/{n}/live", s.switchVersion)
+	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
 	route("GET /skills", s.listSkills)
 	route("GET /skills/{name}/{version}", s.getSkill)
 	route("PUT /skills/{name}/{version}", s.putSkill)
@@ -133,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /agents/{id}/runs/{run_id}/continue", s.continueRun)
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 		route("POST /agents/{id}/events", s.startEvent)
+		mux.HandleFunc("POST /agents/{id}/versions/{n}/trial", s.startTrial)
 	}
 	if s.Drafts != nil {
 		route("POST /drafts/{draft_id}/claim", s.claimDraft)
@@ -260,7 +265,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrUnauthorized):
 		status, msg = http.StatusUnauthorized, "the caller is not verified"
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrNoVersion), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
 		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound), errors.Is(err, skill.ErrNotFound):
 		status, msg = http.StatusNotFound, "not found"
 	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):

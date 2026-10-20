@@ -10,12 +10,15 @@ package registry
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
@@ -86,7 +89,47 @@ type Definition struct {
 	// (#101), each a stored version: the context carries their names and
 	// descriptions, and the skill tool their text.
 	Skills []skill.Ref `json:"skills,omitempty"`
+
+	// Version is the number of the stored version this is (kiff/tafs#107),
+	// set by the store: the live one on Get, 0 for an agent with no versions
+	// yet. It is not part of what Digest covers.
+	Version int `json:"version,omitempty"`
 }
+
+// Version is one stored version of an agent (kiff/tafs#107): its
+// definition is kept with it, and any one may go live, forward or back.
+type Version struct {
+	N int `json:"n"`
+	// Note is what changed, in plain words.
+	Note string `json:"note,omitempty"`
+	// By is who made it: the owner's subject, or "setup".
+	By      string    `json:"by,omitempty"`
+	Created time.Time `json:"created"`
+	// Digest is Digest(the version's definition).
+	Digest string `json:"digest"`
+	Live   bool   `json:"live"`
+	// Revisions are the KIFF Card revisions this version needs live; empty
+	// is the agent's current Cards.
+	Revisions []string `json:"revisions,omitempty"`
+	// Draft is the KIFF draft that proposes those revisions while it isn't
+	// confirmed: a trial's writes are decided against its Cards.
+	Draft string `json:"draft,omitempty"`
+}
+
+// Digest is a definition's fingerprint, its version number aside: the same
+// definition stored twice has the same digest.
+func Digest(d Definition) (string, error) {
+	d.Version = 0
+	b, err := Encode(d)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ErrNoVersion is a version the agent doesn't have.
+var ErrNoVersion = errors.New("registry: no such version")
 
 // Check refuses a definition that can't be stored or run safely.
 func (d Definition) Check() error {
@@ -194,9 +237,23 @@ type Agents interface {
 	Get(ctx context.Context, tenant, id string) (Definition, error)
 	// List returns the tenant's definitions, by ID.
 	List(ctx context.Context, tenant string) ([]Definition, error)
-	// Delete removes the tenant's definition. Deleting one that isn't there
-	// is not an error, so a retry is safe.
+	// Delete removes the tenant's definition, and its versions. Deleting one
+	// that isn't there is not an error, so a retry is safe.
 	Delete(ctx context.Context, tenant, id string) error
+
+	// PutVersion stores d as the agent's next version, with v's note, author,
+	// revisions and draft, and returns its number. It doesn't change which
+	// version is live. An agent stored before versions gets its live
+	// definition kept as version 1 first. ErrNotFound for an agent not stored.
+	PutVersion(ctx context.Context, d Definition, v Version) (int, error)
+	// Versions lists the agent's versions, oldest first, the live one marked.
+	Versions(ctx context.Context, tenant, id string) ([]Version, error)
+	// GetVersion returns version n's definition (its Version set to n), or
+	// ErrNoVersion.
+	GetVersion(ctx context.Context, tenant, id string, n int) (Definition, error)
+	// Switch makes version n live: Get returns it from then on. Forward or
+	// back, to any version the agent has; ErrNoVersion otherwise.
+	Switch(ctx context.Context, tenant, id string, n int) error
 }
 
 // Secrets resolves the reference to an agent's KIFF key. An implementation
@@ -259,7 +316,19 @@ func (b *Builder) Build(ctx context.Context, tenant, id string) (agent.Agent, De
 // BuildRun is Build for one run of the agent: one whose definition asks for
 // a workspace gets that run's.
 func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.Agent, Definition, error) {
-	d, err := b.Agents.Get(ctx, tenant, id)
+	return b.BuildVersion(ctx, tenant, id, run, 0)
+}
+
+// BuildVersion is BuildRun for version n of the agent, not the live one: a
+// trial of a version that isn't live yet (kiff/tafs#107). 0 is the live one.
+func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n int) (agent.Agent, Definition, error) {
+	var d Definition
+	var err error
+	if n > 0 {
+		d, err = b.Agents.GetVersion(ctx, tenant, id, n)
+	} else {
+		d, err = b.Agents.Get(ctx, tenant, id)
+	}
 	if err != nil {
 		return agent.Agent{}, Definition{}, err
 	}

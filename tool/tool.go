@@ -44,10 +44,23 @@ type Result struct {
 	// answer is announced and withdrawn, and when it stops waiting. Set only
 	// when State is StateHeld.
 	Hold *Hold `json:"hold,omitempty"`
+	// Trial is KIFF's decision on a trial's write (kiff/tafs#107): what it
+	// would have done with the call, which it never sent. Set only in a
+	// trial run, for a gateway call KIFF decided.
+	Trial *TrialDecision `json:"trial,omitempty"`
 	// Component is a UI component the tool shows the owner (the show tool,
 	// kiff/agents#91). The run records it as its own event, kept like the
 	// agent's messages; it is not part of the tool's recorded result.
 	Component json.RawMessage `json:"-"`
+}
+
+// TrialDecision is what KIFF would have done with a trial's write.
+type TrialDecision struct {
+	// Decision is "allowed", "held" or "refused".
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
+	// Title is the tool's name for people, as KIFF keeps it.
+	Title string `json:"title,omitempty"`
 }
 
 // Hold is KIFF's handle on a held call. A field KIFF didn't send, or sent in

@@ -117,6 +117,15 @@ type ToolResultBody struct {
 	tool.Result
 }
 
+// TrialWriteBody is the body of a TrialWrite event: a trial's call through
+// KIFF's gateway, as made, and KIFF's decision on it (kiff/tafs#107).
+type TrialWriteBody struct {
+	CallID string          `json:"call_id"`
+	Tool   string          `json:"tool"`
+	Input  json.RawMessage `json:"input"`
+	tool.TrialDecision
+}
+
 // ErrorBody is the body of an Error event. It says what failed, never why:
 // events are shown to the tenant, and a cause can carry a backend's own
 // diagnostics. The cause goes to the caller, as the error returned.
@@ -586,9 +595,14 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}()
 	}
 	wg.Wait()
-	for _, r := range results {
+	for i, r := range results {
 		if err := rec.Record(session.ToolResult, r); err != nil {
 			return nil, err
+		}
+		if r.Trial != nil {
+			if err := rec.Record(session.TrialWrite, TrialWriteBody{CallID: r.CallID, Tool: r.Tool, Input: calls[i].Input, TrialDecision: *r.Trial}); err != nil {
+				return nil, err
+			}
 		}
 		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
 		if len(r.Component) > 0 && !r.IsError && shows(byName[r.Tool]) {

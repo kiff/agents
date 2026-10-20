@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/tool"
 )
 
@@ -43,7 +44,11 @@ type Client struct {
 
 	mu    sync.Mutex // held while initializing
 	ready bool
-	next  atomic.Int64
+	// trials is whether the gateway said it decides a call without sending
+	// it (TrialCapability). A trial's call goes to a gateway that said so,
+	// or nowhere: one that didn't would send it.
+	trials bool
+	next   atomic.Int64
 
 	smu     sync.Mutex
 	session string // Mcp-Session-Id, once the gateway gives one
@@ -152,6 +157,11 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		}
 	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
+	if _, trial := run.TrialFrom(ctx); trial {
+		// A trial never pauses: KIFF answers its writes with a decision.
+		out.Trial, out.State = m.Trial, ""
+		return out, m, nil
+	}
 	if m.State == tool.StateHeld {
 		// Only state says whether the call is held. The hold's fields are
 		// read best effort: one KIFF writes in another shape is left empty,
@@ -196,7 +206,15 @@ type meta struct {
 	OperationID   json.RawMessage `json:"operation_id"`
 	ExceptionID   json.RawMessage `json:"exception_id"`
 	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`
+	// Trial is KIFF's decision on a trial's write, which it never sent
+	// (kiff/tafs#107): only for a call made with KIFF-Trial.
+	Trial *tool.TrialDecision `json:"trial"`
 }
+
+// TrialHeader asks KIFF to decide a call and not send it (kiff/tafs#107):
+// its value is the draft whose Cards decide, or "live". Set from the run's
+// trial mark only, never from anything the model wrote.
+const TrialHeader = "KIFF-Trial"
 
 // init opens the MCP session once.
 func (c *Client) init(ctx context.Context) error {
@@ -210,9 +228,16 @@ func (c *Client) init(ctx context.Context) error {
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "kiff-agents", "version": "0"},
 	}
-	if err := c.post(ctx, "initialize", params, true, nil); err != nil {
+	var res struct {
+		Capabilities struct {
+			Experimental map[string]json.RawMessage `json:"experimental"`
+		} `json:"capabilities"`
+	}
+	if err := c.post(ctx, "initialize", params, true, &res); err != nil {
 		return err
 	}
+	var trials bool
+	c.trials = json.Unmarshal(res.Capabilities.Experimental[TrialCapability], &trials) == nil && trials
 	if err := c.post(ctx, "notifications/initialized", nil, false, nil); err != nil {
 		return err
 	}
@@ -224,8 +249,19 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	if err := c.init(ctx); err != nil {
 		return err
 	}
+	if _, trial := run.TrialFrom(ctx); trial && method == "tools/call" && !c.trials {
+		return ErrNoTrials
+	}
 	return c.post(ctx, method, params, true, out)
 }
+
+// TrialCapability is the experimental capability a gateway that decides
+// trials (KIFF-Trial) declares in its initialize answer, as true.
+const TrialCapability = "dev.kiff/trial"
+
+// ErrNoTrials is a trial's call to a gateway that hasn't said it decides
+// trials: it was not sent, since that gateway would send it for real.
+var ErrNoTrials = errors.New("kiff: this gateway doesn't run trials yet; the call was not sent")
 
 // Error is a JSON-RPC error the gateway answered with.
 type Error struct {
@@ -260,6 +296,13 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+c.key)
 	req.Header.Set("MCP-Protocol-Version", protocolVersion)
+	if t, ok := run.TrialFrom(ctx); ok {
+		draft := t.Draft
+		if draft == "" {
+			draft = "live"
+		}
+		req.Header.Set(TrialHeader, draft)
+	}
 	c.smu.Lock()
 	if c.session != "" {
 		req.Header.Set("Mcp-Session-Id", c.session)

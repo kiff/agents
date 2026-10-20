@@ -86,6 +86,9 @@ type gatewayTool struct {
 	name   string
 	result tool.Result
 	onCall func()
+	// trials are the trial marks its calls were made with, in order (a
+	// zero Trial for an ordinary call).
+	trials []run.Trial
 }
 
 func (g *gatewayTool) Spec() model.ToolSpec {
@@ -93,7 +96,9 @@ func (g *gatewayTool) Spec() model.ToolSpec {
 }
 func (g *gatewayTool) Access() tool.Access { return tool.Write }
 func (g *gatewayTool) Gateway() bool       { return true }
-func (g *gatewayTool) Call(context.Context, json.RawMessage) (tool.Result, error) {
+func (g *gatewayTool) Call(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
+	t, _ := run.TrialFrom(ctx)
+	g.trials = append(g.trials, t)
 	if g.onCall != nil {
 		g.onCall()
 	}

@@ -57,7 +57,7 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		return run.Run{}, session.ErrNotFound // the contract: another tenant's or agent's session isn't found
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
-	r.Source = s.Source
+	r.Source, r.AgentVersion, r.Draft = s.Source, s.Version, s.Draft
 	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
 		r.ID = s.ID
 		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {

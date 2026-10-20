@@ -65,6 +65,11 @@ type Start struct {
 	// Source is what started it within its trigger (run.Run.Source).
 	Source string
 	Input  string
+	// Version is the agent's version a trial runs (kiff/tafs#107); 0 runs
+	// the live one. Draft is the KIFF draft its writes are decided against.
+	// Only a trial (Trigger run.ByTrial) has either.
+	Version int
+	Draft   string
 	// ID is the run's ID, when the caller names it; empty, a new one. A
 	// caller that may start the same run more than once (a schedule's firing,
 	// delivered at least once) names it, and the second Start returns the run
@@ -94,14 +99,19 @@ type runView struct {
 	// once the run took it. One not taken when the run has ended is the
 	// caller's to send as the next message.
 	Steering []run.Steering `json:"steering,omitempty"`
-	Created  time.Time      `json:"created"`
-	Updated  time.Time      `json:"updated"`
+	// AgentVersion is the agent's version the run ran, and Draft the KIFF
+	// draft a trial's writes were decided against (kiff/tafs#107).
+	AgentVersion int       `json:"agent_version,omitempty"`
+	Draft        string    `json:"draft,omitempty"`
+	Created      time.Time `json:"created"`
+	Updated      time.Time `json:"updated"`
 }
 
 func viewRun(r run.Run) runView {
 	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements,
-		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, Created: r.Created, Updated: r.Updated}
+		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
+		Created: r.Created, Updated: r.Updated}
 }
 
 // agentRun is the tenant's run of the agent in the path; a run of another
