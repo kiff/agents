@@ -273,6 +273,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusNotFound, "not found"
 	case errors.Is(err, registry.ErrSwitching):
 		status, msg = http.StatusConflict, "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
+	case errors.Is(err, registry.ErrNoSwitch):
+		status, msg = http.StatusConflict, "this agent isn't switching to that version: begin the switch first"
 	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):
 		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
 	case errors.As(err, &tooBig):

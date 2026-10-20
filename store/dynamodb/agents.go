@@ -313,6 +313,43 @@ func (a *Agents) BeginSwitch(ctx context.Context, tenant, id string, sw registry
 	return was, nil
 }
 
+// SwitchDraft rewrites the mark with the new draft only over the mark it
+// read, in one conditional write; a mark that changed meanwhile is read again.
+func (a *Agents) SwitchDraft(ctx context.Context, tenant, id string, n int, draft string) (registry.Switching, error) {
+	for try := 0; try < 3; try++ {
+		out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: pkey(switchPK(tenant), id), ConsistentRead: aws.Bool(true)})
+		if err != nil {
+			return registry.Switching{}, err
+		}
+		if out.Item == nil {
+			return registry.Switching{}, registry.ErrNoSwitch
+		}
+		was := getS(out.Item, "sw")
+		var sw registry.Switching
+		if err := json.Unmarshal([]byte(was), &sw); err != nil {
+			return registry.Switching{}, fmt.Errorf("dynamodb: switch of %q: %w", id, err)
+		}
+		if sw.N != n {
+			return registry.Switching{}, registry.ErrNoSwitch
+		}
+		sw.Draft = draft
+		b, err := json.Marshal(sw)
+		if err != nil {
+			return registry.Switching{}, err
+		}
+		item := pkey(switchPK(tenant), id)
+		item["n"], item["sw"] = out.Item["n"], s(string(b))
+		_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item,
+			ConditionExpression:       aws.String("sw = :was"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{":was": s(was)}})
+		var failed *types.ConditionalCheckFailedException
+		if !errors.As(err, &failed) {
+			return sw, err
+		}
+	}
+	return registry.Switching{}, registry.ErrSwitching
+}
+
 func (a *Agents) Switching(ctx context.Context, tenant, id string) (registry.Switching, bool, error) {
 	out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: pkey(switchPK(tenant), id), ConsistentRead: aws.Bool(true)})
 	if err != nil || out.Item == nil {

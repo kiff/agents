@@ -319,3 +319,34 @@ func TestAFailedCardsRecordSwitchesNothing(t *testing.T) {
 		t.Fatalf("the retry left the mark: %v", b["switching"])
 	}
 }
+
+// A switch drafted again waits for the new draft with no gap: the mark stays,
+// so nothing of the agent can start in between (kiff/tafs#107).
+func TestASwitchsDraftIsReplacedInPlace(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	v2 := agentBody("payouts")
+	v2.Instructions = "Version two."
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "two", "draft": "drf_old"})
+	f.want(200, code, body, "put version")
+	// Nothing to replace before the switch begins.
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{"draft": "drf_new", "replace": true})
+	f.want(409, code, body, "replace with no switch")
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(200, code, body, "pending")
+	at := body["switching"].(map[string]any)["at"]
+
+	// Replaced: the same switch, never dropped in between.
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{"draft": "drf_new", "replace": true})
+	f.want(200, code, body, "replace")
+	sw := body["switching"].(map[string]any)
+	if sw["draft"] != "drf_new" || sw["n"] != float64(2) || sw["at"] != at {
+		t.Fatalf("replaced switch = %v, want version 2 waiting for drf_new, begun when it was", sw)
+	}
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] == nil || b["switching"].(map[string]any)["draft"] != "drf_new" {
+		t.Fatalf("after the replace, switching = %v; want the mark kept, waiting for drf_new", b["switching"])
+	}
+	if code, b := f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{"replace": true}); code != 400 {
+		t.Fatalf("replace with no draft = %d %v, want 400", code, b)
+	}
+}

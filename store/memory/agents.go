@@ -189,6 +189,19 @@ func (a *Agents) BeginSwitch(_ context.Context, tenant, id string, sw registry.S
 	return sw, nil
 }
 
+func (a *Agents) SwitchDraft(_ context.Context, tenant, id string, n int, draft string) (registry.Switching, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{tenant, id}
+	sw, ok := a.sw[k]
+	if !ok || sw.N != n {
+		return registry.Switching{}, registry.ErrNoSwitch
+	}
+	sw.Draft = draft
+	a.sw[k] = sw
+	return sw, nil
+}
+
 func (a *Agents) Switching(_ context.Context, tenant, id string) (registry.Switching, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
