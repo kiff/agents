@@ -732,11 +732,6 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 				m.test = true
 			}
 		}
-		for _, e := range g.Events {
-			if strings.HasPrefix(e.What, "read ") {
-				m.read = true
-			}
-		}
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent, m)
 	if err != nil {

@@ -224,42 +224,16 @@ func TestAgentIDIsNewEachTime(t *testing.T) {
 	}
 }
 
-// describe calls one read-only, no-argument vendor tool through planque, to
-// read what the sign-in covers (kiff/tafs#89): the agent's own key, the
-// tool's name only, and planque's answer as data; a refusal reads back.
-func TestDescribeReadsWhatTheSignInCovers(t *testing.T) {
+// describe is gone (kiff/planque#23): the action is refused before planque.
+func TestThereIsNoDescribe(t *testing.T) {
 	var seen []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization")+" "+string(body))
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/v1/accounts/tnt_1/grants/grt_1/describe" && strings.Contains(string(body), "list_accounts"):
-			w.Write([]byte(`{"grant":"grt_1","tool":"list_accounts","result":{"content":[{"type":"text","text":"acct_1: test mode"}]}}`))
-		case r.URL.Path == "/v1/accounts/tnt_1/grants/grt_1/describe":
-			w.WriteHeader(403)
-			w.Write([]byte(`{"error":"only a tool the vendor marks read-only and that takes no arguments describes the sign-in; create_refund isn't one"}`))
-		}
-	}))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = append(seen, r.URL.Path) }))
 	t.Cleanup(srv.Close)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-
-	text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`)
-	if isErr || !strings.Contains(text, `"tool":"list_accounts"`) || !strings.Contains(text, "acct_1: test mode") {
+	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog or tools") {
 		t.Fatalf("describe: %s", text)
 	}
-	if seen[0] != `POST /v1/accounts/tnt_1/grants/grt_1/describe Bearer k_setup {"tool":"list_accounts"}` {
-		t.Fatalf("sent: %s", seen[0])
-	}
-	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"create_refund"}`); !isErr || !strings.Contains(text, "planque answered 403") {
-		t.Fatalf("a refused tool: %s", text)
-	}
-	for _, in := range []string{`{"action":"describe","grant":"grt_1"}`, `{"action":"describe","tool":"list_accounts"}`, `{"action":"describe","grant":"../x","tool":"t"}`} {
-		if _, isErr := call(t, tl, in); !isErr {
-			t.Errorf("%s should be refused before planque", in)
-		}
-	}
-	if len(seen) != 2 {
-		t.Fatalf("refused inputs reached planque: %v", seen[2:])
+	if len(seen) != 0 {
+		t.Fatalf("sent to planque: %v", seen)
 	}
 }
