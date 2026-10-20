@@ -216,6 +216,11 @@ type meta struct {
 // trial mark only, never from anything the model wrote.
 const TrialHeader = "KIFF-Trial"
 
+// TrialRunHeader names the trial's run, from the same mark: KIFF counts
+// the trial's earlier allowed writes toward the Cards' limits, and
+// refuses a trial's write that names none.
+const TrialRunHeader = "KIFF-Trial-Run"
+
 // init opens the MCP session once.
 func (c *Client) init(ctx context.Context) error {
 	c.mu.Lock()
@@ -302,6 +307,9 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 			draft = "live"
 		}
 		req.Header.Set(TrialHeader, draft)
+		if t.Run != "" {
+			req.Header.Set(TrialRunHeader, t.Run)
+		}
 	}
 	c.smu.Lock()
 	if c.session != "" {

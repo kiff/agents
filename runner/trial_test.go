@@ -37,7 +37,8 @@ func TestATrialRunsItsVersionAndRecordsItsWrites(t *testing.T) {
 	if reqs := f.model.requests(); len(reqs) == 0 || !strings.Contains(reqs[0].System, "Version two: read the charge first.") {
 		t.Fatal("the trial didn't run the version it tries")
 	}
-	if len(f.refund.trials) != 1 || f.refund.trials[0] != (run.Trial{Draft: "drf_2"}) {
+	// The mark names the trial's run, so KIFF counts its earlier writes.
+	if len(f.refund.trials) != 1 || f.refund.trials[0] != (run.Trial{Draft: "drf_2", Run: r.ID}) {
 		t.Fatalf("the gateway call's trial mark = %+v", f.refund.trials)
 	}
 	// Tool calls go at the run's end; the trial's writes stay.
