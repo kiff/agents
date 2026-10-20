@@ -140,6 +140,7 @@ func (a *Agents) Versions(_ context.Context, tenant, id string) ([]registry.Vers
 		v := x.v
 		v.Live = v.N == live.Version
 		v.Revisions = slices.Clone(v.Revisions)
+		v.Cards = slices.Clone(v.Cards)
 		out = append(out, v)
 	}
 	return out, nil
@@ -199,5 +200,16 @@ func (a *Agents) EndSwitch(_ context.Context, tenant, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sw, [2]string{tenant, id})
+	return nil
+}
+
+func (a *Agents) SetCards(_ context.Context, tenant, id string, n int, cards []registry.CardRevision) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	vs := a.vers[[2]string{tenant, id}]
+	if n < 1 || n > len(vs) {
+		return registry.ErrNoVersion
+	}
+	vs[n-1].v.Cards = slices.Clone(cards)
 	return nil
 }

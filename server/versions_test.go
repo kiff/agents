@@ -248,3 +248,32 @@ func TestAVersionReadsWithItsDefinition(t *testing.T) {
 		}
 	}
 }
+
+// A version goes live recording the KIFF Cards it runs under, each at its
+// revision, so going back to it can restore them (kiff/tafs#107).
+func TestLiveRecordsTheCardsAVersionRunsUnder(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	v2 := agentBody("payouts")
+	v2.Instructions = "Version two."
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "two"})
+	f.want(200, code, body, "put version")
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/live", map[string]any{"cards": []any{map[string]any{"id": "card_pay", "revision": 4}}})
+	f.want(200, code, body, "live with cards")
+	_, body = f.do("t1", "GET", "/agents/payouts/versions/2", nil)
+	if cs, _ := body["version"].(map[string]any)["cards"].([]any); len(cs) != 1 || cs[0].(map[string]any)["revision"] != float64(4) {
+		t.Fatalf("version 2 = %v", body["version"])
+	}
+	// No body still switches, and leaves version 1's record as it was.
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/1/live", nil)
+	f.want(200, code, body, "live, no body")
+	for _, bad := range []map[string]any{
+		{"cards": []any{map[string]any{"id": "", "revision": 1}}},
+		{"cards": []any{map[string]any{"id": "c", "revision": 0}}},
+		{"other": true},
+	} {
+		if code, b := f.do("t1", "POST", "/agents/payouts/versions/2/live", bad); code != 400 {
+			t.Errorf("%v = %d %v, want 400", bad, code, b)
+		}
+	}
+}

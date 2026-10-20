@@ -337,3 +337,37 @@ func decodeAgent(item map[string]types.AttributeValue) (registry.Definition, err
 	}
 	return d, nil
 }
+
+// SetCards rewrites version n's record with its Cards, leaving its
+// definition as stored; only a version that exists.
+func (a *Agents) SetCards(ctx context.Context, tenant, id string, n int, cards []registry.CardRevision) error {
+	if n < 1 {
+		return registry.ErrNoVersion
+	}
+	key := pkey(versionsPK(tenant, id), versionSK(n))
+	out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: key, ConsistentRead: aws.Bool(true), ProjectionExpression: aws.String("ver")})
+	if err != nil {
+		return err
+	}
+	if out.Item == nil {
+		return registry.ErrNoVersion
+	}
+	var v registry.Version
+	if err := json.Unmarshal([]byte(getS(out.Item, "ver")), &v); err != nil {
+		return fmt.Errorf("dynamodb: version %d of %q: %w", n, id, err)
+	}
+	v.Cards = cards
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &a.table, Key: key,
+		UpdateExpression:          aws.String("SET ver = :v"),
+		ConditionExpression:       aws.String("attribute_exists(pk)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":v": s(string(b))}})
+	var gone *types.ConditionalCheckFailedException
+	if errors.As(err, &gone) {
+		return registry.ErrNoVersion
+	}
+	return err
+}

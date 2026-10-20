@@ -122,6 +122,15 @@ type Version struct {
 	// Draft is the KIFF draft that proposes those revisions while it isn't
 	// confirmed: a trial's writes are decided against its Cards.
 	Draft string `json:"draft,omitempty"`
+	// Cards are the KIFF Cards this version ran under, each at the revision
+	// it had when the version went live: what going back to it restores.
+	Cards []CardRevision `json:"cards,omitempty"`
+}
+
+// CardRevision is one KIFF Card at one revision (kiff/tafs#107).
+type CardRevision struct {
+	ID       string `json:"id"`
+	Revision int64  `json:"revision"`
 }
 
 // Switching marks an agent on its way to version N (kiff/tafs#107): the
@@ -281,6 +290,9 @@ type Agents interface {
 	// back, to any version the agent has; ErrNoVersion otherwise.
 	Switch(ctx context.Context, tenant, id string, n int) error
 
+	// SetCards records the KIFF Cards version n runs under, replacing what
+	// was recorded; ErrNoVersion for a version the agent doesn't have.
+	SetCards(ctx context.Context, tenant, id string, n int, cards []CardRevision) error
 	// BeginSwitch marks the agent as switching to sw.N and returns the mark
 	// as stored. Again for the same N keeps the first mark; for another N,
 	// ErrSwitching. ErrNotFound for an agent not stored.
