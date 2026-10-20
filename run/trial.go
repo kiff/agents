@@ -11,6 +11,9 @@ type Trial struct {
 	// Draft is the KIFF draft whose Cards decide the trial's writes; empty
 	// is the live Cards.
 	Draft string
+	// Run is the trial's run: KIFF counts its earlier allowed writes
+	// toward the Cards' limits, as a live queue would.
+	Run string
 }
 
 // WithTrial marks ctx as a trial's.

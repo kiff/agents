@@ -197,8 +197,8 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// runs the live one.
 	version := 0
 	if r.Trigger == run.ByTrial {
-		ctx = run.WithTrial(ctx, run.Trial{Draft: r.Draft})
-		loop = run.WithTrial(loop, run.Trial{Draft: r.Draft})
+		ctx = run.WithTrial(ctx, run.Trial{Draft: r.Draft, Run: r.ID})
+		loop = run.WithTrial(loop, run.Trial{Draft: r.Draft, Run: r.ID})
 		version = r.AgentVersion
 	}
 	a, d, err := rn.Builder.BuildVersion(ctx, tenant, r.Agent, r.ID, version)

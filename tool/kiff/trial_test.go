@@ -16,7 +16,8 @@ import (
 
 // trialGateway is a gateway that declares trials when trials is set, and
 // answers a call made with KIFF-Trial with a decision, never a hold. It
-// records each tools/call's KIFF-Trial header ("-" when absent).
+// records each tools/call's KIFF-Trial header ("-" when absent), with
+// "@" and its KIFF-Trial-Run when there is one.
 func trialGateway(t *testing.T, trials bool) (*httptest.Server, *[]string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -47,8 +48,12 @@ func trialGateway(t *testing.T, trials bool) (*httptest.Server, *[]string) {
 			if h == "" {
 				h = "-"
 			}
+			seen1 := h
+			if run := r.Header.Get(kiff.TrialRunHeader); run != "" {
+				seen1 += "@" + run
+			}
 			mu.Lock()
-			seen = append(seen, h)
+			seen = append(seen, seen1)
 			mu.Unlock()
 			if h == "-" { // an ordinary call over the limit: held
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}}, "isError": true,
@@ -75,7 +80,7 @@ func TestATrialsCallIsDecidedNotSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := run.WithTrial(context.Background(), run.Trial{Draft: "drf_2"})
+	ctx := run.WithTrial(context.Background(), run.Trial{Draft: "drf_2", Run: "run-1"})
 	got, err := tools[0].Call(ctx, json.RawMessage(`{"charge":"ch_1","amount":30000}`))
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +100,8 @@ func TestATrialsCallIsDecidedNotSent(t *testing.T) {
 	if err != nil || !held.Held() || held.Trial != nil {
 		t.Fatalf("ordinary call = %+v, %v", held, err)
 	}
-	if want := []string{"drf_2", "live", "-"}; len(*seen) != 3 || (*seen)[0] != want[0] || (*seen)[1] != want[1] || (*seen)[2] != want[2] {
+	// The trial's run goes with its draft, so KIFF counts its earlier writes.
+	if want := []string{"drf_2@run-1", "live", "-"}; len(*seen) != 3 || (*seen)[0] != want[0] || (*seen)[1] != want[1] || (*seen)[2] != want[2] {
 		t.Fatalf("headers %v, want %v", *seen, want)
 	}
 }
