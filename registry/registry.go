@@ -150,6 +150,10 @@ type Switching struct {
 // dropped.
 var ErrSwitching = errors.New("registry: this agent is switching versions; nothing of it runs until the switch is done")
 
+// ErrNoSwitch means the agent isn't switching to that version, so there is
+// no switch whose draft to replace.
+var ErrNoSwitch = errors.New("registry: this agent isn't switching to that version")
+
 // Digest is a definition's fingerprint, its version number aside: the same
 // definition stored twice has the same digest.
 func Digest(d Definition) (string, error) {
@@ -297,6 +301,10 @@ type Agents interface {
 	// as stored. Again for the same N keeps the first mark; for another N,
 	// ErrSwitching. ErrNotFound for an agent not stored.
 	BeginSwitch(ctx context.Context, tenant, id string, sw Switching) (Switching, error)
+	// SwitchDraft replaces the KIFF draft a switch to n waits for, keeping
+	// the mark, so nothing of the agent runs in between (kiff/tafs#107: the
+	// version's Cards drafted again). ErrNoSwitch when it isn't switching to n.
+	SwitchDraft(ctx context.Context, tenant, id string, n int, draft string) (Switching, error)
 	// Switching returns the agent's mark, and whether it has one.
 	Switching(ctx context.Context, tenant, id string) (Switching, bool, error)
 	// EndSwitch removes the agent's mark; none is not an error.

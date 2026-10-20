@@ -181,6 +181,9 @@ func (s *Server) switchVersion(ctx context.Context, c Caller, r *http.Request) (
 type pendingBody struct {
 	// Draft is the KIFF draft the switch waits for; empty is the version's.
 	Draft string `json:"draft"`
+	// Replace puts Draft in place of the one a switch to n under way waits
+	// for, keeping the switch, so nothing of the agent runs in between.
+	Replace bool `json:"replace"`
 }
 
 // pendingVersion begins the switch to version n (kiff/tafs#107). From then
@@ -190,7 +193,9 @@ type pendingBody struct {
 // only while no run of the agent is going or waiting (PENDING, RUNNING or
 // PAUSED): a run that started on the live definition ends first, and one
 // waiting on its owner is answered or stopped first, so it never goes on
-// under the next version with the last one's turns.
+// under the next version with the last one's turns. With replace, a switch to
+// n under way waits for another draft instead (its Cards drafted again),
+// with no gap in which a run could start.
 func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	var body pendingBody
 	if err := decode(r, &body); err != nil {
@@ -211,6 +216,16 @@ func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) 
 	}
 	if vs[i].Live {
 		return 0, nil, conflict("that version is live already")
+	}
+	if body.Replace {
+		if body.Draft == "" {
+			return 0, nil, bad("replace names the draft the switch waits for instead")
+		}
+		sw, err := s.Agents.SwitchDraft(ctx, c.Tenant, id, n, body.Draft)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, map[string]any{"switching": sw}, nil
 	}
 	draft := body.Draft
 	if draft == "" {

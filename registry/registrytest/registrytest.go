@@ -349,6 +349,19 @@ func switching(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		if sw, ok, err := s.Switching(ctx, "t1", "refunds"); !ok || err != nil || sw.N != 2 {
 			t.Fatalf("Switching = %+v, %v, %v", sw, ok, err)
 		}
+		// Its draft replaced in place: the same mark, begun when it was.
+		if _, err := s.SwitchDraft(ctx, "t1", "refunds", 3, "drf_3"); !errors.Is(err, registry.ErrNoSwitch) {
+			t.Fatalf("SwitchDraft for another version = %v; want ErrNoSwitch", err)
+		}
+		if _, err := s.SwitchDraft(ctx, "t2", "refunds", 2, "drf_3"); !errors.Is(err, registry.ErrNoSwitch) {
+			t.Fatalf("SwitchDraft in another tenant = %v; want ErrNoSwitch", err)
+		}
+		if sw, err := s.SwitchDraft(ctx, "t1", "refunds", 2, "drf_2b"); err != nil || sw.N != 2 || sw.Draft != "drf_2b" || !sw.At.Equal(at) {
+			t.Fatalf("SwitchDraft = %+v, %v; want version 2 waiting for drf_2b, begun at %v", sw, err, at)
+		}
+		if sw, ok, err := s.Switching(ctx, "t1", "refunds"); !ok || err != nil || sw.Draft != "drf_2b" || !sw.At.Equal(at) {
+			t.Fatalf("Switching after SwitchDraft = %+v, %v, %v", sw, ok, err)
+		}
 		if _, ok, _ := s.Switching(ctx, "t2", "refunds"); ok {
 			t.Fatal("another tenant's agent of the same id is switching")
 		}
@@ -357,6 +370,9 @@ func switching(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 		if err := s.EndSwitch(ctx, "t1", "refunds"); err != nil {
 			t.Fatalf("EndSwitch with none = %v; want nil", err)
+		}
+		if _, err := s.SwitchDraft(ctx, "t1", "refunds", 2, "drf_2c"); !errors.Is(err, registry.ErrNoSwitch) {
+			t.Fatalf("SwitchDraft after the end = %v; want ErrNoSwitch", err)
 		}
 		if _, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 3, At: at}); err != nil {
 			t.Fatalf("BeginSwitch after the end = %v", err)
