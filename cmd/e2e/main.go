@@ -446,7 +446,7 @@ How you work:
 - Understand first. Ask what you need to know, one or two questions at a time: what the job is, which systems are involved, where the money comes in and goes out, and what the owner expects. Use confirm when the answer is a choice; otherwise just ask.
 - Show your plan as steps (show, type steps) once you know it, and keep it current.
 - Ask before you connect anything ("Is it OK if I connect to your Stripe?"). Then connect first, to look: planque request with the vendor's MCP server, a new agent id for the taf (lowercase letters, digits and dashes, with a short random part so it is new, at most 40 characters), and no tools. Show an approval with the grant; the owner approves with Face ID and signs in at the vendor.
-- Look before you propose. Once planque says the grant is listed, read its catalog: the vendor's tools, their arguments, and the account the sign-in acts in. Choose the fewest tools the job needs. Narrow each with fixed_arguments (pin what must never change, such as the account or test mode, when the tool takes them) and arguments (only what the taf must decide). Name the argument that moves money, with its unit and scale. Mark tools that only read as read_only.
+- Look before you propose. Once planque says the grant is listed, read its catalog: the vendor's tools, their arguments, and the account the sign-in acts in. Choose the tools the whole job needs: to find the work, to check one item, and to act. Pin with fixed_arguments only what must never change, such as the account or test mode, when the tool takes them; leave the rest to the taf (arguments), since its Card limits what changes things. Name the argument that moves money, with its unit and scale. Mark tools that only read as read_only.
 - Propose the rules in plain words before you set anything: what the taf may do, the limits (each action, and over a day), what it can never touch, and whether an action over a limit is held for the owner or refused. Ask about each limit; don't assume one the owner didn't give. Then set the tools on the grant (planque tools) and show an approval with the grant again; the owner approves with Face ID, with no second sign-in.
 - Only when planque says connected, give the taf its Card: submit its draft (kiff_draft) over the connected tools, with the limits you agreed, then show an approval with the grant and the draft.
 - When all is done, show result: the taf (its agent id, its name, its job: refunds, and the draft the owner confirmed), one sentence on what was set up, and the tools.
@@ -787,17 +787,25 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if err := t.agents.Put(ctx, taf); err != nil {
 		return err
 	}
+	var connected *grant
+	for _, id := range t.grants {
+		if g, err := t.phone.grant(ctx, id); err == nil && g.Status == "connected" {
+			connected = &g
+		}
+	}
+	if connected == nil {
+		return errors.New("no connected grant for the taf")
+	}
+	if t.stripe == nil {
+		// The fake vendor lists tools to find, check and act on charges, and
+		// one the job never needs: Setup takes the first three (kiff/tafs#107).
+		if err := coversTheJob(*connected); err != nil {
+			return err
+		}
+		t.logf("Setup gave the taf what the whole job needs: find the charges, check one, refund it")
+	}
 	if t.stripe != nil {
 		// Against Stripe's generic tools, what Setup narrowed is the test.
-		var connected *grant
-		for _, id := range t.grants {
-			if g, err := t.phone.grant(ctx, id); err == nil && g.Status == "connected" {
-				connected = &g
-			}
-		}
-		if connected == nil {
-			return errors.New("no connected grant for the taf")
-		}
 		if err := checkStripeGrant(*connected, t.account); err != nil {
 			return err
 		}
@@ -877,6 +885,32 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if len(got) != 2 || !strings.Contains(got[0], `"charge":"`+in+`"`) || !strings.Contains(got[0], `"amount":300`) ||
 		!strings.Contains(got[1], `"charge":"`+approved+`"`) || !strings.Contains(got[1], `"amount":800`) {
 		return fmt.Errorf("the vendor received %v; want exactly the refund of %s for 300, then of %s for 800", got, in, approved)
+	}
+	return nil
+}
+
+// coversTheJob checks that the tools Setup asked for on g, from the fake
+// vendor's catalog, cover the whole refunds job: find the charges
+// (list_charges), check one (retrieve_charge), and refund it (create_refund,
+// or stripe_api_write pinned to refunds). Paying out the balance is never part
+// of it.
+func coversTheJob(g grant) error {
+	asked := map[string]bool{}
+	for _, t := range g.Request.Tools {
+		asked[t.Tool] = true
+		if t.Tool == "stripe_api_write" && t.Fixed["stripe_api_operation_id"] == "PostRefunds" {
+			asked["create_refund"] = true
+		}
+	}
+	var missing []string
+	for _, need := range []string{"list_charges", "retrieve_charge", "create_refund"} {
+		if !asked[need] {
+			missing = append(missing, need)
+		}
+	}
+	if len(missing) > 0 || asked["payout_balance"] {
+		b, _ := json.Marshal(g.Request.Tools)
+		return fmt.Errorf("Setup's tools don't fit the whole job (missing %v, payout_balance %v): %s", missing, asked["payout_balance"], b)
 	}
 	return nil
 }

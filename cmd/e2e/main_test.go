@@ -62,3 +62,29 @@ func TestTafDefinitionFromTafs(t *testing.T) {
 		t.Fatalf("the test's own agent, key and limits: %+v", d)
 	}
 }
+
+func TestCoversTheJob(t *testing.T) {
+	g := func(tools ...string) grant {
+		var out grant
+		for _, name := range tools {
+			out.Request.Tools = append(out.Request.Tools, struct {
+				Tool  string         `json:"tool"`
+				Name  string         `json:"name"`
+				Fixed map[string]any `json:"fixed_arguments"`
+			}{Tool: name})
+		}
+		return out
+	}
+	if err := coversTheJob(g("list_charges", "retrieve_charge", "create_refund")); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]grant{
+		"only acts":        g("create_refund"),
+		"can't check one":  g("list_charges", "create_refund"),
+		"pays out as well": g("list_charges", "retrieve_charge", "create_refund", "payout_balance"),
+	} {
+		if coversTheJob(c) == nil {
+			t.Errorf("%s: passed", name)
+		}
+	}
+}
