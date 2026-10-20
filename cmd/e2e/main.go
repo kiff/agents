@@ -747,6 +747,9 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			case "test":
 				m.test = true
 			}
+			if tool.ReadOnly && t.stripe == nil && !fakeReads[tool.Tool] {
+				m.writesAsReads = append(m.writesAsReads, tool.Tool)
+			}
 		}
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent, m)

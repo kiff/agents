@@ -176,6 +176,8 @@ type grant struct {
 			Tool  string         `json:"tool"`
 			Name  string         `json:"name"`
 			Fixed map[string]any `json:"fixed_arguments"`
+			// ReadOnly is Setup's claim that the tool only reads (kiff/agents#139).
+			ReadOnly bool `json:"read_only"`
 		} `json:"tools"`
 	} `json:"request"`
 	// Events is the grant's record, such as "read list_accounts at …" when

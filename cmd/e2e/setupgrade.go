@@ -133,7 +133,13 @@ var counted = map[string]bool{"brief": true, "names the agent from the taf's nam
 type modes struct {
 	live []string // tools pinned to live mode
 	test bool     // a tool pinned to test mode
+	// writesAsReads are tools Setup asked for as read-only that the fake
+	// vendor doesn't mark so, such as payout_balance (kiff/agents#139).
+	writesAsReads []string
 }
+
+// fakeReads are the fake vendor's tools it marks readOnlyHint.
+var fakeReads = map[string]bool{"list_charges": true, "retrieve_charge": true, "list_accounts": true}
 
 // gradeSetup grades what Setup wrote, and the modes it pinned.
 func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string, m modes) ([]eval.CheckResult, error) {
@@ -245,6 +251,15 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		add("pins the mode the owner chose", eval.Grade{Why: "pinned to live mode, though the owner chose test: " + strings.Join(m.live, ", ")})
 	} else {
 		add("pins the mode the owner chose", eval.Grade{Pass: true})
+	}
+
+	// 9. A tool that changes something is never asked for as one that only
+	// reads (kiff/agents#139): the approval would tell the owner it reads.
+	// planque refuses the grant then, and this says why the run failed.
+	if len(m.writesAsReads) > 0 {
+		add("marks no write read-only", eval.Grade{Why: "asked for as read-only, though the vendor doesn't mark it so: " + strings.Join(m.writesAsReads, ", ")})
+	} else {
+		add("marks no write read-only", eval.Grade{Pass: true})
 	}
 	return out, nil
 }

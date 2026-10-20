@@ -75,6 +75,8 @@ func TestCoversTheJob(t *testing.T) {
 				Tool  string         `json:"tool"`
 				Name  string         `json:"name"`
 				Fixed map[string]any `json:"fixed_arguments"`
+				// ReadOnly is Setup's claim that the tool only reads (kiff/agents#139).
+				ReadOnly bool `json:"read_only"`
 			}{Tool: name})
 		}
 		return out
