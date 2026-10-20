@@ -347,7 +347,7 @@ func (a *Agents) SwitchDraft(ctx context.Context, tenant, id string, n int, draf
 			return sw, err
 		}
 	}
-	return registry.Switching{}, registry.ErrSwitching
+	return registry.Switching{}, registry.ErrSwitchChanged
 }
 
 func (a *Agents) Switching(ctx context.Context, tenant, id string) (registry.Switching, bool, error) {
