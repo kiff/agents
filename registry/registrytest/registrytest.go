@@ -199,6 +199,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 	})
 	versions(t, newStore)
 	switching(t, newStore)
+	cards(t, newStore)
 
 }
 
@@ -375,6 +376,37 @@ func switching(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 		if _, ok, err := s.Switching(ctx, "t1", "refunds"); ok || err != nil {
 			t.Fatalf("Switching after Delete = %v, %v; want none", ok, err)
+		}
+	})
+}
+
+// cards checks that a version records the Cards it runs under
+// (kiff/tafs#107).
+func cards(t *testing.T, newStore func(t *testing.T) registry.Agents) {
+	ctx := context.Background()
+	t.Run("AVersionRecordsItsCards", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Put(ctx, Definition("t1", "refunds")); err != nil {
+			t.Fatal(err)
+		}
+		v2 := Definition("t1", "refunds")
+		v2.Instructions = "Version two."
+		if _, err := s.PutVersion(ctx, v2, registry.Version{Note: "two"}); err != nil {
+			t.Fatal(err)
+		}
+		want := []registry.CardRevision{{ID: "card_refund", Revision: 3}, {ID: "card_read", Revision: 1}}
+		if err := s.SetCards(ctx, "t1", "refunds", 2, want); err != nil {
+			t.Fatal(err)
+		}
+		vs, err := s.Versions(ctx, "t1", "refunds")
+		if err != nil || len(vs) != 2 || !reflect.DeepEqual(vs[1].Cards, want) || len(vs[0].Cards) != 0 || vs[1].Note != "two" {
+			t.Fatalf("Versions = %+v, %v", vs, err)
+		}
+		if d, err := s.GetVersion(ctx, "t1", "refunds", 2); err != nil || d.Instructions != "Version two." {
+			t.Fatalf("the definition changed with its Cards: %q, %v", d.Instructions, err)
+		}
+		if err := s.SetCards(ctx, "t1", "refunds", 9, want); !errors.Is(err, registry.ErrNoVersion) {
+			t.Fatalf("SetCards on no version = %v", err)
 		}
 	})
 }

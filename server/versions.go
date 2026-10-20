@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -20,7 +22,7 @@ import (
 //	POST /agents/{id}/versions              {definition, note, by, draft, revisions} → {"n"}; live unchanged
 //	GET  /agents/{id}/versions/{n}          {"version", "definition"}: one version, with its definition
 //	POST /agents/{id}/versions/{n}/pending  {draft?} → {"switching"}: the switch to n begins
-//	POST /agents/{id}/versions/{n}/live     → {"live": n}; ends a switch to n
+//	POST /agents/{id}/versions/{n}/live     {cards?} → {"live": n}; ends a switch to n, and records the Cards it runs under
 //	DELETE /agents/{id}/switching           → {"cancelled": true|false}
 //	POST /agents/{id}/versions/{n}/trial    {input} → {"run"}, at once; it runs in the background
 //	GET  /agents/{id}/trials/{run_id}       {"run", "writes"}: KIFF's decisions so far
@@ -113,12 +115,41 @@ func (s *Server) getVersion(ctx context.Context, c Caller, r *http.Request) (int
 	return http.StatusOK, map[string]any{"version": vs[i], "definition": d}, nil
 }
 
+// liveBody is what POST /agents/{id}/versions/{n}/live may take: the KIFF
+// Cards the version runs under, each at its revision now (kiff/tafs#107).
+type liveBody struct {
+	Cards []registry.CardRevision `json:"cards"`
+}
+
+// MaxVersionCards bounds the Cards one version records.
+const MaxVersionCards = 50
+
 // switchVersion makes version n live, forward or back, and ends a switch to
 // n under way. While the agent switches to another version, ErrSwitching.
+// With cards, it records the Cards version n runs under, so going back to it
+// can restore them.
 func (s *Server) switchVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	n, err := versionNumber(r)
 	if err != nil {
 		return 0, nil, err
+	}
+	var body liveBody
+	if raw, err := io.ReadAll(r.Body); err != nil {
+		return 0, nil, err
+	} else if len(bytes.TrimSpace(raw)) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			return 0, nil, bad("the body is not the JSON this route takes: %v", err)
+		}
+	}
+	if len(body.Cards) > MaxVersionCards {
+		return 0, nil, bad("a version records at most %d Cards", MaxVersionCards)
+	}
+	for _, cr := range body.Cards {
+		if cr.ID == "" || len(cr.ID) > 128 || cr.Revision < 1 {
+			return 0, nil, bad("each card is {id, revision}, a revision from 1")
+		}
 	}
 	id := r.PathValue("id")
 	sw, on, err := s.Agents.Switching(ctx, c.Tenant, id)
@@ -130,6 +161,11 @@ func (s *Server) switchVersion(ctx context.Context, c Caller, r *http.Request) (
 	}
 	if err := s.Agents.Switch(ctx, c.Tenant, id, n); err != nil {
 		return 0, nil, err
+	}
+	if len(body.Cards) > 0 {
+		if err := s.Agents.SetCards(ctx, c.Tenant, id, n, body.Cards); err != nil {
+			return 0, nil, err
+		}
 	}
 	if on {
 		if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
