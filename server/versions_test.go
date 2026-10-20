@@ -349,4 +349,11 @@ func TestASwitchsDraftIsReplacedInPlace(t *testing.T) {
 	if code, b := f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{"replace": true}); code != 400 {
 		t.Fatalf("replace with no draft = %d %v, want 400", code, b)
 	}
+	// A trial meanwhile asks KIFF about the draft the switch waits for, not
+	// the one the version was stored with.
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/trial", map[string]any{"input": "Refund charge ch_1 for 300 cents."})
+	f.want(202, code, body, "trial while switching")
+	if d := body["run"].(map[string]any)["draft"]; d != "drf_new" {
+		t.Fatalf("trial while switching runs under %v, want drf_new", d)
+	}
 }

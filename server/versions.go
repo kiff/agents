@@ -327,7 +327,18 @@ func (s *Server) startTrial(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, registry.ErrNoVersion)
 		return
 	}
-	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByTrial, Input: body.Input, Version: n, Draft: vs[i].Draft})
+	// While a switch to n waits, its draft is the one KIFF will confirm (the
+	// Cards drafted again, or restored): the trial asks about that one.
+	draft := vs[i].Draft
+	sw, on, err := s.Agents.Switching(ctx, c.Tenant, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if on && sw.N == n && sw.Draft != "" {
+		draft = sw.Draft
+	}
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByTrial, Input: body.Input, Version: n, Draft: draft})
 	if err != nil {
 		s.fail(w, r, err)
 		return
