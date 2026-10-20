@@ -154,6 +154,10 @@ var ErrSwitching = errors.New("registry: this agent is switching versions; nothi
 // no switch whose draft to replace.
 var ErrNoSwitch = errors.New("registry: this agent isn't switching to that version")
 
+// ErrSwitchChanged means the switch kept changing while its draft was being
+// replaced: read it again, then replace again.
+var ErrSwitchChanged = errors.New("registry: the switch changed meanwhile")
+
 // Digest is a definition's fingerprint, its version number aside: the same
 // definition stored twice has the same digest.
 func Digest(d Definition) (string, error) {
