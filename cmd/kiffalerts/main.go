@@ -4,7 +4,10 @@
 // AWS. kiffalert.Handler checks that signature and records the owner's answer
 // on the run that paused on the hold. That is all it does: a run that waits
 // for nothing more is due a minute later, and the agents function's sweep
-// (cmd/lambda) continues it. This function can execute nothing.
+// (cmd/lambda) continues it. This function can execute nothing. Its answer
+// to the alert that leaves a run ready names the run (kiffalert.Ready), so
+// the caller that handed the alert on, tafs cloud, can continue it at once
+// through the agents API, as a caller there (kiff/tafs#138).
 //
 // The function is apart from the agents function so that its open URL can
 // serve no other route: this command mounts only kiffalert.Handler.

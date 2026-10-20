@@ -131,7 +131,7 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents and schedules; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
 | `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode; the runner, with agents' keys and the model key from Secrets Manager; background runs as asynchronous invocations of the same function; the sweep every minute, which also continues resolved paused runs; schedule firings, each starting one run and executing it in its own invocation. Still to come: the deploy |
-| `cmd/kiffalerts` | KIFF's alerts on Lambda | Built (#13): its own function behind a URL with no IAM auth, serving only `POST /kiff/alerts`; KIFF accounts from Secrets Manager; it records answers only, and `cmd/lambda`'s sweep continues the resolved runs. Still to come: the deploy |
+| `cmd/kiffalerts` | KIFF's alerts on Lambda | Built (#13): its own function behind a URL with no IAM auth, serving only `POST /kiff/alerts`; KIFF accounts from Secrets Manager; it records answers only, and `cmd/lambda`'s sweep continues the resolved runs. The answer to the alert that leaves a run ready names it (`{"run":{"id","agent"}}`), so tafs cloud continues it at once through `…/continue` (kiff/tafs#138). Still to come: the deploy |
 
 ## The API
 
