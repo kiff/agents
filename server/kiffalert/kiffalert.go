@@ -158,7 +158,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "try again", http.StatusServiceUnavailable)
 		return
 	}
-	if h.Continue != nil && ready(rn, h.now()) {
+	if !ready(rn, h.now()) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if h.Continue != nil {
 		if err := h.Continue(ctx, tenant, rn.ID); err != nil {
 			// The answer is recorded; a later delivery continues the run.
 			h.log().Error("kiffalert: continuing the run", "run", rn.ID, "err", err)
@@ -166,7 +170,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The run waits for nothing more. Its tenant's caller (tafs cloud, which
+	// handed this alert on) may continue it now through the API, where it
+	// is a caller, rather than wait for the sweep (kiff/tafs#138). Only an
+	// alert signed with the account's secret gets this far.
+	writeJSON(w, Ready{Run: ReadyRun{ID: rn.ID, Agent: rn.Agent}})
+}
+
+// Ready is the answer to an alert that left its run waiting for nothing
+// more: the run, which its tenant's caller may continue
+// (POST /agents/{agent}/runs/{id}/continue).
+type Ready struct {
+	Run ReadyRun `json:"run"`
+}
+
+// ReadyRun names a run that may continue.
+type ReadyRun struct {
+	ID    string `json:"id"`
+	Agent string `json:"agent"`
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // recent reports whether KIFF decided the hold within PauseWindow of now. A

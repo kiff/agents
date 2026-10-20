@@ -3,6 +3,7 @@ package kiffalert_test
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -160,6 +161,28 @@ func TestWithoutContinueTheSweepContinues(t *testing.T) {
 	due, err := e.runs.DuePaused(ctx, r.Due().Add(time.Second), 10)
 	if err != nil || len(due) != 1 || due[0].ID != e.run.ID {
 		t.Fatalf("due to the sweep: %+v (%v), want the run", due, err)
+	}
+}
+
+// The answer that leaves a run waiting for nothing more names it, so the
+// caller that handed the alert on can continue it now rather than wait for
+// the sweep (kiff/tafs#138). An answer that leaves it waiting names nothing.
+func TestTheLastAnswerNamesTheRun(t *testing.T) {
+	e := setup(t)
+	e.h.Continue = nil
+	body := payload("kiff-acct-1", kiffalert.HoldAnswered, "exc_1", "approved")
+	w := e.post(body, signed(body, e.now))
+	if w.Code != http.StatusOK || w.Body.Len() != 0 {
+		t.Fatalf("first answer: %d %q, want 200 and nothing named", w.Code, w.Body)
+	}
+	body = payload("kiff-acct-1", kiffalert.HoldAnswered, "exc_2", "refused")
+	w = e.post(body, signed(body, e.now))
+	var got kiffalert.Ready
+	if err := json.Unmarshal(w.Body.Bytes(), &got); w.Code != http.StatusOK || err != nil {
+		t.Fatalf("last answer: %d %q (%v)", w.Code, w.Body, err)
+	}
+	if got.Run.ID != e.run.ID || got.Run.Agent != "rae" || w.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("named %+v (%s), want run %s of agent rae", got, w.Header().Get("Content-Type"), e.run.ID)
 	}
 }
 
