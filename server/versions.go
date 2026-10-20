@@ -18,6 +18,7 @@ import (
 //
 //	GET  /agents/{id}/versions              {"versions": [Version…]}, oldest first
 //	POST /agents/{id}/versions              {definition, note, by, draft, revisions} → {"n"}; live unchanged
+//	GET  /agents/{id}/versions/{n}          {"version", "definition"}: one version, with its definition
 //	POST /agents/{id}/versions/{n}/pending  {draft?} → {"switching"}: the switch to n begins
 //	POST /agents/{id}/versions/{n}/live     → {"live": n}; ends a switch to n
 //	DELETE /agents/{id}/switching           → {"cancelled": true|false}
@@ -87,6 +88,29 @@ func (s *Server) putVersion(ctx context.Context, c Caller, r *http.Request) (int
 		return 0, nil, err
 	}
 	return http.StatusOK, map[string]int{"n": n}, nil
+}
+
+// getVersion is one version and its definition (kiff/tafs#107): what tafs
+// cloud reads a version's instructions from, at their source.
+func (s *Server) getVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	n, err := versionNumber(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id := r.PathValue("id")
+	vs, err := s.Agents.Versions(ctx, c.Tenant, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	i := slices.IndexFunc(vs, func(v registry.Version) bool { return v.N == n })
+	if i < 0 {
+		return 0, nil, registry.ErrNoVersion
+	}
+	d, err := s.Agents.GetVersion(ctx, c.Tenant, id, n)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, map[string]any{"version": vs[i], "definition": d}, nil
 }
 
 // switchVersion makes version n live, forward or back, and ends a switch to

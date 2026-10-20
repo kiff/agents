@@ -224,3 +224,27 @@ func TestASwitchWaitsForAnOldPausedRun(t *testing.T) {
 	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
 	f.want(200, code, body, "pending")
 }
+
+// One version reads back with its definition, for tafs cloud to read its
+// instructions at their source (kiff/tafs#107).
+func TestAVersionReadsWithItsDefinition(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	v2 := agentBody("payouts")
+	v2.Instructions = "Version two."
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "reads first", "by": "setup", "draft": "drf_2"})
+	f.want(200, code, body, "put version")
+	code, body = f.do("t1", "GET", "/agents/payouts/versions/2", nil)
+	f.want(200, code, body, "get version")
+	if v := body["version"].(map[string]any); v["n"] != float64(2) || v["note"] != "reads first" || v["live"] != false {
+		t.Fatalf("version = %v", v)
+	}
+	if d := body["definition"].(map[string]any); d["instructions"] != "Version two." {
+		t.Fatalf("definition = %v", d)
+	}
+	for _, c := range []struct{ tenant, path string }{{"t1", "/agents/payouts/versions/9"}, {"t1", "/agents/payouts/versions/x"}, {"t2", "/agents/payouts/versions/2"}} {
+		if code, _ := f.do(c.tenant, "GET", c.path, nil); code != 404 {
+			t.Errorf("%s %s = %d, want 404", c.tenant, c.path, code)
+		}
+	}
+}

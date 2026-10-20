@@ -58,13 +58,28 @@ type Option struct {
 }
 
 // Taf is the taf a result hands over to: what tafs cloud starts it from
-// (kiff/tafs#50, POST /v1/tafs with from_setup).
+// (kiff/tafs#50, POST /v1/tafs with from_setup), or, with Improves, the next
+// version of a taf tafs already runs (kiff/tafs#107).
 type Taf struct {
 	Agent string `json:"agent"`
 	Name  string `json:"name"`
-	Job   string `json:"job"`   // one of tafs' jobs, such as refunds
-	Draft string `json:"draft"` // the taf's KIFF draft, confirmed in the second approval
+	Job   string `json:"job"` // one of tafs' jobs, such as refunds
+	// Draft is the taf's KIFF draft: for a new taf, the one the owner
+	// confirmed in the second approval; for an improvement, the revision of
+	// its Cards, which the owner confirms only when they switch to the
+	// version. An improvement that changes no Card has none.
+	Draft string `json:"draft,omitempty"`
+	// Improves is the tafs id of the taf this is the next version of.
+	Improves string `json:"improves,omitempty"`
+	// Note says what changed, in the owner's language (an improvement).
+	Note string `json:"note,omitempty"`
+	// Notes are the taf's instructions from the owner for the new version,
+	// in full; empty keeps them as they are (an improvement).
+	Notes string `json:"notes,omitempty"`
 }
+
+// MaxNotes bounds an improvement's instructions from the owner.
+const MaxNotes = 4000
 
 // Component is one component. Which fields it has depends on its type.
 type Component struct {
@@ -120,7 +135,9 @@ func (Tool) Spec() model.ToolSpec {
 			"steps {title, steps:[{label, status: pending|active|done|failed|skipped}]}; notice {tone: info|success|warning|error, title?, text}; " +
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
-			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed. " +
+			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed; " +
+			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
+			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
 			"The app keeps no words of its own on a card: a sign_in takes title, text, yes (the button that opens the vendor's page), no (e.g. Not now) and note; a result takes yes (the button that opens the taf). " +
 			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
@@ -134,8 +151,11 @@ func (Tool) Spec() model.ToolSpec {
 			`"grant":{"type":"string","description":"planque's grant id"},"draft":{"type":"string","description":"KIFF's agent draft id"},` +
 			`"service":{"type":"string","description":"the vendor's host, e.g. mcp.stripe.com"},` +
 			`"taf":{"type":"object","properties":{"agent":{"type":"string"},"name":{"type":"string"},` +
-			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds"},"draft":{"type":"string","description":"the taf's KIFF draft id, confirmed by the owner"}},` +
-			`"required":["agent","name","job","draft"]},` +
+			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds"},"draft":{"type":"string","description":"the taf's KIFF draft id: confirmed by the owner for a new taf; an improvement's Card revision, confirmed at the switch"},` +
+			`"improves":{"type":"string","description":"the tafs id of the taf this is the next version of"},` +
+			`"note":{"type":"string","description":"what changed, in the owner's language (an improvement)"},` +
+			`"notes":{"type":"string","description":"the taf's full new instructions from the owner (an improvement); omit to keep them"}},` +
+			`"required":["agent","name","job"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
 			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
 			`"no":{"type":"string","description":"the other button's label (sign_in)"},` +
@@ -274,8 +294,26 @@ func (c Component) check() error {
 		if !idPattern.MatchString(c.Taf.Job) {
 			return fmt.Errorf("taf.job is one of tafs' jobs, such as refunds")
 		}
-		if !refPattern.MatchString(c.Taf.Draft) {
-			return fmt.Errorf("taf.draft is the taf's KIFF draft id, the one the owner confirmed")
+		if c.Taf.Improves == "" {
+			if !refPattern.MatchString(c.Taf.Draft) {
+				return fmt.Errorf("taf.draft is the taf's KIFF draft id, the one the owner confirmed")
+			}
+			if c.Taf.Note != "" || c.Taf.Notes != "" {
+				return fmt.Errorf("taf.note and taf.notes are for an improvement (taf.improves)")
+			}
+		} else {
+			if !refPattern.MatchString(c.Taf.Improves) {
+				return fmt.Errorf("taf.improves is the tafs id of the taf it improves")
+			}
+			if c.Taf.Draft != "" && !refPattern.MatchString(c.Taf.Draft) {
+				return fmt.Errorf("taf.draft is the KIFF draft id revising the taf's Cards")
+			}
+			if err := text("taf.note", c.Taf.Note, true, MaxText); err != nil {
+				return err
+			}
+			if err := text("taf.notes", c.Taf.Notes, false, MaxNotes); err != nil {
+				return err
+			}
 		}
 		if err := text("text", c.Text, true, MaxText); err != nil {
 			return err

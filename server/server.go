@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	route("DELETE /agents/{id}", s.deleteAgent)
 	route("GET /agents/{id}/versions", s.listVersions)
 	route("POST /agents/{id}/versions", s.putVersion)
+	route("GET /agents/{id}/versions/{n}", s.getVersion)
 	route("POST /agents/{id}/versions/{n}/live", s.switchVersion)
 	route("POST /agents/{id}/versions/{n}/pending", s.pendingVersion)
 	route("DELETE /agents/{id}/switching", s.cancelSwitch)
