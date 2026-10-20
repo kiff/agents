@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,5 +125,35 @@ func TestReadThenRefunded(t *testing.T) {
 	generic.Calls[1].Action = "stripe_api_write_k3f9"
 	if err := readThenRefunded(generic.Calls, "reembolsos-x"); err != nil {
 		t.Errorf("a read, then the generic write pinned to refunds: %v", err)
+	}
+}
+
+// The phone signs planque's requests as a KIFF device (d=), as the tafs app
+// does, so planque can drop the key-enrolled path (kiff/planque#12).
+func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
+	if h := signatureHeader("2026-10-20T09:00:00Z", []byte("sig"), "dev_1"); !strings.HasSuffix(h, ",d=dev_1") || !strings.HasPrefix(h, "t=2026-10-20T09:00:00Z,v1=") {
+		t.Fatalf("header = %q", h)
+	}
+	if h := signatureHeader("2026-10-20T09:00:00Z", []byte("sig"), ""); strings.Contains(h, "d=") {
+		t.Fatalf("header without a device = %q", h)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/me/devices" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"devices":[{"id":"dev_other","this_device":false},{"id":"dev_phone","this_device":true}]}`))
+	}))
+	defer srv.Close()
+	got, err := thisDevice(context.Background(), &client{base: srv.URL, http: srv.Client(), auth: func(*http.Request, []byte) {}})
+	if err != nil || got != "dev_phone" {
+		t.Fatalf("thisDevice = %q, %v", got, err)
+	}
+	none := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"devices":[{"id":"dev_other","this_device":false}]}`))
+	}))
+	defer none.Close()
+	if _, err := thisDevice(context.Background(), &client{base: none.URL, http: none.Client(), auth: func(*http.Request, []byte) {}}); err == nil {
+		t.Fatal("a session with no device of its own passed")
 	}
 }

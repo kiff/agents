@@ -244,6 +244,10 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	t.out.hide(t.tenant, "<the account>")
 	t.kiff = kiffSession(kiff.APIURL, t.cfg.session, t.tenant, pk, t.hc)
 	t.phone = newPhone(pk, t.cfg.planque, t.tenant, t.hc)
+	// planque asks KIFF whether this device signed (d=), as for the app.
+	if t.phone.device, err = thisDevice(ctx, t.kiff); err != nil {
+		return fmt.Errorf("the phone's device in KIFF: %w", err)
+	}
 	if t.cfg.stripeKey != "" {
 		if t.stripe, err = newStripe(t.cfg.stripeKey, t.hc); err != nil {
 			return err
@@ -322,7 +326,7 @@ func (t *test) enrol(ctx context.Context) error {
 	connector, _ := k.Body["plaintext"].(string)
 	t.secrets = append(t.secrets, connector)
 	a, err = t.phone.planque.do(ctx, http.MethodPost, t.phone.accountPath()+"/enrolment",
-		map[string]string{"device_key": t.phone.publicKey(), "connector_key": connector})
+		map[string]string{"connector_key": connector})
 	if err != nil || a.err() != nil {
 		return fmt.Errorf("enrolling the phone with planque: %v %v", err, a.err())
 	}
