@@ -80,12 +80,23 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 			t.Fatal("an agent id without the taf's name passed")
 		}
 	}
-	// A write asked for as read-only fails, and says which (kiff/agents#139).
-	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3",
-		modes{writesAsReads: []string{"payout_balance"}})
+	// A write asked for as read-only, refused by planque, fails and says which (kiff/agents#139).
+	refused := s
+	refused.writesAsReads = []string{"payout_balance"}
+	checks, _ = gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, owners["es"], refused, "taf-reembolsos-x7k3", modes{})
 	for _, c := range checks {
 		if c.Name == "marks no write read-only" && (c.Pass || !strings.Contains(c.Why, "payout_balance")) {
 			t.Fatalf("a write asked for as read-only: %+v", c)
+		}
+	}
+	for text, want := range map[string]string{
+		// planque's notReadOnly, and as the planque tool returns it.
+		"payout_balance isn't read-only at vendor.test: the vendor doesn't mark it so, so it can't be granted as a read":                      "payout_balance",
+		"planque answered 400: create_refund isn't read-only at vendor.test: the vendor doesn't mark it so, so it can't be granted as a read": "create_refund",
+		"vendor.test lists no tool named list_payouts": "",
+	} {
+		if got, _ := refusedRead(text); got != want {
+			t.Errorf("refusedRead(%q) = %q, want %q", text, got, want)
 		}
 	}
 	if slug("Reembolsos de Tienda") != "reembolsos-de-tienda" {

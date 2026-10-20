@@ -549,6 +549,11 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				return "", "", err
 			}
 			t.said.messages = append(t.said.messages, msgs...)
+			reads, err := t.refusedReadsOf(ctx, ch.Session, r.ID)
+			if err != nil {
+				return "", "", err
+			}
+			t.said.writesAsReads = append(t.said.writesAsReads, reads...)
 			for _, c := range shown {
 				t.said.card(c)
 			}
@@ -727,6 +732,28 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) ([]strin
 	return out, nil
 }
 
+// refusedReadsOf are the tools planque refused, in a run of the setup agent,
+// because Setup asked for them as read-only and the vendor doesn't mark them so.
+func (t *test) refusedReadsOf(ctx context.Context, sessionID, runID string) ([]string, error) {
+	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range events {
+		if e.Run != runID || e.Kind != session.ToolResult {
+			continue
+		}
+		var b agent.ToolResultBody
+		if json.Unmarshal(e.Body, &b) == nil && b.IsError {
+			if tool, ok := refusedRead(b.Text); ok {
+				out = append(out, tool)
+			}
+		}
+	}
+	return out, nil
+}
+
 // grade grades the setup chat (-grade), prints each check's name and
 // outcome (a judged failure's reason only outside CI: it quotes the chat), and
 // fails the test when a check failed.
@@ -746,9 +773,6 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 				m.live = append(m.live, tool.Tool)
 			case "test":
 				m.test = true
-			}
-			if tool.ReadOnly && t.stripe == nil && !fakeReads[tool.Tool] {
-				m.writesAsReads = append(m.writesAsReads, tool.Tool)
 			}
 		}
 	}
