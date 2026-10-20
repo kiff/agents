@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/chat"
@@ -145,6 +146,12 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	// The switch, through kiff/agents' own routes as tafs cloud calls them: begun
 	// (refused while a run goes), the Card confirmed on the phone (the version
 	// shown), then live with the Card revisions it now runs under.
+	// A switch begins only while no run of the taf is going or waiting: the run
+	// whose hold the owner refused earlier goes on to its end first, as the
+	// alert and the sweep do in production.
+	if err := t.finishAnswered(ctx, tafID); err != nil {
+		return err
+	}
 	api := t.api()
 	defer api.Close()
 	pending := fmt.Sprintf("/agents/%s/versions/%d/pending", tafID, n)
@@ -433,4 +440,45 @@ func (t *test) cardRevisions(ctx context.Context, agentID string) ([]registry.Ca
 		out = append(out, registry.CardRevision{ID: id, Revision: latest})
 	}
 	return out, nil
+}
+
+// finishAnswered continues each of the taf's runs that waits on a hold the
+// owner already answered on the phone, to its end: the answer recorded on
+// the run, then the run executed, as KIFF's alert and the sweep do in
+// production. Then none of its runs may be going or waiting.
+func (t *test) finishAnswered(ctx context.Context, tafID string) error {
+	list, err := t.rn.Runs.List(ctx, t.tenant, tafID, 0)
+	if err != nil {
+		return err
+	}
+	for _, r := range list {
+		if r.Status != runs.Paused {
+			continue
+		}
+		full, err := t.rn.Runs.Get(ctx, t.tenant, r.ID)
+		if err != nil {
+			return err
+		}
+		for _, q := range full.Requirements {
+			if q.Exception != "" && q.Answered.IsZero() {
+				// The holds still waiting here are the ones the owner refused on the phone.
+				if _, err := runs.Answer(ctx, t.rn.Runs, t.tenant, q.Exception, "refused", time.Now()); err != nil {
+					return fmt.Errorf("recording the owner's answer on the run: %w", err)
+				}
+			}
+		}
+		if _, err := t.rn.Execute(ctx, t.tenant, r.ID, nil); err != nil {
+			return fmt.Errorf("continuing a run the owner answered: %w", err)
+		}
+	}
+	list, err = t.rn.Runs.List(ctx, t.tenant, tafID, 0)
+	if err != nil {
+		return err
+	}
+	for _, r := range list {
+		if !r.Status.Final() && r.Trigger != runs.ByTrial {
+			return fmt.Errorf("a run of the taf is still %s before the switch", r.Status)
+		}
+	}
+	return nil
 }
