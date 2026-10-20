@@ -133,7 +133,6 @@ var counted = map[string]bool{"brief": true, "names the agent from the taf's nam
 type modes struct {
 	live []string // tools pinned to live mode
 	test bool     // a tool pinned to test mode
-	read bool     // Setup read what the sign-in covers (planque describe)
 }
 
 // gradeSetup grades what Setup wrote, and the modes it pinned.
@@ -235,12 +234,12 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 			asked = true
 		}
 	}
-	// Or it read the mode from the vendor and pinned it (kiff/tafs#90): the
-	// vendor knows what the owner signed in to, so it needn't ask.
-	if asked || (m.read && m.test) {
+	// Nothing is read from the owner's account before they approve the
+	// tools (kiff/planque#23), so Setup asks.
+	if asked {
 		add("asks test or live", eval.Grade{Pass: true})
 	} else {
-		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap, and no mode the vendor reported was pinned"})
+		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap"})
 	}
 	if len(m.live) > 0 {
 		add("pins the mode the owner chose", eval.Grade{Why: "pinned to live mode, though the owner chose test: " + strings.Join(m.live, ", ")})

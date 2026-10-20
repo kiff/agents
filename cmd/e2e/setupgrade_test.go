@@ -209,14 +209,10 @@ func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
 	if !strings.Contains(got["pins the mode the owner chose"].Why, "create_refund") {
 		t.Fatalf("the reason names no tool: %q", got["pins the mode the owner chose"].Why)
 	}
-	// The vendor said test, and Setup pinned it (kiff/tafs#90): no need to ask.
-	got = grade([]component{other}, modes{read: true, test: true})
-	if !got["asks test or live"].Pass || !got["pins the mode the owner chose"].Pass {
-		t.Fatalf("read and pinned test: %+v", got)
-	}
-	// Pinned test without reading it is a guess: it still had to ask.
+	// Pinned test without asking is a guess (nothing is read from the
+	// account before its tools are approved, kiff/planque#23): it had to ask.
 	if got = grade([]component{other}, modes{test: true}); got["asks test or live"].Pass {
-		t.Fatalf("pinned test unread, never asked: %+v", got)
+		t.Fatalf("pinned test, never asked: %+v", got)
 	}
 	for fixed, want := range map[string]string{`{"mode":"test"}`: "test", `{"livemode":false}`: "test", `{"environment":"sandbox"}`: "test", `{"mode":"live"}`: "live", `{"account":"a"}`: ""} {
 		var f map[string]any
