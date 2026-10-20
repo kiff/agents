@@ -26,6 +26,10 @@ type Draft struct {
 	AgentID string   `json:"agent_id"`
 	Status  string   `json:"status"`
 	CardIDs []string `json:"card_ids,omitempty"`
+	// Revision is a draft that revises the Cards of an agent that holds them
+	// already (kiff/tafs#107): no key comes out of it, so it has no claim
+	// secret.
+	Revision bool `json:"revision,omitempty"`
 }
 
 // Record is what is kept of one submitted draft: its claim secret until the
@@ -124,8 +128,19 @@ func (s *Service) Submit(ctx context.Context, tenant, key string, body json.RawM
 	if err != nil {
 		return Draft{}, err
 	}
-	if d.ID == "" || !strings.HasPrefix(secret, "kiff_claim_") {
-		return Draft{}, errors.New("drafts: KIFF's answer has no draft id or claim secret")
+	if d.ID == "" {
+		return Draft{}, errors.New("drafts: KIFF's answer has no draft id")
+	}
+	// A revision draft has no key to claim (kiff/tafs#107): there is nothing to
+	// keep, and its agent already has its key.
+	if d.Revision {
+		if secret != "" {
+			return Draft{}, errors.New("drafts: KIFF gave a claim secret for a revision draft")
+		}
+		return d, nil
+	}
+	if !strings.HasPrefix(secret, "kiff_claim_") {
+		return Draft{}, errors.New("drafts: KIFF's answer has no claim secret")
 	}
 	if err := s.Store.Put(ctx, tenant, d.ID, Record{AgentID: d.AgentID, Secret: secret}); err != nil {
 		return Draft{}, fmt.Errorf("drafts: keeping the claim secret: %w", err)

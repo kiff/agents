@@ -36,6 +36,10 @@ func (k *kiff) Submit(_ context.Context, key string, body json.RawMessage) (draf
 		AgentID string `json:"agent_id"`
 	}
 	_ = json.Unmarshal(body, &b)
+	// An agent that holds Cards gets a revision draft: no key, no claim secret.
+	if b.AgentID == "agt_holds_cards" {
+		return drafts.Draft{ID: "drf_2", AgentID: b.AgentID, Status: "draft", Revision: true}, "", nil
+	}
 	return drafts.Draft{ID: "drf_1", AgentID: b.AgentID, Status: "draft"}, "kiff_claim_s3cret", nil
 }
 
@@ -87,6 +91,19 @@ func TestSubmitKeepsTheSecretFromTheModel(t *testing.T) {
 	r, err := m.Get(ctx, "t1", "drf_1")
 	if err != nil || r.Secret != "kiff_claim_s3cret" || r.AgentID != "agt_refunds" {
 		t.Fatalf("kept %+v, %v", r, err)
+	}
+}
+
+// A revision draft (kiff/tafs#107) revises the Cards of an agent that has its
+// key already: KIFF gives no claim secret, and none is kept or needed.
+func TestSubmitTakesARevisionWithNoClaimSecret(t *testing.T) {
+	s, _, m := newService()
+	d, err := s.Submit(ctx, "t1", "kiff_key_setup", json.RawMessage(`{"agent_id":"agt_holds_cards","label":"Refunds","cards":[]}`))
+	if err != nil || d.ID != "drf_2" || !d.Revision {
+		t.Fatalf("submit = %+v, %v", d, err)
+	}
+	if _, err := m.Get(ctx, "t1", "drf_2"); err == nil {
+		t.Fatal("a record was kept for a revision draft, which has nothing to claim")
 	}
 }
 
