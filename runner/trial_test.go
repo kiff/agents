@@ -1,13 +1,17 @@
 package runner_test
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
@@ -70,4 +74,56 @@ func TestARunRecordsItsVersion(t *testing.T) {
 	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "go", Version: 1}); err == nil {
 		t.Fatal("an ordinary run started a version of its choosing")
 	}
+}
+
+// kiff/tafs#107: while an agent switches versions nothing of it runs: no
+// run starts, one stored before the switch doesn't start, and a paused one
+// waits on, its held call not collected. A trial still runs.
+func TestNothingRunsWhileTheAgentSwitches(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Waiting for approval."), say("Trial done."))
+	paused := f.pause(f.start(server.Start{Input: "refund order 42"}))
+	f.answer(paused)
+	stored := f.start(server.Start{Input: "a message before the switch"})
+	if _, err := f.agents.PutVersion(ctx, registrytest.Definition("t1", "rae"), registry.Version{Draft: "drf_2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.agents.BeginSwitch(ctx, "t1", "rae", registry.Switching{N: 2, Draft: "drf_2", At: f.clock.now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "go"}); !errors.Is(err, registry.ErrSwitching) {
+		t.Fatalf("a run started while switching: %v", err)
+	}
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.BySchedule, Input: "go", Source: "morning"}); !errors.Is(err, registry.ErrSwitching) {
+		t.Fatalf("a scheduled run started while switching: %v", err)
+	}
+	asked := 0
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		asked++
+		return nil, nil
+	}
+	requests := len(f.model.requests())
+	got, err := f.r.Execute(ctx, "t1", stored.ID, nil)
+	if !errors.Is(err, registry.ErrSwitching) || got.Status != run.Error || got.Error != runner.FailedSwitching {
+		t.Fatalf("a run stored before the switch = %+v, %v; want it not started", got, err)
+	}
+	got, err = f.r.Execute(ctx, "t1", paused.ID, nil)
+	if !errors.Is(err, registry.ErrSwitching) || got.Status != run.Paused || asked != 0 {
+		t.Fatalf("a paused run while switching = %+v, %v (KIFF asked %d times); want it waiting, nothing collected", got, err, asked)
+	}
+	if len(f.model.requests()) != requests {
+		t.Fatal("the model was asked while the agent switched")
+	}
+
+	// A trial isn't held back: its writes are never sent.
+	trial := f.start(server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByTrial, Input: "try", Version: 2, Draft: "drf_2"})
+	if got, err := f.r.Execute(ctx, "t1", trial.ID, nil); err != nil || got.Status != run.Completed {
+		t.Fatalf("a trial while switching = %+v, %v", got, err)
+	}
+
+	// Once the switch ends, runs start again.
+	if err := f.agents.EndSwitch(ctx, "t1", "rae"); err != nil {
+		t.Fatal(err)
+	}
+	f.start(server.Start{Input: "after the switch"})
 }

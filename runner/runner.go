@@ -45,6 +45,9 @@ const (
 	FailedStart = "the run could not be started"
 	FailedRun   = "the run failed"
 	FailedTime  = "the run reached its time limit"
+	// FailedSwitching: the agent began switching versions before the run
+	// started (kiff/tafs#107).
+	FailedSwitching = "the agent is switching versions, so the run didn't start"
 )
 
 // ErrNoCollect means a paused run can't be continued: no Collect is set to get
@@ -95,6 +98,12 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	trial := s.Trigger == run.ByTrial
 	if !trial && (s.Version != 0 || s.Draft != "") {
 		return run.Run{}, errors.New("runner: only a trial runs a version or a draft")
+	}
+	if !trial {
+		// Nothing of an agent that is switching versions runs (kiff/tafs#107).
+		if err := rn.notSwitching(ctx, s.Tenant, s.Agent); err != nil {
+			return run.Run{}, err
+		}
 	}
 	var d registry.Definition
 	var err error
@@ -158,6 +167,19 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	return r, nil
 }
 
+// notSwitching is registry.ErrSwitching while the agent is switching
+// versions (kiff/tafs#107), and nil otherwise.
+func (rn *Runner) notSwitching(ctx context.Context, tenant, agent string) error {
+	sw, on, err := rn.Builder.Agents.Switching(ctx, tenant, agent)
+	if err != nil {
+		return fmt.Errorf("runner: reading whether the agent is switching versions: %w", err)
+	}
+	if on {
+		return fmt.Errorf("%w (to version %d)", registry.ErrSwitching, sw.N)
+	}
+	return nil
+}
+
 // Execute claims the run and runs it to its next stop, passing each event to
 // emit (nil: none). A PENDING run starts from its input; a PAUSED one, once
 // KIFF has resolved all it waits for, continues from the turn it paused in
@@ -190,6 +212,14 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	x := &execution{rn: rn, tenant: tenant, id: id, claim: run.NewID()}
 	if r, err = run.Claim(ctx, rn.Runs, tenant, id, x.claim, deadline, rn.now()); err != nil {
 		return r, err
+	}
+	// Checked once the run is claimed: a switch begins only while none of
+	// the agent's runs is active, so either it saw this one, or this sees
+	// the switch. A paused run goes back to waiting; a new one doesn't start.
+	if r.Trigger != run.ByTrial {
+		if err := rn.notSwitching(ctx, tenant, r.Agent); err != nil {
+			return x.notRun(ctx, r, paused, nil, FailedSwitching, err)
+		}
 	}
 
 	// A trial runs its own version, its tools marked so its writes are only

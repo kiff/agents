@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
@@ -103,4 +104,123 @@ func TestVersionsRefuseWhatIsntThere(t *testing.T) {
 	if code, _ := f.do("t1", "GET", "/agents/payouts/trials/"+body["id"].(string), nil); code != 404 {
 		t.Errorf("an ordinary run read as a trial = %d", code)
 	}
+}
+
+// kiff/tafs#107: a switch to a version that brings a Card revision begins
+// only while no run of the agent is going, holds the definition while the
+// owner confirms the revision, and ends when that version goes live, or when
+// it's cancelled.
+func TestASwitchBeginsWhileNothingRunsAndEndsLive(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	for _, note := range []string{"reads first", "asks first"} {
+		v := agentBody("payouts")
+		v.Instructions = note
+		code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v, "note": note, "draft": "drf_" + note[:1]})
+		f.want(200, code, body, "put version")
+	}
+
+	// A run going: the switch waits for it.
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay", "background": true})
+	f.want(202, code, body, "start run")
+	going := body["id"].(string)
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(409, code, body, "pending while a run goes")
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] != nil {
+		t.Fatalf("a refused switch left its mark: %v", b["switching"])
+	}
+	if err := f.runs.Delete(ctx, "t1", going); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(200, code, body, "pending")
+	sw := body["switching"].(map[string]any)
+	if sw["n"] != float64(2) || sw["draft"] != "drf_r" {
+		t.Fatalf("switching = %v, want version 2 waiting for its draft", sw)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{"draft": "drf_other"})
+	f.want(200, code, body, "pending again")
+	if body["switching"].(map[string]any)["draft"] != "drf_r" {
+		t.Fatalf("pending again = %v, want the first mark", body)
+	}
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"].(map[string]any)["n"] != float64(2) {
+		t.Fatalf("versions while switching = %v", b)
+	}
+	for _, c := range []struct{ method, path, what string }{
+		{"POST", "/agents/payouts/versions/3/pending", "a second switch"},
+		{"POST", "/agents/payouts/versions/3/live", "another version live"},
+	} {
+		if code, body := f.do("t1", c.method, c.path, map[string]any{}); code != 409 {
+			t.Errorf("%s while switching = %d %v, want 409", c.what, code, body)
+		}
+	}
+	if code, body := f.do("t1", "PUT", "/agents/payouts", agentBody("payouts")); code != 409 {
+		t.Errorf("an upgrade while switching = %d %v, want 409", code, body)
+	}
+	if code, body := f.do("t1", "POST", "/agents/payouts/versions/1/pending", map[string]any{}); code != 409 {
+		t.Errorf("a switch to the live version = %d %v, want 409", code, body)
+	}
+
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/live", nil)
+	f.want(200, code, body, "live")
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] != nil {
+		t.Fatalf("still switching after live: %v", b["switching"])
+	}
+
+	// Cancelled: the live version stays.
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/3/pending", map[string]any{})
+	f.want(200, code, body, "pending 3")
+	code, body = f.do("t1", "DELETE", "/agents/payouts/switching", nil)
+	f.want(200, code, body, "cancel")
+	if body["cancelled"] != true {
+		t.Fatalf("cancel = %v", body)
+	}
+	code, body = f.do("t1", "DELETE", "/agents/payouts/switching", nil)
+	f.want(200, code, body, "cancel again")
+	if body["cancelled"] != false {
+		t.Fatalf("cancel with none = %v", body)
+	}
+	if _, b := f.do("t1", "GET", "/agents/payouts", nil); b["version"] != float64(2) {
+		t.Fatalf("live after a cancelled switch = v%v, want 2", b["version"])
+	}
+	if code, _ := f.do("t2", "DELETE", "/agents/payouts/switching", nil); code != 404 {
+		t.Errorf("another tenant's cancel = %d, want 404", code)
+	}
+}
+
+// A switch sees every run of the agent, however old: a paused run behind
+// more than a page of newer ones still holds it back (kiff/tafs#107).
+func TestASwitchWaitsForAnOldPausedRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	v := agentBody("payouts")
+	v.Instructions = "Version two."
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v, "draft": "drf_2"})
+	f.want(200, code, body, "put version")
+
+	old := run.New("t1", "payouts", "sess-old", run.ByOwner, "refund order 42", now.Add(-72*time.Hour))
+	old.Status = run.Paused
+	if err := f.runs.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 120 {
+		r := run.New("t1", "payouts", fmt.Sprintf("sess-%d", i), run.BySchedule, "pay", now.Add(-time.Duration(120-i)*time.Minute))
+		r.Status = run.Completed
+		if err := f.runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(409, code, body, "pending with an old paused run")
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] != nil {
+		t.Fatalf("a refused switch left its mark: %v", b["switching"])
+	}
+
+	// Answered and ended, it no longer holds the switch back.
+	if err := f.runs.Delete(ctx, "t1", old.ID); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(200, code, body, "pending")
 }

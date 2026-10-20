@@ -14,6 +14,7 @@ import (
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
@@ -103,6 +104,11 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
 			return nil
 		}
+	case errors.Is(err, registry.ErrSwitching):
+		// Skipped, not retried: a retry could start it on the version
+		// the owner is leaving, or late on the next one (kiff/tafs#107).
+		f.log.InfoContext(ctx, "firing skipped: the agent is switching versions", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
+		return nil
 	case err != nil:
 		return err
 	}

@@ -22,6 +22,7 @@ import (
 //
 //	agent    pk=G|tenant     sk=id        the live Definition, as JSON in "def"
 //	version  pk=V|tenant|id  sk=%010d n   its Definition in "def", its record in "ver"
+//	switch   pk=W|tenant     sk=id        a switch under way: its version in "n", its mark in "sw"
 type Agents struct {
 	db    API
 	table string
@@ -41,6 +42,8 @@ func agentsPK(tenant string) string { return key("G", tenant) }
 func versionsPK(tenant, id string) string { return key("V", tenant, id) }
 
 func versionSK(n int) string { return fmt.Sprintf("%010d", n) }
+
+func switchPK(tenant string) string { return key("W", tenant) }
 
 // Put stores d as the live definition. An agent with versions gets it as its
 // next version, live at once (an upgrade is part of its history); one
@@ -272,7 +275,58 @@ func (a *Agents) Delete(ctx context.Context, tenant, id string) error {
 			return err
 		}
 	}
+	if err := a.EndSwitch(ctx, tenant, id); err != nil {
+		return err
+	}
 	_, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(agentsPK(tenant), id)})
+	return err
+}
+
+// BeginSwitch writes the mark only when none is stored, in one conditional
+// write, so two switches can't both begin; one for the same version is kept.
+func (a *Agents) BeginSwitch(ctx context.Context, tenant, id string, sw registry.Switching) (registry.Switching, error) {
+	if _, err := a.Get(ctx, tenant, id); err != nil {
+		return registry.Switching{}, err
+	}
+	sw.At = sw.At.UTC()
+	b, err := json.Marshal(sw)
+	if err != nil {
+		return registry.Switching{}, err
+	}
+	item := pkey(switchPK(tenant), id)
+	item["n"], item["sw"] = n(int64(sw.N)), s(string(b))
+	_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item,
+		ConditionExpression: aws.String("attribute_not_exists(pk)")})
+	var failed *types.ConditionalCheckFailedException
+	if !errors.As(err, &failed) {
+		return sw, err
+	}
+	was, ok, err := a.Switching(ctx, tenant, id)
+	switch {
+	case err != nil:
+		return registry.Switching{}, err
+	case !ok: // ended meanwhile: begin again
+		return a.BeginSwitch(ctx, tenant, id, sw)
+	case was.N != sw.N:
+		return was, registry.ErrSwitching
+	}
+	return was, nil
+}
+
+func (a *Agents) Switching(ctx context.Context, tenant, id string) (registry.Switching, bool, error) {
+	out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: pkey(switchPK(tenant), id), ConsistentRead: aws.Bool(true)})
+	if err != nil || out.Item == nil {
+		return registry.Switching{}, false, err
+	}
+	var sw registry.Switching
+	if err := json.Unmarshal([]byte(getS(out.Item, "sw")), &sw); err != nil {
+		return registry.Switching{}, false, fmt.Errorf("dynamodb: switch of %q: %w", id, err)
+	}
+	return sw, true, nil
+}
+
+func (a *Agents) EndSwitch(ctx context.Context, tenant, id string) error {
+	_, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(switchPK(tenant), id)})
 	return err
 }
 

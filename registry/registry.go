@@ -124,6 +124,23 @@ type Version struct {
 	Draft string `json:"draft,omitempty"`
 }
 
+// Switching marks an agent on its way to version N (kiff/tafs#107): the
+// version's Card revision waits for its owner's confirmation in KIFF, and
+// until the switch is done or dropped no run of the agent starts or goes on,
+// so nothing runs with one version's definition under another's Cards.
+// Trials still run: their writes are never sent.
+type Switching struct {
+	N int `json:"n"`
+	// Draft is the KIFF draft whose confirmation the switch waits for.
+	Draft string    `json:"draft,omitempty"`
+	At    time.Time `json:"at"`
+}
+
+// ErrSwitching means the agent is switching versions: no run of it starts
+// or goes on, and its definition isn't replaced, until the switch is done or
+// dropped.
+var ErrSwitching = errors.New("registry: this agent is switching versions; nothing of it runs until the switch is done")
+
 // Digest is a definition's fingerprint, its version number aside: the same
 // definition stored twice has the same digest.
 func Digest(d Definition) (string, error) {
@@ -245,7 +262,8 @@ type Agents interface {
 	Get(ctx context.Context, tenant, id string) (Definition, error)
 	// List returns the tenant's definitions, by ID.
 	List(ctx context.Context, tenant string) ([]Definition, error)
-	// Delete removes the tenant's definition, and its versions. Deleting one
+	// Delete removes the tenant's definition, its versions and its switching
+	// mark. Deleting one
 	// that isn't there is not an error, so a retry is safe.
 	Delete(ctx context.Context, tenant, id string) error
 
@@ -262,6 +280,15 @@ type Agents interface {
 	// Switch makes version n live: Get returns it from then on. Forward or
 	// back, to any version the agent has; ErrNoVersion otherwise.
 	Switch(ctx context.Context, tenant, id string, n int) error
+
+	// BeginSwitch marks the agent as switching to sw.N and returns the mark
+	// as stored. Again for the same N keeps the first mark; for another N,
+	// ErrSwitching. ErrNotFound for an agent not stored.
+	BeginSwitch(ctx context.Context, tenant, id string, sw Switching) (Switching, error)
+	// Switching returns the agent's mark, and whether it has one.
+	Switching(ctx context.Context, tenant, id string) (Switching, bool, error)
+	// EndSwitch removes the agent's mark; none is not an error.
+	EndSwitch(ctx context.Context, tenant, id string) error
 }
 
 // Secrets resolves the reference to an agent's KIFF key. An implementation
