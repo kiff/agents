@@ -96,6 +96,14 @@ type Definition struct {
 	Version int `json:"version,omitempty"`
 }
 
+// The notes a store writes itself, in the words the owner reads in the
+// version list: the definition an agent had before it had versions, and a
+// Put on a versioned agent (an upgrade replaces its rules as a whole).
+const (
+	NoteFirst = "As it was set up"
+	NotePut   = "Its rules were updated"
+)
+
 // Version is one stored version of an agent (kiff/tafs#107): its
 // definition is kept with it, and any one may go live, forward or back.
 type Version struct {

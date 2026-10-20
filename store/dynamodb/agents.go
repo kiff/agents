@@ -53,7 +53,7 @@ func (a *Agents) Put(ctx context.Context, d registry.Definition) error {
 	}
 	if last > 0 {
 		d.Version = last + 1
-		if err := a.putVersion(ctx, d, registry.Version{N: d.Version, Note: "put"}); err != nil {
+		if err := a.putVersion(ctx, d, registry.Version{N: d.Version, Note: registry.NotePut}); err != nil {
 			return err
 		}
 	}
@@ -133,7 +133,7 @@ func (a *Agents) PutVersion(ctx context.Context, d registry.Definition, v regist
 		return 0, err
 	}
 	if last == 0 { // stored before versions: what's live is version 1
-		if err := a.putVersion(ctx, live, registry.Version{N: 1, Note: "as it was before versions"}); err != nil && !errors.Is(err, ErrVersionTaken) {
+		if err := a.putVersion(ctx, live, registry.Version{N: 1, Note: registry.NoteFirst}); err != nil && !errors.Is(err, ErrVersionTaken) {
 			return 0, err
 		}
 		live.Version = 1

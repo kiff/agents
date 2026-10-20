@@ -60,7 +60,7 @@ func (a *Agents) Put(_ context.Context, d registry.Definition) error {
 			return err
 		}
 		d.Version = len(vs) + 1
-		a.vers[k] = append(vs, version{v: registry.Version{N: d.Version, Note: "put", Created: a.now(), Digest: dg}, d: clone(d)})
+		a.vers[k] = append(vs, version{v: registry.Version{N: d.Version, Note: registry.NotePut, Created: a.now(), Digest: dg}, d: clone(d)})
 	}
 	a.defs[k] = clone(d)
 	return nil
@@ -112,7 +112,7 @@ func (a *Agents) PutVersion(_ context.Context, d registry.Definition, v registry
 		}
 		live.Version = 1
 		a.defs[k] = live
-		a.vers[k] = []version{{v: registry.Version{N: 1, Note: "as it was before versions", Created: a.now(), Digest: dg}, d: clone(live)}}
+		a.vers[k] = []version{{v: registry.Version{N: 1, Note: registry.NoteFirst, Created: a.now(), Digest: dg}, d: clone(live)}}
 	}
 	dg, err := registry.Digest(d)
 	if err != nil {
