@@ -933,7 +933,7 @@ func readThenRefunded(calls []struct {
 		switch {
 		case strings.HasPrefix(c.Action, "retrieve_charge") && (read.IsZero() || c.At.Before(read)):
 			read = c.At
-		case strings.HasPrefix(c.Action, "create_refund") && (refund.IsZero() || c.At.Before(refund)):
+		case isRefund(c.Action) && (refund.IsZero() || c.At.Before(refund)):
 			refund = c.At
 		}
 	}
@@ -944,6 +944,13 @@ func readThenRefunded(calls []struct {
 		return fmt.Errorf("%s didn't read the charge before its first allowed refund", agent)
 	}
 	return nil
+}
+
+// isRefund says whether action, as KIFF names it (with planque's per-grant
+// suffix), is the taf's refund: create_refund, or the generic write that
+// coversTheJob accepts only pinned to refunds.
+func isRefund(action string) bool {
+	return strings.HasPrefix(action, "create_refund") || strings.HasPrefix(action, "stripe_api_write")
 }
 
 // coversTheJob checks that the tools Setup asked for on g, from the fake
