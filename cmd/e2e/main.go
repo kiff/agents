@@ -814,7 +814,9 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	// This run's charges, so only its own calls count: the vendor keeps
 	// every run's for a week.
 	in, out := "ch_e2e_in_"+t.run, "ch_e2e_out_"+t.run
-	asks := []string{"Refund charge " + in + " for 300 cents.", "Refund charge " + out + " for 90000 cents."}
+	// The first asks it to check the charge first: its read tool must be on its
+	// Card too, or KIFF refuses the read (kiff/tafs#107).
+	asks := []string{"Check charge " + in + ", then refund 300 cents of it.", "Refund charge " + out + " for 90000 cents."}
 	if t.stripe != nil {
 		asks = []string{"Refund 300 cents of payment " + t.intent + ".", "Refund 90000 cents of payment " + t.intent + "."}
 	}
@@ -885,6 +887,61 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if len(got) != 2 || !strings.Contains(got[0], `"charge":"`+in+`"`) || !strings.Contains(got[0], `"amount":300`) ||
 		!strings.Contains(got[1], `"charge":"`+approved+`"`) || !strings.Contains(got[1], `"amount":800`) {
 		return fmt.Errorf("the vendor received %v; want exactly the refund of %s for 300, then of %s for 800", got, in, approved)
+	}
+	// KIFF's own record: the taf read the charge, allowed, before its refund.
+	a, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/activity?limit=100", nil)
+	if err != nil || a.err() != nil {
+		return fmt.Errorf("reading KIFF's activity: %v %v", err, a.err())
+	}
+	var act activity
+	if err := json.Unmarshal([]byte(a.Raw), &act); err != nil {
+		return fmt.Errorf("KIFF's activity: %w", err)
+	}
+	if err := readThenRefunded(act.Calls, tafID); err != nil {
+		return err
+	}
+	t.logf("KIFF allowed the taf's read of the charge, then its refund: find, check, act")
+	return nil
+}
+
+// activity is KIFF's record of the account's calls (GET /v1/me/activity),
+// as much as the e2e reads.
+type activity struct {
+	Calls []struct {
+		Actor   string    `json:"actor_id"`
+		Action  string    `json:"action_name"`
+		Outcome string    `json:"outcome"`
+		At      time.Time `json:"created_at"`
+	} `json:"calls"`
+}
+
+// readThenRefunded checks, in KIFF's record, that agent's first allowed
+// refund came after an allowed read of a charge (retrieve_charge, named in
+// KIFF with planque's per-grant suffix): its read tool was on its Card, and it
+// checked before it acted.
+func readThenRefunded(calls []struct {
+	Actor   string    `json:"actor_id"`
+	Action  string    `json:"action_name"`
+	Outcome string    `json:"outcome"`
+	At      time.Time `json:"created_at"`
+}, agent string) error {
+	var read, refund time.Time
+	for _, c := range calls {
+		if c.Actor != agent || c.Outcome != "allowed" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(c.Action, "retrieve_charge") && (read.IsZero() || c.At.Before(read)):
+			read = c.At
+		case strings.HasPrefix(c.Action, "create_refund") && (refund.IsZero() || c.At.Before(refund)):
+			refund = c.At
+		}
+	}
+	if read.IsZero() {
+		return fmt.Errorf("KIFF allowed no read of a charge by %s: is retrieve_charge on its Card?", agent)
+	}
+	if refund.IsZero() || !read.Before(refund) {
+		return fmt.Errorf("%s didn't read the charge before its first allowed refund", agent)
 	}
 	return nil
 }
