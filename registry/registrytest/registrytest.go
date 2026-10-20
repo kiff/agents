@@ -226,7 +226,7 @@ func versions(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		if err != nil || len(vs) != 2 {
 			t.Fatalf("Versions = %+v, %v", vs, err)
 		}
-		if !vs[0].Live || vs[1].Live || vs[1].N != 2 || vs[1].Note != "reads first" || vs[1].By != "setup" ||
+		if !vs[0].Live || vs[0].Note != registry.NoteFirst || vs[1].Live || vs[1].N != 2 || vs[1].Note != "reads first" || vs[1].By != "setup" ||
 			len(vs[1].Revisions) != 1 || vs[1].Revisions[0] != "rev_2" || vs[1].Draft != "drf_2" || vs[1].Created.IsZero() {
 			t.Fatalf("Versions = %+v", vs)
 		}
@@ -283,7 +283,7 @@ func versions(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 		live, _ := s.Get(ctx, "t1", "refunds")
 		vs, _ := s.Versions(ctx, "t1", "refunds")
-		if live.Version != 3 || live.Instructions != "An upgrade." || len(vs) != 3 || !vs[2].Live {
+		if live.Version != 3 || live.Instructions != "An upgrade." || len(vs) != 3 || !vs[2].Live || vs[2].Note != registry.NotePut {
 			t.Fatalf("live v%d %q, versions %+v; want the upgrade as v3, live", live.Version, live.Instructions, vs)
 		}
 	})
