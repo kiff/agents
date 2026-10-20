@@ -117,4 +117,10 @@ func TestReadThenRefunded(t *testing.T) {
 	if readThenRefunded(late.Calls, "reembolsos-x") == nil {
 		t.Error("a read after the refund passed")
 	}
+	// The generic write, pinned to refunds, is the refund too (coversTheJob accepts it).
+	generic := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
+	generic.Calls[1].Action = "stripe_api_write_k3f9"
+	if err := readThenRefunded(generic.Calls, "reembolsos-x"); err != nil {
+		t.Errorf("a read, then the generic write pinned to refunds: %v", err)
+	}
 }
