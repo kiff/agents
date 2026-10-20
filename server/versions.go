@@ -125,8 +125,10 @@ type pendingBody struct {
 // on nothing of the agent runs: no run starts, and a paused one waits on, so
 // nothing runs with one version's definition under another's Cards while
 // the owner confirms version n's Card revision. Trials still run. It begins
-// only while no run of the agent is going (PENDING or RUNNING): one that
-// started on the live definition must end first.
+// only while no run of the agent is going or waiting (PENDING, RUNNING or
+// PAUSED): a run that started on the live definition ends first, and one
+// waiting on its owner is answered or stopped first, so it never goes on
+// under the next version with the last one's turns.
 func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	var body pendingBody
 	if err := decode(r, &body); err != nil {
@@ -157,20 +159,21 @@ func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) 
 	if err != nil {
 		return 0, nil, err
 	}
-	// Read once the mark is stored: a run claimed before it is seen here,
-	// and one claimed after sees the mark (runner.Execute).
-	runs, err := s.Runs.List(ctx, c.Tenant, id, maxRuns)
+	// Read once the mark is stored, every run of the agent (a switch is
+	// rare): one claimed before the mark is seen here, however old, and one
+	// claimed after sees the mark (runner.Execute).
+	runs, err := s.Runs.List(ctx, c.Tenant, id, 0)
 	if err != nil {
 		return 0, nil, err
 	}
 	for _, rn := range runs {
-		if rn.Active() && rn.Trigger != run.ByTrial {
+		if !rn.Status.Final() && rn.Trigger != run.ByTrial {
 			if sw.At.Equal(at) { // this request's mark: take it back
 				if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
 					return 0, nil, err
 				}
 			}
-			return 0, nil, conflict("a run of this agent is going: stop it or let it finish, then switch")
+			return 0, nil, conflict("a run of this agent is going or waiting on its owner: answer it, stop it or let it finish, then switch")
 		}
 	}
 	return http.StatusOK, map[string]any{"switching": sw}, nil

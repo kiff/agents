@@ -165,8 +165,8 @@ type Runs interface {
 	// prev.Version (ErrConflict otherwise). next.Version is prev.Version+1,
 	// and next is the Same run as prev (ErrFixed otherwise).
 	Put(ctx context.Context, prev, next Run) error
-	// List returns an agent's runs, newest first, at most limit, without
-	// their paused turn (Get has it).
+	// List returns an agent's runs, newest first, at most limit (0 or
+	// less: all of them), without their paused turn (Get has it).
 	List(ctx context.Context, tenant, agent string, limit int) ([]Run, error)
 	// ListSource returns the runs one source started, by trigger and
 	// source (the runs a schedule started: BySchedule and its ID), newest

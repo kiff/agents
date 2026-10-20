@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
@@ -186,4 +187,40 @@ func TestASwitchBeginsWhileNothingRunsAndEndsLive(t *testing.T) {
 	if code, _ := f.do("t2", "DELETE", "/agents/payouts/switching", nil); code != 404 {
 		t.Errorf("another tenant's cancel = %d, want 404", code)
 	}
+}
+
+// A switch sees every run of the agent, however old: a paused run behind
+// more than a page of newer ones still holds it back (kiff/tafs#107).
+func TestASwitchWaitsForAnOldPausedRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	v := agentBody("payouts")
+	v.Instructions = "Version two."
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v, "draft": "drf_2"})
+	f.want(200, code, body, "put version")
+
+	old := run.New("t1", "payouts", "sess-old", run.ByOwner, "refund order 42", now.Add(-72*time.Hour))
+	old.Status = run.Paused
+	if err := f.runs.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 120 {
+		r := run.New("t1", "payouts", fmt.Sprintf("sess-%d", i), run.BySchedule, "pay", now.Add(-time.Duration(120-i)*time.Minute))
+		r.Status = run.Completed
+		if err := f.runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(409, code, body, "pending with an old paused run")
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] != nil {
+		t.Fatalf("a refused switch left its mark: %v", b["switching"])
+	}
+
+	// Answered and ended, it no longer holds the switch back.
+	if err := f.runs.Delete(ctx, "t1", old.ID); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(200, code, body, "pending")
 }
