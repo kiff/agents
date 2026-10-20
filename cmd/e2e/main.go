@@ -89,6 +89,7 @@ type config struct {
 	maxTurns                                        int
 	maxCost                                         int64
 	keep                                            bool
+	improve                                         bool // the improve case, after the taf
 	log                                             io.Writer
 }
 
@@ -133,6 +134,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
 	maxCost := fs.Float64("max-cost", 3, "the most the whole test may spend on the model, in US dollars")
+	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
 	signin := fs.String("signin", "", "once, before the test runs: sign the phone in to KIFF (a person approves in a browser), make the setup agent, "+
@@ -301,6 +303,14 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		}
 		fmt.Fprintf(t.cfg.log, "taf  brief: %d answers, at most %d words each\n", len(t.tafSaid), maxTafWords)
 	}
+	if t.cfg.improve {
+		if t.stripe != nil {
+			return errors.New("-improve runs against the fake vendor")
+		}
+		if err := t.improve(ctx, tafID); err != nil {
+			return err
+		}
+	}
 	return t.checkRecords(ctx)
 }
 
@@ -398,6 +408,8 @@ func (t *test) setupDefinition() (registry.Definition, error) {
 		}
 	}
 	d.Tenant, d.ID, d.KeyRef, d.Gateway = t.tenant, "setup", "kiff/setup", kiff.URL
+	// The test reads its tool calls back, so it keeps them, whatever the definition keeps.
+	d.Keep = keepAll
 	d.Planque, d.Show, d.Drafts, d.Workspace = strings.TrimRight(t.cfg.planque, "/"), true, true, false
 	d.MaxCost = t.cfg.maxCost
 	return d, d.Check()
@@ -479,6 +491,10 @@ type component struct {
 		Name  string `json:"name"`
 		Job   string `json:"job"`
 		Draft string `json:"draft"`
+		// An improvement's (kiff/tafs#107): the taf it is the next version of.
+		Improves string `json:"improves"`
+		Note     string `json:"note"`
+		Notes    string `json:"notes"`
 	} `json:"taf"`
 	Title string `json:"title"`
 	Text  string `json:"text"`
