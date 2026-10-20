@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
 )
@@ -65,6 +66,11 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		return tool.Result{Text: "the input must be {action, name, text}", IsError: true}, nil
 	}
 	name := strings.TrimSpace(in.Name)
+	if _, trial := run.TrialFrom(ctx); trial && (in.Action == "write" || in.Action == "forget") {
+		// A trial tries a version without changing what the live one knows
+		// (kiff/tafs#107).
+		return tool.Result{Text: "This is a trial: notes are read, not changed."}, nil
+	}
 	switch in.Action {
 	case "list":
 		notes, err := t.notes.ListNotes(ctx, t.tenant, t.agent)

@@ -197,4 +197,120 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 			t.Fatal("changing a definition after Put, or one Get returned, changed the stored keep rules")
 		}
 	})
+	versions(t, newStore)
+
+}
+
+// versions checks the agent's versions (kiff/tafs#107): kept apart from
+// what's live until switched, every one listed, any one live again.
+func versions(t *testing.T, newStore func(t *testing.T) registry.Agents) {
+	ctx := context.Background()
+
+	t.Run("APutVersionIsntLiveUntilSwitched", func(t *testing.T) {
+		s := newStore(t)
+		v1 := Definition("t1", "refunds")
+		if err := s.Put(ctx, v1); err != nil {
+			t.Fatal(err)
+		}
+		v2 := v1
+		v2.Instructions = "Read the payment before you refund it."
+		n, err := s.PutVersion(ctx, v2, registry.Version{Note: "reads first", By: "setup", Revisions: []string{"rev_2"}, Draft: "drf_2"})
+		if err != nil || n != 2 {
+			t.Fatalf("PutVersion = %d, %v; want 2 (the live one kept as 1)", n, err)
+		}
+		live, err := s.Get(ctx, "t1", "refunds")
+		if err != nil || live.Instructions != v1.Instructions || live.Version != 1 {
+			t.Fatalf("live after PutVersion = v%d %q, %v; want v1, unchanged", live.Version, live.Instructions, err)
+		}
+		vs, err := s.Versions(ctx, "t1", "refunds")
+		if err != nil || len(vs) != 2 {
+			t.Fatalf("Versions = %+v, %v", vs, err)
+		}
+		if !vs[0].Live || vs[1].Live || vs[1].N != 2 || vs[1].Note != "reads first" || vs[1].By != "setup" ||
+			len(vs[1].Revisions) != 1 || vs[1].Revisions[0] != "rev_2" || vs[1].Draft != "drf_2" || vs[1].Created.IsZero() {
+			t.Fatalf("Versions = %+v", vs)
+		}
+		if d1, _ := registry.Digest(v1); vs[0].Digest != d1 {
+			t.Fatalf("v1's digest %q, want the live definition's %q", vs[0].Digest, d1)
+		}
+		got, err := s.GetVersion(ctx, "t1", "refunds", 2)
+		if err != nil || got.Instructions != v2.Instructions || got.Version != 2 {
+			t.Fatalf("GetVersion(2) = %+v, %v", got, err)
+		}
+	})
+
+	t.Run("SwitchGoesForwardAndBack", func(t *testing.T) {
+		s := newStore(t)
+		v1 := Definition("t1", "refunds")
+		if err := s.Put(ctx, v1); err != nil {
+			t.Fatal(err)
+		}
+		v2 := v1
+		v2.Instructions = "Version two."
+		if _, err := s.PutVersion(ctx, v2, registry.Version{Note: "two"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range []int{2, 1, 2} {
+			if err := s.Switch(ctx, "t1", "refunds", n); err != nil {
+				t.Fatalf("Switch(%d): %v", n, err)
+			}
+			live, _ := s.Get(ctx, "t1", "refunds")
+			vs, _ := s.Versions(ctx, "t1", "refunds")
+			if live.Version != n || !vs[n-1].Live || vs[2-n].Live {
+				t.Fatalf("after Switch(%d): live v%d, versions %+v", n, live.Version, vs)
+			}
+		}
+		if err := s.Switch(ctx, "t1", "refunds", 3); !errors.Is(err, registry.ErrNoVersion) {
+			t.Fatalf("Switch(3) = %v, want ErrNoVersion", err)
+		}
+		if _, err := s.GetVersion(ctx, "t1", "refunds", 9); !errors.Is(err, registry.ErrNoVersion) {
+			t.Fatalf("GetVersion(9) = %v, want ErrNoVersion", err)
+		}
+	})
+
+	t.Run("PutOnAVersionedAgentIsItsNextVersionLive", func(t *testing.T) {
+		s := newStore(t)
+		d := Definition("t1", "refunds")
+		if err := s.Put(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.PutVersion(ctx, d, registry.Version{Note: "same"}); err != nil {
+			t.Fatal(err)
+		}
+		d.Instructions = "An upgrade."
+		if err := s.Put(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		live, _ := s.Get(ctx, "t1", "refunds")
+		vs, _ := s.Versions(ctx, "t1", "refunds")
+		if live.Version != 3 || live.Instructions != "An upgrade." || len(vs) != 3 || !vs[2].Live {
+			t.Fatalf("live v%d %q, versions %+v; want the upgrade as v3, live", live.Version, live.Instructions, vs)
+		}
+	})
+
+	t.Run("VersionsAreTheirAgentsAndTenants", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.PutVersion(ctx, Definition("t1", "nobody"), registry.Version{}); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("PutVersion for an agent not stored = %v, want ErrNotFound", err)
+		}
+		d := Definition("t1", "refunds")
+		if err := s.Put(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.PutVersion(ctx, d, registry.Version{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.GetVersion(ctx, "t2", "refunds", 1); !errors.Is(err, registry.ErrNoVersion) {
+			t.Fatalf("another tenant's version = %v, want ErrNoVersion", err)
+		}
+		if err := s.Switch(ctx, "t2", "refunds", 1); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("Switch in another tenant = %v, want ErrNotFound", err)
+		}
+		if err := s.Delete(ctx, "t1", "refunds"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.GetVersion(ctx, "t1", "refunds", 1); !errors.Is(err, registry.ErrNoVersion) {
+			t.Fatalf("a version after Delete = %v, want ErrNoVersion", err)
+		}
+	})
 }

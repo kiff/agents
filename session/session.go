@@ -20,6 +20,9 @@ type Kind string
 const (
 	KindRun  Kind = "run"  // a job: started by a schedule, a trigger or the owner, and its continuations
 	KindChat Kind = "chat" // the owner talking to the agent
+	// KindTrial is a trial of a version (kiff/tafs#107): apart from the
+	// agent's runs and chats.
+	KindTrial Kind = "trial"
 )
 
 // Session is a thread of runs for one agent. Expires is when the whole
@@ -62,6 +65,10 @@ const (
 	// Component is a UI component the agent showed the owner (steps, an
 	// approval, a result), drawn by the app in the chat (kiff/agents#91).
 	Component EventKind = "component"
+	// TrialWrite is a write a trial made and KIFF decided without sending it
+	// (kiff/tafs#107): the call and KIFF's decision, kept like the agent's
+	// messages so a trial's result outlives its tool calls.
+	TrialWrite EventKind = "trial_write"
 )
 
 // EventKinds lists every kind a Policy must have a rule for, so it can be
@@ -71,7 +78,7 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 // Defaulted are kinds a Policy may leave out: each takes the rule of the kind
 // named here. A kind added later goes here, so a stored policy written before
 // it keeps working. A component is kept like the agent's messages.
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage}
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires

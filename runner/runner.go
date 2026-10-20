@@ -92,7 +92,17 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 			return run.Run{}, err
 		}
 	}
-	d, err := rn.Builder.Agents.Get(ctx, s.Tenant, s.Agent)
+	trial := s.Trigger == run.ByTrial
+	if !trial && (s.Version != 0 || s.Draft != "") {
+		return run.Run{}, errors.New("runner: only a trial runs a version or a draft")
+	}
+	var d registry.Definition
+	var err error
+	if trial && s.Version > 0 {
+		d, err = rn.Builder.Agents.GetVersion(ctx, s.Tenant, s.Agent, s.Version)
+	} else {
+		d, err = rn.Builder.Agents.Get(ctx, s.Tenant, s.Agent)
+	}
 	if err != nil {
 		return run.Run{}, err
 	}
@@ -103,8 +113,11 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 			return run.Run{}, err
 		}
 		kind := session.KindRun
-		if s.Trigger == run.ByOwner {
+		switch s.Trigger {
+		case run.ByOwner:
 			kind = session.KindChat
+		case run.ByTrial:
+			kind = session.KindTrial
 		}
 		sess, err := rec.Open(ctx, s.Tenant, s.Agent, kind)
 		if err != nil {
@@ -122,6 +135,10 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
+	r.AgentVersion = d.Version
+	if trial {
+		r.Draft = s.Draft
+	}
 	if s.ID != "" {
 		r.ID = s.ID
 	}
@@ -175,7 +192,16 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return r, err
 	}
 
-	a, d, err := rn.Builder.BuildRun(ctx, tenant, r.Agent, r.ID)
+	// A trial runs its own version, its tools marked so its writes are only
+	// decided and its notes kept as they are (kiff/tafs#107); any other run
+	// runs the live one.
+	version := 0
+	if r.Trigger == run.ByTrial {
+		ctx = run.WithTrial(ctx, run.Trial{Draft: r.Draft})
+		loop = run.WithTrial(loop, run.Trial{Draft: r.Draft})
+		version = r.AgentVersion
+	}
+	a, d, err := rn.Builder.BuildVersion(ctx, tenant, r.Agent, r.ID, version)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
