@@ -159,13 +159,15 @@ func (s *Server) switchVersion(ctx context.Context, c Caller, r *http.Request) (
 	if on && sw.N != n {
 		return 0, nil, registry.ErrSwitching
 	}
-	if err := s.Agents.Switch(ctx, c.Tenant, id, n); err != nil {
-		return 0, nil, err
-	}
+	// The Cards first: a failed record leaves nothing switched, and a retry
+	// finds the switch as it was, not version n live with its mark kept.
 	if len(body.Cards) > 0 {
 		if err := s.Agents.SetCards(ctx, c.Tenant, id, n, body.Cards); err != nil {
 			return 0, nil, err
 		}
+	}
+	if err := s.Agents.Switch(ctx, c.Tenant, id, n); err != nil {
+		return 0, nil, err
 	}
 	if on {
 		if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {

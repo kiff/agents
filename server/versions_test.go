@@ -1,11 +1,14 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
@@ -275,5 +278,44 @@ func TestLiveRecordsTheCardsAVersionRunsUnder(t *testing.T) {
 		if code, b := f.do("t1", "POST", "/agents/payouts/versions/2/live", bad); code != 400 {
 			t.Errorf("%v = %d %v, want 400", bad, code, b)
 		}
+	}
+}
+
+// failingCards is a registry whose SetCards fails.
+type failingCards struct{ registry.Agents }
+
+func (failingCards) SetCards(context.Context, string, string, int, []registry.CardRevision) error {
+	return errors.New("the store is down")
+}
+
+// A switch whose Cards can't be recorded leaves nothing switched: the last
+// version stays live and the switch still waits, so a retry ends it.
+func TestAFailedCardsRecordSwitchesNothing(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	v2 := agentBody("payouts")
+	v2.Instructions = "Version two."
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "two"})
+	f.want(200, code, body, "put version")
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
+	f.want(200, code, body, "pending")
+
+	f.server.Agents = failingCards{f.agents}
+	f.restart()
+	cards := map[string]any{"cards": []any{map[string]any{"id": "card_pay", "revision": 2}}}
+	if code, body := f.do("t1", "POST", "/agents/payouts/versions/2/live", cards); code < 500 {
+		t.Fatalf("live with a failing record = %d %v, want 5xx", code, body)
+	}
+	_, body = f.do("t1", "GET", "/agents/payouts/versions", nil)
+	if vs := body["versions"].([]any); vs[0].(map[string]any)["live"] != true || body["switching"] == nil {
+		t.Fatalf("after a failed record: versions %v, switching %v; want 1 live, still switching", vs, body["switching"])
+	}
+
+	f.server.Agents = f.agents
+	f.restart()
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/live", cards)
+	f.want(200, code, body, "retry")
+	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] != nil {
+		t.Fatalf("the retry left the mark: %v", b["switching"])
 	}
 }
