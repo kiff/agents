@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The nightly log is public: neither the account nor the vendor's address
@@ -60,5 +61,60 @@ func TestTafDefinitionFromTafs(t *testing.T) {
 	}
 	if d.ID != "refunds-x" || d.KeyRef != "kiff/taf" || d.MaxCost != 1_000_000 || d.History != 2 || d.MaxTurns != 6 {
 		t.Fatalf("the test's own agent, key and limits: %+v", d)
+	}
+}
+
+func TestCoversTheJob(t *testing.T) {
+	g := func(tools ...string) grant {
+		var out grant
+		for _, name := range tools {
+			out.Request.Tools = append(out.Request.Tools, struct {
+				Tool  string         `json:"tool"`
+				Name  string         `json:"name"`
+				Fixed map[string]any `json:"fixed_arguments"`
+			}{Tool: name})
+		}
+		return out
+	}
+	if err := coversTheJob(g("list_charges", "retrieve_charge", "create_refund")); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]grant{
+		"only acts":        g("create_refund"),
+		"can't check one":  g("list_charges", "create_refund"),
+		"pays out as well": g("list_charges", "retrieve_charge", "create_refund", "payout_balance"),
+	} {
+		if coversTheJob(c) == nil {
+			t.Errorf("%s: passed", name)
+		}
+	}
+}
+
+func TestReadThenRefunded(t *testing.T) {
+	at := func(m int) time.Time { return time.Date(2026, 10, 20, 9, m, 0, 0, time.UTC) }
+	var a activity
+	add := func(actor, action, outcome string, m int) {
+		a.Calls = append(a.Calls, struct {
+			Actor   string    `json:"actor_id"`
+			Action  string    `json:"action_name"`
+			Outcome string    `json:"outcome"`
+			At      time.Time `json:"created_at"`
+		}{actor, action, outcome, at(m)})
+	}
+	add("reembolsos-x", "retrieve_charge_k3f9", "allowed", 1)
+	add("reembolsos-x", "create_refund_k3f9", "allowed", 2)
+	add("someone-else", "create_refund_zz", "allowed", 0)
+	if err := readThenRefunded(a.Calls, "reembolsos-x"); err != nil {
+		t.Fatal(err)
+	}
+	refused := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
+	refused.Calls[0].Outcome = "blocked" // the read tool isn't on its Card
+	if readThenRefunded(refused.Calls, "reembolsos-x") == nil {
+		t.Error("a refused read passed")
+	}
+	late := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
+	late.Calls[0].At = at(3) // it read only after refunding
+	if readThenRefunded(late.Calls, "reembolsos-x") == nil {
+		t.Error("a read after the refund passed")
 	}
 }
