@@ -125,7 +125,8 @@ func TestAnswersAreRecordedAndTheRunContinuesOnceAllAre(t *testing.T) {
 		t.Fatalf("after one answer: %+v, continued %v", q, e.continued)
 	}
 	body = payload("kiff-acct-1", kiffalert.HoldAnswered, "exc_2", "refused")
-	if w := e.post(body, signed(body, e.now)); w.Code != http.StatusOK {
+	w := e.post(body, signed(body, e.now))
+	if w.Code != http.StatusOK {
 		t.Fatalf("second answer: %d %s", w.Code, w.Body)
 	}
 	if q := e.stored(t).Requirements[1]; q.Answer != "refused" {
@@ -133,6 +134,9 @@ func TestAnswersAreRecordedAndTheRunContinuesOnceAllAre(t *testing.T) {
 	}
 	if len(e.continued) != 1 || e.continued[0] != "t1/"+e.run.ID {
 		t.Fatalf("continued %v, want the run once", e.continued)
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("continued here, and named %q: nothing is left for the caller to continue", w.Body)
 	}
 	before := e.stored(t)
 	if w := e.post(body, signed(body, e.now)); w.Code != http.StatusOK {

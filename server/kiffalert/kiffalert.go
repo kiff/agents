@@ -169,6 +169,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "the answer is recorded; continuing failed, try again", http.StatusServiceUnavailable)
 			return
 		}
+		// Already going: nothing for the caller to continue.
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 	// The run waits for nothing more. Its tenant's caller (tafs cloud, which
 	// handed this alert on) may continue it now through the API, where it
@@ -178,8 +181,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Ready is the answer to an alert that left its run waiting for nothing
-// more: the run, which its tenant's caller may continue
-// (POST /agents/{agent}/runs/{id}/continue).
+// more, when no Continue here has taken it: the run, which its tenant's
+// caller may continue (POST /agents/{agent}/runs/{id}/continue).
 type Ready struct {
 	Run ReadyRun `json:"run"`
 }
