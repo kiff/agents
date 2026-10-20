@@ -81,6 +81,10 @@ type phone struct {
 	key     *ecdsa.PrivateKey
 	planque *client
 	tenant  string
+	// device is this phone's id in KIFF, sent with each signature (d=), so
+	// planque asks KIFF whether it signed, as the tafs app does
+	// (kiff/planque#12). Empty signs with the key alone.
+	device string
 	// signIn completes the vendor's sign-in and returns the code from the
 	// app's link: on its own at the fake vendor, by a person at Stripe.
 	signIn func(ctx context.Context, link string) (string, error)
@@ -116,9 +120,39 @@ func newPhone(key *ecdsa.PrivateKey, planqueURL, tenant string, hc *http.Client)
 			hex.EncodeToString(sum[:]), at}, "\n")
 		digest := sha256.Sum256([]byte(msg))
 		sig, _ := ecdsa.SignASN1(rand.Reader, key, digest[:])
-		req.Header.Set("Planque-Device-Signature", "t="+at+",v1="+base64.StdEncoding.EncodeToString(sig))
+		req.Header.Set("Planque-Device-Signature", signatureHeader(at, sig, p.device))
 	}}
 	return p
+}
+
+// signatureHeader is planque's device signature header: the time, the
+// signature and, for a device KIFF knows, its id.
+func signatureHeader(at string, sig []byte, device string) string {
+	h := "t=" + at + ",v1=" + base64.StdEncoding.EncodeToString(sig)
+	if device != "" {
+		h += ",d=" + device
+	}
+	return h
+}
+
+// thisDevice is the phone's id in KIFF: the device its session signed in
+// as (GET /v1/me/devices, this_device), as the tafs app reads it.
+func thisDevice(ctx context.Context, kiff *client) (string, error) {
+	a, err := kiff.do(ctx, http.MethodGet, "/v1/me/devices", nil)
+	if err != nil {
+		return "", err
+	}
+	if err := a.err(); err != nil {
+		return "", err
+	}
+	devices, _ := a.Body["devices"].([]any)
+	for _, d := range devices {
+		m, _ := d.(map[string]any)
+		if id, _ := m["id"].(string); m["this_device"] == true && strings.HasPrefix(id, "dev_") {
+			return id, nil
+		}
+	}
+	return "", errors.New("KIFF lists no device for this session: renew it with -signin")
 }
 
 func (p *phone) publicKey() string {
