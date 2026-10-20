@@ -76,6 +76,10 @@ type Taf struct {
 	// Notes are the taf's instructions from the owner for the new version,
 	// in full; empty keeps them as they are (an improvement).
 	Notes string `json:"notes,omitempty"`
+	// Unscheduled says a new taf's tools can't find its work by themselves,
+	// so it gets no schedule: the owner hands it work in its chat
+	// (kiff/tafs#138). An improvement keeps the taf's schedule.
+	Unscheduled bool `json:"unscheduled,omitempty"`
 }
 
 // MaxNotes bounds an improvement's instructions from the owner.
@@ -154,7 +158,8 @@ func (Tool) Spec() model.ToolSpec {
 			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds"},"draft":{"type":"string","description":"the taf's KIFF draft id: confirmed by the owner for a new taf; an improvement's Card revision, confirmed at the switch"},` +
 			`"improves":{"type":"string","description":"the tafs id of the taf this is the next version of"},` +
 			`"note":{"type":"string","description":"what changed, in the owner's language (an improvement)"},` +
-			`"notes":{"type":"string","description":"the taf's full new instructions from the owner (an improvement); omit to keep them"}},` +
+			`"notes":{"type":"string","description":"the taf's full new instructions from the owner (an improvement); omit to keep them"},` +
+			`"unscheduled":{"type":"boolean","description":"a new taf whose tools can't find its work by themselves: no schedule, the owner hands it work in its chat"}},` +
 			`"required":["agent","name","job"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
 			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
@@ -302,6 +307,9 @@ func (c Component) check() error {
 				return fmt.Errorf("taf.note and taf.notes are for an improvement (taf.improves)")
 			}
 		} else {
+			if c.Taf.Unscheduled {
+				return fmt.Errorf("taf.unscheduled is for a new taf: an improvement keeps its schedule")
+			}
 			if !refPattern.MatchString(c.Taf.Improves) {
 				return fmt.Errorf("taf.improves is the tafs id of the taf it improves")
 			}
