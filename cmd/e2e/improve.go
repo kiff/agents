@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool/kiff"
 )
 
 // The improve case (kiff/tafs#107): the taf just set up holds every refund
@@ -127,29 +130,48 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 		return err
 	}
 	t.logf("the trial of version %d: %v", n, decisions)
-	if !slices.Contains(decisions, "allowed") || slices.Contains(decisions, "held") {
+	// Every refund it tried allowed on the revised Card, and at least one.
+	if len(decisions) == 0 || slices.ContainsFunc(decisions, func(d string) bool { return d != "allowed" }) {
 		return fmt.Errorf("the trial decided %v; want the refund allowed on the revised Card", decisions)
 	}
-	if got, err := t.vendorCalls(ctx); err == nil && slices.ContainsFunc(got, func(c string) bool { return strings.Contains(c, charge) }) {
+	sent, err := t.vendorCalls(ctx)
+	if err != nil {
+		return fmt.Errorf("reading what the vendor received during the trial: %w", err)
+	}
+	if slices.ContainsFunc(sent, func(c string) bool { return strings.Contains(c, charge) }) {
 		return errors.New("the trial's refund reached the vendor")
 	}
 
-	// The switch: begun, the Card confirmed on the phone (the version shown), then live.
-	if _, err := t.agents.BeginSwitch(ctx, t.tenant, tafID, registry.Switching{N: n, Draft: draft}); err != nil {
-		return err
+	// The switch, through kiff/agents' own routes as tafs cloud calls them: begun
+	// (refused while a run goes), the Card confirmed on the phone (the version
+	// shown), then live with the Card revisions it now runs under.
+	api := t.api()
+	defer api.Close()
+	pending := fmt.Sprintf("/agents/%s/versions/%d/pending", tafID, n)
+	if status, body := t.agentsCall(api, http.MethodPost, pending, map[string]any{"draft": draft}); status != http.StatusOK {
+		return fmt.Errorf("beginning the switch: %d %v", status, body)
 	}
 	version, _ := d.Body["version"].(string)
 	c, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version})
 	if err != nil || c.err() != nil {
 		return fmt.Errorf("confirming the version's Card: %v %v", err, c.err())
 	}
-	if err := t.agents.Switch(ctx, t.tenant, tafID, n); err != nil {
+	revs, err := t.cardRevisions(ctx, tafID)
+	if err != nil {
 		return err
 	}
-	if err := t.agents.EndSwitch(ctx, t.tenant, tafID); err != nil {
+	live := fmt.Sprintf("/agents/%s/versions/%d/live", tafID, n)
+	if status, body := t.agentsCall(api, http.MethodPost, live, map[string]any{"cards": revs}); status != http.StatusOK {
+		return fmt.Errorf("making version %d live: %d %v", n, status, body)
+	}
+	vs, err := t.agents.Versions(ctx, t.tenant, tafID)
+	if err != nil {
 		return err
 	}
-	t.logf("the owner switched to version %d: its Card confirmed once, then live", n)
+	if sw, on, _ := t.agents.Switching(ctx, t.tenant, tafID); on || !vs[n-1].Live || len(vs[n-1].Cards) == 0 {
+		return fmt.Errorf("after the switch: version %d live %v, its Cards %v, still switching %v (%+v)", n, vs[n-1].Live, vs[n-1].Cards, on, sw)
+	}
+	t.logf("the owner switched to version %d: its Card confirmed once, then live, its Cards recorded %v", n, vs[n-1].Cards)
 
 	// The same refund, for real: no hold now.
 	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: tafID}
@@ -356,4 +378,59 @@ func only(m map[string]any, keys ...string) map[string]any {
 		}
 	}
 	return out
+}
+
+// api is kiff/agents' own server over the test's runtime, as tafs cloud calls it.
+func (t *test) api() *httptest.Server {
+	s := &server.Server{
+		Auth:   func(*http.Request) (server.Caller, error) { return server.Caller{Tenant: t.tenant}, nil },
+		Agents: t.agents, Sessions: t.sessions, Runs: t.rn.Runs, Runner: t.rn, Gateways: []string{kiff.URL},
+	}
+	return httptest.NewServer(s.Handler())
+}
+
+// agentsCall calls the test's kiff/agents server, and reads its JSON answer.
+func (t *test) agentsCall(api *httptest.Server, method, path string, body any) (int, map[string]any) {
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(method, api.URL+path, bytes.NewReader(b))
+	if err != nil {
+		return 0, map[string]any{"error": err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := api.Client().Do(req)
+	if err != nil {
+		return 0, map[string]any{"error": err.Error()}
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
+}
+
+// cardRevisions are the taf's active Cards, each at its latest revision, read
+// from its statement as tafs cloud reads them.
+func (t *test) cardRevisions(ctx context.Context, agentID string) ([]registry.CardRevision, error) {
+	held, err := t.heldCards(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	var out []registry.CardRevision
+	for _, c := range held {
+		id, _ := c["id"].(string)
+		s, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/mandates/"+url.PathEscape(id)+"/statement", nil)
+		if err != nil || s.err() != nil {
+			return nil, fmt.Errorf("reading Card %s's statement: %v %v", id, err, s.err())
+		}
+		var latest int64
+		for _, r := range asList(s.Body["revisions"]) {
+			if n, ok := r["revision"].(float64); ok && int64(n) > latest {
+				latest = int64(n)
+			}
+		}
+		if latest == 0 {
+			return nil, fmt.Errorf("KIFF keeps no revision of Card %s", id)
+		}
+		out = append(out, registry.CardRevision{ID: id, Revision: latest})
+	}
+	return out, nil
 }
