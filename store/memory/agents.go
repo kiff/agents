@@ -16,6 +16,7 @@ type Agents struct {
 	mu   sync.Mutex
 	defs map[[2]string]registry.Definition // by tenant, id: the live one
 	vers map[[2]string][]version           // by tenant, id: every version, oldest first
+	sw   map[[2]string]registry.Switching  // by tenant, id: a switch under way
 	// Now stamps a version's creation; nil is time.Now.
 	Now func() time.Time
 }
@@ -28,7 +29,7 @@ type version struct {
 
 // NewAgents returns an empty registry.
 func NewAgents() *Agents {
-	return &Agents{defs: map[[2]string]registry.Definition{}, vers: map[[2]string][]version{}}
+	return &Agents{defs: map[[2]string]registry.Definition{}, vers: map[[2]string][]version{}, sw: map[[2]string]registry.Switching{}}
 }
 
 func (a *Agents) now() time.Time {
@@ -94,6 +95,7 @@ func (a *Agents) Delete(_ context.Context, tenant, id string) error {
 	defer a.mu.Unlock()
 	delete(a.defs, [2]string{tenant, id})
 	delete(a.vers, [2]string{tenant, id})
+	delete(a.sw, [2]string{tenant, id})
 	return nil
 }
 
@@ -165,5 +167,37 @@ func (a *Agents) Switch(_ context.Context, tenant, id string, n int) error {
 		return registry.ErrNoVersion
 	}
 	a.defs[k] = clone(vs[n-1].d)
+	return nil
+}
+
+func (a *Agents) BeginSwitch(_ context.Context, tenant, id string, sw registry.Switching) (registry.Switching, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{tenant, id}
+	if _, ok := a.defs[k]; !ok {
+		return registry.Switching{}, registry.ErrNotFound
+	}
+	if was, ok := a.sw[k]; ok {
+		if was.N != sw.N {
+			return was, registry.ErrSwitching
+		}
+		return was, nil
+	}
+	sw.At = sw.At.UTC()
+	a.sw[k] = sw
+	return sw, nil
+}
+
+func (a *Agents) Switching(_ context.Context, tenant, id string) (registry.Switching, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sw, ok := a.sw[[2]string{tenant, id}]
+	return sw, ok, nil
+}
+
+func (a *Agents) EndSwitch(_ context.Context, tenant, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.sw, [2]string{tenant, id})
 	return nil
 }

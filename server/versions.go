@@ -18,7 +18,9 @@ import (
 //
 //	GET  /agents/{id}/versions              {"versions": [Version…]}, oldest first
 //	POST /agents/{id}/versions              {definition, note, by, draft, revisions} → {"n"}; live unchanged
-//	POST /agents/{id}/versions/{n}/live     → {"live": n}
+//	POST /agents/{id}/versions/{n}/pending  {draft?} → {"switching"}: the switch to n begins
+//	POST /agents/{id}/versions/{n}/live     → {"live": n}; ends a switch to n
+//	DELETE /agents/{id}/switching           → {"cancelled": true|false}
 //	POST /agents/{id}/versions/{n}/trial    {input} → {"run"}, at once; it runs in the background
 //	GET  /agents/{id}/trials/{run_id}       {"run", "writes"}: KIFF's decisions so far
 
@@ -42,7 +44,15 @@ func (s *Server) listVersions(ctx context.Context, c Caller, r *http.Request) (i
 	if vs == nil {
 		vs = []registry.Version{}
 	}
-	return http.StatusOK, map[string]any{"versions": vs}, nil
+	out := map[string]any{"versions": vs}
+	sw, on, err := s.Agents.Switching(ctx, c.Tenant, r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	if on {
+		out["switching"] = sw
+	}
+	return http.StatusOK, out, nil
 }
 
 // putVersion stores the agent's next version, checked as PUT /agents/{id}
@@ -79,16 +89,110 @@ func (s *Server) putVersion(ctx context.Context, c Caller, r *http.Request) (int
 	return http.StatusOK, map[string]int{"n": n}, nil
 }
 
-// switchVersion makes version n live, forward or back.
+// switchVersion makes version n live, forward or back, and ends a switch to
+// n under way. While the agent switches to another version, ErrSwitching.
 func (s *Server) switchVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	n, err := versionNumber(r)
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := s.Agents.Switch(ctx, c.Tenant, r.PathValue("id"), n); err != nil {
+	id := r.PathValue("id")
+	sw, on, err := s.Agents.Switching(ctx, c.Tenant, id)
+	if err != nil {
 		return 0, nil, err
 	}
+	if on && sw.N != n {
+		return 0, nil, registry.ErrSwitching
+	}
+	if err := s.Agents.Switch(ctx, c.Tenant, id, n); err != nil {
+		return 0, nil, err
+	}
+	if on {
+		if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
+			return 0, nil, err
+		}
+	}
 	return http.StatusOK, map[string]int{"live": n}, nil
+}
+
+// pendingBody is what POST /agents/{id}/versions/{n}/pending takes.
+type pendingBody struct {
+	// Draft is the KIFF draft the switch waits for; empty is the version's.
+	Draft string `json:"draft"`
+}
+
+// pendingVersion begins the switch to version n (kiff/tafs#107). From then
+// on nothing of the agent runs: no run starts, and a paused one waits on, so
+// nothing runs with one version's definition under another's Cards while
+// the owner confirms version n's Card revision. Trials still run. It begins
+// only while no run of the agent is going (PENDING or RUNNING): one that
+// started on the live definition must end first.
+func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	var body pendingBody
+	if err := decode(r, &body); err != nil {
+		return 0, nil, err
+	}
+	n, err := versionNumber(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id := r.PathValue("id")
+	vs, err := s.Agents.Versions(ctx, c.Tenant, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	i := slices.IndexFunc(vs, func(v registry.Version) bool { return v.N == n })
+	if i < 0 {
+		return 0, nil, registry.ErrNoVersion
+	}
+	if vs[i].Live {
+		return 0, nil, conflict("that version is live already")
+	}
+	draft := body.Draft
+	if draft == "" {
+		draft = vs[i].Draft
+	}
+	at := s.now().UTC()
+	sw, err := s.Agents.BeginSwitch(ctx, c.Tenant, id, registry.Switching{N: n, Draft: draft, At: at})
+	if err != nil {
+		return 0, nil, err
+	}
+	// Read once the mark is stored: a run claimed before it is seen here,
+	// and one claimed after sees the mark (runner.Execute).
+	runs, err := s.Runs.List(ctx, c.Tenant, id, maxRuns)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, rn := range runs {
+		if rn.Active() && rn.Trigger != run.ByTrial {
+			if sw.At.Equal(at) { // this request's mark: take it back
+				if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
+					return 0, nil, err
+				}
+			}
+			return 0, nil, conflict("a run of this agent is going: stop it or let it finish, then switch")
+		}
+	}
+	return http.StatusOK, map[string]any{"switching": sw}, nil
+}
+
+// cancelSwitch drops a switch under way: the live version stays, and the
+// agent runs again.
+func (s *Server) cancelSwitch(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	_, on, err := s.Agents.Switching(ctx, c.Tenant, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	if on {
+		if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
+			return 0, nil, err
+		}
+	}
+	return http.StatusOK, map[string]bool{"cancelled": on}, nil
 }
 
 func versionNumber(r *http.Request) (int, error) {

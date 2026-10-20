@@ -108,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	route("GET /agents/{id}/versions", s.listVersions)
 	route("POST /agents/{id}/versions", s.putVersion)
 	route("POST /agents/{id}/versions/{n}/live", s.switchVersion)
+	route("POST /agents/{id}/versions/{n}/pending", s.pendingVersion)
+	route("DELETE /agents/{id}/switching", s.cancelSwitch)
 	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
 	route("GET /skills", s.listSkills)
 	route("GET /skills/{name}/{version}", s.getSkill)
@@ -268,6 +270,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrNoVersion), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
 		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound), errors.Is(err, skill.ErrNotFound):
 		status, msg = http.StatusNotFound, "not found"
+	case errors.Is(err, registry.ErrSwitching):
+		status, msg = http.StatusConflict, "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
 	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):
 		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
 	case errors.As(err, &tooBig):
@@ -369,6 +373,13 @@ func (s *Server) putAgent(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	if err := s.checkSkills(ctx, c.Tenant, d.Skills); err != nil {
 		return 0, nil, err
+	}
+	// A switch under way waits for its own version (kiff/tafs#107): nothing
+	// else replaces the definition meanwhile, an upgrade included.
+	if _, on, err := s.Agents.Switching(ctx, c.Tenant, d.ID); err != nil {
+		return 0, nil, err
+	} else if on {
+		return 0, nil, registry.ErrSwitching
 	}
 	if err := s.Agents.Put(ctx, d); err != nil {
 		return 0, nil, err

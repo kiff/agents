@@ -198,6 +198,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 	})
 	versions(t, newStore)
+	switching(t, newStore)
 
 }
 
@@ -311,6 +312,69 @@ func versions(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 		if _, err := s.GetVersion(ctx, "t1", "refunds", 1); !errors.Is(err, registry.ErrNoVersion) {
 			t.Fatalf("a version after Delete = %v, want ErrNoVersion", err)
+		}
+	})
+}
+
+// switching checks the mark an agent carries while it switches versions
+// (kiff/tafs#107).
+func switching(t *testing.T, newStore func(t *testing.T) registry.Agents) {
+	ctx := context.Background()
+	at := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+
+	t.Run("OneSwitchAtATime", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 2, At: at}); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("BeginSwitch on no agent = %v; want ErrNotFound", err)
+		}
+		if err := s.Put(ctx, Definition("t1", "refunds")); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := s.Switching(ctx, "t1", "refunds"); ok || err != nil {
+			t.Fatalf("Switching before any = %v, %v; want none", ok, err)
+		}
+		got, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 2, Draft: "drf_2", At: at})
+		if err != nil || got.N != 2 || got.Draft != "drf_2" || !got.At.Equal(at) {
+			t.Fatalf("BeginSwitch = %+v, %v", got, err)
+		}
+		again, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 2, Draft: "drf_x", At: at.Add(time.Hour)})
+		if err != nil || again.Draft != "drf_2" || !again.At.Equal(at) {
+			t.Fatalf("BeginSwitch to the same version again = %+v, %v; want the first mark kept", again, err)
+		}
+		other, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 3, At: at})
+		if !errors.Is(err, registry.ErrSwitching) || other.N != 2 {
+			t.Fatalf("BeginSwitch to another version = %+v, %v; want ErrSwitching with the mark", other, err)
+		}
+		if sw, ok, err := s.Switching(ctx, "t1", "refunds"); !ok || err != nil || sw.N != 2 {
+			t.Fatalf("Switching = %+v, %v, %v", sw, ok, err)
+		}
+		if _, ok, _ := s.Switching(ctx, "t2", "refunds"); ok {
+			t.Fatal("another tenant's agent of the same id is switching")
+		}
+		if err := s.EndSwitch(ctx, "t1", "refunds"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.EndSwitch(ctx, "t1", "refunds"); err != nil {
+			t.Fatalf("EndSwitch with none = %v; want nil", err)
+		}
+		if _, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 3, At: at}); err != nil {
+			t.Fatalf("BeginSwitch after the end = %v", err)
+		}
+	})
+
+	t.Run("DeleteEndsTheSwitch", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Put(ctx, Definition("t1", "refunds")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.BeginSwitch(ctx, "t1", "refunds", registry.Switching{N: 2, At: at}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Delete(ctx, "t1", "refunds"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := s.Switching(ctx, "t1", "refunds"); ok || err != nil {
+			t.Fatalf("Switching after Delete = %v, %v; want none", ok, err)
 		}
 	})
 }
