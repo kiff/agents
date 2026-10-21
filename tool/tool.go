@@ -48,6 +48,11 @@ type Result struct {
 	// would have done with the call, which it never sent. Set only in a
 	// trial run, for a gateway call KIFF decided.
 	Trial *TrialDecision `json:"trial,omitempty"`
+	// Invocation is KIFF's key for a gateway call ("tc-…"), as its result
+	// said: the entity KIFF's activity and receipt file the call under, so
+	// tafs can find this call from its Record (kiff/tafs#167). Empty for a
+	// tool that isn't KIFF's, or a gateway that doesn't say.
+	Invocation string `json:"invocation,omitempty"`
 	// Component is a UI component the tool shows the owner (the show tool,
 	// kiff/agents#91). The run records it as its own event, kept like the
 	// agent's messages; it is not part of the tool's recorded result.

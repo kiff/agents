@@ -156,7 +156,7 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 			return tool.Result{}, meta{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
 		}
 	}
-	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
+	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation)}
 	if _, trial := run.TrialFrom(ctx); trial {
 		// A trial never pauses: KIFF answers its writes with a decision.
 		out.Trial, out.State = m.Trial, ""
