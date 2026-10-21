@@ -152,6 +152,16 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 		return errors.New("the trial's refund reached the vendor")
 	}
 
+	// Trying the version for real (kiff/tafs#173): its Card confirmed as a trial on
+	// the phone, a refund sent under the trial Card alone, then back to live.
+	if err := t.tryVersion(ctx, tafID, n, draft); err != nil {
+		return err
+	}
+	// Going back leaves the draft waiting again, under its own version.
+	if d, err = t.kiff.do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil); err != nil || d.err() != nil {
+		return fmt.Errorf("reading the version's draft after its trial: %v %v", err, d.err())
+	}
+
 	// The switch, through kiff/agents' own routes as tafs cloud calls them: begun
 	// (refused while a run goes), the Card confirmed on the phone (the version
 	// shown), then live with the Card revisions it now runs under.
@@ -209,7 +219,85 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	}) {
 		return fmt.Errorf("on version %d the vendor didn't receive the refund of %s for 800", n, charge)
 	}
-	fmt.Fprintf(t.cfg.log, "improve  version %d: Card revised, trial allowed with nothing sent, switched, refund done\n", n)
+	fmt.Fprintf(t.cfg.log, "improve  version %d: Card revised, trial allowed with nothing sent, tried for real and back, switched, refund done\n", n)
+	return nil
+}
+
+// tryVersion is the owner trying version n beside the live one (kiff/tafs#173),
+// as tafs cloud does it. On the phone, KIFF confirms the draft as a trial: its
+// Cards are issued as trial Cards, held by the taf's trial subject alone. Then
+// the trial's chat refunds 8 euros, which the live Card would hold. It's sent,
+// decided on the trial Card. Going back ends KIFF's trial from the phone, and
+// the version keeps one line with KIFF's counts.
+func (t *test) tryVersion(ctx context.Context, tafID string, n int, draft string) error {
+	d, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil)
+	if err != nil || d.err() != nil {
+		return fmt.Errorf("reading the draft to try: %v %v", err, d.err())
+	}
+	version, _ := d.Body["version"].(string)
+	c, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version, "as": "trial"})
+	if err != nil || c.err() != nil {
+		return fmt.Errorf("starting the trial on the phone: %v %v", err, c.err())
+	}
+	if c.Body["status"] != "trying" {
+		return fmt.Errorf("the draft confirmed as a trial is %v; want trying", c.Body["status"])
+	}
+	api := t.api()
+	defer api.Close()
+	at := "/agents/" + tafID + "/trial"
+	if status, body := t.agentsCall(api, http.MethodPut, at, map[string]any{"n": n, "draft": draft}); status != http.StatusOK {
+		return fmt.Errorf("opening the trial: %d %v", status, body)
+	}
+
+	charge := "ch_e2e_trial_" + t.run
+	ask := "Refund charge " + charge + " for 800 cents."
+	tr, err := t.rn.Start(ctx, server.Start{Tenant: t.tenant, Agent: tafID, Trigger: runs.ByTrial, Input: ask, Version: n, Draft: draft})
+	if err != nil {
+		return fmt.Errorf("the trial's message: %w", err)
+	}
+	if tr, err = t.rn.Execute(ctx, t.tenant, tr.ID, nil); err != nil && tr.Status != runs.Completed {
+		return fmt.Errorf("the trial's run: %w", err)
+	}
+	_, text, _ := t.latest(ctx, tr.Session, tr.ID)
+	t.logf("trial: %s → taf: %s", ask, oneLine(text))
+	sent, err := t.vendorCalls(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(sent, func(c string) bool {
+		return strings.Contains(c, `"charge":"`+charge+`"`) && strings.Contains(c, `"amount":800`)
+	}) {
+		return fmt.Errorf("the trial's refund of %s for 800 didn't reach the vendor (run %s)", charge, tr.Status)
+	}
+
+	// Back to live, from the phone: KIFF ends the trial and answers its counts.
+	e, err := t.kiff.do(ctx, http.MethodDelete, "/v1/me/agent-drafts/"+draft+"/trial", nil)
+	if err != nil || e.err() != nil {
+		return fmt.Errorf("going back on the phone: %v %v", err, e.err())
+	}
+	counts := map[string]int{}
+	for _, k := range []string{"calls", "allowed", "held", "refused"} {
+		f, _ := e.Body[k].(float64)
+		counts[k] = int(f)
+	}
+	if counts["allowed"] < 1 {
+		return fmt.Errorf("KIFF counted the trial's calls as %v; want its refund allowed", counts)
+	}
+	end := map[string]any{"why": "back", "calls": counts["calls"], "held": counts["held"], "refused": counts["refused"]}
+	if status, body := t.agentsCall(api, http.MethodDelete, at, end); status != http.StatusOK {
+		return fmt.Errorf("closing the trial: %d %v", status, body)
+	}
+	vs, err := t.agents.Versions(ctx, t.tenant, tafID)
+	if err != nil {
+		return err
+	}
+	if tl := vs[n-1].Trials; len(tl) != 1 || tl[0].Why != "back" || tl[0].Calls != counts["calls"] {
+		return fmt.Errorf("version %d keeps %+v of its trial; want one line, back, with KIFF's counts %v", n, tl, counts)
+	}
+	if _, open, _ := t.agents.Trial(ctx, t.tenant, tafID); open {
+		return errors.New("the trial is still open after going back")
+	}
+	t.logf("the owner tried version %d: its refund sent under the trial Card, back to live, KIFF counted %v", n, counts)
 	return nil
 }
 

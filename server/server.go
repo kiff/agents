@@ -74,6 +74,10 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// EndKIFFTrial ends t's trial Card in KIFF with the agent's own key, and
+	// returns KIFF's counts of its calls (kiff/tafs#173). Nil: idle trials
+	// aren't swept, since ending one here would leave its Cards in KIFF.
+	EndKIFFTrial func(ctx context.Context, t registry.Trial) (registry.TrialCounts, error)
 	// MaxActive caps a tenant's active runs (run.Run.Active: PENDING or
 	// RUNNING): a request that would start one more is 429. Zero: no cap.
 	// Only requests are capped; a schedule's firing and the sweep's continue
@@ -112,6 +116,9 @@ func (s *Server) Handler() http.Handler {
 	route("POST /agents/{id}/versions/{n}/pending", s.pendingVersion)
 	route("DELETE /agents/{id}/switching", s.cancelSwitch)
 	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
+	route("PUT /agents/{id}/trial", s.openTrial)
+	route("GET /agents/{id}/trial", s.getOpenTrial)
+	route("DELETE /agents/{id}/trial", s.closeTrial)
 	route("GET /skills", s.listSkills)
 	route("GET /skills/{name}/{version}", s.getSkill)
 	route("PUT /skills/{name}/{version}", s.putSkill)
@@ -141,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 		route("POST /agents/{id}/events", s.startEvent)
 		mux.HandleFunc("POST /agents/{id}/versions/{n}/trial", s.startTrial)
+		mux.HandleFunc("POST /agents/{id}/trial/messages", s.trialMessage)
 	}
 	if s.Drafts != nil {
 		route("POST /drafts/{draft_id}/claim", s.claimDraft)
@@ -271,6 +279,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrNoVersion), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
 		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound), errors.Is(err, skill.ErrNotFound):
 		status, msg = http.StatusNotFound, "not found"
+	case errors.Is(err, registry.ErrNoTrial):
+		status, msg = http.StatusNotFound, "this agent has no open trial"
 	case errors.Is(err, registry.ErrSwitching):
 		status, msg = http.StatusConflict, "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
 	case errors.Is(err, registry.ErrSwitchChanged):

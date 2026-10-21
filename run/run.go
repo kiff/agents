@@ -42,8 +42,11 @@ const (
 	ByEvent    Trigger = "event"    // work came in: a payment event, an e-invoice
 	ByEval     Trigger = "eval"     // a case of an eval run
 	// ByTrial is a trial of a version that may not be live (kiff/tafs#107):
-	// its writes are decided by KIFF and never sent, it writes no notes, and
-	// its session is a trial's, apart from the agent's runs and chats.
+	// its writes go to KIFF under KIFF-Trial, it writes no notes, and its
+	// session is a trial's, apart from the agent's runs and chats. KIFF
+	// decides them and sends none, unless the draft is a trial Card the
+	// owner started trying (kiff/tafs#173): then they are sent, decided on
+	// that Card alone.
 	ByTrial Trigger = "trial"
 )
 
