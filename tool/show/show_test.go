@@ -25,6 +25,11 @@ func TestEveryComponentIsShown(t *testing.T) {
 		`{"type":"steps","id":"plan","title":"Connect Stripe","steps":[{"label":"Ask for access","status":"done"},{"label":"Sign in","status":"active"}]}`,
 		`{"type":"notice","id":"n1","tone":"warning","text":"The link expired."}`,
 		`{"type":"confirm","id":"plan-ok","text":"Go ahead?","options":[{"value":"yes","label":"Go ahead"},{"value":"no","label":"Not now"}]}`,
+		// Several questions answered together (kiff/tafs#138 item 57), every word the agent's.
+		`{"type":"questions","id":"setup-basics","text":"Three things before I connect Stripe:","questions":[` +
+			`{"id":"mode","text":"Test mode or real money?","options":[{"value":"test","label":"Test mode","description":"Recommended to start"},{"value":"live","label":"Real money"}]},` +
+			`{"id":"limit","text":"How much a day before it asks you?","options":[{"value":"10000","label":"100 €"},{"value":"25000","label":"250 €"}],"note":"Each refund over 50 € already waits for you."},` +
+			`{"id":"tools","text":"What may it do?","multi":true,"options":[{"value":"refund","label":"Refund"},{"value":"read","label":"Look up payments"}]}]}`,
 		`{"type":"approval","id":"connect-stripe","grant":"grt_AbC-1","draft":"draft_9"}`,
 		`{"type":"sign_in","id":"connect-stripe","grant":"grt_AbC-1","service":"mcp.stripe.com"}`,
 		// The card's own words, in the owner's language (kiff/tafs#75).
@@ -86,6 +91,14 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","draft":"drf_1","note":"x"},"text":"done"}`:                       "for an improvement",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1"},"text":"done"}`:                               "taf.note",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","unscheduled":true},"text":"done"}`: "for a new taf",
+		`{"type":"questions","id":"q","text":"?","questions":[]}`:                                                                                  "1 to 4 questions",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"q0","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q1","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q2","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q3","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q4","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`: "1 to 4 questions",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                                                                                                                                                                                        "different",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"}]}]}`:                                      "2 to 5 options",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:             "a question's text is required",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}],"own":true}]}`: "unknown",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y","description":"more"},{"value":"n","label":"N"}]}`:                             "no description",
+		`{"type":"questions","id":"q","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                       "text is required",
 		`not json`: "a JSON object",
 	} {
 		r := call(t, in)

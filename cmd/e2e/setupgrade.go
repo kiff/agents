@@ -110,6 +110,20 @@ func (s *said) texts() []string {
 				out = append(out, o.Label)
 			}
 		}
+		for _, q := range c.Questions {
+			for _, t := range []string{q.Text, q.Note} {
+				if strings.TrimSpace(t) != "" {
+					out = append(out, t)
+				}
+			}
+			for _, o := range q.Options {
+				for _, t := range []string{o.Label, o.Description} {
+					if strings.TrimSpace(t) != "" {
+						out = append(out, t)
+					}
+				}
+			}
+		}
 	}
 	return out
 }
@@ -303,7 +317,45 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	} else {
 		add("names each payment and its currency", eval.Grade{Pass: true})
 	}
+
+	// 11. Questions that don't depend on each other are asked together, in
+	// one questions card, not one confirm after another (kiff/tafs#138,
+	// item 57): the owner waited about 10 s for each.
+	if asked := askedInOrder(s); len(asked) > 1 {
+		g, err = j.Ask(ctx, "Choices the owner taps that don't depend on each other's answers were asked together, in one "+
+			"questions card, not as confirms one after another. A confirm on its own is fine when its options depend on an "+
+			"earlier answer, when it asks the owner to agree to something shown first (rules, a plan, a change), or when it was "+
+			"the only question at that point.",
+			"What Setup asked the owner to tap, in order:\n"+numbered(asked))
+		if err != nil {
+			return nil, err
+		}
+		add("asks its questions together", g)
+	} else {
+		add("asks its questions together", eval.Grade{Pass: true})
+	}
 	return out, nil
+}
+
+// askedInOrder is every card that asked the owner to tap, in the order
+// shown: a confirm as its question and options, a questions card as all of
+// its questions.
+func askedInOrder(s said) []string {
+	var out []string
+	for _, id := range s.order {
+		c := s.cards[id]
+		switch c.Type {
+		case "confirm":
+			out = append(out, "confirm: "+choice(c.Text, c.Options))
+		case "questions":
+			var qs []string
+			for _, q := range c.Questions {
+				qs = append(qs, choice(q.Text, q.Options))
+			}
+			out = append(out, "questions card: "+strings.Join(qs, "; "))
+		}
+	}
+	return out
 }
 
 // What tells a test-or-live choice's options apart, in the owners'
@@ -313,13 +365,26 @@ var (
 	liveWords = []string{"live", "real", "producción", "en vivo"}
 )
 
-// modeChoice returns a confirm's test option, when it offers test and live.
+// modeChoice returns a confirm's test option, when it offers test and live,
+// or a questions card's, when one of its questions does.
 func modeChoice(c component) (test string, ok bool) {
-	if c.Type != "confirm" {
-		return "", false
+	switch c.Type {
+	case "confirm":
+		return modeOptions(c.Options)
+	case "questions":
+		for _, q := range c.Questions {
+			if test, ok := modeOptions(q.Options); ok {
+				return test, true
+			}
+		}
 	}
+	return "", false
+}
+
+// modeOptions returns the test option, when the options offer test and live.
+func modeOptions(options []option) (test string, ok bool) {
 	live := false
-	for _, o := range c.Options {
+	for _, o := range options {
 		l := strings.ToLower(o.Label + " " + o.Value)
 		switch {
 		case containsAny(l, testWords):
@@ -366,14 +431,22 @@ func confirms(s said) []string {
 	var out []string
 	for _, id := range s.order {
 		c := s.cards[id]
-		if c.Type != "confirm" {
-			continue
+		switch c.Type {
+		case "confirm":
+			out = append(out, choice(c.Text, c.Options))
+		case "questions":
+			for _, q := range c.Questions {
+				out = append(out, choice(q.Text, q.Options))
+			}
 		}
-		var labels []string
-		for _, o := range c.Options {
-			labels = append(labels, o.Label)
-		}
-		out = append(out, strings.TrimSpace(c.Text+" ["+strings.Join(labels, " | ")+"]"))
 	}
 	return out
+}
+
+func choice(text string, options []option) string {
+	var labels []string
+	for _, o := range options {
+		labels = append(labels, o.Label)
+	}
+	return strings.TrimSpace(text + " [" + strings.Join(labels, " | ") + "]")
 }
