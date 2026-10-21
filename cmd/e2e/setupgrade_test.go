@@ -258,6 +258,61 @@ func TestUncheckedMoney(t *testing.T) {
 // A questions card (kiff/tafs#138 item 57) is answered in one message, as the
 // app sends it: test for a test-or-live question, the owner's facts typed for
 // the first other one; and its test-or-live question counts as asking.
+// Questions asked one confirm after another are judged; one card, or a
+// single confirm, needs no judge (kiff/tafs#138, item 57).
+func TestQuestionsAskedTogetherAreGraded(t *testing.T) {
+	mode := component{Type: "confirm", ID: "modo", Text: "¿Prueba o real?", Options: []option{{Value: "test", Label: "Prueba"}, {Value: "live", Label: "Real"}}}
+	limit := component{Type: "confirm", ID: "limite", Text: "¿Cuánto al día?", Options: []option{{Value: "100", Label: "100 €"}, {Value: "250", Label: "250 €"}}}
+	var apart said
+	apart.card(mode)
+	apart.card(limit)
+	v := &verdicts{fail: []string{"asked together"}}
+	checks, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, owners["es"], apart, "taf-reembolsos-x7k3", modes{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pass(checks, "asks its questions together") {
+		t.Fatal("two confirms one after another passed")
+	}
+	last := v.asked[len(v.asked)-1]
+	if !strings.Contains(last, "1. confirm: ¿Prueba o real? [Prueba | Real]") || !strings.Contains(last, "2. confirm: ¿Cuánto al día? [100 € | 250 €]") {
+		t.Fatalf("the judge read %q", last)
+	}
+
+	together := component{Type: "questions", ID: "basics", Questions: []question{
+		{ID: "modo", Text: "¿Prueba o real?", Options: mode.Options},
+		{ID: "limite", Text: "¿Cuánto al día?", Options: limit.Options},
+	}}
+	for name, cards := range map[string][]component{"one card": {together}, "one confirm": {mode}} {
+		var s said
+		for _, c := range cards {
+			s.card(c)
+		}
+		v := &verdicts{fail: []string{"asked together"}}
+		checks, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, owners["es"], s, "taf-reembolsos-x7k3", modes{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pass(checks, "asks its questions together") {
+			t.Errorf("%s failed", name)
+		}
+		for _, a := range v.asked {
+			if strings.Contains(a, "asked together") {
+				t.Errorf("%s asked the judge", name)
+			}
+		}
+	}
+}
+
+func pass(checks []eval.CheckResult, name string) bool {
+	for _, c := range checks {
+		if c.Name == name {
+			return c.Pass
+		}
+	}
+	return false
+}
+
 func TestAQuestionsCardIsAnsweredAndGraded(t *testing.T) {
 	c := component{Type: "questions", ID: "basics", Questions: []question{
 		{ID: "mode", Text: "¿Prueba o real?", Options: []option{{Value: "real", Label: "Dinero real"}, {Value: "prueba", Label: "Modo prueba"}}},

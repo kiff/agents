@@ -317,7 +317,45 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	} else {
 		add("names each payment and its currency", eval.Grade{Pass: true})
 	}
+
+	// 11. Questions that don't depend on each other are asked together, in
+	// one questions card, not one confirm after another (kiff/tafs#138,
+	// item 57): the owner waited about 10 s for each.
+	if asked := askedInOrder(s); len(asked) > 1 {
+		g, err = j.Ask(ctx, "Choices the owner taps that don't depend on each other's answers were asked together, in one "+
+			"questions card, not as confirms one after another. A confirm on its own is fine when its options depend on an "+
+			"earlier answer, when it asks the owner to agree to something shown first (rules, a plan, a change), or when it was "+
+			"the only question at that point.",
+			"What Setup asked the owner to tap, in order:\n"+numbered(asked))
+		if err != nil {
+			return nil, err
+		}
+		add("asks its questions together", g)
+	} else {
+		add("asks its questions together", eval.Grade{Pass: true})
+	}
 	return out, nil
+}
+
+// askedInOrder is every card that asked the owner to tap, in the order
+// shown: a confirm as its question and options, a questions card as all of
+// its questions.
+func askedInOrder(s said) []string {
+	var out []string
+	for _, id := range s.order {
+		c := s.cards[id]
+		switch c.Type {
+		case "confirm":
+			out = append(out, "confirm: "+choice(c.Text, c.Options))
+		case "questions":
+			var qs []string
+			for _, q := range c.Questions {
+				qs = append(qs, choice(q.Text, q.Options))
+			}
+			out = append(out, "questions card: "+strings.Join(qs, "; "))
+		}
+	}
+	return out
 }
 
 // What tells a test-or-live choice's options apart, in the owners'
