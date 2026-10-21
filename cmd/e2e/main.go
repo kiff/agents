@@ -940,7 +940,8 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if err := json.Unmarshal([]byte(a.Raw), &act); err != nil {
 		return fmt.Errorf("KIFF's activity: %w", err)
 	}
-	if err := readThenRefunded(act.Calls, tafID); err != nil {
+	reads, refunds := chargeTools(*connected)
+	if err := readThenRefunded(act.Calls, tafID, reads, refunds); err != nil {
 		return err
 	}
 	t.logf("KIFF allowed the taf's read of the charge, then its refund: find, check, act")
@@ -958,30 +959,84 @@ type activity struct {
 	} `json:"calls"`
 }
 
+// chargeTools are the names the grant gave the charge's read and the refund:
+// a tool's own name when Setup set one, else its vendor tool. Setup may name
+// the read (its unit_lookup names it, e.g. get_charge), and KIFF records the
+// call under that name, not the vendor's.
+func chargeTools(g grant) (reads, refunds []string) {
+	for _, t := range g.Request.Tools {
+		name := t.Name
+		if name == "" {
+			name = t.Tool
+		}
+		switch {
+		case t.Tool == "retrieve_charge":
+			reads = append(reads, name)
+		case t.Tool == "create_refund", t.Tool == "stripe_api_write" && t.Fixed["stripe_api_operation_id"] == "PostRefunds":
+			refunds = append(refunds, name)
+		}
+	}
+	return reads, refunds
+}
+
+// isTool says whether action, as KIFF names it (the grant's tool name with
+// planque's per-grant part), is one of names.
+func isTool(action string, names []string) bool {
+	for _, n := range names {
+		if action == n || strings.HasPrefix(action, n+"_") || strings.HasSuffix(action, "_"+n) {
+			return true
+		}
+	}
+	return false
+}
+
 // readThenRefunded checks, in KIFF's record, that agent's first allowed
-// refund came after an allowed read of a charge (retrieve_charge, named in
-// KIFF with planque's per-grant suffix): its read tool was on its Card, and it
-// checked before it acted.
+// refund came after an allowed read of a charge, by the names its grant
+// gave them (chargeTools): its read tool was on its Card, and it checked
+// before it acted.
 func readThenRefunded(calls []struct {
 	Actor   string    `json:"actor_id"`
 	Action  string    `json:"action_name"`
 	Outcome string    `json:"outcome"`
 	At      time.Time `json:"created_at"`
-}, agent string) error {
+}, agent string, reads, refunds []string) error {
 	var read, refund time.Time
+	var its []struct {
+		at   time.Time
+		call string
+	}
 	for _, c := range calls {
-		if c.Actor != agent || c.Outcome != "allowed" {
+		if c.Actor != agent {
+			continue
+		}
+		// Its calls, for the reason: names and outcomes only, never arguments.
+		its = append(its, struct {
+			at   time.Time
+			call string
+		}{c.At, c.Action + " " + c.Outcome})
+		if c.Outcome != "allowed" {
 			continue
 		}
 		switch {
-		case strings.HasPrefix(c.Action, "retrieve_charge") && (read.IsZero() || c.At.Before(read)):
+		case isTool(c.Action, reads) && (read.IsZero() || c.At.Before(read)):
 			read = c.At
-		case isRefund(c.Action) && (refund.IsZero() || c.At.Before(refund)):
+		case isTool(c.Action, refunds) && (refund.IsZero() || c.At.Before(refund)):
 			refund = c.At
 		}
 	}
 	if read.IsZero() {
-		return fmt.Errorf("KIFF allowed no read of a charge by %s: is retrieve_charge on its Card?", agent)
+		slices.SortStableFunc(its, func(a, b struct {
+			at   time.Time
+			call string
+		}) int {
+			return a.at.Compare(b.at)
+		})
+		var made []string
+		for _, c := range its {
+			made = append(made, c.call)
+		}
+		return fmt.Errorf("KIFF allowed no read of a charge (%s) by %s: is it on its Card? Its calls, in order: %s",
+			strings.Join(reads, ", "), agent, strings.Join(made, "; "))
 	}
 	if refund.IsZero() || !read.Before(refund) {
 		return fmt.Errorf("%s didn't read the charge before its first allowed refund", agent)

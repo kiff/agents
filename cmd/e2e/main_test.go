@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -103,24 +104,57 @@ func TestReadThenRefunded(t *testing.T) {
 	add("reembolsos-x", "retrieve_charge_k3f9", "allowed", 1)
 	add("reembolsos-x", "create_refund_k3f9", "allowed", 2)
 	add("someone-else", "create_refund_zz", "allowed", 0)
-	if err := readThenRefunded(a.Calls, "reembolsos-x"); err != nil {
+	reads, refunds := []string{"retrieve_charge"}, []string{"create_refund"}
+	if err := readThenRefunded(a.Calls, "reembolsos-x", reads, refunds); err != nil {
 		t.Fatal(err)
 	}
 	refused := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
 	refused.Calls[0].Outcome = "blocked" // the read tool isn't on its Card
-	if readThenRefunded(refused.Calls, "reembolsos-x") == nil {
+	if readThenRefunded(refused.Calls, "reembolsos-x", reads, refunds) == nil {
 		t.Error("a refused read passed")
 	}
 	late := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
 	late.Calls[0].At = at(3) // it read only after refunding
-	if readThenRefunded(late.Calls, "reembolsos-x") == nil {
+	if readThenRefunded(late.Calls, "reembolsos-x", reads, refunds) == nil {
 		t.Error("a read after the refund passed")
 	}
 	// The generic write, pinned to refunds, is the refund too (coversTheJob accepts it).
 	generic := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
 	generic.Calls[1].Action = "stripe_api_write_k3f9"
-	if err := readThenRefunded(generic.Calls, "reembolsos-x"); err != nil {
+	if err := readThenRefunded(generic.Calls, "reembolsos-x", reads, []string{"stripe_api_write"}); err != nil {
 		t.Errorf("a read, then the generic write pinned to refunds: %v", err)
+	}
+	// Setup named the read (its unit_lookup's get_charge): KIFF records it by that
+	// name, and it's still the read (main's Eval 39593151494 and 39601994170).
+	named := activity{Calls: append(a.Calls[:0:0], a.Calls...)}
+	named.Calls[0].Action = "get_charge_k3f9"
+	if err := readThenRefunded(named.Calls, "reembolsos-x", []string{"get_charge"}, refunds); err != nil {
+		t.Errorf("a read Setup named: %v", err)
+	}
+	err := readThenRefunded(named.Calls, "reembolsos-x", reads, refunds)
+	if err == nil {
+		t.Fatal("a call not named as the grant's read passed")
+	}
+	// The reason lists the taf's own calls in order, names and outcomes only.
+	if !strings.Contains(err.Error(), "Its calls, in order: get_charge_k3f9 allowed; create_refund_k3f9 allowed") || strings.Contains(err.Error(), "someone-else") {
+		t.Errorf("reason %q", err)
+	}
+}
+
+// The grant's own names for the charge's read and the refund: a tool's name
+// when Setup gave one, else its vendor tool.
+func TestChargeTools(t *testing.T) {
+	var g grant
+	g.Request.Tools = []grantTool{
+		{Tool: "list_charges"},
+		{Tool: "retrieve_charge", Name: "get_charge", ReadOnly: true},
+		{Tool: "create_refund"},
+		{Tool: "stripe_api_write", Name: "refund", Fixed: map[string]any{"stripe_api_operation_id": "PostRefunds"}},
+		{Tool: "stripe_api_write", Name: "payout", Fixed: map[string]any{"stripe_api_operation_id": "PostPayouts"}},
+	}
+	reads, refunds := chargeTools(g)
+	if !slices.Equal(reads, []string{"get_charge"}) || !slices.Equal(refunds, []string{"create_refund", "refund"}) {
+		t.Fatalf("reads %v, refunds %v", reads, refunds)
 	}
 }
 
