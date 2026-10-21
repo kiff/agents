@@ -58,7 +58,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. refunds): the tool makes the agent's id from it, with a random part so it is new, " +
-			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
+			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title?, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
 			"resource_argument names the string argument the call acts on (the payment, charge or order), one the taf's read of it takes. " +
 			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read of the same request that says the currency: " +
@@ -68,16 +68,19 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"arguments":{"charge":{"path":"charge","type":"string","required":true},"amount":{"path":"amount","type":"integer","required":true}}} ` +
 			"makes the amount and the charge required, so no refund leaves them out. " +
 			"Each answer is the grant's id, status and the text the owner will read. Asking grants nothing: show an approval with the grant id. " +
+			"setup_reads: true, on a read-only tool, lets you read it yourself once the owner approved it: read {grant, tool, arguments}, with the name the grant lists. " +
+			"Use it for a vendor's tool that lists an operation's fields, so you name each argument's path from the vendor, never by guess. " +
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
 			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status","catalog","tools"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools","read"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request); not with name"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
-			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog)"}},` +
+			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
+			`"arguments":{"type":"object","description":"the read's arguments (read)"}},` +
 			`"required":["action"]}`),
 	}
 }
@@ -93,6 +96,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Tools  json.RawMessage `json:"tools"`
 		Grant  string          `json:"grant"`
 		Tool   string          `json:"tool"`
+		Args   json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.Result{Text: "the input must be {action, …}", IsError: true}, nil
@@ -123,7 +127,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		g.Agent = agent
 		b, _ := json.Marshal(g)
 		return tool.Result{Text: string(b)}, nil
-	case "status", "catalog", "tools":
+	case "status", "catalog", "tools", "read":
 		if in.Grant == "" || strings.ContainsAny(in.Grant, "/?#") {
 			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
 		}
@@ -131,6 +135,18 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		switch in.Action {
 		case "catalog":
 			return t.catalog(ctx, at+"/catalog", in.Tool)
+		case "read":
+			// A tool the owner approved for Setup to read (setup_reads), by
+			// the name the grant lists (kiff/tafs#174).
+			if in.Tool == "" {
+				return tool.Result{Text: "read needs the tool, by the name the grant lists, and its arguments", IsError: true}, nil
+			}
+			args := in.Args
+			if len(args) == 0 || string(args) == "null" {
+				args = json.RawMessage("{}")
+			}
+			body, _ := json.Marshal(map[string]any{"tool": in.Tool, "arguments": args})
+			return t.read(ctx, at+"/read", body)
 		case "tools":
 			if len(in.Tools) == 0 || in.Tools[0] != '[' || string(in.Tools) == "[]" {
 				return tool.Result{Text: "tools needs the taf's tools, from the grant's catalog", IsError: true}, nil
@@ -142,7 +158,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
-	return tool.Result{Text: "action is request, status, catalog or tools", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog, tools or read", IsError: true}, nil
 }
 
 // AgentID is a new KIFF agent id from the name the model gave: the name as
@@ -209,6 +225,33 @@ func (t *Tool) grant(ctx context.Context, method, path string, body []byte) (too
 	}
 	b, _ := json.Marshal(g)
 	return tool.Result{Text: string(b)}, nil
+}
+
+// read answers with the vendor's own answer to a setup_reads read: its
+// text, bounded like the catalog, and whether the vendor called it an error.
+func (t *Tool) read(ctx context.Context, path string, body []byte) (tool.Result, error) {
+	raw, refused, err := t.do(ctx, http.MethodPost, path, body)
+	if err != nil || refused != nil {
+		return deref(refused), err
+	}
+	var res struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return tool.Result{}, fmt.Errorf("planque: a read's answer that isn't a tool result")
+	}
+	var b strings.Builder
+	for _, c := range res.Content {
+		b.WriteString(c.Text)
+	}
+	text := b.String()
+	if len(text) > MaxCatalog {
+		text = text[:MaxCatalog] + " …(shortened)"
+	}
+	return tool.Result{Text: text, IsError: res.IsError}, nil
 }
 
 // The catalog goes into the model's context, as the vendor wrote it: it is
