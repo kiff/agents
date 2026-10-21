@@ -199,12 +199,27 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
 - **Sessions and runs expire as a whole** when their last kept event has. A
   session with a paused run doesn't expire until that run ends. DynamoDB's TTL
   removes them for free.
-- **History sent to the model** is bounded: the last few finished runs of the
+- **History sent to the model** is bounded: the finished runs of the
   session, the owner's and the agent's messages, not tool calls and their
-  results. Dropping a tool call always drops its result with it, so what the
-  model gets is valid. A new message while a run in the session is paused
-  starts a new run; history leaves the paused run out until it ends. Long
-  threads get a summary later, when one needs it.
+  results, up to the agent's `history` runs and, when set, its
+  `history_tokens`. In a chat, the runs that no longer fit are summarised by
+  the model once, kept as a `summary` event, and the summary comes first;
+  the owner's first message is always kept as they wrote it. Without a
+  summary, the agent is told that earlier messages aren't shown. Dropping a
+  tool call always drops its result with it, so what the model gets is
+  valid. A new message while a run in the session is paused starts a new
+  run; history leaves the paused run out until it ends.
+- **What a chat read** can be kept for its next messages (#172): a read-only
+  call and its result, as one `kept_read` event, with the `UntilIdle` rule.
+  Only in chats, only reads, sealed with the tenant's own key before it is
+  stored (`session.Sealer`), used while the chat goes on (its `Retention`,
+  idle) and never longer than its `Max` after the read; a disconnected tool's
+  reads aren't used. No view of a session shows them. Each comes with its age.
+- **Where things stand now**: a tool that holds what it made outside the
+  chat (planque's grants, the drafts the setup agent submitted) says, at the
+  start of each run, where each one the chat's components name stands, from
+  its own source (`tool.Stater`). Neither this nor the kept reads is
+  recorded: each run makes its own.
 - **Memory** is the agent's notes, written through its memory tool. Each update
   costs a tool call, so the turn and cost caps bound it; notes live until
   forgotten or the agent is removed.

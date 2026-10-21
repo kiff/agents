@@ -58,3 +58,30 @@ func TestSubmit(t *testing.T) {
 		}
 	}
 }
+
+// State is what is kept here of each draft the chat's components name: it
+// never shows the claim secret, and says when nothing is kept of one.
+func TestStateSaysWhatIsKeptOfEachShownDraft(t *testing.T) {
+	m := memory.NewDrafts()
+	ctx := context.Background()
+	_ = m.Put(ctx, "t1", "drf_1", drafts.Record{AgentID: "refunds-a1", Secret: "kiff_claim_s3cret"})
+	_ = m.Put(ctx, "t1", "drf_2", drafts.Record{AgentID: "refunds-a1", KeyRef: "kiff/refunds-a1", Claimed: true})
+	tl := tooldrafts.New(&drafts.Service{Store: m, Keys: m}, "t1", "kiff_key_setup")
+	text, err := tl.State(ctx, []json.RawMessage{
+		json.RawMessage(`{"type":"approval","draft":"drf_1"}`), json.RawMessage(`{"type":"approval","draft":"drf_2"}`), json.RawMessage(`{"type":"approval","draft":"drf_x"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"drf_1, for agent refunds-a1: submitted; not claimed yet", "drf_2, for agent refunds-a1: confirmed by the owner", "drf_x: nothing kept of it here"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("State said %q, want %q in it", text, want)
+		}
+	}
+	if strings.Contains(text, "kiff_claim") {
+		t.Fatal("State showed a claim secret")
+	}
+	if text, _ := tl.State(ctx, nil); text != "" {
+		t.Fatalf("with no draft shown, State said %q", text)
+	}
+}

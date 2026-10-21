@@ -256,7 +256,7 @@ func (rt *runtime) note(ctx context.Context, name string) error {
 
 // definition is the agent a case runs as. From -definitions, it is the
 // job's agent as kiff/tafs defines it: its model, price, effort, max tokens,
-// max turns, history and instructions (with KIFF's skill). Otherwise it is the base
+// max turns, history (by count and size) and instructions (with KIFF's skill). Otherwise it is the base
 // with the job's instructions and the skill. Either way the eval keeps its
 // own tenant, gateway, key, cost cap and keep rules: the checks read tool
 // calls and results.
@@ -276,7 +276,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		if t.Workspace { // the eval's runner has none: refused, not run without it
 			return d, fmt.Errorf("%s: the job's agent has a workspace, and the eval gives none yet", s.Name)
 		}
-		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.Instructions
+		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.HistoryTokens, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.HistoryTokens, t.Instructions
 		d.Skills = t.Skills // read from -skills: a skill it names that isn't there fails the build
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))

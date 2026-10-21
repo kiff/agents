@@ -579,7 +579,9 @@ func (f *follower) catchUp(ctx context.Context) error {
 	}
 	for _, e := range events {
 		if e.Seq > f.after {
-			f.sse.event("event", strconv.FormatInt(e.Seq, 10), e)
+			if e.Kind != session.KeptRead { // only the runner reads it
+				f.sse.event("event", strconv.FormatInt(e.Seq, 10), e)
+			}
 			f.after = e.Seq
 		}
 	}

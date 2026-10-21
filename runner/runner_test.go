@@ -140,6 +140,8 @@ type fixture struct {
 	r      *runner.Runner
 	// connectErr, when set, is what connecting to the gateway fails with.
 	connectErr error
+	// extra are more gateway tools, after stripe_refund.
+	extra []tool.Tool
 }
 
 func newFixture(t testing.TB, replies ...model.Reply) *fixture {
@@ -163,7 +165,7 @@ func (f *fixture) newRunner() *runner.Runner {
 				if f.connectErr != nil {
 					return nil, f.connectErr
 				}
-				return []tool.Tool{f.refund}, nil
+				return append([]tool.Tool{f.refund}, f.extra...), nil
 			}}}
 }
 
@@ -478,8 +480,11 @@ func TestHistoryIsBoundedByTheDefinition(t *testing.T) {
 		}
 	}
 	reqs := f.model.requests()
-	if got, want := texts(reqs[2].Messages), []string{"user: b", "assistant: two", "user: c"}; !slices.Equal(got, want) {
-		t.Fatalf("saw %q, want only the last finished run: %q", got, want)
+	// The run it doesn't get is said to be missing, and the owner's first
+	// message stays, so the agent never carries on as if it had it.
+	want := []string{"user: " + runner.DroppedNote, "user: " + runner.OpeningNote + "a", "user: b", "assistant: two", "user: c"}
+	if got := texts(reqs[2].Messages); !slices.Equal(got, want) {
+		t.Fatalf("saw %q, want only the last finished run, after what stands for the one before: %q", got, want)
 	}
 }
 

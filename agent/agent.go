@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
@@ -53,6 +54,15 @@ type Agent struct {
 	// call pauses the run instead: its held calls are withdrawn in KIFF
 	// before a paused run is cancelled.
 	Cancel func(ctx context.Context) (bool, error)
+	// Preface is what the run reads before its input, in the same message:
+	// what stands for the session's earlier part, where things stand now,
+	// what it read earlier (the runner makes it, kiff/tafs#138). It is
+	// never recorded, so each run, and each continuation, reads its own.
+	Preface []model.Block
+	// Spent is what the run spent before its loop, such as on a summary, in
+	// millionths of a US dollar: it counts toward MaxCost.
+	Spent int64
+
 	// Steer, when set, takes the messages the owner wrote to the run while it
 	// went (#102), and marks them taken. The loop asks at each checkpoint,
 	// after Cancel; More asks once the agent has answered, so a message that
@@ -230,11 +240,12 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 	if err := a.Check(); err != nil {
 		return Outcome{}, history, err
 	}
-	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: input}}})
+	asked := append(slices.Clone(a.Preface), model.Block{Kind: model.Text, Text: input})
+	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
 	if err := rec.Record(session.OwnerMessage, TextBody{Text: input}); err != nil {
 		return Outcome{}, msgs, err
 	}
-	return a.loop(ctx, rec, msgs, Outcome{}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: a.Spent}, emit)
 }
 
 // Continue carries on a paused run, r, as stored, from the turn it paused
@@ -271,7 +282,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	}
 	// What the owner wrote while the run went, before it paused, follows its
 	// input: the continued run doesn't see the turns between them.
-	asked := []model.Block{{Kind: model.Text, Text: r.Input}}
+	asked := append(slices.Clone(a.Preface), model.Block{Kind: model.Text, Text: r.Input})
 	for _, text := range r.Taken() {
 		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + text})
 	}
@@ -279,7 +290,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		model.Message{Role: model.User, Blocks: asked},
 		withoutThinking(r.Paused.Reply),
 		model.Message{Role: model.User, Blocks: results})
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost, Turns: r.Turns}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns}, emit)
 }
 
 // withoutThinking is a paused turn's reply as a continued run sends it: its
@@ -626,6 +637,11 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				return nil, err
 			}
 		}
+		if !r.IsError && (r.State == "" || r.State == "forwarded") && r.Trial == nil && tool.Reads(byName[r.Tool], calls[i].Input) {
+			if err := rec.Record(session.KeptRead, session.KeptReadBody{CallID: r.CallID, Tool: r.Tool, Input: calls[i].Input, Result: clip(r.Text, MaxKeptRead)}); err != nil {
+				return nil, err
+			}
+		}
 		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
 		if len(r.Component) > 0 && !r.IsError && shows(byName[r.Tool]) {
 			if err := rec.Record(session.Component, r.Component); err != nil {
@@ -635,6 +651,22 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}
 	}
 	return results, nil
+}
+
+// MaxKeptRead bounds what one kept read keeps of its result, in bytes: a
+// chat's next runs get what it said, not a whole export.
+const MaxKeptRead = 16 << 10
+
+// clip is text cut to at most n bytes, on a rune, saying so.
+func clip(text string, n int) string {
+	if len(text) <= n {
+		return text
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + " …(shortened)"
 }
 
 // shows reports whether t may put a component in the owner's chat.
@@ -654,4 +686,65 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}
 	return r
+}
+
+// SummarySystem is what the model is told when it summarises the part of a
+// conversation that no longer fits its history.
+const SummarySystem = `You are an agent in a long conversation with its owner, and its earliest part no longer fits what you read each time. Write a summary of that part for yourself, so you can carry on as if you remembered it.
+
+Keep:
+- what the owner asked for, and every decision, limit, amount, currency, mode, name and preference they gave, in their own words;
+- what has been done, and what each tool or system answered that still matters (ids, names, statuses);
+- what is still open or waiting, and on whom;
+- what you told the owner you would do.
+
+Leave out greetings and anything settled that no longer matters. Write short plain lines, at most 400 words, and only the summary.`
+
+// SummaryMaxTokens bounds a summary's reply.
+const SummaryMaxTokens = 2048
+
+// Summarize is the model's summary of msgs, the part of a conversation that
+// no longer fits, after prior, its summary of what came before them (empty:
+// none), recorded with its usage in rec. It returns the summary and its
+// cost, in millionths of a US dollar.
+func Summarize(ctx context.Context, a Agent, rec *session.Recording, prior string, msgs []model.Message) (string, int64, error) {
+	var b strings.Builder
+	if prior != "" {
+		b.WriteString("Your summary of what came before:\n\n" + prior + "\n\nThen:\n")
+	}
+	for _, m := range msgs {
+		who := "Owner"
+		if m.Role == model.Assistant {
+			who = "You"
+		}
+		for _, bl := range m.Blocks {
+			if bl.Kind == model.Text && strings.TrimSpace(bl.Text) != "" {
+				b.WriteString("\n" + who + ": " + bl.Text + "\n")
+			}
+		}
+	}
+	b.WriteString("\nWrite the summary now.")
+	req := model.Request{Model: a.ModelID, System: SummarySystem, MaxTokens: SummaryMaxTokens, Effort: a.Effort,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: b.String()}}}}}
+	reply, err := a.Model.Turn(ctx, req, func(string) {})
+	if err != nil {
+		return "", 0, err
+	}
+	cost := a.Price.Cost(reply.Usage)
+	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
+		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite,
+		CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost}); err != nil {
+		return "", cost, err
+	}
+	var text []string
+	for _, bl := range reply.Blocks {
+		if bl.Kind == model.Text {
+			text = append(text, bl.Text)
+		}
+	}
+	out := strings.TrimSpace(strings.Join(text, "\n"))
+	if reply.Stop == model.Refused || out == "" {
+		return "", cost, errors.New("agent: the model wrote no summary")
+	}
+	return out, cost, nil
 }

@@ -351,6 +351,11 @@ func TestSessions(t *testing.T) {
 	f := newFixture(t)
 	f.session("t1", "s1", "payouts")
 	f.session("t1", "s2", "refunds")
+	// What a chat kept of a read is only the runner's: no view shows it.
+	kept := session.Event{Session: "s1", Run: "r1", Seq: 2, Time: now, Kind: session.KeptRead, Body: json.RawMessage(`{"sealed":"AAAA"}`), Expires: now.Add(time.Hour)}
+	if err := f.store.Append(ctx, "t1", "s1", "r1", []session.Event{kept}); err != nil {
+		t.Fatal(err)
+	}
 
 	code, body := f.do("t1", "GET", "/sessions", nil)
 	f.want(400, code, body, "list without agent_id")

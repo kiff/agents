@@ -30,9 +30,16 @@ of its eight kinds):
     "tool_result": { "Keep": 1, "Retention": 0 }
   },
   "max_cost_micro_usd": 500000,
-  "history": 20
+  "history": 20,
+  "history_tokens": 30000
 }
 ```
+
+- `history_tokens` bounds what the earlier runs' messages take (estimated, four
+  bytes a token). In a chat, what no longer fits is summarised, not dropped.
+- `keep.kept_read`, `{ "Keep": 3, "Retention": <idle>, "Max": <at most> }`
+  (`UntilIdle`), keeps what a chat read for its next messages, sealed. Left
+  out, nothing is kept.
 
 - `price` is per million tokens, in millionths of a dollar. With both cache
   prices set, every turn uses the prompt cache; without them it doesn't, so

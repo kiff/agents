@@ -48,6 +48,16 @@ func New(base, tenant, key string, hc *http.Client) *Tool {
 func (t *Tool) Access() tool.Access { return tool.Own }
 func (t *Tool) Gateway() bool       { return false }
 
+// Reads reports whether a call only reads: status, catalog and read ask
+// planque what is there; request and tools ask for something.
+func (t *Tool) Reads(input json.RawMessage) bool {
+	var in struct {
+		Action string `json:"action"`
+	}
+	_ = json.Unmarshal(input, &in)
+	return in.Action == "status" || in.Action == "catalog" || in.Action == "read"
+}
+
 func (t *Tool) Spec() model.ToolSpec {
 	return model.ToolSpec{
 		Name: Name,
@@ -159,6 +169,36 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
 	return tool.Result{Text: "action is request, status, catalog, tools or read", IsError: true}, nil
+}
+
+// MaxStated is how many of a session's grants State looks up: the latest.
+const MaxStated = 8
+
+// State is where each grant the session's components name stands now, as
+// planque says: what the agent would read with status, without a turn.
+func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, error) {
+	grants := tool.Named(shown, "grant", MaxStated)
+	if len(grants) == 0 {
+		return "", nil
+	}
+	path := "/v1/accounts/" + url.PathEscape(t.tenant) + "/grants/"
+	var b strings.Builder
+	b.WriteString("planque's grants in this conversation, as planque says now (status {grant} gives the same):\n")
+	for _, id := range grants {
+		if strings.ContainsAny(id, "/?#") {
+			continue
+		}
+		res, err := t.grant(ctx, http.MethodGet, path+url.PathEscape(id), nil)
+		switch {
+		case err != nil:
+			fmt.Fprintf(&b, "- %s: planque didn't answer now\n", id)
+		case res.IsError:
+			fmt.Fprintf(&b, "- %s: %s\n", id, res.Text)
+		default:
+			fmt.Fprintf(&b, "- %s\n", res.Text)
+		}
+	}
+	return b.String(), nil
 }
 
 // AgentID is a new KIFF agent id from the name the model gave: the name as

@@ -22,6 +22,9 @@
 #   agents-accounts/<KIFF account> {"tenant","secret"} for alerts KIFF_ACCOUNTS_PREFIX
 #   agents-drafts/<tenant>/<draft> a taf draft's claim secret     AGENTS_DRAFTS_PREFIX
 #                                  (written by the API function, #91)
+#   agents-sealing/<tenant>        the key a tenant's chats seal  AGENTS_SEALING_PREFIX
+#                                  their kept reads with (#172; made by the
+#                                  API function, the first time it's needed)
 #   agents-model/anthropic         the model provider's key       AGENTS_MODEL_KEY_SECRET
 #
 # The model key's secret can be another one in the region, outside the agents'
@@ -61,6 +64,9 @@ ACCOUNTS_PREFIX=agents-accounts/
 # Claim secrets of taf drafts the setup agent submits (#91): outside the agents'
 # key prefix, so no key reference can name one.
 DRAFTS_PREFIX=agents-drafts/
+# Each tenant's key for what its chats keep of their reads (#172): outside the
+# agents' key prefix too.
+SEALING_PREFIX=agents-sealing/
 PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
 
@@ -130,12 +136,13 @@ ITEMS='"dynamodb:GetItem","dynamodb:BatchGetItem","dynamodb:Query","dynamodb:Put
 # schedules of its own group, made with the scheduler's role. For taf drafts
 # (#91) it also creates an agent's key when it claims one, never over an
 # existing secret, and keeps the drafts' claim secrets under their own prefix.
+# It makes and reads each tenant's sealing key (#172), never replacing one.
 aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-document "$(cat <<EOF
 {"Version":"2012-10-17","Statement":[
  $LOGS,
  {"Effect":"Allow","Action":[$ITEMS],"Resource":"$ARN_TABLE"},
- {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${MODEL_SECRET}-??????","$ARN_SECRET:${DRAFTS_PREFIX}*"]},
- {"Effect":"Allow","Action":"secretsmanager:CreateSecret","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${DRAFTS_PREFIX}*"]},
+ {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${MODEL_SECRET}-??????","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
+ {"Effect":"Allow","Action":"secretsmanager:CreateSecret","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:PutSecretValue","Resource":"$ARN_SECRET:${DRAFTS_PREFIX}*"},
  {"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"$ARN_FN"},
  {"Effect":"Allow","Action":["scheduler:CreateSchedule","scheduler:UpdateSchedule","scheduler:DeleteSchedule","scheduler:GetSchedule"],
@@ -181,7 +188,7 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX"}}
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX"}}
 EOF
 )
 ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'

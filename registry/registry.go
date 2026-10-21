@@ -71,6 +71,11 @@ type Definition struct {
 	// History is how many of the session's finished runs the model gets
 	// before a new one.
 	History int `json:"history"`
+	// HistoryTokens bounds what those runs' messages may take, in tokens
+	// (estimated). In a chat, the runs that no longer fit, by count or by
+	// size, are summarised by the model instead of dropped, and the summary
+	// comes first (session.Summary). 0: no bound by size, and no summary.
+	HistoryTokens int `json:"history_tokens,omitempty"`
 	// Workspace gives each of the agent's runs a workspace: files and
 	// commands, with no credentials and no way out (#86). Off unless set.
 	Workspace bool `json:"workspace,omitempty"`
@@ -192,7 +197,7 @@ func (d Definition) Check() error {
 		return errors.New("registry: a reference to the agent's KIFF key is required")
 	case d.MaxCost <= 0:
 		return errors.New("registry: a run needs a cost cap")
-	case d.MaxTurns < 0 || d.History < 0:
+	case d.MaxTurns < 0 || d.History < 0 || d.HistoryTokens < 0:
 		return errors.New("registry: max turns and history are never negative")
 	}
 	if u, err := url.Parse(d.Gateway); err != nil || u.Scheme != "https" || u.Host == "" {
