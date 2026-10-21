@@ -157,7 +157,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
 	}
 	if req.Cache {
-		markCache(&p)
+		markCache(&p, req.CacheLong)
 	}
 	return p, nil
 }
@@ -167,12 +167,20 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 // before it: one on the system prompt (or the last tool, without one) caches
 // the prefix every turn shares; one on the last message's last block caches
 // the conversation, which the next turn reads back and extends.
-func markCache(p *sdk.MessageNewParams) {
+//
+// long keeps the shared prefix an hour: an owner's next message often comes
+// after more than five minutes. The conversation's breakpoint stays five
+// minutes; the API wants the longer one first, as it is here.
+func markCache(p *sdk.MessageNewParams, long bool) {
 	cc := sdk.NewCacheControlEphemeralParam()
+	shared := cc
+	if long {
+		shared.TTL = sdk.CacheControlEphemeralTTLTTL1h
+	}
 	if n := len(p.System); n > 0 {
-		p.System[n-1].CacheControl = cc
+		p.System[n-1].CacheControl = shared
 	} else if n := len(p.Tools); n > 0 && p.Tools[n-1].OfTool != nil {
-		p.Tools[n-1].OfTool.CacheControl = cc
+		p.Tools[n-1].OfTool.CacheControl = shared
 	}
 	if len(p.Messages) == 0 {
 		return
@@ -199,7 +207,9 @@ func fromMessage(msg sdk.Message) model.Reply {
 		InputTokens:  msg.Usage.InputTokens,
 		OutputTokens: msg.Usage.OutputTokens,
 		CacheRead:    msg.Usage.CacheReadInputTokens,
-		CacheWrite:   msg.Usage.CacheCreationInputTokens,
+		// The hour's writes, priced apart; the rest kept five minutes.
+		CacheWrite:   msg.Usage.CacheCreationInputTokens - msg.Usage.CacheCreation.Ephemeral1hInputTokens,
+		CacheWrite1h: msg.Usage.CacheCreation.Ephemeral1hInputTokens,
 	}}
 	for _, c := range msg.Content {
 		switch b := c.AsAny().(type) {

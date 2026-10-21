@@ -128,14 +128,16 @@ type UsageBody struct {
 	OutputTokens int64  `json:"output_tokens"`
 	CacheRead    int64  `json:"cache_read_tokens,omitempty"`
 	CacheWrite   int64  `json:"cache_write_tokens,omitempty"`
-	CostMicroUSD int64  `json:"cost_micro_usd"`
+	// CacheWrite1h is what it wrote to the cache for an hour.
+	CacheWrite1h int64 `json:"cache_write_1h_tokens,omitempty"`
+	CostMicroUSD int64 `json:"cost_micro_usd"`
 	// Context is what the call's input was made of, when the caller knew.
 	Context *ContextBody `json:"context,omitempty"`
 }
 
 // Prompt is the call's whole input, in tokens: what it sent fresh, what the
 // cache served and what it wrote to the cache.
-func (u UsageBody) Prompt() int64 { return u.InputTokens + u.CacheRead + u.CacheWrite }
+func (u UsageBody) Prompt() int64 { return u.InputTokens + u.CacheRead + u.CacheWrite + u.CacheWrite1h }
 
 // Room is what the model's context window had left after the call's input,
 // in tokens; ok is false when the window isn't known.
