@@ -133,6 +133,15 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	t.logf("the trial of version %d: %v", n, decisions)
 	// Every refund it tried allowed on the revised Card, and at least one.
 	if len(decisions) == 0 || slices.ContainsFunc(decisions, func(d string) bool { return d != "allowed" }) {
+		// The trial's reply is the taf's own words in this test's chat, no
+		// account's data: shown so a miss can be read from CI.
+		if _, events, err := t.sessions.Read(ctx, t.tenant, tr.Session); err == nil {
+			for _, e := range events {
+				if e.Run == tr.ID && (e.Kind == session.AgentMessage || e.Kind == session.Error) {
+					fmt.Fprintf(t.cfg.log, "      trial %s: %s\n", e.Kind, oneLine(string(e.Body)))
+				}
+			}
+		}
 		return fmt.Errorf("the trial decided %v; want the refund allowed on the revised Card", decisions)
 	}
 	sent, err := t.vendorCalls(ctx)
