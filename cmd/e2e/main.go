@@ -506,10 +506,45 @@ type component struct {
 		Label  string `json:"label"`
 		Status string `json:"status"`
 	} `json:"steps"`
-	Options []struct {
-		Value string `json:"value"`
-		Label string `json:"label"`
-	} `json:"options"`
+	Options []option `json:"options"`
+	// A questions card's questions (kiff/tafs#138 item 57).
+	Questions []question `json:"questions"`
+}
+
+// option is one answer to a confirm or a question.
+type option struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// question is one of a questions card's questions.
+type question struct {
+	ID      string   `json:"id"`
+	Text    string   `json:"text"`
+	Multi   bool     `json:"multi"`
+	Options []option `json:"options"`
+	Note    string   `json:"note"`
+}
+
+// answerQuestions is the owner's one message for a questions card, as the
+// app sends it: each question's id to {value} or {own}. A test-or-live
+// question gets test (kiff/tafs#89); own, when given, answers the first
+// other question in the owner's words.
+func answerQuestions(c component, own string) string {
+	answers := map[string]map[string]string{}
+	for _, q := range c.Questions {
+		switch test, ok := modeOptions(q.Options); {
+		case ok:
+			answers[q.ID] = map[string]string{"value": test}
+		case own != "":
+			answers[q.ID], own = map[string]string{"own": own}, ""
+		case len(q.Options) > 0:
+			answers[q.ID] = map[string]string{"value": q.Options[0].Value}
+		}
+	}
+	b, _ := json.Marshal(answers)
+	return fmt.Sprintf("[questions %s] %s", c.ID, b)
 }
 
 // converse is the owner in the setup chat: one message, then an answer to
@@ -584,6 +619,13 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				} else if len(c.Options) > 0 {
 					msg = fmt.Sprintf("[confirm %s] %s", c.ID, c.Options[0].Value)
 				}
+			case "questions":
+				// Once Setup can look, the owner's facts are typed, as for a confirm.
+				own := ""
+				if approvedGrant != "" && !toldFacts {
+					own, toldFacts = facts[0], true
+				}
+				msg = answerQuestions(c, own)
 			case "approval", "sign_in":
 				if err := t.approve(ctx, c, &approvedGrant); err != nil {
 					return "", "", err

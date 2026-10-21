@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,10 +34,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	var s said
 	s.messages = []string{"¿Con qué proveedor cobras?", strings.Repeat("palabra ", maxWords+1)}
 	c := component{Type: "confirm", ID: "modo", Title: "Modo de Stripe", Text: "¿Prueba o real?", Note: "Puedes cambiarlo luego."}
-	c.Options = append(c.Options, struct {
-		Value string `json:"value"`
-		Label string `json:"label"`
-	}{"test", "Prueba"})
+	c.Options = append(c.Options, option{Value: "test", Label: "Prueba"})
 	s.card(c)
 	s.card(c) // a card shown again is one card
 
@@ -161,15 +159,7 @@ func TestNoPlanqueAndAStablePlan(t *testing.T) {
 // Test or live is the owner's choice (kiff/tafs#89): the scripted owner taps
 // test, Setup must have offered both, and nothing may be pinned to live.
 func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
-	opt := func(value, label string) struct {
-		Value string `json:"value"`
-		Label string `json:"label"`
-	} {
-		return struct {
-			Value string `json:"value"`
-			Label string `json:"label"`
-		}{value, label}
-	}
+	opt := func(value, label string) option { return option{Value: value, Label: label} }
 	es := component{Type: "confirm", ID: "modo"}
 	es.Options = append(es.Options, opt("real", "Modo real (dinero real)"), opt("prueba", "Modo prueba (sin dinero real), recomendado"))
 	if v, ok := modeChoice(es); !ok || v != "prueba" {
@@ -262,5 +252,32 @@ func TestUncheckedMoney(t *testing.T) {
 	}
 	if got := uncheckedMoney([]grantTool{read}); len(got) != 0 {
 		t.Fatalf("a read alone: %v", got)
+	}
+}
+
+// A questions card (kiff/tafs#138 item 57) is answered in one message, as the
+// app sends it: test for a test-or-live question, the owner's facts typed for
+// the first other one; and its test-or-live question counts as asking.
+func TestAQuestionsCardIsAnsweredAndGraded(t *testing.T) {
+	c := component{Type: "questions", ID: "basics", Questions: []question{
+		{ID: "mode", Text: "¿Prueba o real?", Options: []option{{Value: "real", Label: "Dinero real"}, {Value: "prueba", Label: "Modo prueba"}}},
+		{ID: "limit", Text: "¿Cuánto al día?", Options: []option{{Value: "10000", Label: "100 €"}, {Value: "25000", Label: "250 €"}}},
+	}}
+	if got, want := answerQuestions(c, "50 € al día"), `[questions basics] {"limit":{"own":"50 € al día"},"mode":{"value":"prueba"}}`; got != want {
+		t.Fatalf("answer %s, want %s", got, want)
+	}
+	if got, want := answerQuestions(c, ""), `[questions basics] {"limit":{"value":"10000"},"mode":{"value":"prueba"}}`; got != want {
+		t.Fatalf("answer %s, want %s", got, want)
+	}
+	if v, ok := modeChoice(c); !ok || v != "prueba" {
+		t.Fatalf("mode choice %q %v", v, ok)
+	}
+	var s said
+	s.card(c)
+	if n := len(confirms(s)); n != 2 {
+		t.Fatalf("choices to tap = %d, want 2", n)
+	}
+	if texts := s.texts(); !slices.Contains(texts, "¿Cuánto al día?") || !slices.Contains(texts, "250 €") {
+		t.Fatalf("texts %v", texts)
 	}
 }

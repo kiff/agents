@@ -33,10 +33,14 @@ const (
 	MaxSteps   = 20
 	MaxOptions = 4
 	MaxTools   = 20
+	// A questions card asks 1 to MaxQuestions questions at once, each with
+	// 2 to MaxQuestionOptions options (kiff/tafs#138 item 57).
+	MaxQuestions       = 4
+	MaxQuestionOptions = 5
 )
 
 // Types are the components the app draws.
-var Types = []string{"steps", "notice", "confirm", "approval", "sign_in", "result"}
+var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result"}
 
 var (
 	idPattern  = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
@@ -51,10 +55,25 @@ type Step struct {
 	Status string `json:"status"`
 }
 
-// Option is one answer to a confirm.
+// Option is one answer to a confirm or a question.
 type Option struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
+	// Description says more about the option, under its label: only in a
+	// question.
+	Description string `json:"description,omitempty"`
+}
+
+// Question is one of a questions card's questions: its own id, its text,
+// its options, whether several may be picked (Multi), and a line under it
+// (Note). The app adds a field for the owner's own words under each, and
+// "Chat about this" on the card: never the agent's to send.
+type Question struct {
+	ID      string   `json:"id"`
+	Text    string   `json:"text"`
+	Multi   bool     `json:"multi,omitempty"`
+	Options []Option `json:"options"`
+	Note    string   `json:"note,omitempty"`
 }
 
 // Taf is the taf a result hands over to: what tafs cloud starts it from
@@ -94,11 +113,13 @@ type Component struct {
 	Tone    string   `json:"tone,omitempty"`
 	Steps   []Step   `json:"steps,omitempty"`
 	Options []Option `json:"options,omitempty"`
-	Grant   string   `json:"grant,omitempty"`
-	Draft   string   `json:"draft,omitempty"`
-	Service string   `json:"service,omitempty"`
-	Taf     *Taf     `json:"taf,omitempty"`
-	Tools   []string `json:"tools,omitempty"`
+	// Questions are a questions card's questions, answered together.
+	Questions []Question `json:"questions,omitempty"`
+	Grant     string     `json:"grant,omitempty"`
+	Draft     string     `json:"draft,omitempty"`
+	Service   string     `json:"service,omitempty"`
+	Taf       *Taf       `json:"taf,omitempty"`
+	Tools     []string   `json:"tools,omitempty"`
 	// The card's own words for its buttons and the line under them, in the
 	// owner's language (kiff/tafs#75). Yes is the main button, No the other,
 	// Note the line below. A card without them shows the app's words. Never
@@ -111,12 +132,13 @@ type Component struct {
 
 // fields lists the fields each type may carry, besides type and id.
 var fields = map[string][]string{
-	"steps":    {"title", "steps"},
-	"notice":   {"tone", "title", "text"},
-	"confirm":  {"text", "options"},
-	"approval": {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
-	"sign_in":  {"grant", "service", "title", "text", "yes", "no", "note"},
-	"result":   {"taf", "text", "tools", "yes"},
+	"steps":     {"title", "steps"},
+	"notice":    {"tone", "title", "text"},
+	"confirm":   {"text", "options"},
+	"questions": {"text", "questions"},
+	"approval":  {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
+	"sign_in":   {"grant", "service", "title", "text", "yes", "no", "note"},
+	"result":    {"taf", "text", "tools", "yes"},
 }
 
 // Tool shows components.
@@ -138,6 +160,9 @@ func (Tool) Spec() model.ToolSpec {
 		Description: "Show the owner a component in the chat; the app draws it. Showing an id again replaces that component in place (to advance steps). " +
 			"steps {title, steps:[{label, status: pending|active|done|failed|skipped}]}; notice {tone: info|success|warning|error, title?, text}; " +
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
+			"questions {text, questions:[{id, text, options:[{value, label, description?}], 2 to 5, multi?, note?}], 1 to 4}: several questions the owner answers together, when none depends on another's answer; " +
+			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
+			"[questions <id>] then a JSON object from each question's id to {value}, {values} (multi) or {own} (the owner's own words); " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
 			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed; " +
 			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
@@ -146,12 +171,15 @@ func (Tool) Spec() model.ToolSpec {
 			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"type":{"type":"string","enum":["steps","notice","confirm","approval","sign_in","result"]},` +
+			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result"]},` +
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]}},"required":["label","status"]}},` +
 			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"}},"required":["value","label"]}},` +
+			`"questions":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"multi":{"type":"boolean"},` +
+			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}},"required":["value","label"]}},` +
+			`"note":{"type":"string"}},"required":["id","text","options"]}},` +
 			`"grant":{"type":"string","description":"planque's grant id"},"draft":{"type":"string","description":"KIFF's agent draft id"},` +
 			`"service":{"type":"string","description":"the vendor's host, e.g. mcp.stripe.com"},` +
 			`"taf":{"type":"object","properties":{"agent":{"type":"string"},"name":{"type":"string"},` +
@@ -259,14 +287,33 @@ func (c Component) check() error {
 		if len(c.Options) < 2 || len(c.Options) > MaxOptions {
 			return fmt.Errorf("options has 2 to %d options", MaxOptions)
 		}
+		if err := checkOptions(c.Options, false); err != nil {
+			return err
+		}
+	case "questions":
+		if err := text("text", c.Text, true, MaxText); err != nil {
+			return err
+		}
+		if len(c.Questions) == 0 || len(c.Questions) > MaxQuestions {
+			return fmt.Errorf("questions has 1 to %d questions", MaxQuestions)
+		}
 		seen := map[string]bool{}
-		for _, o := range c.Options {
-			if !idPattern.MatchString(o.Value) || seen[o.Value] {
-				return fmt.Errorf("each option's value is 1 to 64 of a-z 0-9 - _, and different")
+		for _, q := range c.Questions {
+			if !idPattern.MatchString(q.ID) || seen[q.ID] {
+				return fmt.Errorf("each question's id is 1 to 64 of a-z 0-9 - _, and different")
 			}
-			seen[o.Value] = true
-			if err := text("an option's label", o.Label, true, 80); err != nil {
+			seen[q.ID] = true
+			if err := text("a question's text", q.Text, true, MaxLabel); err != nil {
 				return err
+			}
+			if err := text("a question's note", q.Note, false, MaxLabel); err != nil {
+				return err
+			}
+			if len(q.Options) < 2 || len(q.Options) > MaxQuestionOptions {
+				return fmt.Errorf("question %s has 2 to %d options", q.ID, MaxQuestionOptions)
+			}
+			if err := checkOptions(q.Options, true); err != nil {
+				return fmt.Errorf("question %s: %w", q.ID, err)
 			}
 		}
 	case "sign_in":
@@ -333,6 +380,28 @@ func (c Component) check() error {
 			if !refPattern.MatchString(t) {
 				return fmt.Errorf("tools are tool names")
 			}
+		}
+	}
+	return nil
+}
+
+// checkOptions checks a confirm's or a question's options: values unique,
+// labels short, and a description only in a question.
+func checkOptions(options []Option, described bool) error {
+	seen := map[string]bool{}
+	for _, o := range options {
+		if !idPattern.MatchString(o.Value) || seen[o.Value] {
+			return fmt.Errorf("each option's value is 1 to 64 of a-z 0-9 - _, and different")
+		}
+		seen[o.Value] = true
+		if err := text("an option's label", o.Label, true, 80); err != nil {
+			return err
+		}
+		if o.Description != "" && !described {
+			return fmt.Errorf("a confirm's options take no description; use questions")
+		}
+		if err := text("an option's description", o.Description, false, MaxLabel); err != nil {
+			return err
 		}
 	}
 	return nil
