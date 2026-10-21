@@ -343,7 +343,10 @@ func (t *test) trialDecisions(ctx context.Context, r runs.Run) ([]string, error)
 		var b agent.TrialWriteBody
 		if json.Unmarshal(e.Body, &b) == nil {
 			t.logf("trial call %s: %s (%s)", b.Tool, b.Decision, oneLine(b.Reason))
-			if isRefund(b.Tool) {
+			// By the grant's names for the refund, as the taf's run is counted: Setup
+			// may name the tool (eval/tafs-174, 21 Oct: "I made the €8 refund as a trial
+			// run only", and none was counted).
+			if isTool(b.Tool, t.refunds) || isRefund(b.Tool) {
 				out = append(out, b.Decision)
 			}
 		}

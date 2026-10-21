@@ -213,8 +213,11 @@ type test struct {
 	rn       *runner.Runner
 	agents   *memory.Agents
 
-	secrets  []string // every secret value the runs must never record
-	grants   []string // planque grants this run connected
+	secrets []string // every secret value the runs must never record
+	grants  []string // planque grants this run connected
+	// refunds are the names the grant gave the refund (chargeTools), for the
+	// improve trial to count its refund by, as the taf's run is.
+	refunds  []string
 	cardIDs  []string // Cards the taf's draft issued
 	draftIDs []string
 	taf      string   // the taf's agent id, once handed over
@@ -994,6 +997,7 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		return fmt.Errorf("KIFF's activity: %w", err)
 	}
 	reads, refunds := chargeTools(*connected)
+	t.refunds = refunds
 	if err := readThenRefunded(act.Calls, tafID, reads, refunds); err != nil {
 		return err
 	}
