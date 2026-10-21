@@ -136,6 +136,11 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
 						"state": "held", "operation_id": "op-refund-42", "exception_id": "exc_123", "hold_expires_at": 1760605800}}}
+			} else if p.Name == "stripe_refund" && args["nested"] == true {
+				// A sealed connection carries the resource deeper in the arguments.
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_10"}},
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "invocation": "tc-90",
+						"resource_argument": "charge", "resource_path": "parameters.charge", "sent": "yes", "retry": "none"}}}
 			} else if p.Name == "stripe_refund" && args["forwarded"] == true {
 				// Within its Card: sent, and KIFF names its key (kiff/tafs#167).
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_9"}},
@@ -228,6 +233,18 @@ func TestAForwardedCallKeepsKIFFsKey(t *testing.T) {
 	raw, _ := json.Marshal(got)
 	if !strings.Contains(string(raw), `"invocation":"tc-88"`) || strings.Contains(string(raw), "pi_9") {
 		t.Fatalf("recorded result = %s", raw)
+	}
+	// Where KIFF says it is, nested; a number there, or a path that isn't, is nothing.
+	for input, want := range map[string]string{
+		`{"nested":true,"parameters":{"charge":"ch_7","amount":100}}`: "ch_7",
+		`{"nested":true,"parameters":{"charge":42}}`:                   "",
+		`{"nested":true,"charge":"ch_top"}`:                            "",
+		`{"nested":true,"parameters":"ch_7"}`:                          "",
+	} {
+		got, err := tools[1].Call(context.Background(), json.RawMessage(input))
+		if err != nil || got.Invocation != "tc-90" || got.Resource != want {
+			t.Fatalf("%s: resource %q, want %q (%v)", input, got.Resource, want, err)
+		}
 	}
 }
 
