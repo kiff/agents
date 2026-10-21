@@ -158,8 +158,8 @@ func TestChargeTools(t *testing.T) {
 	}
 }
 
-// The phone signs planque's requests as a KIFF device (d=), as the tafs app
-// does, so planque can drop the key-enrolled path (kiff/planque#12).
+// The owner reads an approval in words: each tool by a title of its own, no
+// tool name, grant prefix or host (kiff/tafs#138, items 52, 53).
 func TestTheApprovalIsInWords(t *testing.T) {
 	g := grant{Text: "You will sign in at mcp.example.com.\n\nThe taf may:\n• Refund a payment: moves money (amount), only within the taf's Card"}
 	g.Request.Server = "https://mcp.example.com/mcp"
@@ -180,8 +180,14 @@ func TestTheApprovalIsInWords(t *testing.T) {
 	if raw := rawWords(g); raw != "Setup gave stripe_api_write no title" {
 		t.Errorf("no title: %q", raw)
 	}
+	g.Request.Tools = []grantTool{{Tool: "stripe_api_write", Name: "a_refund", Title: "Refund a payment"}, {Tool: "stripe_api_write", Name: "a_cancel", Title: "refund a payment"}}
+	if raw := rawWords(g); raw != `two tools titled "refund a payment"` {
+		t.Errorf("one title twice: %q", raw)
+	}
 }
 
+// The phone signs planque's requests as a KIFF device (d=), as the tafs app
+// does, so planque can drop the key-enrolled path (kiff/planque#12).
 func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
 	if h := signatureHeader("2026-10-20T09:00:00Z", []byte("sig"), "dev_1"); !strings.HasSuffix(h, ",d=dev_1") || !strings.HasPrefix(h, "t=2026-10-20T09:00:00Z,v1=") {
 		t.Fatalf("header = %q", h)

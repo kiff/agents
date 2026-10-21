@@ -200,8 +200,8 @@ type grant struct {
 // rawWords is what the owner shouldn't read in a grant's approval text
 // (kiff/tafs#138, items 52, 53): a tool with no title from Setup, a tool's
 // own name (a grant prefix such as bxkwf7vi_refund_payment), or the
-// vendor's host outside the line that says where to sign in. Empty when
-// the text is in words.
+// vendor's host outside the line that says where to sign in, or two tools
+// with one title. Empty when the text is in words.
 func rawWords(g grant) string {
 	var words []string
 	for _, line := range strings.Split(g.Text, "\n") {
@@ -210,13 +210,18 @@ func rawWords(g grant) string {
 		}
 	}
 	text := strings.Join(words, "\n")
+	titled := map[string]bool{}
 	for _, t := range g.Request.Tools {
+		title := strings.ToLower(strings.TrimSpace(t.Title))
 		switch {
+		case title != "" && titled[title]:
+			return fmt.Sprintf("two tools titled %q", title)
 		case strings.TrimSpace(t.Title) == "":
 			return "Setup gave " + t.Tool + " no title"
 		case t.Name != "" && strings.Contains(text, t.Name):
 			return "the tool's name " + t.Name
 		}
+		titled[title] = true
 	}
 	if u, err := url.Parse(g.Request.Server); err == nil && u.Host != "" && strings.Contains(text, u.Host) {
 		return "the vendor's host " + u.Host
