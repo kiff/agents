@@ -237,9 +237,9 @@ func TestAForwardedCallKeepsKIFFsKey(t *testing.T) {
 	// Where KIFF says it is, nested; a number there, or a path that isn't, is nothing.
 	for input, want := range map[string]string{
 		`{"nested":true,"parameters":{"charge":"ch_7","amount":100}}`: "ch_7",
-		`{"nested":true,"parameters":{"charge":42}}`:                   "",
-		`{"nested":true,"charge":"ch_top"}`:                            "",
-		`{"nested":true,"parameters":"ch_7"}`:                          "",
+		`{"nested":true,"parameters":{"charge":42}}`:                  "",
+		`{"nested":true,"charge":"ch_top"}`:                           "",
+		`{"nested":true,"parameters":"ch_7"}`:                         "",
 	} {
 		got, err := tools[1].Call(context.Background(), json.RawMessage(input))
 		if err != nil || got.Invocation != "tc-90" || got.Resource != want {

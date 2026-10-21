@@ -233,15 +233,15 @@ type meta struct {
 	State string `json:"state"`
 	// Retry "same_call" means the call has no final outcome yet: repeating
 	// it gets the answer.
-	Retry         string          `json:"retry"`
-	Invocation    json.RawMessage `json:"invocation"`
+	Retry      string          `json:"retry"`
+	Invocation json.RawMessage `json:"invocation"`
 	// ResourceArgument names the argument the call's Card scopes on (the
 	// gateway tool's resource argument): its name, never its value.
 	ResourceArgument json.RawMessage `json:"resource_argument"`
 	// ResourcePath is where that argument's value is in the call's
 	// arguments, dotted ("parameters.charge"): the name itself when it's at
 	// the top level (a sealed connection's resource_path, kiff-cloud#1179).
-	ResourcePath json.RawMessage `json:"resource_path"`
+	ResourcePath  json.RawMessage `json:"resource_path"`
 	OperationID   json.RawMessage `json:"operation_id"`
 	ExceptionID   json.RawMessage `json:"exception_id"`
 	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`
