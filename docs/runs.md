@@ -149,8 +149,12 @@ r, err = c.Send(ctx, "And for Acme, ask me.", emit)       // same session, new r
 ```
 
 A new message carries on the session's finished runs (what the owner and the
-agent said; never tool calls), up to the agent's `History`. A run that is
-paused or still going is left out until it ends.
+agent said; never tool calls), up to the agent's `History` and, when set, its
+`HistoryTokens`. The runs that no longer fit are summarised once, and the
+summary leads what the model reads, with the owner's first message as they
+wrote it. Before the message itself come where things stand now (the tools'
+`State`) and, when the agent keeps them, what the chat read earlier, each with
+its age. A run that is paused or still going is left out until it ends.
 
 ## Writing runs directly
 

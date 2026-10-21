@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/kiff/agents/drafts"
 	"github.com/kiff/agents/drafts/kiffapi"
@@ -52,6 +54,38 @@ func (t *Tool) Spec() model.ToolSpec {
 			`Convert what the owner said into those units, and say it back in theirs."}},` +
 			`"required":["action","agent_id","cards"]}`),
 	}
+}
+
+// MaxStated is how many of a session's drafts State looks up: the latest.
+const MaxStated = 4
+
+// State is where each draft the session's components name stands now, from
+// what this runtime keeps of it: waiting for the owner's confirmation, or
+// confirmed, its key claimed for the taf. A draft it keeps nothing of (a
+// revision, or another runtime's) is said to be unknown here.
+func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, error) {
+	ids := tool.Named(shown, "draft", MaxStated)
+	if len(ids) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	b.WriteString("Drafts in this conversation, as kept now:\n")
+	for _, id := range ids {
+		rec, err := t.svc.Store.Get(ctx, t.tenant, id)
+		switch {
+		case errors.Is(err, drafts.ErrNotFound):
+			fmt.Fprintf(&b, "- %s: nothing kept of it here (a revision of a taf's Cards, or not submitted here)\n", id)
+		case err != nil:
+			fmt.Fprintf(&b, "- %s: couldn't be read now\n", id)
+		case rec.Claimed:
+			fmt.Fprintf(&b, "- %s, for agent %s: confirmed by the owner, and the taf has its key\n", id, rec.AgentID)
+		case rec.Mismatch:
+			fmt.Fprintf(&b, "- %s, for agent %s: confirmed, but KIFF's key wasn't this agent's, so it wasn't kept\n", id, rec.AgentID)
+		default:
+			fmt.Fprintf(&b, "- %s, for agent %s: submitted; not claimed yet (the owner hasn't confirmed it, or tafs hasn't taken its key)\n", id, rec.AgentID)
+		}
+	}
+	return b.String(), nil
 }
 
 // Call submits the draft. What KIFF refuses comes back as a result the

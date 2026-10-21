@@ -90,6 +90,7 @@ func (s *Server) opsRunEvents(ctx context.Context, r *http.Request) (int, any, e
 		return 0, nil, err
 	}
 	_, events, err := s.Sessions.ReadRun(ctx, tenant, rn.Session, rn.ID)
+	events = session.Shown(events)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return 0, nil, err
 	}

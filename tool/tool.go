@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/kiff/agents/model"
@@ -92,6 +93,57 @@ type Hold struct {
 // from the agent, and the show tool checks each against contract 1.
 type Shower interface {
 	Shows() bool
+}
+
+// Reader is a tool some of whose calls only read, and others don't (planque's
+// status and catalog, against its requests): Reads says which.
+type Reader interface {
+	Reads(input json.RawMessage) bool
+}
+
+// Reads reports whether a call of t with input only reads: every call of a
+// Read tool, and a Reader's calls it says so of. What such a call read may be
+// kept for a chat's next runs (session.KeptRead); a write's result never is.
+func Reads(t Tool, input json.RawMessage) bool {
+	if t == nil {
+		return false
+	}
+	if t.Access() == Read {
+		return true
+	}
+	r, ok := t.(Reader)
+	return ok && r.Reads(input)
+}
+
+// Stater is a tool that holds what it made outside the conversation, such as
+// a vendor grant or a KIFF draft. At the start of each run, State says where
+// each one the session's components name stands now, from the tool's own
+// source, so the agent never depends on remembering it from the chat. shown
+// is the session's components, oldest first; an empty answer says nothing.
+type Stater interface {
+	State(ctx context.Context, shown []json.RawMessage) (string, error)
+}
+
+// Named is the distinct string values of field in components, in the order
+// they last appear, at most max of the latest: what a Stater looks up.
+func Named(components []json.RawMessage, field string, max int) []string {
+	var out []string
+	for _, c := range components {
+		var v map[string]json.RawMessage
+		if json.Unmarshal(c, &v) != nil {
+			continue
+		}
+		var s string
+		if json.Unmarshal(v[field], &s) != nil || s == "" {
+			continue
+		}
+		out = slices.DeleteFunc(out, func(x string) bool { return x == s })
+		out = append(out, s)
+	}
+	if len(out) > max {
+		out = out[len(out)-max:]
+	}
+	return out
 }
 
 // Held reports whether KIFF holds the call for its owner.

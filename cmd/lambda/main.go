@@ -85,6 +85,7 @@ import (
 	"github.com/kiff/agents/schedule/eventbridge"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/server/lambdaurl"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/dynamodb"
 	"github.com/kiff/agents/tool"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
@@ -201,6 +202,14 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			return planque.New(base, tenant, key, nil)
 		},
 	}, Collect: kiff.Collect}
+	// What a chat keeps of its reads for its next messages, sealed under the
+	// tenant's own key (#172): off unless set, so nothing is kept by default.
+	if sp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")); sp != "" {
+		if strings.HasPrefix(sp, prefix) || strings.HasPrefix(prefix, sp) {
+			return nil, fmt.Errorf("lambda: AGENTS_SEALING_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap: a key reference could name a sealing key", sp, prefix)
+		}
+		rn.Sealer = &session.KeySealer{Keys: secretsmanager.NewSealingKeys(secrets, sp).Key}
+	}
 	schedules := &schedule.Service{
 		Store:     dynamodb.NewSchedules(db, table),
 		Scheduler: eventbridge.New(sch.NewFromConfig(cfg), group, target, role),

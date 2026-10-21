@@ -501,6 +501,7 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 
 func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	sess, events, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
+	events = session.Shown(events)
 	if err != nil {
 		return 0, nil, err
 	}

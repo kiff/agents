@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 )
@@ -25,6 +26,14 @@ type Recorder struct {
 	store  Store
 	policy Policy
 	now    func() time.Time
+	sealer Sealer
+}
+
+// Sealing has r seal what it keeps until idle with s. Without a Sealer, an
+// UntilIdle event isn't written at all.
+func (r *Recorder) Sealing(s Sealer) *Recorder {
+	r.sealer = s
+	return r
 }
 
 // NewRecorder checks the policy and returns a recorder for store.
@@ -135,8 +144,10 @@ func (rec *Recording) Session() Session { return rec.s }
 func (rec *Recording) Run() string { return rec.run }
 
 // Record queues one event as its kind's rule says. A body over MaxBody is
-// recorded as an OmittedBody. Record fails only after Pause or End, or when
-// body can't be encoded; write errors come from Flush, Pause and End.
+// recorded as an OmittedBody. An UntilIdle event is recorded only in a chat
+// with a Sealer, sealed by the writer before it is stored. Record fails only
+// after Pause or End, or when body can't be encoded; write errors come from
+// Flush, Pause and End.
 func (rec *Recording) Record(kind EventKind, body any) error {
 	rule := rec.r.policy.Rule(kind)
 	raw, err := json.Marshal(body)
@@ -151,12 +162,15 @@ func (rec *Recording) Record(kind EventKind, body any) error {
 	if rule.Keep == Kept && rule.Retention > 0 {
 		e.Expires = now.Add(rule.Retention)
 	}
+	if rule.Keep == UntilIdle {
+		e.Expires, e.seal = now.Add(rule.Max), true
+	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	if rec.closed {
 		return ErrEnded
 	}
-	if rule.Keep == Never {
+	if rule.Keep == Never || (rule.Keep == UntilIdle && (rec.s.Kind != KindChat || rec.r.sealer == nil)) {
 		return nil
 	}
 	rec.queued++
@@ -300,7 +314,10 @@ func (rec *Recording) write() {
 			batch := rec.pending[:n:n] // Record appends after it, never into it
 			rec.mu.Unlock()
 
-			err := rec.r.store.Append(ctx, rec.s.Tenant, rec.s.ID, rec.run, batch)
+			batch, err := rec.sealed(ctx, batch)
+			if err == nil {
+				err = rec.r.store.Append(ctx, rec.s.Tenant, rec.s.ID, rec.run, batch)
+			}
 
 			rec.mu.Lock()
 			if err != nil {
@@ -315,6 +332,25 @@ func (rec *Recording) write() {
 			rec.mu.Unlock()
 		}
 	}
+}
+
+// sealed is batch with the bodies it seals sealed: a copy when there are
+// any, so what stays pending is still in clear for a retry to seal again.
+func (rec *Recording) sealed(ctx context.Context, batch []Event) ([]Event, error) {
+	if !slices.ContainsFunc(batch, func(e Event) bool { return e.seal }) {
+		return batch, nil
+	}
+	out := slices.Clone(batch)
+	for i, e := range out {
+		if !e.seal {
+			continue
+		}
+		var err error
+		if out[i], err = seal(ctx, rec.r.sealer, rec.s.Tenant, e); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Cost sums the cost of Usage events, in millionths of a dollar.

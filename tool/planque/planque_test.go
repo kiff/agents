@@ -259,3 +259,48 @@ func TestThereIsNoDescribe(t *testing.T) {
 		t.Fatalf("sent to planque: %v", seen)
 	}
 }
+
+// Only planque's lookups are reads: what a chat may keep of them.
+func TestReadsAreTheLookups(t *testing.T) {
+	tl := planque.New("https://planque.example", "tnt_1", "k_setup", nil)
+	for in, want := range map[string]bool{
+		`{"action":"status","grant":"g"}`: true, `{"action":"catalog","grant":"g"}`: true, `{"action":"read","grant":"g"}`: true,
+		`{"action":"request","server":"s"}`: false, `{"action":"tools","grant":"g"}`: false, `not json`: false,
+	} {
+		if got := tl.Reads(json.RawMessage(in)); got != want {
+			t.Errorf("Reads(%s) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// State is each grant the chat's components name, as planque says now,
+// read with the agent's own key; with none named, planque isn't asked.
+func TestStateSaysWhereEachShownGrantStands(t *testing.T) {
+	srv, seen := fake(t, true)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	shown := []json.RawMessage{
+		json.RawMessage(`{"type":"approval","id":"a1","grant":"grt_1"}`),
+		json.RawMessage(`{"type":"plan","steps":[]}`),
+		json.RawMessage(`{"type":"approval","id":"a2","grant":"grt_9"}`),
+		json.RawMessage(`{"type":"approval","id":"a3","grant":"grt_1"}`),
+	}
+	text, err := tl.State(context.Background(), shown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, `"id":"grt_1","status":"connected","tools":["stripe_refund"]`) || !strings.Contains(text, "grt_9: planque answered 404: no such grant") {
+		t.Fatalf("State said %q", text)
+	}
+	if strings.Index(text, "grt_9") > strings.Index(text, "grt_1") {
+		t.Fatalf("the grants aren't in the order last shown: %q", text)
+	}
+	for _, s := range *seen {
+		if !strings.HasPrefix(s, "GET ") || !strings.Contains(s, "Bearer k_setup") {
+			t.Fatalf("State made %q", s)
+		}
+	}
+	*seen = nil
+	if text, _ := tl.State(context.Background(), shown[1:2]); text != "" || len(*seen) != 0 {
+		t.Fatalf("with no grant shown, State said %q and asked planque %d times", text, len(*seen))
+	}
+}

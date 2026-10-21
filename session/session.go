@@ -74,6 +74,15 @@ const (
 	// id), nothing else from the input (kiff/tafs#167). It outlives the
 	// call's own events, so the owner's Record can say which payment.
 	CallRef EventKind = "call_ref"
+	// KeptRead is what a read-only tool call read in a chat, the call and its
+	// result together (KeptReadBody), kept for the chat's next runs while it
+	// goes on (UntilIdle), sealed (kiff/agents#172). It never leaves the
+	// runner: a session's events as the API shows them leave it out.
+	KeptRead EventKind = "kept_read"
+	// Summary is the agent's summary of a chat's earlier runs, written once
+	// they no longer fit its history (SummaryBody): kept like the agent's
+	// messages, so the runs it covers needn't be read again.
+	Summary EventKind = "summary"
 )
 
 // EventKinds lists every kind a Policy must have a rule for, so it can be
@@ -82,9 +91,10 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 
 // Defaulted are kinds a Policy may leave out: each takes the rule of the kind
 // named here. A kind added later goes here, so a stored policy written before
-// it keeps working. A component, a trial's write and a call's reference are
-// kept like the agent's messages.
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage}
+// it keeps working. A component, a trial's write, a call's reference and a
+// summary are kept like the agent's messages. A KeptRead left out is not
+// written at all (Policy.Rule).
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires
@@ -100,6 +110,14 @@ type Event struct {
 	Body     json.RawMessage `json:"body"`
 	Expires  time.Time       `json:"expires,omitzero"`
 	UntilEnd bool            `json:"until_end,omitempty"`
+	// seal: the Recording seals Body before the Store gets it.
+	seal bool
+}
+
+// Shown is events without what only the runner reads (KeptRead): what any
+// view of a session, its API, a stream or an operator's page, may show.
+func Shown(events []Event) []Event {
+	return slices.DeleteFunc(events, func(e Event) bool { return e.Kind == KeptRead })
 }
 
 // SortEvents puts a session's events in the order a Store returns them: run by
@@ -118,6 +136,26 @@ func SortEvents(events []Event) {
 	slices.SortFunc(events, func(a, b Event) int {
 		return cmp.Or(first[a.Run].time.Compare(first[b.Run].time), cmp.Compare(a.Run, b.Run), cmp.Compare(a.Seq, b.Seq))
 	})
+}
+
+// KeptReadBody is the body of a KeptRead event, before it is sealed: one
+// read-only call and what it returned, as the model saw them.
+type KeptReadBody struct {
+	CallID string          `json:"call_id"`
+	Tool   string          `json:"tool"`
+	Input  json.RawMessage `json:"input"`
+	Result string          `json:"result"`
+}
+
+// SummaryBody is the body of a Summary event: the agent's summary of the
+// session's runs up to and including Through, the last run it covers. The
+// owner's first message is kept as they wrote it (Opening), whatever the
+// summary says of it.
+type SummaryBody struct {
+	Text    string `json:"text"`
+	Opening string `json:"opening,omitempty"`
+	Through string `json:"through"`
+	Runs    int    `json:"runs"`
 }
 
 // UsageBody is the body of a Usage event: what one model call used and cost.

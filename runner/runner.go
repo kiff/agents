@@ -12,11 +12,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/kiff/agents/agent"
-	"github.com/kiff/agents/chat"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
@@ -65,6 +63,9 @@ type Runner struct {
 	// until KIFF's operation IDs are recorded (step 4): a paused run can't
 	// continue without it.
 	Collect func(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error)
+	// Sealer seals what a chat keeps of its reads for its next runs
+	// (session.KeptRead), and opens it for them. Nil: nothing is kept.
+	Sealer session.Sealer
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
@@ -241,7 +242,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
 	}
-	history, err := rn.history(ctx, sess, events, r, d.History)
+	p, err := rn.past(ctx, sess, events, r, d, a.Tools)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its history: %w", err))
 	}
@@ -249,12 +250,18 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, err)
 	}
+	rec.Sealing(rn.Sealer)
 
 	if !paused {
 		recording, err := rec.Start(ctx, sess, r.ID, r.Created)
 		if err != nil {
 			return x.notRun(ctx, r, false, d.Keep, FailedStart, fmt.Errorf("starting its recording: %w", err))
 		}
+		if len(p.fold) > 0 {
+			a.Spent = rn.fold(loop, a, recording, &p)
+		}
+		history, _ := p.history()
+		a.Preface = p.preface(loop, a.Tools, rn.now())
 		out, msgs, err := agent.Run(loop, a, recording, history, r.Input, emit)
 		out, err = x.more(loop, a, recording, msgs, out, err, emit)
 		return x.stop(ctx, recording, d.Keep, out, err)
@@ -265,6 +272,11 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	recording, err := rec.Resume(ctx, sess, r.ID)
 	if err != nil {
 		return x.notRun(ctx, r, true, d.Keep, FailedStart, fmt.Errorf("resuming its recording: %w", err))
+	}
+	// Summarised before KIFF is asked, so nothing slow comes between
+	// collecting and recording.
+	if len(p.fold) > 0 {
+		a.Spent = rn.fold(loop, a, recording, &p)
 	}
 	held, err := rn.Collect(ctx, a, r.Requirements)
 	if err != nil {
@@ -277,6 +289,8 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 			}
 		}
 	}
+	history, _ := p.history()
+	a.Preface = p.preface(loop, a.Tools, rn.now())
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
 	out, err = x.more(loop, a, recording, msgs, out, err, emit)
 	return x.stop(ctx, recording, d.Keep, out, err)
@@ -357,46 +371,25 @@ func (rn *Runner) Expires(ctx context.Context, r run.Run, now time.Time) time.Ti
 	return expires(d.Keep, now)
 }
 
-// history is what the model gets before current: the owner's and the agent's
-// messages of the session's last n finished runs created before it, in
-// order. A run still going, or paused, is left out until it ends. Which runs
-// came before is read from the runs themselves, not from their events: the
-// keep rules may have dropped all of the current run's own while it was
-// paused.
-func (rn *Runner) history(ctx context.Context, sess session.Session, events []session.Event, current run.Run, n int) ([]model.Message, error) {
-	n = min(n, MaxHistory)
-	if n <= 0 {
-		return nil, nil
+// fold summarises the runs of p that no longer fit, after its summary, and
+// records the new summary in rec, so later runs start from it. A summary
+// that fails leaves those runs out, said so (DroppedNote). It returns what
+// summarising cost.
+func (rn *Runner) fold(ctx context.Context, a agent.Agent, rec *session.Recording, p *past) int64 {
+	prior, runs := "", 0
+	if p.summary != nil {
+		prior, runs = p.summary.Text, p.summary.Runs
 	}
-	var order []string // the session's runs, as SortEvents orders them
-	for _, e := range events {
-		if len(order) == 0 || order[len(order)-1] != e.Run {
-			order = append(order, e.Run)
-		}
+	text, cost, err := agent.Summarize(ctx, a, rec, prior, flatten(p.fold))
+	if err != nil {
+		p.dropped, p.fold = true, nil
+		return cost
 	}
-	finished := map[string]bool{}
-	for i := len(order) - 1; i >= 0 && len(finished) < n; i-- {
-		if order[i] == current.ID || slices.Contains(sess.Held, order[i]) {
-			continue
-		}
-		r, err := rn.Runs.Get(ctx, sess.Tenant, order[i])
-		if errors.Is(err, run.ErrNotFound) {
-			continue // its run is gone: deleted, or expired before its events
-		}
-		if err != nil {
-			return nil, err
-		}
-		if r.Status.Final() && r.Created.Before(current.Created) {
-			finished[order[i]] = true
-		}
-	}
-	var kept []session.Event
-	for _, e := range events {
-		if finished[e.Run] {
-			kept = append(kept, e)
-		}
-	}
-	return chat.Conversation(kept), nil
+	s := session.SummaryBody{Text: text, Opening: p.opening, Through: p.fold[len(p.fold)-1].id, Runs: runs + len(p.fold)}
+	// Not recorded, the summary still serves this run; the next one makes it again.
+	_ = rec.Record(session.Summary, s)
+	p.summary, p.fold = &s, nil
+	return cost
 }
 
 // failed is what the Error of a run whose loop failed with err says.
