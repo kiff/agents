@@ -182,7 +182,7 @@ func (d Definition) Check() error {
 		return fmt.Errorf("registry: an id is 1 to %d letters, digits, '-', '_' or '.'", maxID)
 	case d.Model == "":
 		return errors.New("registry: a model is required")
-	case d.Price.Input <= 0 || d.Price.Output <= 0 || d.Price.CacheRead < 0 || d.Price.CacheWrite < 0:
+	case d.Price.Input <= 0 || d.Price.Output <= 0 || d.Price.CacheRead < 0 || d.Price.CacheWrite < 0 || d.Price.CacheWrite1h < 0:
 		return errors.New("registry: a price needs positive input and output, and no negative cache price")
 	case d.MaxTokens <= 0:
 		return errors.New("registry: max tokens must be positive")

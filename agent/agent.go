@@ -537,7 +537,7 @@ func (a Agent) capped(out Outcome) Stop {
 // turn is one model turn, offered tools (to call, unless noToolUse),
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, out *Outcome, emit func(Event)) (model.Reply, error) {
-	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches()}
+	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour()}
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	if err != nil {
 		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})
@@ -547,7 +547,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	out.Cost += cost
 	out.Turns++
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
-		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CostMicroUSD: cost,
+		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost,
 		Context: a.context(ctx, req)}); err != nil {
 		return reply, err
 	}

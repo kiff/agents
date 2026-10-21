@@ -81,6 +81,10 @@ type Request struct {
 	// next turn reads them from the cache. Writing the cache costs more than
 	// plain input, so set it only when the turn's Price counts it.
 	Cache bool
+	// CacheLong keeps the cached shared part (tools and system prompt) an
+	// hour instead of five minutes. Set it only when the turn's Price counts
+	// an hour's writes (Price.CachesAnHour).
+	CacheLong bool
 }
 
 // Efforts are the effort levels a Request may name, lowest first.
@@ -103,6 +107,9 @@ type Usage struct {
 	OutputTokens int64
 	CacheRead    int64
 	CacheWrite   int64
+	// CacheWrite1h is what the turn wrote to the cache for an hour, apart
+	// from CacheWrite (five minutes): it costs more (Price.CacheWrite1h).
+	CacheWrite1h int64
 }
 
 // Reply is a whole turn: its blocks in order (text and tool calls), why it
@@ -131,16 +138,27 @@ type Price struct {
 	Output     int64
 	CacheRead  int64
 	CacheWrite int64
+	// CacheWrite1h is what writing to the cache for an hour costs. Set, the
+	// part every turn and run of an agent shares (its tools and system
+	// prompt) is kept an hour, so an owner who writes again after a pause
+	// doesn't wait while it is read again; the conversation stays five
+	// minutes. Zero: everything is kept five minutes.
+	CacheWrite1h int64
 }
 
 // Caches says whether p counts cache tokens, so a turn at p may ask for the
 // cache (Request.Cache).
 func (p Price) Caches() bool { return p.CacheRead > 0 && p.CacheWrite > 0 }
 
+// CachesAnHour says whether p counts an hour's cache writes too, so a turn at
+// p may keep its shared part an hour (Request.CacheLong).
+func (p Price) CachesAnHour() bool { return p.Caches() && p.CacheWrite1h > 0 }
+
 // Cost is what u costs at p, in millionths of a US dollar, rounded up so a
 // cap is never undercounted.
 func (p Price) Cost(u Usage) int64 {
-	total := u.InputTokens*p.Input + u.OutputTokens*p.Output + u.CacheRead*p.CacheRead + u.CacheWrite*p.CacheWrite
+	total := u.InputTokens*p.Input + u.OutputTokens*p.Output + u.CacheRead*p.CacheRead + u.CacheWrite*p.CacheWrite +
+		u.CacheWrite1h*p.CacheWrite1h
 	return (total + 999_999) / 1_000_000
 }
 

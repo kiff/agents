@@ -108,7 +108,7 @@ func contextOf(events []session.Event) (Context, error) {
 		c.Turns++
 		c.PromptTokens += u.Prompt()
 		c.CacheReadTokens += u.CacheRead
-		c.CacheWriteTokens += u.CacheWrite
+		c.CacheWriteTokens += u.CacheWrite + u.CacheWrite1h
 		c.PeakPromptTokens = max(c.PeakPromptTokens, u.Prompt())
 		if u.Context != nil {
 			c.PeakResultsBytes = max(c.PeakResultsBytes, u.Context.ToolResultsBytes)

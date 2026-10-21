@@ -325,6 +325,65 @@ func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
 	}
 }
 
+// An agent whose price counts an hour's writes keeps the shared prefix (its
+// tools and system prompt) an hour, and the conversation five minutes: an
+// owner's next message often comes after a pause (kiff/tafs#138, item 58).
+func TestCacheLongKeepsThePrefixAnHour(t *testing.T) {
+	ttl := func(v any) any {
+		m, _ := v.(map[string]any)
+		c, _ := m["cache_control"].(map[string]any)
+		return c["ttl"]
+	}
+	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "go"}}}}
+	body := sent(t, model.Request{Model: "m", MaxTokens: 1, System: "s", Messages: msgs, Cache: true, CacheLong: true})
+	sys := asList(body["system"])
+	last := asList(asList(body["messages"])[0].(map[string]any)["content"])[0]
+	if ttl(sys[len(sys)-1]) != "1h" || ttl(last) != nil {
+		t.Fatalf("system ttl %v, last message ttl %v", ttl(sys[len(sys)-1]), ttl(last))
+	}
+	short := sent(t, model.Request{Model: "m", MaxTokens: 1, System: "s", Messages: msgs, Cache: true})
+	if sys := asList(short["system"]); ttl(sys[len(sys)-1]) != nil {
+		t.Fatalf("five minutes: system ttl %v", ttl(sys[len(sys)-1]))
+	}
+}
+
+// The hour's cache writes are counted apart, priced at their own rate.
+func TestAnHoursCacheWritesAreCountedApart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":1300,"cache_creation":{"ephemeral_1h_input_tokens":1000,"ephemeral_5m_input_tokens":300}}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+			`{"type":"message_stop"}`,
+		} {
+			var head struct{ Type string }
+			_ = json.Unmarshal([]byte(ev), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, ev)
+		}
+	}))
+	defer srv.Close()
+	m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("k"), option.WithMaxRetries(0))
+	reply, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 8, System: "s", Cache: true, CacheLong: true,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "go"}}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Usage.CacheWrite != 300 || reply.Usage.CacheWrite1h != 1000 {
+		t.Fatalf("usage %+v", reply.Usage)
+	}
+	p := model.Price{Input: 4_000_000, Output: 20_000_000, CacheRead: 400_000, CacheWrite: 5_000_000, CacheWrite1h: 8_000_000}
+	// 5*4 + 2*20 + 300*5 + 1000*8 = 9560 millionths of a dollar per million: 10 rounded up.
+	if got := p.Cost(reply.Usage); got != (5*4_000_000+2*20_000_000+300*5_000_000+1000*8_000_000+999_999)/1_000_000 {
+		t.Fatalf("cost %d", got)
+	}
+	if !p.CachesAnHour() || (model.Price{Input: 1, Output: 1, CacheRead: 1, CacheWrite: 1}).CachesAnHour() {
+		t.Fatal("CachesAnHour")
+	}
+}
+
 // The context window comes from the Models API, asked once per model; a
 // failure, asked without retries, is remembered too.
 func TestTheWindowIsAskedOnce(t *testing.T) {
