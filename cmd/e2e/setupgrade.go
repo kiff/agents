@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -149,6 +150,28 @@ var counted = map[string]bool{"brief": true, "names the agent from the taf's nam
 type modes struct {
 	live []string // tools pinned to live mode
 	test bool     // a tool pinned to test mode
+	// unchecked are the tools that move money without naming what they act
+	// on, or the read that says their currency (kiff/kiff-cloud#1299).
+	unchecked []string
+}
+
+// uncheckedMoney are a grant's tools that move money without naming what
+// they act on (resource_argument) and a read of the same grant that says
+// their currency (unit_lookup, by the read's name).
+func uncheckedMoney(tools []grantTool) []string {
+	var out []string
+	for _, t := range tools {
+		if t.AmountArg == "" {
+			continue
+		}
+		ok := t.ResourceArg != "" && t.UnitLookup != nil && slices.ContainsFunc(tools, func(r grantTool) bool {
+			return r.ReadOnly && r.Name != "" && r.Name == t.UnitLookup.Tool
+		})
+		if !ok {
+			out = append(out, t.Tool)
+		}
+	}
+	return out
 }
 
 // gradeSetup grades what Setup wrote, and the modes it pinned.
@@ -270,6 +293,15 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		add("marks no write read-only", eval.Grade{Why: "asked for as read-only, though the vendor doesn't mark it so: " + strings.Join(s.writesAsReads, ", ")})
 	} else {
 		add("marks no write read-only", eval.Grade{Pass: true})
+	}
+
+	// 10. A tool that moves money names what it acts on and the read that
+	// says its currency, so KIFF never counts one currency as another
+	// (kiff/kiff-cloud#1299) and the owner's record names the payment.
+	if len(m.unchecked) > 0 {
+		add("names each payment and its currency", eval.Grade{Why: "moves money without its resource and currency read: " + strings.Join(m.unchecked, ", ")})
+	} else {
+		add("names each payment and its currency", eval.Grade{Pass: true})
 	}
 	return out, nil
 }

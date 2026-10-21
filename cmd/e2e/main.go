@@ -767,6 +767,7 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		if err != nil {
 			return err
 		}
+		m.unchecked = append(m.unchecked, uncheckedMoney(g.Request.Tools)...)
 		for _, tool := range g.Request.Tools {
 			switch pinnedMode(tool.Fixed) {
 			case "live":
