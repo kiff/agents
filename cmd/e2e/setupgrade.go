@@ -110,6 +110,20 @@ func (s *said) texts() []string {
 				out = append(out, o.Label)
 			}
 		}
+		for _, q := range c.Questions {
+			for _, t := range []string{q.Text, q.Note} {
+				if strings.TrimSpace(t) != "" {
+					out = append(out, t)
+				}
+			}
+			for _, o := range q.Options {
+				for _, t := range []string{o.Label, o.Description} {
+					if strings.TrimSpace(t) != "" {
+						out = append(out, t)
+					}
+				}
+			}
+		}
 	}
 	return out
 }
@@ -313,13 +327,26 @@ var (
 	liveWords = []string{"live", "real", "producción", "en vivo"}
 )
 
-// modeChoice returns a confirm's test option, when it offers test and live.
+// modeChoice returns a confirm's test option, when it offers test and live,
+// or a questions card's, when one of its questions does.
 func modeChoice(c component) (test string, ok bool) {
-	if c.Type != "confirm" {
-		return "", false
+	switch c.Type {
+	case "confirm":
+		return modeOptions(c.Options)
+	case "questions":
+		for _, q := range c.Questions {
+			if test, ok := modeOptions(q.Options); ok {
+				return test, true
+			}
+		}
 	}
+	return "", false
+}
+
+// modeOptions returns the test option, when the options offer test and live.
+func modeOptions(options []option) (test string, ok bool) {
 	live := false
-	for _, o := range c.Options {
+	for _, o := range options {
 		l := strings.ToLower(o.Label + " " + o.Value)
 		switch {
 		case containsAny(l, testWords):
@@ -366,14 +393,22 @@ func confirms(s said) []string {
 	var out []string
 	for _, id := range s.order {
 		c := s.cards[id]
-		if c.Type != "confirm" {
-			continue
+		switch c.Type {
+		case "confirm":
+			out = append(out, choice(c.Text, c.Options))
+		case "questions":
+			for _, q := range c.Questions {
+				out = append(out, choice(q.Text, q.Options))
+			}
 		}
-		var labels []string
-		for _, o := range c.Options {
-			labels = append(labels, o.Label)
-		}
-		out = append(out, strings.TrimSpace(c.Text+" ["+strings.Join(labels, " | ")+"]"))
 	}
 	return out
+}
+
+func choice(text string, options []option) string {
+	var labels []string
+	for _, o := range options {
+		labels = append(labels, o.Label)
+	}
+	return strings.TrimSpace(text + " [" + strings.Join(labels, " | ") + "]")
 }

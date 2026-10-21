@@ -248,6 +248,8 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 				} else if len(c.Options) > 0 {
 					msg = fmt.Sprintf("[confirm %s] %s", c.ID, c.Options[0].Value)
 				}
+			case "questions":
+				msg = answerQuestions(c, "")
 			case "approval", "sign_in":
 				if c.Draft != "" {
 					return improvement{}, errors.New("Setup asked the owner to approve the version's draft in the chat: that would change the Cards the taf runs on now")
