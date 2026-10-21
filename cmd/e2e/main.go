@@ -1012,13 +1012,21 @@ func chargeTools(g grant) (reads, refunds []string) {
 			name = t.Tool
 		}
 		switch {
-		case t.Tool == "retrieve_charge":
+		case isChargeRead(t):
 			reads = append(reads, name)
 		case t.Tool == "create_refund", t.Tool == "stripe_api_write" && t.Fixed["stripe_api_operation_id"] == "PostRefunds":
 			refunds = append(refunds, name)
 		}
 	}
 	return reads, refunds
+}
+
+// isChargeRead says whether t reads one charge: the vendor's read for every
+// operation, pinned to the one that retrieves a charge (kiff/tafs#174). Its
+// fields come from stripe_api_details; a guessed one fails at the vendor,
+// and KIFF's currency check with it.
+func isChargeRead(t grantTool) bool {
+	return t.Tool == "stripe_api_read" && t.Fixed["stripe_api_operation_id"] == "GetChargesCharge"
 }
 
 // isTool says whether action, as KIFF names it (the grant's tool name with
@@ -1095,7 +1103,8 @@ func isRefund(action string) bool {
 
 // coversTheJob checks that the tools Setup asked for on g, from the fake
 // vendor's catalog, cover the whole refunds job: find the charges
-// (list_charges), check one (retrieve_charge), and refund it (create_refund,
+// (list_charges), check one (stripe_api_read pinned to retrieving a charge),
+// and refund it (create_refund,
 // or stripe_api_write pinned to refunds). Paying out the balance is never part
 // of it.
 func coversTheJob(g grant) error {
@@ -1105,9 +1114,12 @@ func coversTheJob(g grant) error {
 		if t.Tool == "stripe_api_write" && t.Fixed["stripe_api_operation_id"] == "PostRefunds" {
 			asked["create_refund"] = true
 		}
+		if isChargeRead(t) {
+			asked["read one charge"] = true
+		}
 	}
 	var missing []string
-	for _, need := range []string{"list_charges", "retrieve_charge", "create_refund"} {
+	for _, need := range []string{"list_charges", "read one charge", "create_refund"} {
 		if !asked[need] {
 			missing = append(missing, need)
 		}
