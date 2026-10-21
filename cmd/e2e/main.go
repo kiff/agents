@@ -672,6 +672,9 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 		return err
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
+	if raw := rawWords(g); raw != "" && len(g.Request.Tools) > 0 {
+		return fmt.Errorf("the approval shows the owner %s, not words", raw)
+	}
 	switch g.Status {
 	case "connected":
 	case "listed":
