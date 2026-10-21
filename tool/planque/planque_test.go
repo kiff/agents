@@ -224,13 +224,35 @@ func TestAgentIDIsNewEachTime(t *testing.T) {
 	}
 }
 
+// Setup reads a tool the owner approved for it (setup_reads), by the name
+// the grant lists, through planque's read (kiff/tafs#174).
+func TestReadPostsTheToolAndItsArguments(t *testing.T) {
+	var path, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		path, body = r.URL.Path, string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"fields"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	if text, isErr := call(t, tl, `{"action":"read","grant":"grt_1","tool":"stripe_api_details_x1","arguments":{"stripe_api_operation_id":"GetChargesCharge"}}`); isErr ||
+		path != "/v1/accounts/tnt_1/grants/grt_1/read" ||
+		body != `{"arguments":{"stripe_api_operation_id":"GetChargesCharge"},"tool":"stripe_api_details_x1"}` {
+		t.Fatalf("%s (error %v): %s %s", text, isErr, path, body)
+	}
+	if _, isErr := call(t, tl, `{"action":"read","grant":"grt_1"}`); !isErr {
+		t.Fatal("a read with no tool was sent")
+	}
+}
+
 // describe is gone (kiff/planque#23): the action is refused before planque.
 func TestThereIsNoDescribe(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = append(seen, r.URL.Path) }))
 	t.Cleanup(srv.Close)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog or tools") {
+	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog, tools or read") {
 		t.Fatalf("describe: %s", text)
 	}
 	if len(seen) != 0 {

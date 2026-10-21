@@ -69,20 +69,32 @@ func TestTafDefinitionFromTafs(t *testing.T) {
 }
 
 func TestCoversTheJob(t *testing.T) {
+	// "read" is the vendor's read for every operation, pinned to retrieving a
+	// charge (kiff/tafs#174); "read anything" is the same tool left open.
 	g := func(tools ...string) grant {
 		var out grant
 		for _, name := range tools {
+			switch name {
+			case "read":
+				name = "stripe_api_read"
+				out.Request.Tools = append(out.Request.Tools, grantTool{Tool: name, Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}})
+				continue
+			case "read anything":
+				name = "stripe_api_read"
+			}
 			out.Request.Tools = append(out.Request.Tools, grantTool{Tool: name})
 		}
 		return out
 	}
-	if err := coversTheJob(g("list_charges", "retrieve_charge", "create_refund")); err != nil {
+	if err := coversTheJob(g("list_charges", "read", "create_refund")); err != nil {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]grant{
-		"only acts":        g("create_refund"),
-		"can't check one":  g("list_charges", "create_refund"),
-		"pays out as well": g("list_charges", "retrieve_charge", "create_refund", "payout_balance"),
+		"only acts":              g("create_refund"),
+		"can't check one":        g("list_charges", "create_refund"),
+		"reads any operation":    g("list_charges", "read anything", "create_refund"),
+		"pays out as well":       g("list_charges", "read", "create_refund", "payout_balance"),
+		"the old dedicated read": g("list_charges", "retrieve_charge", "create_refund"),
 	} {
 		if coversTheJob(c) == nil {
 			t.Errorf("%s: passed", name)
@@ -141,13 +153,46 @@ func TestReadThenRefunded(t *testing.T) {
 	}
 }
 
+// Setup connects the field-listing tool alone first (kiff/tafs#174): the job is
+// covered by the grants together, as the e2e of 21 Oct read only that first one.
+func TestAllToolsCoverTheJobAcrossGrants(t *testing.T) {
+	var details, job grant
+	details.Request.Tools = []grantTool{{Tool: "stripe_api_details", ReadOnly: true}}
+	job.Request.Tools = []grantTool{{Tool: "list_charges"},
+		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}}, {Tool: "create_refund"}}
+	if coversTheJob(details) == nil {
+		t.Fatal("the field-listing grant alone covered the job")
+	}
+	all := allTools([]grant{details, job})
+	if err := coversTheJob(*all); err != nil || len(all.Request.Tools) != 4 {
+		t.Fatalf("both grants: %v, %d tools", err, len(all.Request.Tools))
+	}
+}
+
+// The account is pinned on every tool that takes it, reads included (kiff/tafs#138,
+// item 58): the owner's taf looked it up on every message.
+func TestPinsTheAccount(t *testing.T) {
+	var g grant
+	g.Request.Tools = []grantTool{{Tool: "list_charges"},
+		{Tool: "stripe_api_read", Name: "get_charge", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge", "stripe_context": "acct_1"}},
+		{Tool: "stripe_api_write", Name: "refund", Fixed: map[string]any{"stripe_api_operation_id": "PostRefunds", "stripe_context": "acct_1"}}}
+	if err := pinsTheAccount(g); err != nil {
+		t.Fatal(err)
+	}
+	g.Request.Tools[1].Fixed = map[string]any{"stripe_api_operation_id": "GetChargesCharge"}
+	if err := pinsTheAccount(g); err == nil || !strings.Contains(err.Error(), "get_charge") {
+		t.Fatalf("a read with the account open: %v", err)
+	}
+}
+
 // The grant's own names for the charge's read and the refund: a tool's name
 // when Setup gave one, else its vendor tool.
 func TestChargeTools(t *testing.T) {
 	var g grant
 	g.Request.Tools = []grantTool{
 		{Tool: "list_charges"},
-		{Tool: "retrieve_charge", Name: "get_charge", ReadOnly: true},
+		{Tool: "stripe_api_read", Name: "get_charge", ReadOnly: true, Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}},
+		{Tool: "stripe_api_read", Name: "get_payment", ReadOnly: true, Fixed: map[string]any{"stripe_api_operation_id": "GetPaymentIntentsIntent"}},
 		{Tool: "create_refund"},
 		{Tool: "stripe_api_write", Name: "refund", Fixed: map[string]any{"stripe_api_operation_id": "PostRefunds"}},
 		{Tool: "stripe_api_write", Name: "payout", Fixed: map[string]any{"stripe_api_operation_id": "PostPayouts"}},

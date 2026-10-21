@@ -213,8 +213,11 @@ type test struct {
 	rn       *runner.Runner
 	agents   *memory.Agents
 
-	secrets  []string // every secret value the runs must never record
-	grants   []string // planque grants this run connected
+	secrets []string // every secret value the runs must never record
+	grants  []string // planque grants this run connected
+	// refunds are the names the grant gave the refund (chargeTools), for the
+	// improve trial to count its refund by, as the taf's run is.
+	refunds  []string
 	cardIDs  []string // Cards the taf's draft issued
 	draftIDs []string
 	taf      string   // the taf's agent id, once handed over
@@ -838,6 +841,13 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)
+		// What Setup asked the owner to tap is Setup's own text in this test's
+		// chat, no account's data: shown so a miss can be read from CI.
+		if !c.Pass && c.Name == "asks its questions together" {
+			for i, a := range askedInOrder(t.said) {
+				fmt.Fprintf(t.cfg.log, "      %d. %s\n", i+1, oneLine(a))
+			}
+		}
 	}
 	fmt.Fprintf(t.cfg.log, "setup  %d/%d  %d messages, %d components  judge $%.4f\n", passed, len(checks),
 		len(t.said.messages), len(t.said.order), float64(t.cfg.judge.Spent())/1e6)
@@ -872,19 +882,23 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if err := t.agents.Put(ctx, taf); err != nil {
 		return err
 	}
-	var connected *grant
+	var grants []grant
 	for _, id := range t.grants {
 		if g, err := t.phone.grant(ctx, id); err == nil && g.Status == "connected" {
-			connected = &g
+			grants = append(grants, g)
 		}
 	}
-	if connected == nil {
+	if len(grants) == 0 {
 		return errors.New("no connected grant for the taf")
 	}
+	connected := allTools(grants)
 	if t.stripe == nil {
 		// The fake vendor lists tools to find, check and act on charges, and
 		// one the job never needs: Setup takes the first three (kiff/tafs#107).
 		if err := coversTheJob(*connected); err != nil {
+			return err
+		}
+		if err := pinsTheAccount(*connected); err != nil {
 			return err
 		}
 		t.logf("Setup gave the taf what the whole job needs: find the charges, check one, refund it")
@@ -983,6 +997,7 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		return fmt.Errorf("KIFF's activity: %w", err)
 	}
 	reads, refunds := chargeTools(*connected)
+	t.refunds = refunds
 	if err := readThenRefunded(act.Calls, tafID, reads, refunds); err != nil {
 		return err
 	}
@@ -1012,13 +1027,56 @@ func chargeTools(g grant) (reads, refunds []string) {
 			name = t.Tool
 		}
 		switch {
-		case t.Tool == "retrieve_charge":
+		case isChargeRead(t):
 			reads = append(reads, name)
 		case t.Tool == "create_refund", t.Tool == "stripe_api_write" && t.Fixed["stripe_api_operation_id"] == "PostRefunds":
 			refunds = append(refunds, name)
 		}
 	}
 	return reads, refunds
+}
+
+// allTools is the taf's tools across the grants this run connected: Setup
+// may connect the vendor's field-listing tool in a grant of its own first
+// (kiff/tafs#174), so the job's tools are the grants' together.
+func allTools(grants []grant) *grant {
+	all := grants[len(grants)-1]
+	all.Request.Tools = nil
+	for _, g := range grants {
+		all.Request.Tools = append(all.Request.Tools, g.Request.Tools...)
+	}
+	return &all
+}
+
+// pinsTheAccount checks that every one of the vendor's tools that takes the
+// account it acts in has it pinned, reads included (kiff/tafs#138, item 58):
+// left open, the taf looks it up on every message, one more model turn.
+func pinsTheAccount(g grant) error {
+	var open []string
+	for _, t := range g.Request.Tools {
+		if t.Tool != "stripe_api_read" && t.Tool != "stripe_api_write" {
+			continue
+		}
+		if _, ok := t.Fixed["stripe_context"]; !ok {
+			name := t.Name
+			if name == "" {
+				name = t.Tool
+			}
+			open = append(open, name)
+		}
+	}
+	if len(open) > 0 {
+		return fmt.Errorf("Setup left the account open on %s: the taf would look it up on every message", strings.Join(open, ", "))
+	}
+	return nil
+}
+
+// isChargeRead says whether t reads one charge: the vendor's read for every
+// operation, pinned to the one that retrieves a charge (kiff/tafs#174). Its
+// fields come from stripe_api_details; a guessed one fails at the vendor,
+// and KIFF's currency check with it.
+func isChargeRead(t grantTool) bool {
+	return t.Tool == "stripe_api_read" && t.Fixed["stripe_api_operation_id"] == "GetChargesCharge"
 }
 
 // isTool says whether action, as KIFF names it (the grant's tool name with
@@ -1095,7 +1153,8 @@ func isRefund(action string) bool {
 
 // coversTheJob checks that the tools Setup asked for on g, from the fake
 // vendor's catalog, cover the whole refunds job: find the charges
-// (list_charges), check one (retrieve_charge), and refund it (create_refund,
+// (list_charges), check one (stripe_api_read pinned to retrieving a charge),
+// and refund it (create_refund,
 // or stripe_api_write pinned to refunds). Paying out the balance is never part
 // of it.
 func coversTheJob(g grant) error {
@@ -1105,9 +1164,12 @@ func coversTheJob(g grant) error {
 		if t.Tool == "stripe_api_write" && t.Fixed["stripe_api_operation_id"] == "PostRefunds" {
 			asked["create_refund"] = true
 		}
+		if isChargeRead(t) {
+			asked["read one charge"] = true
+		}
 	}
 	var missing []string
-	for _, need := range []string{"list_charges", "retrieve_charge", "create_refund"} {
+	for _, need := range []string{"list_charges", "read one charge", "create_refund"} {
 		if !asked[need] {
 			missing = append(missing, need)
 		}
