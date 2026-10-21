@@ -1041,3 +1041,42 @@ func TestAContinuedRunKnowsWhatTheOwnerWrote(t *testing.T) {
 		t.Fatalf("the continued run read %+v first, want the input and the message it took", first)
 	}
 }
+
+// A gateway call that KIFF names its key and resource for leaves a call_ref,
+// kept after the run like the agent's messages while the call's own events
+// go (kiff/tafs#167): the Record names the payment from it. Only the
+// resource's value is kept, nothing else from the input; a call KIFF names no
+// resource for, or another tool's, leaves none.
+func TestAGatewayCallLeavesItsReference(t *testing.T) {
+	refund := &fakeTool{name: "refund", access: tool.Write, gateway: true,
+		result: tool.Result{Text: "refunded re_1", Invocation: "tc-88", Resource: "pi_9"}}
+	unnamed := &fakeTool{name: "lookup", access: tool.Read, gateway: true, result: tool.Result{Text: "ok", Invocation: "tc-89"}}
+	m := &script{replies: []model.Reply{
+		use("c1", "refund", `{"payment":"pi_9","amount":15000,"reason":"damaged"}`),
+		use("c2", "lookup", `{"q":"x"}`),
+		say("Done."),
+	}}
+	store, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund, unnamed), r, nil, "Refund pi_9.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refs []string
+	for _, e := range events {
+		switch e.Kind {
+		case session.CallRef:
+			refs = append(refs, string(e.Body))
+		case session.ToolCall, session.ToolResult:
+			t.Fatalf("the call outlived its run: %s", e.Kind)
+		}
+	}
+	if len(refs) != 1 || refs[0] != `{"invocation":"tc-88","value":"pi_9"}` {
+		t.Fatalf("call refs %v", refs)
+	}
+}

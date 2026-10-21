@@ -157,9 +157,18 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		}
 	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation)}
+	// What the call is on: the argument KIFF's Card scopes on, by the name
+	// KIFF gives (never a guess), and only a string value.
+	if name := str(m.ResourceArgument); name != "" {
+		var args map[string]json.RawMessage
+		if json.Unmarshal(input, &args) == nil {
+			out.Resource = str(args[name])
+		}
+	}
 	if _, trial := run.TrialFrom(ctx); trial {
-		// A trial never pauses: KIFF answers its writes with a decision.
-		out.Trial, out.State = m.Trial, ""
+		// A trial never pauses: KIFF answers its writes with a decision. It
+		// sends nothing, so there's nothing for the Record to name.
+		out.Trial, out.State, out.Resource = m.Trial, "", ""
 		return out, m, nil
 	}
 	if m.State == tool.StateHeld {
@@ -203,6 +212,9 @@ type meta struct {
 	// it gets the answer.
 	Retry         string          `json:"retry"`
 	Invocation    json.RawMessage `json:"invocation"`
+	// ResourceArgument names the argument the call's Card scopes on (the
+	// gateway tool's resource argument): its name, never its value.
+	ResourceArgument json.RawMessage `json:"resource_argument"`
 	OperationID   json.RawMessage `json:"operation_id"`
 	ExceptionID   json.RawMessage `json:"exception_id"`
 	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`

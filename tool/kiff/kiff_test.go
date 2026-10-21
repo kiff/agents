@@ -139,7 +139,7 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			} else if p.Name == "stripe_refund" && args["forwarded"] == true {
 				// Within its Card: sent, and KIFF names its key (kiff/tafs#167).
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_9"}},
-					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "invocation": "tc-88", "sent": "yes", "retry": "none"}}}
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "invocation": "tc-88", "resource_argument": "payment", "sent": "yes", "retry": "none"}}}
 			} else if p.Name == "stripe_refund" {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held: the owner answers on their phone."}},
 					"isError": true, "_meta": map[string]any{
@@ -210,20 +210,23 @@ func TestListsAndCallsToolsThroughTheGateway(t *testing.T) {
 	}
 }
 
-// A call KIFF sent within its Card keeps KIFF's key for it, so tafs can find
-// the call from its Record (kiff/tafs#167); it's recorded with the result.
+// A call KIFF sent within its Card keeps KIFF's key for it and, by the
+// argument KIFF names, what it acted on, so the Record can name the payment
+// (kiff/tafs#167).
 func TestAForwardedCallKeepsKIFFsKey(t *testing.T) {
 	srv, _ := gateway(t, false)
 	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := tools[1].Call(context.Background(), json.RawMessage(`{"forwarded":true}`))
-	if err != nil || got.IsError || got.Held() || got.Text != "refunded re_9" || got.Invocation != "tc-88" {
+	got, err := tools[1].Call(context.Background(), json.RawMessage(`{"forwarded":true,"payment":"pi_9","amount":15000}`))
+	if err != nil || got.IsError || got.Held() || got.Text != "refunded re_9" || got.Invocation != "tc-88" || got.Resource != "pi_9" {
 		t.Fatalf("forwarded = %+v %v", got, err)
 	}
+	// The key is recorded with the result; what it's on is not (the run keeps
+	// it as its call_ref, past the result).
 	raw, _ := json.Marshal(got)
-	if !strings.Contains(string(raw), `"invocation":"tc-88"`) {
+	if !strings.Contains(string(raw), `"invocation":"tc-88"`) || strings.Contains(string(raw), "pi_9") {
 		t.Fatalf("recorded result = %s", raw)
 	}
 }

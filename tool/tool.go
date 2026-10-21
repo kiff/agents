@@ -53,6 +53,10 @@ type Result struct {
 	// tafs can find this call from its Record (kiff/tafs#167). Empty for a
 	// tool that isn't KIFF's, or a gateway that doesn't say.
 	Invocation string `json:"invocation,omitempty"`
+	// Resource is what the call acts on (a payment's id), when KIFF names
+	// the argument its Card scopes on: kept apart from the result, as the
+	// run's call_ref, so the Record can name it after the run (kiff/tafs#167).
+	Resource string `json:"-"`
 	// Component is a UI component the tool shows the owner (the show tool,
 	// kiff/agents#91). The run records it as its own event, kept like the
 	// agent's messages; it is not part of the tool's recorded result.
