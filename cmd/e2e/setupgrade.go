@@ -37,7 +37,7 @@ var owners = map[string]owner{
 		facts: []string{
 			// Ask, not Stop (kiff/tafs#31): a refund over the per-call limit waits
 			// for the owner, who answers it on the phone.
-			"A single refund over 5 euros (500 cents) should come to me to approve on my phone first. Over a day, 50 euros at most. " +
+			"A single refund over 5 euros should come to me to approve on my phone first. Over a day, 50 euros at most. " +
 				"The taf should only make refunds, nothing else. Yes, you can connect to it.",
 			"Yes, that's right. Go ahead.",
 		}},
@@ -47,7 +47,7 @@ var owners = map[string]owner{
 				"nuestro proveedor de pagos; su servidor MCP es %s. Llama a la taf Reembolsos.", vendor)
 		},
 		facts: []string{
-			"Un reembolso de más de 5 euros (500 céntimos) tiene que venir a mí para aprobarlo en el móvil primero. Como mucho 50 euros al día. " +
+			"Un reembolso de más de 5 euros tiene que venir a mí para aprobarlo en el móvil primero. Como mucho 50 euros al día. " +
 				"La taf solo hace reembolsos, nada más. Sí, puedes conectarte.",
 			"Sí, así es. Adelante.",
 		}},

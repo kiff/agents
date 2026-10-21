@@ -47,7 +47,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"cards":{"type":"array","items":{"type":"object"},"description":"the taf's Cards, on the gateway domain, each as KIFF issues it: ` +
 			`{id, subject (the agent id), domain: \"gateway\", grants: [{action (a connected tool's name), per_action_max?: [{quantity: \"sum(<numeric argument>)\", max}]}], ` +
 			`aggregates (at least one): [{quantity: \"count\" or \"sum(<numeric argument>)\", limit, window: \"calendar_day\", \"rolling_1h\", \"rolling_24h\" or \"lifetime\"}], ` +
-			`on_exceed?: \"owner\" (held for the owner, the default) or \"refuse\"}"}},` +
+			`on_exceed?: \"owner\" (held for the owner, the default) or \"refuse\"}. ` +
+			`max and limit are in the argument's own units, as the call sends it: with the tool's amount_scale 2, 50.00 is 5000; with scale 0, 50. ` +
+			`Convert what the owner said into those units, and say it back in theirs."}},` +
 			`"required":["action","agent_id","cards"]}`),
 	}
 }
