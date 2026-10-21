@@ -71,13 +71,16 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
         run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 5 -owner-turns 14
+      # The role assumes only from main (infra/aws.sh), so a measure on a branch
+      # (eval/tafs-<sha>) keeps no full report: its log's scores are the result,
+      # and a red run means a check failed, not the upload.
       - uses: aws-actions/configure-aws-credentials@v4
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         with:
           role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
           aws-region: eu-west-1
       - name: The full report, to the private bucket
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         run: |
           key="reports/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
           for f in report.md results.json; do
