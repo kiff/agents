@@ -149,15 +149,21 @@ kiff/agents stops its side; KIFF refuses the agent's calls on its own.
   either the halt cancelled it or it sees the halt.
 - While halted, `Start` refuses every run, trials included
   (`registry.ErrHalted`); a stored one ends CANCELLED with `runner.FailedHalted`,
-  never started; a paused one records what KIFF answered for its held calls and
-  ends at its first checkpoint, before any model turn.
+  never started. A paused one is **not collected**: collecting an approved hold
+  is what has KIFF send it, and a halt holds here even when KIFF can't be asked.
+  Each held call is recorded as not sent (`runner.NotCollected`), and the run
+  ends CANCELLED with `runner.FailedHalted` at its first checkpoint, before any
+  model turn.
 - A resume keeps the halt's time. A run created at or before it never runs, so
   a retry or a queued invocation from before the halt can't come back.
 - An agent is halted while it or its tenant is. Resuming the tenant releases
   the agents halted only through it, those made during the halt too; an agent
   halted on its own stays halted.
-- A call already sent when the halt lands keeps whatever it returns. A halt
-  stops new sends; it doesn't undo what a vendor did.
+- **In flight:** a run already past its checkpoint keeps the calls of the turn
+  it is in: a write it is sending reaches KIFF, which refuses it once KIFF
+  holds the halt, and a vendor read under way (a gateway read) finishes. Each
+  keeps whatever it returns. A halt stops new sends; it doesn't undo what a
+  vendor did.
 
 ## Chat
 

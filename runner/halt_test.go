@@ -41,14 +41,25 @@ func TestNothingRunsWhileTheAgentIsHalted(t *testing.T) {
 	if !errors.Is(err, registry.ErrHalted) || got.Status != run.Cancelled || got.Error != runner.FailedHalted {
 		t.Fatalf("a run stored before the halt = %+v, %v; want it cancelled, not started", got, err)
 	}
+	// Its hold approved and not withdrawn (the halt could only mark it):
+	// collecting it would have KIFF send the approved refund, so it isn't
+	// collected. Each held call is recorded as not sent.
 	collected := 0
 	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
 		collected++
-		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "KIFF refused the call: the agent is halted", IsError: true}}}, nil
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded re_1"}}}, nil
 	}
-	got, err = f.r.Execute(ctx, "t1", paused.ID, nil)
-	if err != nil || got.Status != run.Cancelled || collected != 1 {
-		t.Fatalf("a paused run while halted = %+v, %v (collected %d); want KIFF's answer recorded, then cancelled", got, err, collected)
+	var results []string
+	got, err = f.r.Execute(ctx, "t1", paused.ID, func(e agent.Event) {
+		if e.Kind == agent.CallResult && e.Result != nil {
+			results = append(results, e.Result.Text)
+		}
+	})
+	if err != nil || got.Status != run.Cancelled || got.Error != runner.FailedHalted || collected != 0 {
+		t.Fatalf("a paused run while halted = %+v, %v (collected %d); want it cancelled, nothing collected", got, err, collected)
+	}
+	if len(results) != 1 || results[0] != runner.NotCollected {
+		t.Fatalf("the held call's result = %q; want it said not sent", results)
 	}
 	if len(f.model.requests()) != requests {
 		t.Fatal("the model was asked while the agent was halted")

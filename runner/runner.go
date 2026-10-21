@@ -47,8 +47,8 @@ const (
 	// started (kiff/tafs#107).
 	FailedSwitching = "the agent is switching versions, so the run didn't start"
 	// FailedHalted: the agent, or its tenant, was halted before the run
-	// started (kiff/kiff-cloud#1061).
-	FailedHalted = "the agent is halted, so the run didn't start"
+	// started or went on from a pause (kiff/kiff-cloud#1061).
+	FailedHalted = "the agent is halted, so the run didn't go on"
 )
 
 // ErrNoCollect means a paused run can't be continued: no Collect is set to get
@@ -252,10 +252,12 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// Checked once the run is claimed too, as the switch is: a halt cancels
 	// the agent's active runs once it is stored, so either it saw this one,
 	// or this sees the halt. A new run ends CANCELLED, never started. A
-	// paused one goes on only to record what KIFF answered for its held
-	// calls (KIFF refuses them while halted), and ends at its first
-	// checkpoint, before any model turn.
+	// paused one isn't collected: collecting an approved hold is what has
+	// KIFF send it, and a halt holds here even when KIFF can't be asked. It
+	// records each held call as not sent and ends at its first checkpoint,
+	// before any model turn.
 	if err := rn.notHalted(ctx, tenant, r.Agent, r.Created); err != nil {
+		x.halted = paused
 		if !paused {
 			next, serr := x.saveStop(ctx, func(n *run.Run) error {
 				n.Status, n.Cancel, n.Error, n.Expires = run.Cancelled, true, FailedHalted, expires(nil, rn.now())
@@ -325,11 +327,16 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if len(p.fold) > 0 {
 		a.Spent = rn.fold(loop, a, recording, &p)
 	}
-	held, err := rn.Collect(ctx, a, r.Requirements)
-	if err != nil {
+	var held []agent.ToolResultBody
+	if x.halted {
+		held = notCollected(r.Requirements)
+	} else if held, err = rn.Collect(ctx, a, r.Requirements); err != nil {
 		return x.repause(ctx, recording, r, fmt.Errorf("collecting its held calls: %w", err))
 	}
 	for i := range held {
+		if x.halted {
+			break // never asked of KIFF: not an outcome to explain
+		}
 		for _, q := range r.Requirements {
 			if q.CallID == held[i].CallID {
 				held[i].Result = HeldOutcome(q, held[i].Result)
@@ -341,6 +348,20 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
 	out, err = x.more(loop, a, recording, msgs, out, err, emit)
 	return x.stop(ctx, recording, d.Keep, out, err)
+}
+
+// NotCollected is a held call's result when the run's agent was halted before
+// it was collected (kiff/kiff-cloud#1061): nothing asked KIFF for it, so it
+// wasn't sent.
+const NotCollected = "The agent was halted before this call was collected. It was not sent."
+
+// notCollected is each requirement's result as NotCollected.
+func notCollected(reqs []run.Requirement) []agent.ToolResultBody {
+	out := make([]agent.ToolResultBody, 0, len(reqs))
+	for _, q := range reqs {
+		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: NotCollected, IsError: true}})
+	}
+	return out
 }
 
 // HeldOutcome is a collected held call's result, opening with what happened
@@ -478,6 +499,10 @@ type execution struct {
 	// turn has read yet. A run that fails before one does gives them back
 	// (stop), so the caller sends them on.
 	unread []int
+	// halted: the agent was halted when this paused run was claimed, so its
+	// held calls aren't collected (kiff/kiff-cloud#1061), and it ends
+	// CANCELLED saying so.
+	halted bool
 }
 
 // cancelled is the loop's checkpoint: whether the run was asked to stop. A
@@ -662,6 +687,9 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			}
 		case out.Stop == agent.Cancelled:
 			n.Status, n.Stop, n.Output = run.Cancelled, string(out.Stop), out.Text
+			if x.halted {
+				n.Error = FailedHalted
+			}
 		default:
 			n.Status, n.Stop, n.Output, n.Refusal = run.Completed, string(out.Stop), out.Text, out.Refusal
 		}
