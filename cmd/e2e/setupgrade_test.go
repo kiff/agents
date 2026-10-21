@@ -241,3 +241,26 @@ func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
 		}
 	}
 }
+
+// A tool that moves money names its resource and a read of the same grant,
+// by name, that says its currency (kiff/kiff-cloud#1299).
+func TestUncheckedMoney(t *testing.T) {
+	lookup := &struct {
+		Tool string `json:"tool"`
+	}{Tool: "get_charge"}
+	read := grantTool{Tool: "stripe_api_read", Name: "get_charge", ReadOnly: true}
+	refund := grantTool{Tool: "stripe_api_write", Name: "refund_payment", AmountArg: "amount", ResourceArg: "charge", UnitLookup: lookup}
+	if got := uncheckedMoney([]grantTool{refund, read}); len(got) != 0 {
+		t.Fatalf("checked refund: %v", got)
+	}
+	noResource, noLookup, noRead := refund, refund, refund
+	noResource.ResourceArg, noLookup.UnitLookup = "", nil
+	for name, tools := range map[string][]grantTool{"no resource": {noResource, read}, "no lookup": {noLookup, read}, "no such read": {noRead}} {
+		if got := uncheckedMoney(tools); len(got) != 1 {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+	if got := uncheckedMoney([]grantTool{read}); len(got) != 0 {
+		t.Fatalf("a read alone: %v", got)
+	}
+}

@@ -71,11 +71,7 @@ func TestCoversTheJob(t *testing.T) {
 	g := func(tools ...string) grant {
 		var out grant
 		for _, name := range tools {
-			out.Request.Tools = append(out.Request.Tools, struct {
-				Tool  string         `json:"tool"`
-				Name  string         `json:"name"`
-				Fixed map[string]any `json:"fixed_arguments"`
-			}{Tool: name})
+			out.Request.Tools = append(out.Request.Tools, grantTool{Tool: name})
 		}
 		return out
 	}

@@ -162,6 +162,19 @@ func (p *phone) publicKey() string {
 
 func (p *phone) accountPath() string { return "/v1/accounts/" + url.PathEscape(p.tenant) }
 
+// grantTool is one tool of a grant, as asked for.
+type grantTool struct {
+	Tool        string         `json:"tool"`
+	Name        string         `json:"name"`
+	Fixed       map[string]any `json:"fixed_arguments"`
+	ReadOnly    bool           `json:"read_only"`
+	AmountArg   string         `json:"amount_argument"`
+	ResourceArg string         `json:"resource_argument"`
+	UnitLookup  *struct {
+		Tool string `json:"tool"`
+	} `json:"unit_lookup"`
+}
+
 // grant is a grant as the phone reads it.
 type grant struct {
 	ID     string   `json:"id"`
@@ -172,11 +185,7 @@ type grant struct {
 	Reason string   `json:"reason"`
 	// Request is what the owner approved: the tools, as asked for.
 	Request struct {
-		Tools []struct {
-			Tool  string         `json:"tool"`
-			Name  string         `json:"name"`
-			Fixed map[string]any `json:"fixed_arguments"`
-		} `json:"tools"`
+		Tools []grantTool `json:"tools"`
 	} `json:"request"`
 	// Events is the grant's record, such as "read list_accounts at …" when
 	// Setup read what the sign-in covers (kiff/planque#14).
