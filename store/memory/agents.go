@@ -17,6 +17,7 @@ type Agents struct {
 	defs map[[2]string]registry.Definition // by tenant, id: the live one
 	vers map[[2]string][]version           // by tenant, id: every version, oldest first
 	sw   map[[2]string]registry.Switching  // by tenant, id: a switch under way
+	halt map[[2]string]registry.Halt       // by tenant, id (registry.Tenant: the tenant's own)
 	// Now stamps a version's creation; nil is time.Now.
 	Now func() time.Time
 }
@@ -29,7 +30,7 @@ type version struct {
 
 // NewAgents returns an empty registry.
 func NewAgents() *Agents {
-	return &Agents{defs: map[[2]string]registry.Definition{}, vers: map[[2]string][]version{}, sw: map[[2]string]registry.Switching{}}
+	return &Agents{defs: map[[2]string]registry.Definition{}, vers: map[[2]string][]version{}, sw: map[[2]string]registry.Switching{}, halt: map[[2]string]registry.Halt{}}
 }
 
 func (a *Agents) now() time.Time {
@@ -96,6 +97,9 @@ func (a *Agents) Delete(_ context.Context, tenant, id string) error {
 	delete(a.defs, [2]string{tenant, id})
 	delete(a.vers, [2]string{tenant, id})
 	delete(a.sw, [2]string{tenant, id})
+	if id != registry.Tenant {
+		delete(a.halt, [2]string{tenant, id})
+	}
 	return nil
 }
 
@@ -225,4 +229,40 @@ func (a *Agents) SetCards(_ context.Context, tenant, id string, n int, cards []r
 	}
 	vs[n-1].v.Cards = slices.Clone(cards)
 	return nil
+}
+
+func (a *Agents) Halt(_ context.Context, tenant, id string, at time.Time) (registry.Halt, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{tenant, id}
+	if _, ok := a.defs[k]; !ok && id != registry.Tenant {
+		return registry.Halt{}, registry.ErrNotFound
+	}
+	h := a.halt[k]
+	if !h.On {
+		h = registry.Halt{On: true, At: at.UTC()}
+		a.halt[k] = h
+	}
+	return h, nil
+}
+
+func (a *Agents) Resume(_ context.Context, tenant, id string) (registry.Halt, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{tenant, id}
+	if _, ok := a.defs[k]; !ok && id != registry.Tenant {
+		return registry.Halt{}, registry.ErrNotFound
+	}
+	h, ok := a.halt[k]
+	if ok {
+		h.On = false
+		a.halt[k] = h
+	}
+	return h, nil
+}
+
+func (a *Agents) Halted(_ context.Context, tenant, id string) (registry.Halt, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.halt[[2]string{tenant, id}], nil
 }

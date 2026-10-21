@@ -446,3 +446,21 @@ func TestTheKeyedModelKnowsTheWindow(t *testing.T) {
 		t.Fatal("a model with no window gave one")
 	}
 }
+
+// A firing of a halted agent is skipped, not retried: a retry would run it
+// once resumed, and nothing from before a halt runs (kiff/kiff-cloud#1061).
+func TestAFiringOfAHaltedAgentIsSkipped(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	if _, err := agents.Halt(ctx, "t1", "payouts", time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	if err := f.fire(ctx, fi); err != nil {
+		t.Fatalf("a firing of a halted agent = %v; want it skipped", err)
+	}
+	if _, err := runs.Get(ctx, "t1", fi.Key()); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("a halted agent's firing stored a run: %v", err)
+	}
+}

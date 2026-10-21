@@ -46,6 +46,9 @@ const (
 	// FailedSwitching: the agent began switching versions before the run
 	// started (kiff/tafs#107).
 	FailedSwitching = "the agent is switching versions, so the run didn't start"
+	// FailedHalted: the agent, or its tenant, was halted before the run
+	// started (kiff/kiff-cloud#1061).
+	FailedHalted = "the agent is halted, so the run didn't start"
 )
 
 // ErrNoCollect means a paused run can't be continued: no Collect is set to get
@@ -95,6 +98,11 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		case !errors.Is(err, run.ErrNotFound):
 			return run.Run{}, err
 		}
+	}
+	// Nothing of a halted agent, or of one whose tenant is halted, starts:
+	// not even a trial, whose reads still reach a vendor (kiff/kiff-cloud#1061).
+	if err := rn.notHalted(ctx, s.Tenant, s.Agent, time.Time{}); err != nil {
+		return run.Run{}, err
 	}
 	trial := s.Trigger == run.ByTrial
 	if !trial && (s.Version != 0 || s.Draft != "") {
@@ -181,6 +189,24 @@ func (rn *Runner) notSwitching(ctx context.Context, tenant, agent string) error 
 	return nil
 }
 
+// notHalted is registry.ErrHalted while the agent or its tenant is halted
+// (kiff/kiff-cloud#1061), or for a run created at or before the latest halt
+// (created zero: none to check), so what came before a halt never runs, even
+// once resumed; nil otherwise.
+func (rn *Runner) notHalted(ctx context.Context, tenant, agent string, created time.Time) error {
+	h, err := registry.Halts(ctx, rn.Builder.Agents, tenant, agent)
+	if err != nil {
+		return fmt.Errorf("runner: reading whether the agent is halted: %w", err)
+	}
+	if h.On {
+		return registry.ErrHalted
+	}
+	if !created.IsZero() && h.Before(created) {
+		return fmt.Errorf("%w: the run is from before its latest halt", registry.ErrHalted)
+	}
+	return nil
+}
+
 // Execute claims the run and runs it to its next stop, passing each event to
 // emit (nil: none). A PENDING run starts from its input; a PAUSED one, once
 // KIFF has resolved all it waits for, continues from the turn it paused in
@@ -220,6 +246,27 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if r.Trigger != run.ByTrial {
 		if err := rn.notSwitching(ctx, tenant, r.Agent); err != nil {
 			return x.notRun(ctx, r, paused, nil, FailedSwitching, err)
+		}
+	}
+
+	// Checked once the run is claimed too, as the switch is: a halt cancels
+	// the agent's active runs once it is stored, so either it saw this one,
+	// or this sees the halt. A new run ends CANCELLED, never started. A
+	// paused one goes on only to record what KIFF answered for its held
+	// calls (KIFF refuses them while halted), and ends at its first
+	// checkpoint, before any model turn.
+	if err := rn.notHalted(ctx, tenant, r.Agent, r.Created); err != nil {
+		if !paused {
+			next, serr := x.saveStop(ctx, func(n *run.Run) error {
+				n.Status, n.Cancel, n.Error, n.Expires = run.Cancelled, true, FailedHalted, expires(nil, rn.now())
+				return nil
+			})
+			return next, errors.Join(err, serr)
+		}
+		if !r.Cancel {
+			if r, err = x.save(ctx, func(n *run.Run) error { n.Cancel = true; return nil }); err != nil {
+				return x.notRun(ctx, r, true, nil, "", err)
+			}
 		}
 	}
 
