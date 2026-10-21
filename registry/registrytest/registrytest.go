@@ -200,6 +200,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 	versions(t, newStore)
 	switching(t, newStore)
 	cards(t, newStore)
+	trials(t, newStore)
 
 }
 
@@ -423,6 +424,107 @@ func cards(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 		if err := s.SetCards(ctx, "t1", "refunds", 9, want); !errors.Is(err, registry.ErrNoVersion) {
 			t.Fatalf("SetCards on no version = %v", err)
+		}
+	})
+}
+
+// trials checks an agent's open trial (kiff/tafs#173): one per agent,
+// replaced whole, listed across tenants for the sweep, ended only by its
+// own ID, and summed up on its version once ended.
+func trials(t *testing.T, newStore func(t *testing.T) registry.Agents) {
+	ctx := context.Background()
+	at := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+
+	t.Run("OneOpenTrialPerAgent", func(t *testing.T) {
+		s := newStore(t)
+		first := registry.Trial{Tenant: "t1", Agent: "refunds", ID: "tr_1", N: 2, Draft: "drf_2", Started: at, Used: at}
+		if err := s.PutTrial(ctx, first); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("PutTrial on no agent = %v; want ErrNotFound", err)
+		}
+		for _, k := range [][2]string{{"t1", "refunds"}, {"t2", "refunds"}} {
+			if err := s.Put(ctx, Definition(k[0], k[1])); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, ok, err := s.Trial(ctx, "t1", "refunds"); ok || err != nil {
+			t.Fatalf("Trial before any = %v, %v; want none", ok, err)
+		}
+		if err := s.PutTrial(ctx, first); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := s.Trial(ctx, "t1", "refunds"); !ok || err != nil || !reflect.DeepEqual(got, first) {
+			t.Fatalf("Trial = %+v, %v, %v; want %+v", got, ok, err, first)
+		}
+		if _, ok, _ := s.Trial(ctx, "t2", "refunds"); ok {
+			t.Fatal("another tenant's agent of the same id has the trial")
+		}
+		// Its first message names its session; a later one, when it was used.
+		used := first
+		used.Session, used.Used = "sess_1", at.Add(time.Hour)
+		if err := s.PutTrial(ctx, used); err != nil {
+			t.Fatal(err)
+		}
+		other := registry.Trial{Tenant: "t2", Agent: "refunds", ID: "tr_9", N: 3, Draft: "drf_9", Started: at, Used: at}
+		if err := s.PutTrial(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		all, err := s.Trials(ctx)
+		if err != nil || len(all) != 2 || !reflect.DeepEqual(all[0], used) || !reflect.DeepEqual(all[1], other) {
+			t.Fatalf("Trials = %+v, %v", all, err)
+		}
+		// A trial that replaced it isn't ended by the old one's ID.
+		second := registry.Trial{Tenant: "t1", Agent: "refunds", ID: "tr_2", N: 3, Draft: "drf_3", Started: at, Used: at}
+		if err := s.PutTrial(ctx, second); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.EndTrial(ctx, "t1", "refunds", "tr_1"); err != nil {
+			t.Fatalf("EndTrial of a replaced one = %v; want nil", err)
+		}
+		if got, ok, _ := s.Trial(ctx, "t1", "refunds"); !ok || got.ID != "tr_2" {
+			t.Fatalf("after ending the replaced one, Trial = %+v, %v; want tr_2 open", got, ok)
+		}
+		if err := s.EndTrial(ctx, "t1", "refunds", "tr_2"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := s.Trial(ctx, "t1", "refunds"); ok || err != nil {
+			t.Fatalf("Trial after EndTrial = %v, %v; want none", ok, err)
+		}
+		if err := s.EndTrial(ctx, "t1", "refunds", "tr_2"); err != nil {
+			t.Fatalf("EndTrial with none = %v; want nil", err)
+		}
+		if err := s.Delete(ctx, "t2", "refunds"); err != nil {
+			t.Fatal(err)
+		}
+		if all, err := s.Trials(ctx); err != nil || len(all) != 0 {
+			t.Fatalf("Trials after Delete = %+v, %v; want none", all, err)
+		}
+	})
+
+	t.Run("AVersionKeepsItsEndedTrials", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Put(ctx, Definition("t1", "refunds")); err != nil {
+			t.Fatal(err)
+		}
+		v2 := Definition("t1", "refunds")
+		v2.Instructions = "Version two."
+		if _, err := s.PutVersion(ctx, v2, registry.Version{Note: "two"}); err != nil {
+			t.Fatal(err)
+		}
+		want := []registry.TrialSummary{
+			{Started: at, Ended: at.Add(time.Hour), Why: registry.TrialBack, Calls: 3, Held: 1},
+			{Started: at.Add(2 * time.Hour), Ended: at.Add(3 * time.Hour), Why: registry.TrialInstalled, Calls: 2, Refused: 1},
+		}
+		for _, sum := range want {
+			if err := s.AddTrialSummary(ctx, "t1", "refunds", 2, sum); err != nil {
+				t.Fatal(err)
+			}
+		}
+		vs, err := s.Versions(ctx, "t1", "refunds")
+		if err != nil || len(vs) != 2 || !reflect.DeepEqual(vs[1].Trials, want) || len(vs[0].Trials) != 0 || vs[1].Note != "two" {
+			t.Fatalf("Versions = %+v, %v", vs, err)
+		}
+		if err := s.AddTrialSummary(ctx, "t1", "refunds", 9, want[0]); !errors.Is(err, registry.ErrNoVersion) {
+			t.Fatalf("AddTrialSummary on no version = %v", err)
 		}
 	})
 }

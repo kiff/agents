@@ -17,6 +17,7 @@ type Agents struct {
 	defs map[[2]string]registry.Definition // by tenant, id: the live one
 	vers map[[2]string][]version           // by tenant, id: every version, oldest first
 	sw   map[[2]string]registry.Switching  // by tenant, id: a switch under way
+	tr   map[[2]string]registry.Trial      // by tenant, id: an open trial
 	// Now stamps a version's creation; nil is time.Now.
 	Now func() time.Time
 }
@@ -29,7 +30,7 @@ type version struct {
 
 // NewAgents returns an empty registry.
 func NewAgents() *Agents {
-	return &Agents{defs: map[[2]string]registry.Definition{}, vers: map[[2]string][]version{}, sw: map[[2]string]registry.Switching{}}
+	return &Agents{defs: map[[2]string]registry.Definition{}, vers: map[[2]string][]version{}, sw: map[[2]string]registry.Switching{}, tr: map[[2]string]registry.Trial{}}
 }
 
 func (a *Agents) now() time.Time {
@@ -96,6 +97,7 @@ func (a *Agents) Delete(_ context.Context, tenant, id string) error {
 	delete(a.defs, [2]string{tenant, id})
 	delete(a.vers, [2]string{tenant, id})
 	delete(a.sw, [2]string{tenant, id})
+	delete(a.tr, [2]string{tenant, id})
 	return nil
 }
 
@@ -141,6 +143,7 @@ func (a *Agents) Versions(_ context.Context, tenant, id string) ([]registry.Vers
 		v.Live = v.N == live.Version
 		v.Revisions = slices.Clone(v.Revisions)
 		v.Cards = slices.Clone(v.Cards)
+		v.Trials = slices.Clone(v.Trials)
 		out = append(out, v)
 	}
 	return out, nil
@@ -224,5 +227,56 @@ func (a *Agents) SetCards(_ context.Context, tenant, id string, n int, cards []r
 		return registry.ErrNoVersion
 	}
 	vs[n-1].v.Cards = slices.Clone(cards)
+	return nil
+}
+
+func (a *Agents) PutTrial(_ context.Context, t registry.Trial) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{t.Tenant, t.Agent}
+	if _, ok := a.defs[k]; !ok {
+		return registry.ErrNotFound
+	}
+	t.Started, t.Used = t.Started.UTC(), t.Used.UTC()
+	a.tr[k] = t
+	return nil
+}
+
+func (a *Agents) Trial(_ context.Context, tenant, id string) (registry.Trial, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.tr[[2]string{tenant, id}]
+	return t, ok, nil
+}
+
+func (a *Agents) Trials(context.Context) ([]registry.Trial, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := slices.Collect(maps.Values(a.tr))
+	slices.SortFunc(out, func(x, y registry.Trial) int {
+		return cmp.Or(cmp.Compare(x.Tenant, y.Tenant), cmp.Compare(x.Agent, y.Agent))
+	})
+	return out, nil
+}
+
+func (a *Agents) EndTrial(_ context.Context, tenant, id, trialID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{tenant, id}
+	if t, ok := a.tr[k]; ok && t.ID == trialID {
+		delete(a.tr, k)
+	}
+	return nil
+}
+
+func (a *Agents) AddTrialSummary(_ context.Context, tenant, id string, n int, s registry.TrialSummary) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	vs := a.vers[[2]string{tenant, id}]
+	if n < 1 || n > len(vs) {
+		return registry.ErrNoVersion
+	}
+	s.Started, s.Ended = s.Started.UTC(), s.Ended.UTC()
+	vs[n-1].v.Trials = append(slices.Clone(vs[n-1].v.Trials), s)
 	return nil
 }

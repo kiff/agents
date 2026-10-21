@@ -227,6 +227,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// Cancelling a paused run, or removing an agent with paused runs, takes
 	// back its held calls in KIFF with the agent's own key.
 	f.api.Withdraw = kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
+	// The sweep ends a trial idle for a week in KIFF first, with the agent's
+	// own key, which may end only its own trials (kiff/tafs#173).
+	f.api.EndKIFFTrial = kiff.TrialEnder(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.

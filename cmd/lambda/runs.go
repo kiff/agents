@@ -151,6 +151,18 @@ func (f *function) sweep(ctx context.Context) error {
 	if n > 0 {
 		f.log.InfoContext(ctx, "sweep", "ended", n)
 	}
+	// Trials idle for a week end too (kiff/tafs#173). One KIFF can't end now
+	// is tried again on the next sweep, so its error doesn't fail this one.
+	if f.api == nil {
+		return nil
+	}
+	trials, err := f.api.SweepTrials(ctx)
+	if err != nil {
+		f.log.ErrorContext(ctx, "sweeping trials", "ended", len(trials), "err", err)
+	}
+	if len(trials) > 0 {
+		f.log.InfoContext(ctx, "sweeping trials", "ended", len(trials))
+	}
 	return nil
 }
 
