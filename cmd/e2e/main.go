@@ -838,6 +838,13 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)
+		// What Setup asked the owner to tap is Setup's own text in this test's
+		// chat, no account's data: shown so a miss can be read from CI.
+		if !c.Pass && c.Name == "asks its questions together" {
+			for i, a := range askedInOrder(t.said) {
+				fmt.Fprintf(t.cfg.log, "      %d. %s\n", i+1, oneLine(a))
+			}
+		}
 	}
 	fmt.Fprintf(t.cfg.log, "setup  %d/%d  %d messages, %d components  judge $%.4f\n", passed, len(checks),
 		len(t.said.messages), len(t.said.order), float64(t.cfg.judge.Spent())/1e6)
