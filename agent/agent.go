@@ -126,6 +126,22 @@ type TrialWriteBody struct {
 	tool.TrialDecision
 }
 
+// CallRefBody is the body of a CallRef event: KIFF's key for a gateway call
+// and what it acted on, the only part of its input kept past its run.
+type CallRefBody struct {
+	Invocation string `json:"invocation"`
+	Value      string `json:"value"`
+}
+
+// recordRef records what a gateway call acted on, when KIFF named both its
+// key and the argument its Card scopes on.
+func recordRef(rec *session.Recording, r tool.Result) error {
+	if r.Invocation == "" || r.Resource == "" {
+		return nil
+	}
+	return rec.Record(session.CallRef, CallRefBody{Invocation: r.Invocation, Value: r.Resource})
+}
+
 // ErrorBody is the body of an Error event. It says what failed, never why:
 // events are shown to the tenant, and a cause can carry a backend's own
 // diagnostics. The cause goes to the caller, as the error returned.
@@ -246,6 +262,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	}
 	for _, h := range held {
 		if err := rec.Record(session.ToolResult, h); err != nil {
+			return Outcome{}, history, err
+		}
+		if err := recordRef(rec, h.Result); err != nil {
 			return Outcome{}, history, err
 		}
 		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
@@ -597,6 +616,9 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 	wg.Wait()
 	for i, r := range results {
 		if err := rec.Record(session.ToolResult, r); err != nil {
+			return nil, err
+		}
+		if err := recordRef(rec, r.Result); err != nil {
 			return nil, err
 		}
 		if r.Trial != nil {

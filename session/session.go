@@ -69,6 +69,11 @@ const (
 	// (kiff/tafs#107): the call and KIFF's decision, kept like the agent's
 	// messages so a trial's result outlives its tool calls.
 	TrialWrite EventKind = "trial_write"
+	// CallRef is what a call through KIFF's gateway acted on: KIFF's key for
+	// the call and the value of the argument its Card scopes on (a payment's
+	// id), nothing else from the input (kiff/tafs#167). It outlives the
+	// call's own events, so the owner's Record can say which payment.
+	CallRef EventKind = "call_ref"
 )
 
 // EventKinds lists every kind a Policy must have a rule for, so it can be
@@ -77,8 +82,9 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 
 // Defaulted are kinds a Policy may leave out: each takes the rule of the kind
 // named here. A kind added later goes here, so a stored policy written before
-// it keeps working. A component is kept like the agent's messages.
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage}
+// it keeps working. A component, a trial's write and a call's reference are
+// kept like the agent's messages.
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires

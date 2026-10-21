@@ -156,10 +156,20 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 			return tool.Result{}, meta{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
 		}
 	}
-	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State}
+	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation)}
+	// What the call is on: the argument KIFF's Card scopes on, where KIFF
+	// says it is in the call's arguments (never a guess), and only a string.
+	if name := str(m.ResourceArgument); name != "" {
+		path := str(m.ResourcePath)
+		if path == "" {
+			path = name
+		}
+		out.Resource = str(atPath(input, path))
+	}
 	if _, trial := run.TrialFrom(ctx); trial {
-		// A trial never pauses: KIFF answers its writes with a decision.
-		out.Trial, out.State = m.Trial, ""
+		// A trial never pauses: KIFF answers its writes with a decision. It
+		// sends nothing, so there's nothing for the Record to name.
+		out.Trial, out.State, out.Resource = m.Trial, "", ""
 		return out, m, nil
 	}
 	if m.State == tool.StateHeld {
@@ -183,6 +193,28 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	return out, m, nil
 }
 
+// atPath is the value at a dotted path in a call's arguments
+// ("parameters.charge"), as KIFF's gateway reads it (lookupPath): each segment
+// a key of an object. Nil when the path isn't there.
+func atPath(input json.RawMessage, path string) json.RawMessage {
+	cur := input
+	for _, seg := range strings.Split(path, ".") {
+		if seg == "" {
+			return nil
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(cur, &obj) != nil {
+			return nil
+		}
+		next, ok := obj[seg]
+		if !ok {
+			return nil
+		}
+		cur = next
+	}
+	return cur
+}
+
 // str is raw as a JSON string, or "" when it isn't one.
 func str(raw json.RawMessage) string {
 	var s string
@@ -201,8 +233,15 @@ type meta struct {
 	State string `json:"state"`
 	// Retry "same_call" means the call has no final outcome yet: repeating
 	// it gets the answer.
-	Retry         string          `json:"retry"`
-	Invocation    json.RawMessage `json:"invocation"`
+	Retry      string          `json:"retry"`
+	Invocation json.RawMessage `json:"invocation"`
+	// ResourceArgument names the argument the call's Card scopes on (the
+	// gateway tool's resource argument): its name, never its value.
+	ResourceArgument json.RawMessage `json:"resource_argument"`
+	// ResourcePath is where that argument's value is in the call's
+	// arguments, dotted ("parameters.charge"): the name itself when it's at
+	// the top level (a sealed connection's resource_path, kiff-cloud#1179).
+	ResourcePath  json.RawMessage `json:"resource_path"`
 	OperationID   json.RawMessage `json:"operation_id"`
 	ExceptionID   json.RawMessage `json:"exception_id"`
 	HoldExpiresAt json.RawMessage `json:"hold_expires_at"`

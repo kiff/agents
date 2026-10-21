@@ -136,6 +136,15 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held."}},
 					"isError": true, "_meta": map[string]any{"dev.kiff/call": map[string]any{
 						"state": "held", "operation_id": "op-refund-42", "exception_id": "exc_123", "hold_expires_at": 1760605800}}}
+			} else if p.Name == "stripe_refund" && args["nested"] == true {
+				// A sealed connection carries the resource deeper in the arguments.
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_10"}},
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "invocation": "tc-90",
+						"resource_argument": "charge", "resource_path": "parameters.charge", "sent": "yes", "retry": "none"}}}
+			} else if p.Name == "stripe_refund" && args["forwarded"] == true {
+				// Within its Card: sent, and KIFF names its key (kiff/tafs#167).
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_9"}},
+					"_meta": map[string]any{"dev.kiff/call": map[string]any{"state": "forwarded", "invocation": "tc-88", "resource_argument": "payment", "sent": "yes", "retry": "none"}}}
 			} else if p.Name == "stripe_refund" {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Held: the owner answers on their phone."}},
 					"isError": true, "_meta": map[string]any{
@@ -182,7 +191,7 @@ func TestListsAndCallsToolsThroughTheGateway(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := tools[0].Call(context.Background(), json.RawMessage(`{"charge":"ch_1"}`))
-			if err != nil || got.Text != `{"id":"ch_1"}` || got.IsError || got.Held() || got.Hold != nil {
+			if err != nil || got.Text != `{"id":"ch_1"}` || got.IsError || got.Held() || got.Hold != nil || got.Invocation != "" {
 				t.Fatalf("read = %+v %v", got, err)
 			}
 			held, err := tools[1].Call(context.Background(), nil)
@@ -194,11 +203,48 @@ func TestListsAndCallsToolsThroughTheGateway(t *testing.T) {
 			if held.Hold == nil || *held.Hold != wantHold {
 				t.Fatalf("hold = %+v, want %+v", held.Hold, wantHold)
 			}
+			// KIFF's key for the call, which its activity and receipt file it under.
+			if held.Invocation != "tc-01" {
+				t.Fatalf("held invocation = %q", held.Invocation)
+			}
 			want := "initialize notifications/initialized tools/list tools/call tools/call"
 			if strings.Join(*methods, " ") != want {
 				t.Fatalf("methods = %v", *methods)
 			}
 		})
+	}
+}
+
+// A call KIFF sent within its Card keeps KIFF's key for it and, by the
+// argument KIFF names, what it acted on, so the Record can name the payment
+// (kiff/tafs#167).
+func TestAForwardedCallKeepsKIFFsKey(t *testing.T) {
+	srv, _ := gateway(t, false)
+	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tools[1].Call(context.Background(), json.RawMessage(`{"forwarded":true,"payment":"pi_9","amount":15000}`))
+	if err != nil || got.IsError || got.Held() || got.Text != "refunded re_9" || got.Invocation != "tc-88" || got.Resource != "pi_9" {
+		t.Fatalf("forwarded = %+v %v", got, err)
+	}
+	// The key is recorded with the result; what it's on is not (the run keeps
+	// it as its call_ref, past the result).
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), `"invocation":"tc-88"`) || strings.Contains(string(raw), "pi_9") {
+		t.Fatalf("recorded result = %s", raw)
+	}
+	// Where KIFF says it is, nested; a number there, or a path that isn't, is nothing.
+	for input, want := range map[string]string{
+		`{"nested":true,"parameters":{"charge":"ch_7","amount":100}}`: "ch_7",
+		`{"nested":true,"parameters":{"charge":42}}`:                  "",
+		`{"nested":true,"charge":"ch_top"}`:                           "",
+		`{"nested":true,"parameters":"ch_7"}`:                         "",
+	} {
+		got, err := tools[1].Call(context.Background(), json.RawMessage(input))
+		if err != nil || got.Invocation != "tc-90" || got.Resource != want {
+			t.Fatalf("%s: resource %q, want %q (%v)", input, got.Resource, want, err)
+		}
 	}
 }
 
