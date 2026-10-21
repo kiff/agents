@@ -158,6 +158,34 @@ func TestChargeTools(t *testing.T) {
 	}
 }
 
+// The owner reads an approval in words: each tool by a title of its own, no
+// tool name, grant prefix or host (kiff/tafs#138, items 52, 53).
+func TestTheApprovalIsInWords(t *testing.T) {
+	g := grant{Text: "You will sign in at mcp.example.com.\n\nThe taf may:\n• Refund a payment: moves money (amount), only within the taf's Card"}
+	g.Request.Server = "https://mcp.example.com/mcp"
+	g.Request.Tools = []grantTool{{Tool: "stripe_api_write", Name: "bxkwf7vi_refund_payment", Title: "Refund a payment"}}
+	if raw := rawWords(g); raw != "" {
+		t.Fatalf("words read as raw: %s", raw)
+	}
+	for text, want := range map[string]string{
+		"The taf may:\n• bxkwf7vi_refund_payment: moves money": "the tool's name bxkwf7vi_refund_payment",
+		"Connect mcp.example.com to the taf.":                  "the vendor's host mcp.example.com",
+	} {
+		g.Text = text
+		if raw := rawWords(g); raw != want {
+			t.Errorf("%q: %q, want %q", text, raw, want)
+		}
+	}
+	g.Text, g.Request.Tools[0].Title = "The taf may:\n• Write Stripe API data", ""
+	if raw := rawWords(g); raw != "Setup gave stripe_api_write no title" {
+		t.Errorf("no title: %q", raw)
+	}
+	g.Request.Tools = []grantTool{{Tool: "stripe_api_write", Name: "a_refund", Title: "Refund a payment"}, {Tool: "stripe_api_write", Name: "a_cancel", Title: "refund a payment"}}
+	if raw := rawWords(g); raw != `two tools titled "refund a payment"` {
+		t.Errorf("one title twice: %q", raw)
+	}
+}
+
 // The phone signs planque's requests as a KIFF device (d=), as the tafs app
 // does, so planque can drop the key-enrolled path (kiff/planque#12).
 func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {

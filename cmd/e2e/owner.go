@@ -166,6 +166,7 @@ func (p *phone) accountPath() string { return "/v1/accounts/" + url.PathEscape(p
 type grantTool struct {
 	Tool        string         `json:"tool"`
 	Name        string         `json:"name"`
+	Title       string         `json:"title"`
 	Fixed       map[string]any `json:"fixed_arguments"`
 	ReadOnly    bool           `json:"read_only"`
 	AmountArg   string         `json:"amount_argument"`
@@ -185,7 +186,8 @@ type grant struct {
 	Reason string   `json:"reason"`
 	// Request is what the owner approved: the tools, as asked for.
 	Request struct {
-		Tools []grantTool `json:"tools"`
+		Server string      `json:"server"`
+		Tools  []grantTool `json:"tools"`
 	} `json:"request"`
 	// Events is the grant's record, such as "read list_accounts at …" when
 	// Setup read what the sign-in covers (kiff/planque#14).
@@ -193,6 +195,38 @@ type grant struct {
 		What string `json:"what"`
 	} `json:"events"`
 	Raw json.RawMessage `json:"-"`
+}
+
+// rawWords is what the owner shouldn't read in a grant's approval text
+// (kiff/tafs#138, items 52, 53): a tool with no title from Setup, a tool's
+// own name (a grant prefix such as bxkwf7vi_refund_payment), or the
+// vendor's host outside the line that says where to sign in, or two tools
+// with one title. Empty when the text is in words.
+func rawWords(g grant) string {
+	var words []string
+	for _, line := range strings.Split(g.Text, "\n") {
+		if !strings.HasPrefix(line, "You will sign in at ") {
+			words = append(words, line)
+		}
+	}
+	text := strings.Join(words, "\n")
+	titled := map[string]bool{}
+	for _, t := range g.Request.Tools {
+		title := strings.ToLower(strings.TrimSpace(t.Title))
+		switch {
+		case title != "" && titled[title]:
+			return fmt.Sprintf("two tools titled %q", title)
+		case strings.TrimSpace(t.Title) == "":
+			return "Setup gave " + t.Tool + " no title"
+		case t.Name != "" && strings.Contains(text, t.Name):
+			return "the tool's name " + t.Name
+		}
+		titled[title] = true
+	}
+	if u, err := url.Parse(g.Request.Server); err == nil && u.Host != "" && strings.Contains(text, u.Host) {
+		return "the vendor's host " + u.Host
+	}
+	return ""
 }
 
 func (p *phone) grants(ctx context.Context) ([]grant, error) {

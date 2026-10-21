@@ -58,16 +58,17 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. refunds): the tool makes the agent's id from it, with a random part so it is new, " +
-			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, read_only?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
+			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title, read_only?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
+			"title says what the tool does, in the owner's words and language, on one line (e.g. Refund a payment, Read a charge): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
 			"resource_argument names the string argument the call acts on (the payment, charge or order), one the taf's read of it takes. " +
 			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read of the same request that says the currency: " +
 			"the read's name (not its vendor tool), its argument that takes that id, and where the currency is in its answer; KIFF refuses a call in another currency than the Card's. " +
-			`e.g. {"tool":"create_refund","amount_argument":"amount","amount_unit":"EUR","amount_scale":2,"resource_argument":"charge",` +
+			`e.g. {"tool":"create_refund","title":"Refund a payment","amount_argument":"amount","amount_unit":"EUR","amount_scale":2,"resource_argument":"charge",` +
 			`"unit_lookup":{"tool":"get_charge","argument":"charge","path":"currency"},` +
 			`"arguments":{"charge":{"path":"charge","type":"string","required":true},"amount":{"path":"amount","type":"integer","required":true}}} ` +
 			"makes the amount and the charge required, so no refund leaves them out. " +
-			"Each answer is the grant's id, status and the text the owner will read. Asking grants nothing: show an approval with the grant id. " +
+			"Each answer is the grant's id, status and the text the owner will read (each tool by its title; its exact terms are under Details). Asking grants nothing: show an approval with the grant id. " +
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
 			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
