@@ -153,6 +153,22 @@ func TestReadThenRefunded(t *testing.T) {
 	}
 }
 
+// Setup connects the field-listing tool alone first (kiff/tafs#174): the job is
+// covered by the grants together, as the e2e of 21 Oct read only that first one.
+func TestAllToolsCoverTheJobAcrossGrants(t *testing.T) {
+	var details, job grant
+	details.Request.Tools = []grantTool{{Tool: "stripe_api_details", ReadOnly: true}}
+	job.Request.Tools = []grantTool{{Tool: "list_charges"},
+		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}}, {Tool: "create_refund"}}
+	if coversTheJob(details) == nil {
+		t.Fatal("the field-listing grant alone covered the job")
+	}
+	all := allTools([]grant{details, job})
+	if err := coversTheJob(*all); err != nil || len(all.Request.Tools) != 4 {
+		t.Fatalf("both grants: %v, %d tools", err, len(all.Request.Tools))
+	}
+}
+
 // The grant's own names for the charge's read and the refund: a tool's name
 // when Setup gave one, else its vendor tool.
 func TestChargeTools(t *testing.T) {

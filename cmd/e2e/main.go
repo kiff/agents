@@ -872,15 +872,16 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	if err := t.agents.Put(ctx, taf); err != nil {
 		return err
 	}
-	var connected *grant
+	var grants []grant
 	for _, id := range t.grants {
 		if g, err := t.phone.grant(ctx, id); err == nil && g.Status == "connected" {
-			connected = &g
+			grants = append(grants, g)
 		}
 	}
-	if connected == nil {
+	if len(grants) == 0 {
 		return errors.New("no connected grant for the taf")
 	}
+	connected := allTools(grants)
 	if t.stripe == nil {
 		// The fake vendor lists tools to find, check and act on charges, and
 		// one the job never needs: Setup takes the first three (kiff/tafs#107).
@@ -1019,6 +1020,18 @@ func chargeTools(g grant) (reads, refunds []string) {
 		}
 	}
 	return reads, refunds
+}
+
+// allTools is the taf's tools across the grants this run connected: Setup
+// may connect the vendor's field-listing tool in a grant of its own first
+// (kiff/tafs#174), so the job's tools are the grants' together.
+func allTools(grants []grant) *grant {
+	all := grants[len(grants)-1]
+	all.Request.Tools = nil
+	for _, g := range grants {
+		all.Request.Tools = append(all.Request.Tools, g.Request.Tools...)
+	}
+	return &all
 }
 
 // isChargeRead says whether t reads one charge: the vendor's read for every
