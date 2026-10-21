@@ -888,6 +888,9 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		if err := coversTheJob(*connected); err != nil {
 			return err
 		}
+		if err := pinsTheAccount(*connected); err != nil {
+			return err
+		}
 		t.logf("Setup gave the taf what the whole job needs: find the charges, check one, refund it")
 	}
 	if t.stripe != nil {
@@ -1032,6 +1035,29 @@ func allTools(grants []grant) *grant {
 		all.Request.Tools = append(all.Request.Tools, g.Request.Tools...)
 	}
 	return &all
+}
+
+// pinsTheAccount checks that every one of the vendor's tools that takes the
+// account it acts in has it pinned, reads included (kiff/tafs#138, item 58):
+// left open, the taf looks it up on every message, one more model turn.
+func pinsTheAccount(g grant) error {
+	var open []string
+	for _, t := range g.Request.Tools {
+		if t.Tool != "stripe_api_read" && t.Tool != "stripe_api_write" {
+			continue
+		}
+		if _, ok := t.Fixed["stripe_context"]; !ok {
+			name := t.Name
+			if name == "" {
+				name = t.Tool
+			}
+			open = append(open, name)
+		}
+	}
+	if len(open) > 0 {
+		return fmt.Errorf("Setup left the account open on %s: the taf would look it up on every message", strings.Join(open, ", "))
+	}
+	return nil
 }
 
 // isChargeRead says whether t reads one charge: the vendor's read for every

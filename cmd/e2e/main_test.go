@@ -169,6 +169,22 @@ func TestAllToolsCoverTheJobAcrossGrants(t *testing.T) {
 	}
 }
 
+// The account is pinned on every tool that takes it, reads included (kiff/tafs#138,
+// item 58): the owner's taf looked it up on every message.
+func TestPinsTheAccount(t *testing.T) {
+	var g grant
+	g.Request.Tools = []grantTool{{Tool: "list_charges"},
+		{Tool: "stripe_api_read", Name: "get_charge", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge", "stripe_context": "acct_1"}},
+		{Tool: "stripe_api_write", Name: "refund", Fixed: map[string]any{"stripe_api_operation_id": "PostRefunds", "stripe_context": "acct_1"}}}
+	if err := pinsTheAccount(g); err != nil {
+		t.Fatal(err)
+	}
+	g.Request.Tools[1].Fixed = map[string]any{"stripe_api_operation_id": "GetChargesCharge"}
+	if err := pinsTheAccount(g); err == nil || !strings.Contains(err.Error(), "get_charge") {
+		t.Fatalf("a read with the account open: %v", err)
+	}
+}
+
 // The grant's own names for the charge's read and the refund: a tool's name
 // when Setup gave one, else its vendor tool.
 func TestChargeTools(t *testing.T) {
