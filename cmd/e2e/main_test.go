@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiff/agents/eval"
 )
 
 // The nightly log is public: neither the account nor the vendor's address
@@ -41,14 +43,24 @@ func TestInCIOnlyTheStepsAreWrittenAndEveryIdIsMasked(t *testing.T) {
 	}
 }
 
-func TestTafBrief(t *testing.T) {
-	if err := tafBrief([]string{"Refunded €3.00 to the customer's card.", "KIFF refused the €900 refund; nothing was sent."}); err != nil {
+func TestTafConcise(t *testing.T) {
+	tt := &test{tafSaid: []string{"Refunded €3.00 to the customer's card.", "KIFF refused the €900 refund; nothing was sent."}}
+	if err := tt.tafConcise(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	long := strings.Repeat("word ", maxTafWords+1)
-	err := tafBrief([]string{"Done.", long})
-	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("answer 2 has %d words", maxTafWords+1)) {
+	// A few words over two sentences is fine; only a rambling answer fails.
+	tt.tafSaid = []string{"Done.", strings.Repeat("word ", 60), strings.Repeat("word ", maxTafWords+1)}
+	err := tt.tafConcise(context.Background())
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("answer 3 has %d words", maxTafWords+1)) || strings.Contains(err.Error(), "answer 2") {
 		t.Fatalf("err = %v", err)
+	}
+	// With -grade the judge decides, and its reason stays out of the log.
+	var log, transcript strings.Builder
+	tt = &test{cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{Model: &verdicts{fail: []string{"concise"}}, ModelID: "judge"}},
+		out: &redacting{w: &log, ci: true}, tafSaid: []string{"Great question! Let me tell you all about it."}}
+	err = tt.tafConcise(context.Background())
+	if err == nil || log.Len() != 0 || !strings.Contains(transcript.String(), "not concise: judged") {
+		t.Fatalf("err = %v, log %q, transcript %q", err, log.String(), transcript.String())
 	}
 }
 
