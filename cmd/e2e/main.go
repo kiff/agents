@@ -294,6 +294,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 			return err
 		}
 	}
+	if err := t.setupReadsRecorded(ctx); err != nil {
+		return err
+	}
 
 	fmt.Fprintln(t.cfg.log, "== the taf")
 	if err := t.useTaf(ctx, tafID, draftID); err != nil {
