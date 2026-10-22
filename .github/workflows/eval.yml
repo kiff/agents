@@ -60,9 +60,10 @@ jobs:
         # named from the taf's name, choices to tap. The taf the owner then uses
         # is kiff/tafs' Refunds (refunds.json), whose answers in the chat must be
         # concise. The chat's transcript (setup.md) goes only to the private
-        # bucket, so a failed chat can be read afterwards. Then the improve case (kiff/tafs#107): Setup makes the taf's
-        # next version, a trial decides it, the owner switches, it runs. A
-        # failed check fails the night.
+        # bucket, so a failed chat can be read afterwards. Then the improve
+        # case (kiff/tafs#107): Setup makes the taf's next version, a trial
+        # decides it, the owner switches, it runs. A failed check fails the
+        # night.
         if: always()
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
