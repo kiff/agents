@@ -462,9 +462,11 @@ func (t *test) tafDefinition(id string) (registry.Definition, error) {
 }
 
 // maxTafWords only catches a rambling answer of the taf's in the chat: about
-// twice the "one or two short sentences" kiff/tafs asks for. A few words over
-// is fine (the owner, kiff/agents#78); with -grade, Concise is the check.
-const maxTafWords = 100
+// twice the "one or two short sentences" kiff/tafs asks for, the same as
+// Setup's maxWords. A few words over is fine (the owner, kiff/agents#78), and
+// Spanish takes more words than English to say the same; with -grade,
+// Concise is the check.
+const maxTafWords = maxWords
 
 // tafConcise checks the taf's answers in the chat: none rambles, and with
 // -grade the judge finds them concise. The judge's reason may quote the chat,
