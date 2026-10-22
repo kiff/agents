@@ -56,10 +56,11 @@ jobs:
         # The setup agent as kiff/tafs defines it (setup.json), against prod
         # KIFF, planque and the fake vendor, with the test phone's signed
         # approvals (cmd/e2e). The owner writes in Spanish; the chat is
-        # graded: the owner's language, brevity, no id asked, the agent named
-        # from the taf's name, choices to tap. The taf the owner then uses is
-        # kiff/tafs' Refunds (refunds.json), whose answers in the chat must be
-        # brief. Then the improve case (kiff/tafs#107): Setup makes the taf's
+        # graded: the owner's language, concise messages, no id asked, the agent
+        # named from the taf's name, choices to tap. The taf the owner then uses
+        # is kiff/tafs' Refunds (refunds.json), whose answers in the chat must be
+        # concise. The chat's transcript (setup.md) goes only to the private
+        # bucket, so a failed chat can be read afterwards. Then the improve case (kiff/tafs#107): Setup makes the taf's
         # next version, a trial decides it, the owner switches, it runs. A
         # failed check fails the night.
         if: always()
@@ -70,7 +71,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 5 -owner-turns 14
+        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 5 -owner-turns 14 -transcript setup.md
       # The role assumes only from main (infra/aws.sh), so a measure on a branch
       # (eval/tafs-<sha>) keeps no full report: its log's scores are the result,
       # and a red run means a check failed, not the upload.
@@ -83,7 +84,7 @@ jobs:
         if: always() && github.ref == 'refs/heads/main'
         run: |
           key="reports/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
-          for f in report.md results.json; do
+          for f in report.md results.json setup.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"

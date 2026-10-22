@@ -91,6 +91,7 @@ type config struct {
 	keep                                            bool
 	improve                                         bool // the improve case, after the taf
 	log                                             io.Writer
+	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
 }
 
 // redacting writes what the test says with what it learns (the account,
@@ -127,22 +128,32 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	stdout.ci = env("CI") == "true"
 	cfg := config{log: stdout}
 	fs.StringVar(&cfg.setupDef, "setup", "", "the setup agent's definition (JSON, from kiff/tafs' setupdef.ts); empty: the built-in one")
-	fs.StringVar(&cfg.tafDef, "taf", "", "the taf's definition (JSON, a job of kiff/tafs' tafdef.ts, such as refunds.json): its instructions and effort; its answers in the chat are then checked for brevity. Empty: a short built-in one")
+	fs.StringVar(&cfg.tafDef, "taf", "", "the taf's definition (JSON, a job of kiff/tafs' tafdef.ts, such as refunds.json): its instructions and effort; its answers in the chat are then checked for concision. Empty: a short built-in one")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
 	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es")
-	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, brevity, no ids asked, the agent's name, choices")
+	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, concise messages, no ids asked, the agent's name, choices")
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
 	maxCost := fs.Float64("max-cost", 3, "the most the whole test may spend on the model, in US dollars")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
+	transcript := fs.String("transcript", "", "write each step's details (what the owner and the agents said) to this file, in CI too: "+
+		"for the private reports bucket, never the public log")
 	signin := fs.String("signin", "", "once, before the test runs: sign the phone in to KIFF (a person approves in a browser), make the setup agent, "+
 		"and write the session's token and the setup agent's key to this file (0600)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	cfg.maxCost = int64(*maxCost * 1e6)
+	if *transcript != "" {
+		f, err := os.OpenFile(*transcript, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		cfg.transcript = f
+	}
 	if _, ok := owners[cfg.owner]; !ok {
 		return fmt.Errorf("-owner %q: en or es", cfg.owner)
 	}
@@ -225,10 +236,15 @@ type test struct {
 	tafSaid  []string // the taf's answers in the chat, checked with -taf
 }
 
-// logf is a detail of a step, for a run by hand only (see redacting).
+// logf is a detail of a step: in the log for a run by hand only (see
+// redacting), and always in the transcript, which the nightly keeps private
+// so a failed chat can be read afterwards (kiff/agents#78).
 func (t *test) logf(format string, args ...any) {
 	if !t.out.ci {
 		fmt.Fprintf(t.cfg.log, "  "+format+"\n", args...)
+	}
+	if t.cfg.transcript != nil {
+		fmt.Fprintf(t.cfg.transcript, format+"\n", args...)
 	}
 }
 
@@ -303,11 +319,11 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		return err
 	}
 	if t.cfg.tafDef != "" {
-		// The taf as kiff/tafs defines it answers the owner briefly (kiff/tafs#102).
-		if err := tafBrief(t.tafSaid); err != nil {
+		// The taf as kiff/tafs defines it answers the owner concisely (kiff/tafs#102).
+		if err := t.tafConcise(ctx); err != nil {
 			return err
 		}
-		fmt.Fprintf(t.cfg.log, "taf  brief: %d answers, at most %d words each\n", len(t.tafSaid), maxTafWords)
+		fmt.Fprintf(t.cfg.log, "taf  concise: %d answers\n", len(t.tafSaid))
 	}
 	if t.cfg.improve {
 		if t.stripe != nil {
@@ -445,20 +461,28 @@ func (t *test) tafDefinition(id string) (registry.Definition, error) {
 	return d, d.Check()
 }
 
-// maxTafWords is the most words a taf's answer in the chat may have: kiff/tafs
-// asks for "one or two short sentences (at most about 40 words)".
-const maxTafWords = 50
+// maxTafWords only catches a rambling answer of the taf's in the chat: about
+// twice the "one or two short sentences" kiff/tafs asks for. A few words over
+// is fine (the owner, kiff/agents#78); with -grade, Concise is the check.
+const maxTafWords = 100
 
-// tafBrief checks each of the taf's answers in the chat for brevity.
-func tafBrief(said []string) error {
-	var long []string
-	for i, m := range said {
-		if n := len(strings.Fields(m)); n > maxTafWords {
-			long = append(long, fmt.Sprintf("answer %d has %d words", i+1, n))
-		}
+// tafConcise checks the taf's answers in the chat: none rambles, and with
+// -grade the judge finds them concise. The judge's reason may quote the chat,
+// so it goes to the transcript, not the log.
+func (t *test) tafConcise(ctx context.Context) error {
+	if long := rambling(t.tafSaid, maxTafWords, "answer"); long != "" {
+		return fmt.Errorf("the taf's answers aren't concise: %s", long)
 	}
-	if len(long) > 0 {
-		return fmt.Errorf("the taf's answers aren't brief: %s (at most %d)", strings.Join(long, "; "), maxTafWords)
+	if t.cfg.judge == nil {
+		return nil
+	}
+	g, err := t.cfg.judge.Ask(ctx, Concise, numbered(t.tafSaid))
+	if err != nil {
+		return err
+	}
+	if !g.Pass {
+		t.logf("taf  not concise: %s", g.Why)
+		return errors.New("the taf's answers aren't concise, as judged (the transcript says why)")
 	}
 	return nil
 }

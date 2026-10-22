@@ -16,8 +16,15 @@ import (
 // what Setup wrote is graded: its messages, and the components it showed
 // (titles, texts, options). The app's own labels are the app's.
 
-// maxWords bounds one of Setup's messages: "one or two short sentences".
-const maxWords = 60
+// Concise is how an agent's messages to the owner are judged: the way Claude
+// Code answers, not a word count (the owner, kiff/agents#78, 22 Oct).
+const Concise = "Each numbered message is concise, as a good assistant writes in a chat: it says what it did, found or needs first; " +
+	"it has no filler or pleasantries, doesn't repeat the owner's question back, and uses no list where a sentence will do. " +
+	"A message may be longer when what it says needs the words."
+
+// maxWords only catches a rambling message of Setup's: about twice the "one or
+// two short sentences" it is asked for. Concise is the check.
+const maxWords = 120
 
 // owner is what the scripted owner says, in their language.
 type owner struct {
@@ -128,6 +135,20 @@ func (s *said) texts() []string {
 	return out
 }
 
+// rambling names each text over max words, as one reason; "" when none is.
+func rambling(texts []string, max int, what string) string {
+	var long []string
+	for i, m := range texts {
+		if n := len(strings.Fields(m)); n > max {
+			long = append(long, fmt.Sprintf("%s %d has %d words", what, i+1, n))
+		}
+	}
+	if len(long) == 0 {
+		return ""
+	}
+	return strings.Join(long, "; ") + fmt.Sprintf(" (it rambles past %d)", max)
+}
+
 func numbered(texts []string) string {
 	var b strings.Builder
 	for i, t := range texts {
@@ -152,8 +173,8 @@ func labels(c component) []string {
 }
 
 // counted are the checks graded without the judge. Their reasons never
-// quote the chat (a word count, the slug wanted), so a public log prints them.
-var counted = map[string]bool{"brief": true, "names the agent from the taf's name": true,
+// quote the chat (the slug wanted, a plan's counts), so a public log prints them.
+var counted = map[string]bool{"names the agent from the taf's name": true,
 	"names no planque": true, "keeps its plan": true}
 
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
@@ -201,17 +222,13 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	add("in the owner's language", g)
 
-	// 2. Brief: no message over maxWords words.
-	var long []string
-	for i, m := range s.messages {
-		if n := len(strings.Fields(m)); n > maxWords {
-			long = append(long, fmt.Sprintf("message %d has %d words", i+1, n))
-		}
-	}
-	if len(long) > 0 {
-		add("brief", eval.Grade{Why: strings.Join(long, "; ") + fmt.Sprintf(" (at most %d)", maxWords)})
+	// 2. Concise, as judged; a message over maxWords words rambles whatever it says.
+	if long := rambling(s.messages, maxWords, "message"); long != "" {
+		add("concise", eval.Grade{Why: long})
+	} else if g, err = j.Ask(ctx, Concise, numbered(s.messages)); err != nil {
+		return nil, err
 	} else {
-		add("brief", eval.Grade{Pass: true})
+		add("concise", g)
 	}
 
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in

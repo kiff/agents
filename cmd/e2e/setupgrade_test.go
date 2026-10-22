@@ -48,7 +48,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	for _, c := range checks {
 		got[c.Name] = c.Pass
 	}
-	want := map[string]bool{"in the owner's language": true, "brief": false, "asks for no id": false,
+	want := map[string]bool{"in the owner's language": true, "concise": false, "asks for no id": false,
 		"names the agent from the taf's name": true, "offers choices to tap": true}
 	for name, pass := range want {
 		if p, ok := got[name]; !ok || p != pass {
@@ -67,7 +67,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	if !strings.Contains(v.asked[1], "asks the owner to give") || !strings.Contains(v.asked[1], "Modo de Stripe") {
 		t.Fatalf("the id check read %q", v.asked[1])
 	}
-	if !counted["brief"] || counted["asks for no id"] {
+	if !counted["names no planque"] || counted["concise"] || counted["asks for no id"] {
 		t.Fatal("only the checks graded without the judge print their reasons in CI")
 	}
 
