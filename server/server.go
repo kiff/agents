@@ -24,6 +24,7 @@ import (
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/skill"
+	"github.com/kiff/agents/usage"
 )
 
 // maxBody bounds a request body. A definition is at most registry.MaxSize as
@@ -74,6 +75,9 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// Usage keeps what each account's chats cost, for AI fair use
+	// (kiff/tafs#193). Nil: a chat that asks to be counted is refused.
+	Usage usage.Store
 	// Erase deletes what the tenant keeps outside the stores when its account
 	// is deleted (kiff/tafs#185): its sealing key and its drafts' claim
 	// records. It is safe to repeat. Nil: nothing outside the stores is
@@ -124,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	route("POST /halt", s.halt)
 	route("POST /resume", s.resume)
 	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
+	route("GET /usage/ai", s.getAIUsage)
 	route("GET /skills", s.listSkills)
 	route("GET /skills/{name}/{version}", s.getSkill)
 	route("PUT /skills/{name}/{version}", s.putSkill)
@@ -285,6 +290,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusNotFound, "not found"
 	case errors.Is(err, registry.ErrSwitching):
 		status, msg = http.StatusConflict, "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
+	case errors.Is(err, ErrAIFairUse):
+		status, msg = http.StatusConflict, ErrAIFairUse.Error()
 	case errors.Is(err, registry.ErrHalted):
 		status, msg = http.StatusConflict, "halted: this agent, or its whole account, is halted; nothing of it runs until it is resumed"
 	case errors.Is(err, registry.ErrSwitchChanged):
@@ -462,7 +469,7 @@ func (s *Server) eraseTenant(ctx context.Context, c Caller, _ *http.Request) (in
 			return 0, nil, fmt.Errorf("erasing agent %s: %w", d.ID, err)
 		}
 	}
-	for _, st := range []any{s.Agents, s.Skills} {
+	for _, st := range []any{s.Agents, s.Skills, s.Usage} {
 		if e, ok := st.(tenantEraser); ok {
 			if err := e.EraseTenant(ctx, c.Tenant); err != nil {
 				return 0, nil, err

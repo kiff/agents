@@ -175,6 +175,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	agents := dynamodb.NewAgents(db, table)
 	skills := dynamodb.NewSkills(db, table)
 	runs := dynamodb.NewRuns(db, table)
+	// What each account's chats cost, for AI fair use (kiff/tafs#193): kept
+	// in the same table, counted only for the chats tafs cloud names a period
+	// for.
+	use := dynamodb.NewUsage(db, table)
 	secrets := sm.NewFromConfig(cfg)
 	llm := &keyedModel{
 		key:  func(ctx context.Context) (string, error) { return modelKey(ctx, secrets, keySecret) },
@@ -201,7 +205,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
 			return planque.New(base, tenant, key, nil).ReadThrough(kiff.New(gateway, key, nil))
 		},
-	}, Collect: kiff.Collect}
+	}, Collect: kiff.Collect, Usage: use}
 	// What a chat keeps of its reads for its next messages, sealed under the
 	// tenant's own key (#172): off unless set, so nothing is kept by default.
 	if sp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")); sp != "" {
@@ -226,7 +230,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills, Usage: use},
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,
