@@ -287,3 +287,21 @@ func TestAnImprovementOpensNoConnection(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Archiving a taf is a signed setup call from the phone's session
+// (kiff/agents#78); revoking a Card isn't signed.
+func TestArchivingATafIsSigned(t *testing.T) {
+	for _, c := range []struct {
+		method, path string
+		signed       bool
+	}{
+		{http.MethodPost, "/v1/me/agents/taf-x7k3/archive", true},
+		{http.MethodPost, "/v1/me/agent-drafts/drf_1/confirm", true},
+		{http.MethodPost, "/v1/me/mandates/m_1/revoke", false},
+		{http.MethodGet, "/v1/me/agents/taf-x7k3/archive", false},
+	} {
+		if got := signedPath(c.method, c.path); got != c.signed {
+			t.Errorf("%s %s: signed %v, want %v", c.method, c.path, got, c.signed)
+		}
+	}
+}

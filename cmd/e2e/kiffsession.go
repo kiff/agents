@@ -29,7 +29,10 @@ func signedPath(method, path string) bool {
 	if method != http.MethodPost {
 		return false
 	}
-	return slices.Contains(signedPaths, path) || strings.HasPrefix(path, "/v1/me/agent-drafts/") && strings.HasSuffix(path, "/confirm")
+	return slices.Contains(signedPaths, path) ||
+		strings.HasPrefix(path, "/v1/me/agent-drafts/") && strings.HasSuffix(path, "/confirm") ||
+		// Archiving a taf at the end of a run (kiff/agents#78, PhoneSignedRules).
+		strings.HasPrefix(path, "/v1/me/agents/") && strings.HasSuffix(path, "/archive")
 }
 
 // kiffSession is KIFF's API as the owner's phone calls it.

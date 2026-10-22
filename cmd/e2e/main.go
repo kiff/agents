@@ -228,12 +228,15 @@ type test struct {
 	grants  []string // planque grants this run connected
 	// refunds are the names the grant gave the refund (chargeTools), for the
 	// improve trial to count its refund by, as the taf's run is.
-	refunds  []string
-	cardIDs  []string // Cards the taf's draft issued
-	draftIDs []string
-	taf      string   // the taf's agent id, once handed over
-	said     said     // what Setup wrote, for -grade
-	tafSaid  []string // the taf's answers in the chat, checked with -taf
+	refunds []string
+	cardIDs []string // Cards the taf's draft issued
+	// tafAgents are the KIFF agents this run's drafts made, archived at the
+	// end so a run leaves no taf behind (kiff-cloud#1334).
+	tafAgents []string
+	draftIDs  []string
+	taf       string   // the taf's agent id, once handed over
+	said      said     // what Setup wrote, for -grade
+	tafSaid   []string // the taf's answers in the chat, checked with -taf
 }
 
 // logf is a detail of a step: in the log for a run by hand only (see
@@ -732,6 +735,9 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 		return fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.err())
 	}
 	t.draftIDs = append(t.draftIDs, c.Draft)
+	if a, ok := d.Body["agent_id"].(string); ok && a != "" && !slices.Contains(t.tafAgents, a) {
+		t.tafAgents = append(t.tafAgents, a)
+	}
 	if ids, ok := d.Body["card_ids"].([]any); ok {
 		for _, id := range ids {
 			if s, ok := id.(string); ok {
@@ -1272,8 +1278,9 @@ func (t *test) checkRecords(ctx context.Context) error {
 	return nil
 }
 
-// cleanup disconnects the grant and revokes the taf's Cards, unless -keep:
-// the taf's key then reaches nothing.
+// cleanup disconnects the grant, revokes the taf's Cards and archives the
+// taf's KIFF agent, unless -keep: the taf's key then reaches nothing, and
+// the account's tafs don't grow with each run (kiff-cloud#1334).
 func (t *test) cleanup() {
 	if t.cfg.keep || t.kiff == nil {
 		return
@@ -1288,6 +1295,11 @@ func (t *test) cleanup() {
 	for _, id := range t.cardIDs {
 		if a, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/mandates/"+id+"/revoke", map[string]string{}); err != nil || a.err() != nil {
 			t.logf("cleanup: revoking Card %s: %v %v", id, err, a.err())
+		}
+	}
+	for _, id := range t.tafAgents {
+		if a, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/agents/"+url.PathEscape(id)+"/archive", map[string]string{}); err != nil || a.err() != nil {
+			t.logf("cleanup: archiving the taf %s: %v %v", id, err, a.err())
 		}
 	}
 }
