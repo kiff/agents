@@ -266,3 +266,31 @@ func (a *Agents) Halted(_ context.Context, tenant, id string) (registry.Halt, er
 	defer a.mu.Unlock()
 	return a.halt[[2]string{tenant, id}], nil
 }
+
+// EraseTenant deletes everything the tenant keeps here, when its account is
+// deleted (kiff/tafs#185).
+func (a *Agents) EraseTenant(_ context.Context, tenant string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k := range a.defs {
+		if k[0] == tenant {
+			delete(a.defs, k)
+		}
+	}
+	for k := range a.vers {
+		if k[0] == tenant {
+			delete(a.vers, k)
+		}
+	}
+	for k := range a.sw {
+		if k[0] == tenant {
+			delete(a.sw, k)
+		}
+	}
+	for k := range a.halt {
+		if k[0] == tenant {
+			delete(a.halt, k)
+		}
+	}
+	return nil
+}

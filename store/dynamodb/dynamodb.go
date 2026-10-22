@@ -1021,3 +1021,30 @@ func (st *Store) DeleteNotes(ctx context.Context, tenant, agent string) error {
 	}
 	return st.deleteKeys(ctx, keysOf(items))
 }
+
+// erasePartition deletes every item of partition pk.
+func (st *Store) erasePartition(ctx context.Context, pk string) error {
+	in := &ddb.QueryInput{
+		TableName:                 &st.table,
+		KeyConditionExpression:    aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(pk)},
+		ProjectionExpression:      aws.String("pk, sk"),
+		ConsistentRead:            aws.Bool(true),
+	}
+	var keys []map[string]types.AttributeValue
+	for {
+		page, err := st.db.Query(ctx, in)
+		if err != nil {
+			return err
+		}
+		keys = append(keys, keysOf(page.Items)...)
+		if page.LastEvaluatedKey == nil {
+			break
+		}
+		in.ExclusiveStartKey = page.LastEvaluatedKey
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return st.deleteKeys(ctx, keys)
+}

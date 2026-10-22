@@ -62,3 +62,16 @@ func (s *Skills) List(_ context.Context, tenant string) ([]skill.Package, error)
 	})
 	return out, nil
 }
+
+// EraseTenant deletes the tenant's skill packages, when its account is
+// deleted (kiff/tafs#185).
+func (s *Skills) EraseTenant(_ context.Context, tenant string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.ps {
+		if k[0] == tenant {
+			delete(s.ps, k)
+		}
+	}
+	return nil
+}

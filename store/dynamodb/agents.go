@@ -502,3 +502,17 @@ func decodeHalt(item map[string]types.AttributeValue, id string) (registry.Halt,
 	}
 	return h, nil
 }
+
+// EraseTenant deletes what the tenant keeps beyond its agents, when its
+// account is deleted (kiff/tafs#185): the tenant's own halt, and any agent,
+// halt or switch mark left in its partitions. Each agent is deleted first,
+// with Delete.
+func (a *Agents) EraseTenant(ctx context.Context, tenant string) error {
+	st := &Store{db: a.db, table: a.table}
+	for _, pk := range []string{haltPK(tenant), switchPK(tenant), agentsPK(tenant)} {
+		if err := st.erasePartition(ctx, pk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
