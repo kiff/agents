@@ -305,6 +305,8 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if err != nil {
 		return err
 	}
+	// Counts only, never the words, in every run: a drift in length shows (kiff/agents#185).
+	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
 	if t.cfg.judge != nil {
 		if err := t.grade(ctx, tafID); err != nil {
 			return err
@@ -461,17 +463,14 @@ func (t *test) tafDefinition(id string) (registry.Definition, error) {
 	return d, d.Check()
 }
 
-// maxTafWords only catches a rambling answer of the taf's in the chat: about
-// twice the "one or two short sentences" kiff/tafs asks for. A few words over
-// is fine (the owner, kiff/agents#78); with -grade, Concise is the check.
-const maxTafWords = 100
-
-// tafConcise checks the taf's answers in the chat: none rambles, and with
-// -grade the judge finds them concise. The judge's reason may quote the chat,
-// so it goes to the transcript, not the log.
+// tafConcise checks the taf's answers in the chat: with -grade the judge
+// finds each concise for what it had to say. There's no word count to fail
+// (kiff/agents#185): each answer's count is logged, so a drift shows over
+// the nightly runs. The judge's reason may quote the chat, so it goes to the
+// transcript, not the log.
 func (t *test) tafConcise(ctx context.Context) error {
-	if long := rambling(t.tafSaid, maxTafWords, "answer"); long != "" {
-		return fmt.Errorf("the taf's answers aren't concise: %s", long)
+	if t.cfg.log != nil {
+		fmt.Fprintf(t.cfg.log, "taf  words: %s\n", words(t.tafSaid))
 	}
 	if t.cfg.judge == nil {
 		return nil

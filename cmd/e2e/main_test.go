@@ -48,18 +48,22 @@ func TestTafConcise(t *testing.T) {
 	if err := tt.tafConcise(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// A few words over two sentences is fine; only a rambling answer fails.
-	tt.tafSaid = []string{"Done.", strings.Repeat("word ", 60), strings.Repeat("word ", maxTafWords+1)}
-	err := tt.tafConcise(context.Background())
-	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("answer 3 has %d words", maxTafWords+1)) || strings.Contains(err.Error(), "answer 2") {
-		t.Fatalf("err = %v", err)
+	// No word count fails an answer (kiff/agents#185): a long one passes without
+	// -grade, and its count is logged.
+	var counts strings.Builder
+	tt = &test{cfg: config{log: &counts}, tafSaid: []string{"Done.", strings.Repeat("palabra ", 150)}}
+	if err := tt.tafConcise(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if counts.String() != "taf  words: 1, 150\n" {
+		t.Fatalf("logged %q", counts.String())
 	}
 	// With -grade the judge decides, and its reason stays out of the log.
 	var log, transcript strings.Builder
 	tt = &test{cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{Model: &verdicts{fail: []string{"concise"}}, ModelID: "judge"}},
 		out: &redacting{w: &log, ci: true}, tafSaid: []string{"Great question! Let me tell you all about it."}}
-	err = tt.tafConcise(context.Background())
-	if err == nil || log.Len() != 0 || !strings.Contains(transcript.String(), "not concise: judged") {
+	err := tt.tafConcise(context.Background())
+	if err == nil || log.String() != "taf  words: 9\n" || !strings.Contains(transcript.String(), "not concise: judged") {
 		t.Fatalf("err = %v, log %q, transcript %q", err, log.String(), transcript.String())
 	}
 }

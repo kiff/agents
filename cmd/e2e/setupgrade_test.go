@@ -32,13 +32,14 @@ func (v *verdicts) Turn(_ context.Context, req model.Request, _ func(string)) (m
 
 func TestTheSetupChatIsGraded(t *testing.T) {
 	var s said
-	s.messages = []string{"¿Con qué proveedor cobras?", strings.Repeat("palabra ", maxWords+1)}
+	s.messages = []string{"¿Con qué proveedor cobras?", strings.Repeat("palabra ", 150)}
 	c := component{Type: "confirm", ID: "modo", Title: "Modo de Stripe", Text: "¿Prueba o real?", Note: "Puedes cambiarlo luego."}
 	c.Options = append(c.Options, option{Value: "test", Label: "Prueba"})
 	s.card(c)
 	s.card(c) // a card shown again is one card
 
-	v := &verdicts{fail: []string{"asks the owner to give"}}
+	// Length alone fails nothing: concise is the judge's (kiff/agents#185).
+	v := &verdicts{fail: []string{"asks the owner to give", "padded or rambling"}}
 	checks, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge", Price: model.Price{Input: 1, Output: 1}},
 		owners["es"], s, "taf-reembolsos-x7k3", modes{})
 	if err != nil {
@@ -64,8 +65,12 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 		t.Fatalf("the language check read %q", v.asked[0])
 	}
 	// So does the id check: a confirm can ask for an id too.
-	if !strings.Contains(v.asked[1], "asks the owner to give") || !strings.Contains(v.asked[1], "Modo de Stripe") {
-		t.Fatalf("the id check read %q", v.asked[1])
+	// The concise check is asked of the judge, about each message (kiff/agents#185).
+	if !strings.Contains(v.asked[1], "concise for what it had to say") || !strings.Contains(v.asked[1], "¿Con qué proveedor cobras?") {
+		t.Fatalf("the concise check read %q", v.asked[1])
+	}
+	if !strings.Contains(v.asked[2], "asks the owner to give") || !strings.Contains(v.asked[2], "Modo de Stripe") {
+		t.Fatalf("the id check read %q", v.asked[2])
 	}
 	if !counted["names no planque"] || counted["concise"] || counted["asks for no id"] {
 		t.Fatal("only the checks graded without the judge print their reasons in CI")
