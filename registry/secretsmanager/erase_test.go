@@ -66,21 +66,21 @@ func TestEraseDeletesOnlyTheTenantsOwn(t *testing.T) {
 	e := &erasable{fake: &fake{secrets: map[string]*sm.GetSecretValueOutput{
 		"agents-sealing/t1":  secret("agents-sealing/t1", "k1"),
 		"agents-sealing/t10": secret("agents-sealing/t10", "k10"),
-		"agent-drafts/t1/d1": secret("agent-drafts/t1/d1", "r"),
-		"agent-drafts/t1/d2": secret("agent-drafts/t1/d2", "r"),
-		"agent-drafts/t10/d": secret("agent-drafts/t10/d", "r"),
-		"agent-drafts/t2/d1": secret("agent-drafts/t2/d1", "r"),
+		"agents-drafts/t1/d1": secret("agents-drafts/t1/d1", "r"),
+		"agents-drafts/t1/d2": secret("agents-drafts/t1/d2", "r"),
+		"agents-drafts/t10/d": secret("agents-drafts/t10/d", "r"),
+		"agents-drafts/t2/d1": secret("agents-drafts/t2/d1", "r"),
 		"agents/t1/kiff/taf": secret("agents/t1/kiff/taf", "key"),
 	}}}
-	er := secretsmanager.NewEraser(e, "agents-sealing/", "agent-drafts/")
+	er := secretsmanager.NewEraser(e, "agents-sealing/", "agents-drafts/")
 	if err := er.Erase(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
 	slices.Sort(e.deleted)
-	if want := []string{"agent-drafts/t1/d1", "agent-drafts/t1/d2", "agents-sealing/t1"}; !slices.Equal(e.deleted, want) || !e.forced {
+	if want := []string{"agents-drafts/t1/d1", "agents-drafts/t1/d2", "agents-sealing/t1"}; !slices.Equal(e.deleted, want) || !e.forced {
 		t.Fatalf("deleted %v (forced %v), want %v at once", e.deleted, e.forced, want)
 	}
-	for _, kept := range []string{"agents-sealing/t10", "agent-drafts/t10/d", "agent-drafts/t2/d1", "agents/t1/kiff/taf"} {
+	for _, kept := range []string{"agents-sealing/t10", "agents-drafts/t10/d", "agents-drafts/t2/d1", "agents/t1/kiff/taf"} {
 		if _, ok := e.secrets[kept]; !ok {
 			t.Errorf("%s was deleted", kept)
 		}

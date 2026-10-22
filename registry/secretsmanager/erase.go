@@ -25,7 +25,7 @@ type EraseAPI interface {
 type Eraser struct {
 	api           EraseAPI
 	SealingPrefix string // such as "agents-sealing/"; empty: none kept
-	DraftsPrefix  string // such as "agent-drafts/"; empty: none kept
+	DraftsPrefix  string // such as "agents-drafts/"; empty: none kept
 }
 
 // NewEraser returns an Eraser for the secrets under those prefixes.
