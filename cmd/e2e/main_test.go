@@ -261,3 +261,13 @@ func TestSetupReadsOnRecord(t *testing.T) {
 		t.Errorf("setupReadTools: %v", got)
 	}
 }
+
+// An improvement adds to the taf's connection, never opens another (kiff/tafs#138).
+func TestAnImprovementOpensNoConnection(t *testing.T) {
+	if err := sameConnections(1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := sameConnections(1, 3); err == nil || !strings.Contains(err.Error(), "opened 2 new connection(s)") {
+		t.Fatalf("err = %v", err)
+	}
+}

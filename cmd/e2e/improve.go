@@ -80,8 +80,12 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	lines = append(lines, "", "The owner says: "+asks[0])
 
 	fmt.Fprintln(t.cfg.log, "== improving the taf")
+	connections := len(t.grants)
 	result, err := t.improveChat(ctx, strings.Join(lines, "\n"), asks[1], tafID, tafsID)
 	if err != nil {
+		return err
+	}
+	if err := sameConnections(connections, len(t.grants)); err != nil {
 		return err
 	}
 	draft := result.Draft
@@ -210,6 +214,17 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 		return fmt.Errorf("on version %d the vendor didn't receive the refund of %s for 800", n, charge)
 	}
 	fmt.Fprintf(t.cfg.log, "improve  version %d: Card revised, trial allowed with nothing sent, switched, refund done\n", n)
+	return nil
+}
+
+// sameConnections fails an improvement that opened a connection: the taf has
+// its one to the vendor, and a change adds to it, with one approval and no
+// sign-in (kiff/tafs#138: the owner's retest took five Face IDs and Stripe
+// sign-ins, one new connection each). A limit change, as here, adds none.
+func sameConnections(before, after int) error {
+	if after > before {
+		return fmt.Errorf("improving the taf opened %d new connection(s) to the vendor; it has one, which a change adds to", after-before)
+	}
 	return nil
 }
 

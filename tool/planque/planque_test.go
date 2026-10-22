@@ -273,7 +273,7 @@ func TestThereIsNoDescribe(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = append(seen, r.URL.Path) }))
 	t.Cleanup(srv.Close)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog, tools or read") {
+	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog, tools, read or grants") {
 		t.Fatalf("describe: %s", text)
 	}
 	if len(seen) != 0 {
@@ -285,7 +285,7 @@ func TestThereIsNoDescribe(t *testing.T) {
 func TestReadsAreTheLookups(t *testing.T) {
 	tl := planque.New("https://planque.example", "tnt_1", "k_setup", nil)
 	for in, want := range map[string]bool{
-		`{"action":"status","grant":"g"}`: true, `{"action":"catalog","grant":"g"}`: true, `{"action":"read","grant":"g"}`: true,
+		`{"action":"status","grant":"g"}`: true, `{"action":"catalog","grant":"g"}`: true, `{"action":"read","grant":"g"}`: true, `{"action":"grants","agent":"a"}`: true,
 		`{"action":"request","server":"s"}`: false, `{"action":"tools","grant":"g"}`: false, `not json`: false,
 	} {
 		if got := tl.Reads(json.RawMessage(in)); got != want {
@@ -323,5 +323,35 @@ func TestStateSaysWhereEachShownGrantStands(t *testing.T) {
 	*seen = nil
 	if text, _ := tl.State(context.Background(), shown[1:2]); text != "" || len(*seen) != 0 {
 		t.Fatalf("with no grant shown, State said %q and asked planque %d times", text, len(*seen))
+	}
+}
+
+// Improving a taf, Setup finds the connections it asked for the taf's agent
+// and adds to the one it has for a vendor (kiff/tafs#138): grants {agent}
+// asks planque with Setup's own key, and tools on a connected grant adds.
+func TestGrantsListsATafsConnections(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"grants":[{"id":"grt_1","vendor":"Stripe","server":"https://mcp.stripe.com","status":"connected","tools":[{"name":"create_refund_gtqe","tool":"create_refund"}]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	text, isErr := call(t, tl, `{"action":"grants","agent":"taf-refunds-x7k3"}`)
+	if isErr || !strings.Contains(text, `"id":"grt_1"`) || !strings.Contains(text, `"server":"https://mcp.stripe.com"`) {
+		t.Fatalf("grants: %s", text)
+	}
+	if len(seen) != 1 || seen[0] != "GET /v1/accounts/tnt_1/agents/taf-refunds-x7k3/grants Bearer k_setup" {
+		t.Fatalf("asked: %v", seen)
+	}
+	for _, in := range []string{`{"action":"grants"}`, `{"action":"grants","agent":"../x"}`} {
+		if _, isErr := call(t, tl, in); !isErr {
+			t.Errorf("%s should be refused before planque", in)
+		}
+	}
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "On a connected grant, tools {grant, tools} adds the tools sent") ||
+		!strings.Contains(spec.Description, "one connection per vendor") {
+		t.Fatalf("the description doesn't say how to add: %s", spec.Description)
 	}
 }
