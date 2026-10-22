@@ -129,7 +129,6 @@ func (s *Server) Handler() http.Handler {
 	route("POST /resume", s.resume)
 	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
 	route("GET /usage/ai", s.getAIUsage)
-	route("POST /usage/ai/go-on", s.goOn)
 	route("GET /skills", s.listSkills)
 	route("GET /skills/{name}/{version}", s.getSkill)
 	route("PUT /skills/{name}/{version}", s.putSkill)

@@ -886,10 +886,11 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 
 // ErrAIFairUse refuses a chat past its account's AI fair use for the period,
 // until the owner says go on (kiff/tafs#193).
-var ErrAIFairUse = errors.New("ai_fair_use: this period's AI use is past its bound; the owner says go on (POST /usage/ai/go-on) to continue")
+var ErrAIFairUse = errors.New("ai_fair_use: this period's AI use is past its bound; the owner says go on in KIFF to continue")
 
-// fairUse refuses a chat whose period is past its bound, unless the owner
-// said go on. A run already going finishes: only starting is refused.
+// fairUse refuses a chat whose period is past its bound. A run already going
+// finishes: only starting is refused. The owner's go on is KIFF's: tafs cloud
+// then sends no bound.
 func (s *Server) fairUse(ctx context.Context, tenant string, ai aiBody) error {
 	if !sourceName(ai.Period) || len(ai.Period) > MaxPeriod || ai.Bound < 0 {
 		return bad("ai.period is 1 to %d of a-z, 0-9, '.', '_' or '-', and ai.bound_micro_usd isn't negative", MaxPeriod)
@@ -907,7 +908,7 @@ func (s *Server) fairUse(ctx context.Context, tenant string, ai aiBody) error {
 	return nil
 }
 
-// getAIUsage answers the period's spend and whether the owner said go on.
+// getAIUsage answers the period's spend.
 func (s *Server) getAIUsage(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	period := r.URL.Query().Get("period")
 	if !sourceName(period) || len(period) > MaxPeriod {
@@ -917,28 +918,6 @@ func (s *Server) getAIUsage(ctx context.Context, c Caller, r *http.Request) (int
 		return 0, nil, unavailable("this server doesn't count AI use")
 	}
 	p, err := s.Usage.Get(ctx, c.Tenant, period)
-	if err != nil {
-		return 0, nil, err
-	}
-	return http.StatusOK, p, nil
-}
-
-// goOn records the owner's go on for the period. Only tafs cloud calls it,
-// once the owner signed it on their phone.
-func (s *Server) goOn(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
-	var body struct {
-		Period string `json:"period"`
-	}
-	if err := decode(r, &body); err != nil {
-		return 0, nil, err
-	}
-	if !sourceName(body.Period) || len(body.Period) > MaxPeriod {
-		return 0, nil, bad("period is 1 to %d of a-z, 0-9, '.', '_' or '-'", MaxPeriod)
-	}
-	if s.Usage == nil {
-		return 0, nil, unavailable("this server doesn't count AI use")
-	}
-	p, err := s.Usage.GoOn(ctx, c.Tenant, body.Period, s.now().Add(UsageKeep))
 	if err != nil {
 		return 0, nil, err
 	}

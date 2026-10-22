@@ -62,32 +62,6 @@ func Run(t *testing.T, newStore func(*testing.T) usage.Store) {
 		}
 	})
 
-	t.Run("go on holds for its period only, and keeps the spend", func(t *testing.T) {
-		u := newStore(t)
-		if err := u.Add(ctx, "t1", "p1", 900, until); err != nil {
-			t.Fatal(err)
-		}
-		p, err := u.GoOn(ctx, "t1", "p1", until)
-		if err != nil || !p.GoOn || p.Spent != 900 {
-			t.Fatalf("go on: %+v, %v", p, err)
-		}
-		if p, _ := u.GoOn(ctx, "t1", "p1", until); !p.GoOn || p.Spent != 900 {
-			t.Fatalf("again: %+v", p)
-		}
-		if p, _ := u.Get(ctx, "t1", "p2"); p.GoOn {
-			t.Fatal("go on reached another period")
-		}
-		if p, _ := u.Get(ctx, "t2", "p1"); p.GoOn {
-			t.Fatal("go on reached another tenant")
-		}
-		if err := u.Add(ctx, "t1", "p1", 100, until); err != nil {
-			t.Fatal(err)
-		}
-		if p, _ := u.Get(ctx, "t1", "p1"); !p.GoOn || p.Spent != 1000 {
-			t.Fatalf("after an add: %+v", p)
-		}
-	})
-
 	t.Run("erasing a tenant leaves others", func(t *testing.T) {
 		u := newStore(t)
 		for _, tenant := range []string{"t1", "t2"} {

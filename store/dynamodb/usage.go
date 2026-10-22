@@ -13,7 +13,7 @@ import (
 
 // Usage is a usage.Store on the table:
 //
-//	period  pk=U|tenant  sk=period  "spent" (micro USD, a number), "go_on" (a bool), "ttl"
+//	period  pk=U|tenant  sk=period  "spent" (micro USD, a number), "ttl"
 //
 // Adding is one UpdateItem with ADD, so concurrent runs never lose a cost.
 type Usage struct {
@@ -46,19 +46,6 @@ func (u *Usage) Get(ctx context.Context, tenant, period string) (usage.Period, e
 	return decodePeriod(out.Item), nil
 }
 
-// GoOn sets go_on on the period, creating it if need be.
-func (u *Usage) GoOn(ctx context.Context, tenant, period string, until time.Time) (usage.Period, error) {
-	out, err := u.db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &u.table, Key: pkey(usagePK(tenant), period),
-		UpdateExpression:          aws.String("SET go_on = :t, #ttl = :ttl"),
-		ExpressionAttributeNames:  map[string]string{"#ttl": "ttl"},
-		ExpressionAttributeValues: map[string]types.AttributeValue{":t": &types.AttributeValueMemberBOOL{Value: true}, ":ttl": ttl(until)},
-		ReturnValues:              types.ReturnValueAllNew})
-	if err != nil {
-		return usage.Period{}, err
-	}
-	return decodePeriod(out.Attributes), nil
-}
-
 // EraseTenant deletes the tenant's partition.
 func (u *Usage) EraseTenant(ctx context.Context, tenant string) error {
 	return (&Store{db: u.db, table: u.table}).erasePartition(ctx, usagePK(tenant))
@@ -68,9 +55,5 @@ func decodePeriod(item map[string]types.AttributeValue) usage.Period {
 	if item == nil {
 		return usage.Period{}
 	}
-	p := usage.Period{Spent: getN(item, "spent")}
-	if b, ok := item["go_on"].(*types.AttributeValueMemberBOOL); ok {
-		p.GoOn = b.Value
-	}
-	return p
+	return usage.Period{Spent: getN(item, "spent")}
 }

@@ -8,8 +8,9 @@ import (
 	"github.com/kiff/agents/store/memory"
 )
 
-// A chat that names its period is counted, and refused past its bound until
-// the owner says go on (kiff/tafs#193). Only starting is refused.
+// A chat that names its period is counted, and refused past its bound
+// (kiff/tafs#193). Only starting is refused; the owner's go on is KIFF's,
+// and tafs cloud then sends no bound.
 func TestAIFairUse(t *testing.T) {
 	f := newRunFixture(t)
 	use := memory.NewUsage()
@@ -48,16 +49,9 @@ func TestAIFairUse(t *testing.T) {
 
 	code, body = f.do("t1", "GET", "/usage/ai?period=2026-10-20", nil)
 	f.want(200, code, body, "reading the period")
-	if body["spent_micro_usd"] != float64(4_850_000) || body["go_on"] != false {
+	if body["spent_micro_usd"] != float64(4_850_000) {
 		t.Fatalf("period %v", body)
 	}
-	code, body = f.do("t1", "POST", "/usage/ai/go-on", map[string]any{"period": "2026-10-20"})
-	f.want(200, code, body, "the owner's go on")
-	if body["go_on"] != true {
-		t.Fatalf("after go on: %v", body)
-	}
-	code, body = f.do("t1", "POST", "/agents/refunds/runs", ai(4_850_000))
-	f.want(202, code, body, "a chat past its bound after go on")
 
 	// No bound counts without refusing: our own accounts.
 	code, body = f.do("t2", "POST", "/agents/refunds/runs", map[string]any{"input": "x", "background": true, "ai": map[string]any{"period": "2026-10-20", "bound_micro_usd": 0}})
@@ -72,7 +66,7 @@ func TestAIFairUse(t *testing.T) {
 	// Erasing the account erases its periods.
 	code, body = f.do("t1", "DELETE", "/tenant", nil)
 	f.want(204, code, body, "erasing the tenant")
-	if p, _ := use.Get(ctx, "t1", "2026-10-20"); p.Spent != 0 || p.GoOn {
+	if p, _ := use.Get(ctx, "t1", "2026-10-20"); p.Spent != 0 {
 		t.Fatalf("t1's period kept: %+v", p)
 	}
 }

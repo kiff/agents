@@ -37,16 +37,6 @@ func (u *Usage) Get(_ context.Context, tenant, period string) (usage.Period, err
 	return u.p[[2]string{tenant, period}], nil
 }
 
-// GoOn records the owner's go on.
-func (u *Usage) GoOn(_ context.Context, tenant, period string, _ time.Time) (usage.Period, error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	p := u.p[[2]string{tenant, period}]
-	p.GoOn = true
-	u.p[[2]string{tenant, period}] = p
-	return p, nil
-}
-
 // EraseTenant deletes the tenant's periods.
 func (u *Usage) EraseTenant(_ context.Context, tenant string) error {
 	u.mu.Lock()
