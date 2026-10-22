@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/planque"
 )
 
@@ -224,25 +225,45 @@ func TestAgentIDIsNewEachTime(t *testing.T) {
 	}
 }
 
+// gateway is KIFF's gateway as Setup's reads see it: the calls it was asked.
+type gateway struct {
+	name, input string
+	res         tool.Result
+}
+
+func (g *gateway) Call(_ context.Context, name string, input json.RawMessage) (tool.Result, error) {
+	g.name, g.input = name, string(input)
+	return g.res, nil
+}
+
 // Setup reads a tool the owner approved for it (setup_reads), by the name
-// the grant lists, through planque's read (kiff/tafs#174).
-func TestReadPostsTheToolAndItsArguments(t *testing.T) {
-	var path, body string
+// the grant lists (kiff/tafs#174), through KIFF's gateway, so KIFF decides
+// it on Setup's own Card and planque sends it only with KIFF's permit
+// (kiff/tafs#138). Nothing goes to planque's own read.
+func TestReadGoesThroughKIFF(t *testing.T) {
+	var planqueCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		path, body = r.URL.Path, string(b)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"fields"}]}`))
+		planqueCalls++
+		http.Error(w, "gone", http.StatusGone)
 	}))
 	t.Cleanup(srv.Close)
-	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	g := &gateway{res: tool.Result{Text: "fields"}}
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil).ReadThrough(g)
 	if text, isErr := call(t, tl, `{"action":"read","grant":"grt_1","tool":"stripe_api_details_x1","arguments":{"stripe_api_operation_id":"GetChargesCharge"}}`); isErr ||
-		path != "/v1/accounts/tnt_1/grants/grt_1/read" ||
-		body != `{"arguments":{"stripe_api_operation_id":"GetChargesCharge"},"tool":"stripe_api_details_x1"}` {
-		t.Fatalf("%s (error %v): %s %s", text, isErr, path, body)
+		text != "fields" || g.name != "stripe_api_details_x1" || g.input != `{"stripe_api_operation_id":"GetChargesCharge"}` || planqueCalls != 0 {
+		t.Fatalf("%s (error %v): %s %s, planque called %d times", text, isErr, g.name, g.input, planqueCalls)
+	}
+	// KIFF's refusal comes back as the read's error.
+	g.res = tool.Result{Text: "KIFF refused: no Card covers this", IsError: true}
+	if text, isErr := call(t, tl, `{"action":"read","grant":"grt_1","tool":"stripe_api_details_x1"}`); !isErr || !strings.Contains(text, "refused") || g.input != "{}" {
+		t.Fatalf("a refused read: %s %v %s", text, isErr, g.input)
 	}
 	if _, isErr := call(t, tl, `{"action":"read","grant":"grt_1"}`); !isErr {
 		t.Fatal("a read with no tool was sent")
+	}
+	// No gateway to read through: nothing is read.
+	if text, isErr := call(t, planque.New(srv.URL, "tnt_1", "k_setup", nil), `{"action":"read","grant":"grt_1","tool":"x"}`); !isErr || planqueCalls != 0 {
+		t.Fatalf("a read with no gateway: %s %v", text, isErr)
 	}
 }
 

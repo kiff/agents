@@ -232,3 +232,32 @@ func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
 		t.Fatal("a session with no device of its own passed")
 	}
 }
+
+// Setup's reads go through KIFF (kiff/tafs#138, gate A): a read is on KIFF's
+// record as Setup's call, allowed, with a receipt; anything else fails.
+func TestSetupReadsOnRecord(t *testing.T) {
+	receipt := &struct {
+		TraceID string `json:"trace_id"`
+	}{TraceID: "tr_1"}
+	reads := []string{"list_accounts", "stripe_api_details"}
+	for name, c := range map[string]struct {
+		calls []setupCall
+		ok    bool
+	}{
+		"one read, allowed, with its receipt": {[]setupCall{{Actor: "setup", Action: "list_accounts", Outcome: "allowed", Receipt: receipt}}, true},
+		"no read on the record":               {nil, false},
+		"another agent's read":                {[]setupCall{{Actor: "taf", Action: "list_accounts", Outcome: "allowed", Receipt: receipt}}, false},
+		"a tool that isn't a Setup read":      {[]setupCall{{Actor: "setup", Action: "create_refund", Outcome: "allowed", Receipt: receipt}}, false},
+		"refused":                             {[]setupCall{{Actor: "setup", Action: "list_accounts", Outcome: "blocked", Receipt: receipt}}, false},
+		"no receipt":                          {[]setupCall{{Actor: "setup", Action: "list_accounts", Outcome: "allowed"}}, false},
+	} {
+		if err := readsOnRecord(c.calls, "setup", reads); (err == nil) != c.ok {
+			t.Errorf("%s: %v, want ok=%v", name, err, c.ok)
+		}
+	}
+	g := grant{}
+	g.Request.Tools = []grantTool{{Tool: "list_accounts", SetupReads: true}, {Tool: "stripe_api_details", Name: "details", SetupReads: true}, {Tool: "create_refund"}}
+	if got := setupReadTools(g); !slices.Equal(got, []string{"list_accounts", "details"}) {
+		t.Errorf("setupReadTools: %v", got)
+	}
+}

@@ -168,6 +168,7 @@ type grantTool struct {
 	Name        string         `json:"name"`
 	Fixed       map[string]any `json:"fixed_arguments"`
 	ReadOnly    bool           `json:"read_only"`
+	SetupReads  bool           `json:"setup_reads"`
 	AmountArg   string         `json:"amount_argument"`
 	ResourceArg string         `json:"resource_argument"`
 	UnitLookup  *struct {

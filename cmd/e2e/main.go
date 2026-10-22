@@ -294,6 +294,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 			return err
 		}
 	}
+	if err := t.setupReadsRecorded(ctx); err != nil {
+		return err
+	}
 
 	fmt.Fprintln(t.cfg.log, "== the taf")
 	if err := t.useTaf(ctx, tafID, draftID); err != nil {
@@ -359,8 +362,10 @@ func (t *test) runtime(m model.Model) {
 		},
 		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(t.sessions, tenant, agent)} },
 		Planques: []string{strings.TrimRight(t.cfg.planque, "/")},
-		Planque:  func(base, tenant, key string) tool.Tool { return planque.New(base, tenant, key, t.hc) },
-		Drafts:   func(tenant, key string) tool.Tool { return tooldrafts.New(claims, tenant, key) },
+		Planque: func(base, gateway, tenant, key string) tool.Tool {
+			return planque.New(base, tenant, key, t.hc).ReadThrough(kiff.New(gateway, key, nil))
+		},
+		Drafts: func(tenant, key string) tool.Tool { return tooldrafts.New(claims, tenant, key) },
 	}}
 }
 

@@ -382,13 +382,13 @@ func TestDraftsIsOptIn(t *testing.T) {
 }
 
 // A definition can't send its key to a planque the server doesn't allow;
-// one it allows gets the planque tool, with the agent's own key.
+// one it allows gets the planque tool, with the agent's own key and gateway.
 func TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque(t *testing.T) {
 	f := newFixture(t)
 	var built []string
 	f.b.Planques = []string{"https://planque.test"}
-	f.b.Planque = func(base, tenant, key string) tool.Tool {
-		built = append(built, base+" "+tenant+" "+key)
+	f.b.Planque = func(base, gateway, tenant, key string) tool.Tool {
+		built = append(built, base+" "+gateway+" "+tenant+" "+key)
 		return stub{name: "planque", access: tool.Own}
 	}
 	d := registrytest.Definition("t1", "payouts")
@@ -406,7 +406,8 @@ func TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(built) != 1 || !strings.HasPrefix(built[0], "https://planque.test t1 ") {
+	// It reads through the agent's own gateway (kiff/tafs#138).
+	if len(built) != 1 || !strings.HasPrefix(built[0], "https://planque.test "+d.Gateway+" t1 ") {
 		t.Fatalf("planque tools built: %v", built)
 	}
 	found := false
