@@ -65,14 +65,14 @@ func New(base, tenant, key string, hc *http.Client) *Tool {
 func (t *Tool) Access() tool.Access { return tool.Own }
 func (t *Tool) Gateway() bool       { return false }
 
-// Reads reports whether a call only reads: status, catalog and read ask
-// planque what is there; request and tools ask for something.
+// Reads reports whether a call only reads: status, catalog, read and grants
+// ask planque what is there; request and tools ask for something.
 func (t *Tool) Reads(input json.RawMessage) bool {
 	var in struct {
 		Action string `json:"action"`
 	}
 	_ = json.Unmarshal(input, &in)
-	return in.Action == "status" || in.Action == "catalog" || in.Action == "read"
+	return in.Action == "status" || in.Action == "catalog" || in.Action == "read" || in.Action == "grants"
 }
 
 func (t *Tool) Spec() model.ToolSpec {
@@ -83,6 +83,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"and catalog {grant} shows the vendor's tools (name, description, arguments, read_only) and the account the sign-in acts in; nothing is called. " +
 			"A large catalog is shortened (truncated: true): catalog {grant, tool} shows one tool in full. " +
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
+			"On a connected grant, tools {grant, tools} adds the tools sent (only those to add) to what it has: the owner approves the addition once, " +
+			"with no sign-in, and its tools keep working meanwhile. So a taf has one connection per vendor: grants {agent} lists the connections you asked for a taf's agent " +
+			"(id, server, status, tools); add to the one for that vendor rather than requesting another. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. refunds): the tool makes the agent's id from it, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title?, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
@@ -100,10 +103,10 @@ func (t *Tool) Spec() model.ToolSpec {
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
 			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status","catalog","tools","read"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
-			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request); not with name"},` +
+			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants); not with name"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
@@ -130,6 +133,17 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	path := "/v1/accounts/" + url.PathEscape(t.tenant) + "/grants"
 	switch in.Action {
+	case "grants":
+		// The connections this agent asked for a taf's agent, so an
+		// improvement adds to one instead of asking for another (kiff/tafs#138).
+		if in.Agent == "" || strings.ContainsAny(in.Agent, "/?#") {
+			return tool.Result{Text: "grants needs the taf's agent id", IsError: true}, nil
+		}
+		raw, refused, err := t.do(ctx, http.MethodGet, "/v1/accounts/"+url.PathEscape(t.tenant)+"/agents/"+url.PathEscape(in.Agent)+"/grants", nil)
+		if err != nil || refused != nil {
+			return deref(refused), err
+		}
+		return tool.Result{Text: string(raw)}, nil
 	case "request":
 		if in.Server == "" || (in.Agent == "") == (in.Name == "") {
 			return tool.Result{Text: "request needs server, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first", IsError: true}, nil
@@ -189,7 +203,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
-	return tool.Result{Text: "action is request, status, catalog, tools or read", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog, tools, read or grants", IsError: true}, nil
 }
 
 // MaxStated is how many of a session's grants State looks up: the latest.
