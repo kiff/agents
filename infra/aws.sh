@@ -144,6 +144,8 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
  {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${MODEL_SECRET}-??????","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:CreateSecret","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:PutSecretValue","Resource":"$ARN_SECRET:${DRAFTS_PREFIX}*"},
+ {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
+ {"Effect":"Allow","Action":"secretsmanager:ListSecrets","Resource":"*"},
  {"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"$ARN_FN"},
  {"Effect":"Allow","Action":["scheduler:CreateSchedule","scheduler:UpdateSchedule","scheduler:DeleteSchedule","scheduler:GetSchedule"],
   "Resource":"arn:aws:scheduler:$REGION:$ACCOUNT:schedule/$GROUP/*"},

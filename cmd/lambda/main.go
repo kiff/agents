@@ -236,6 +236,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// Cancelling a paused run, or removing an agent with paused runs, takes
 	// back its held calls in KIFF with the agent's own key.
 	f.api.Withdraw = kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
+	// Deleting an account erases its sealing key and its drafts' records
+	// too (kiff/tafs#185). The tafs' keys and its alert secret are tafs
+	// cloud's to delete.
+	if sp, dp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); sp != "" || dp != "" {
+		f.api.Erase = secretsmanager.NewEraser(secrets, sp, dp).Erase
+	}
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.

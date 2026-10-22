@@ -102,3 +102,9 @@ func decodeSkill(item map[string]types.AttributeValue) (skill.Package, error) {
 	}
 	return p, nil
 }
+
+// EraseTenant deletes the tenant's skill packages, when its account is
+// deleted (kiff/tafs#185).
+func (st *Skills) EraseTenant(ctx context.Context, tenant string) error {
+	return (&Store{db: st.db, table: st.table}).erasePartition(ctx, skillsPK(tenant))
+}

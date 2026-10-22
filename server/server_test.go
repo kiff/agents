@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/kiff/agents/schedule/scheduletest"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/skill"
 	"github.com/kiff/agents/store/memory"
 )
 
@@ -49,7 +51,10 @@ type fixture struct {
 	store    *memory.Store
 	sched    *scheduler
 	schedSvc *schedule.Service
+	skills   *memory.Skills
 	logs     *bytes.Buffer
+	// erased are the tenants Erase was asked for.
+	erased []string
 }
 
 // newFixture serves the API over memory stores. A request's tenant is its
@@ -57,7 +62,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{t: t, agents: memory.NewAgents(), store: memory.NewAt(func() time.Time { return now }),
-		sched: &scheduler{set: map[[2]string]schedule.Schedule{}}, logs: &bytes.Buffer{}}
+		sched: &scheduler{set: map[[2]string]schedule.Schedule{}}, skills: memory.NewSkills(), logs: &bytes.Buffer{}}
 	f.schedSvc = &schedule.Service{Store: memory.NewSchedules(), Scheduler: f.sched,
 		Live: func(ctx context.Context, tenant, agent string) (bool, error) {
 			_, err := f.agents.Get(ctx, tenant, agent)
@@ -76,7 +81,11 @@ func newFixture(t *testing.T) *fixture {
 			return server.Caller{}, errors.New("no tenant header")
 		},
 		Agents: f.agents, Sessions: f.store, Notes: f.store, Schedules: f.schedSvc, Runs: memory.NewRuns(),
-		Gateways: []string{"https://gateway.test/mcp"}, Skills: memory.NewSkills(),
+		Gateways: []string{"https://gateway.test/mcp"}, Skills: f.skills,
+		Erase: func(_ context.Context, tenant string) error {
+			f.erased = append(f.erased, tenant)
+			return nil
+		},
 		Now: func() time.Time { return now },
 		Log: slog.New(slog.NewTextHandler(f.logs, nil)),
 	}
@@ -565,4 +574,78 @@ func TestDeleteSessionFinishesACutShortDelete(t *testing.T) {
 	if code := del("t1"); code != 204 || !store.deleted {
 		t.Fatalf("got %d (deleted %v), want 204 and the delete finished", code, store.deleted)
 	}
+}
+
+// Deleting an account erases everything kept for it (kiff/tafs#185): every
+// agent with its schedules, sessions and notes, the tenant's own halt, its
+// skills, and what is kept outside the stores (Erase). Another tenant keeps
+// all of its own, and asking again is done.
+func TestEraseTenantDeletesEverythingKeptForIt(t *testing.T) {
+	f := newFixture(t)
+	for _, p := range [][2]string{{"t1", "payouts"}, {"t1", "refunds"}, {"t2", "payouts"}} {
+		f.putAgent(p[0], p[1])
+		sc := scheduletest.Schedule(p[0], "morning-"+p[1])
+		sc.Agent = p[1]
+		if err := f.schedSvc.Put(ctx, sc); err != nil {
+			t.Fatal(err)
+		}
+		f.session(p[0], "s-"+p[0]+"-"+p[1], p[1])
+		if err := f.store.PutNote(ctx, session.Note{Tenant: p[0], Agent: p[1], Name: "n", Text: "x", Updated: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tenant := range []string{"t1", "t2"} {
+		if _, err := f.agents.Halt(ctx, tenant, registry.Tenant, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.skills.Put(ctx, skill.Package{Tenant: tenant, Name: "kiff", Version: "1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, body := f.do("t1", "DELETE", "/tenant", nil)
+	f.want(204, code, body, "erase")
+	if defs, _ := f.agents.List(ctx, "t1"); len(defs) != 0 {
+		t.Fatalf("agents left: %v", defs)
+	}
+	for _, a := range []string{"payouts", "refunds"} {
+		if _, ok := f.sched.set[[2]string{"t1", "morning-" + a}]; ok {
+			t.Fatalf("%s's schedule still fires", a)
+		}
+		if _, _, err := f.store.Read(ctx, "t1", "s-t1-"+a); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("%s's session is still stored", a)
+		}
+		if notes, _ := f.store.ListNotes(ctx, "t1", a); len(notes) != 0 {
+			t.Fatalf("%s's notes are still stored", a)
+		}
+	}
+	if h, _ := f.agents.Halted(ctx, "t1", registry.Tenant); h.On {
+		t.Fatal("the tenant's halt is still stored")
+	}
+	if ps, _ := f.skills.List(ctx, "t1"); len(ps) != 0 {
+		t.Fatalf("skills left: %v", ps)
+	}
+	if !slices.Equal(f.erased, []string{"t1"}) {
+		t.Fatalf("Erase asked for %v, want t1", f.erased)
+	}
+
+	// The other tenant keeps everything.
+	if _, err := f.agents.Get(ctx, "t2", "payouts"); err != nil {
+		t.Fatal("t2's agent was removed")
+	}
+	if _, _, err := f.store.Read(ctx, "t2", "s-t2-payouts"); err != nil {
+		t.Fatal("t2's session was removed")
+	}
+	if _, ok := f.sched.set[[2]string{"t2", "morning-payouts"}]; !ok {
+		t.Fatal("t2's schedule was removed")
+	}
+	if h, _ := f.agents.Halted(ctx, "t2", registry.Tenant); !h.On {
+		t.Fatal("t2's halt was removed")
+	}
+	if ps, _ := f.skills.List(ctx, "t2"); len(ps) != 1 {
+		t.Fatal("t2's skills were removed")
+	}
+
+	code, body = f.do("t1", "DELETE", "/tenant", nil)
+	f.want(204, code, body, "erasing again")
 }

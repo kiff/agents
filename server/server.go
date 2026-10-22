@@ -74,6 +74,11 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// Erase deletes what the tenant keeps outside the stores when its account
+	// is deleted (kiff/tafs#185): its sealing key and its drafts' claim
+	// records. It is safe to repeat. Nil: nothing outside the stores is
+	// erased.
+	Erase func(ctx context.Context, tenant string) error
 	// MaxActive caps a tenant's active runs (run.Run.Active: PENDING or
 	// RUNNING): a request that would start one more is 429. Zero: no cap.
 	// Only requests are capped; a schedule's firing and the sweep's continue
@@ -105,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 	route("GET /agents/{id}", s.getAgent)
 	route("PUT /agents/{id}", s.putAgent)
 	route("DELETE /agents/{id}", s.deleteAgent)
+	route("DELETE /tenant", s.eraseTenant)
 	route("GET /agents/{id}/versions", s.listVersions)
 	route("POST /agents/{id}/versions", s.putVersion)
 	route("GET /agents/{id}/versions/{n}", s.getVersion)
@@ -408,20 +414,65 @@ func (s *Server) deleteAgent(ctx context.Context, c Caller, r *http.Request) (in
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
-	if err := s.Schedules.DeleteAgent(ctx, c.Tenant, id); err != nil {
+	if err := s.removeAgent(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
-	if err := s.withdrawAll(ctx, c.Tenant, id); err != nil {
+	return http.StatusNoContent, nil, nil
+}
+
+// removeAgent deletes the agent and everything kept for it: its schedules,
+// its runs (after withdrawing the calls KIFF holds for them), its sessions
+// and notes, and its definition with its versions. The definition goes last,
+// so a removal cut short is finished by repeating it.
+func (s *Server) removeAgent(ctx context.Context, tenant, id string) error {
+	if err := s.Schedules.DeleteAgent(ctx, tenant, id); err != nil {
+		return err
+	}
+	if err := s.withdrawAll(ctx, tenant, id); err != nil {
+		return err
+	}
+	if err := s.Runs.DeleteAgent(ctx, tenant, id); err != nil {
+		return err
+	}
+	if err := session.Remove(ctx, s.Sessions, s.Notes, tenant, id); err != nil {
+		return err
+	}
+	return s.Agents.Delete(ctx, tenant, id)
+}
+
+// tenantEraser is a store that deletes what it keeps for a whole tenant
+// beyond its agents, such as the tenant's own halt or its skills.
+type tenantEraser interface {
+	EraseTenant(ctx context.Context, tenant string) error
+}
+
+// eraseTenant is tafs cloud deleting everything kept for the caller's
+// account, when the owner deletes it (kiff/tafs#185, App Store Review
+// Guideline 5.1.1(v)): every agent with what is kept for it, as removing
+// each would, then what the tenant keeps beyond its agents, in the stores
+// and outside them (Erase). It is safe to repeat, so a deletion cut short is
+// finished by asking again.
+func (s *Server) eraseTenant(ctx context.Context, c Caller, _ *http.Request) (int, any, error) {
+	defs, err := s.Agents.List(ctx, c.Tenant)
+	if err != nil {
 		return 0, nil, err
 	}
-	if err := s.Runs.DeleteAgent(ctx, c.Tenant, id); err != nil {
-		return 0, nil, err
+	for _, d := range defs {
+		if err := s.removeAgent(ctx, c.Tenant, d.ID); err != nil && !errors.Is(err, registry.ErrNotFound) {
+			return 0, nil, fmt.Errorf("erasing agent %s: %w", d.ID, err)
+		}
 	}
-	if err := session.Remove(ctx, s.Sessions, s.Notes, c.Tenant, id); err != nil {
-		return 0, nil, err
+	for _, st := range []any{s.Agents, s.Skills} {
+		if e, ok := st.(tenantEraser); ok {
+			if err := e.EraseTenant(ctx, c.Tenant); err != nil {
+				return 0, nil, err
+			}
+		}
 	}
-	if err := s.Agents.Delete(ctx, c.Tenant, id); err != nil {
-		return 0, nil, err
+	if s.Erase != nil {
+		if err := s.Erase(ctx, c.Tenant); err != nil {
+			return 0, nil, err
+		}
 	}
 	return http.StatusNoContent, nil, nil
 }
