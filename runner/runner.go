@@ -21,6 +21,7 @@ import (
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/usage"
 )
 
 // MaxRun is how long a run may go when its caller set no deadline: Lambda's
@@ -69,6 +70,9 @@ type Runner struct {
 	// Sealer seals what a chat keeps of its reads for its next runs
 	// (session.KeptRead), and opens it for them. Nil: nothing is kept.
 	Sealer session.Sealer
+	// Usage adds a counted run's cost to its period each time the run pauses
+	// or ends (kiff/tafs#193). Nil: nothing is counted.
+	Usage usage.Store
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
@@ -153,6 +157,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
+	r.Meter = s.Meter
 	r.AgentVersion = d.Version
 	if trial {
 		r.Draft = s.Draft
@@ -663,18 +668,25 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		}
 		// Each requirement's hold expiry is KIFF's to report (step 4). Until
 		// then it is zero, and the requirement resolves only once answered.
+		var before int64
 		r, err := x.saveStop(ctx, func(n *run.Run) error {
+			before = n.Cost
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
 			return nil
 		})
+		if err == nil {
+			err = x.count(ctx, r, r.Cost-before)
+		}
 		return r, errors.Join(runErr, err) // a failed turn after the hold is still the caller's to log
 	}
 	if err := rec.End(ctx); err != nil {
 		return x.current(ctx, errors.Join(runErr, fmt.Errorf("runner: ending the recording: %w", err)))
 	}
+	var before int64
 	r, err := x.saveStop(ctx, func(n *run.Run) error {
+		before = n.Cost
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
 		switch {
 		case runErr != nil:
@@ -695,7 +707,24 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		}
 		return nil
 	})
+	if err == nil {
+		err = x.count(ctx, r, r.Cost-before)
+	}
 	return r, errors.Join(runErr, err)
+}
+
+// count adds what the run spent since it was last stored to its period, for
+// AI fair use (kiff/tafs#193): once per pause or end, so a run continued after
+// a pause is counted for each part, never twice. A run with no period isn't
+// counted. A failed add is logged by the caller; the run is stored either way.
+func (x *execution) count(ctx context.Context, r run.Run, spent int64) error {
+	if r.Meter == "" || spent <= 0 || x.rn.Usage == nil {
+		return nil
+	}
+	if err := x.rn.Usage.Add(ctx, r.Tenant, r.Meter, spent, x.rn.now().Add(server.UsageKeep)); err != nil {
+		return fmt.Errorf("runner: counting the run's AI use: %w", err)
+	}
+	return nil
 }
 
 // notRun stores a run that stopped before its loop began, because of cause. A

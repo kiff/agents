@@ -86,6 +86,10 @@ type Run struct {
 	// Cost is what the run's model turns cost so far, in millionths of a US
 	// dollar.
 	Cost int64 `json:"cost_micro_usd"`
+	// Meter is the billing period the run's cost counts toward for AI fair
+	// use (kiff/tafs#193), as the caller named it when it started a chat;
+	// empty for a run that isn't counted.
+	Meter string `json:"meter,omitempty"`
 	// Turns counts the run's model turns so far, across its pauses.
 	Turns int `json:"turns"`
 

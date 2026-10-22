@@ -16,6 +16,7 @@ import (
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/usage"
 )
 
 // MaxInput bounds what a run is asked, in bytes.
@@ -70,6 +71,9 @@ type Start struct {
 	// Only a trial (Trigger run.ByTrial) has either.
 	Version int
 	Draft   string
+	// Meter is the billing period the run's cost counts toward for AI fair
+	// use (kiff/tafs#193); empty, it isn't counted.
+	Meter string
 	// ID is the run's ID, when the caller names it; empty, a new one. A
 	// caller that may start the same run more than once (a schedule's firing,
 	// delivered at least once) names it, and the second Start returns the run
@@ -307,7 +311,20 @@ type startBody struct {
 	Input      string `json:"input"`
 	SessionID  string `json:"session_id,omitempty"`
 	Background bool   `json:"background,omitempty"`
+	// AI counts the run's cost toward its account's AI fair use, and refuses
+	// to start it past the bound (kiff/tafs#193). Nil: not counted.
+	AI *aiBody `json:"ai,omitempty"`
 }
+
+// aiBody names the billing period a chat counts toward and its bound, in
+// micro US dollars; 0 is no bound, the run is only counted.
+type aiBody struct {
+	Period string `json:"period"`
+	Bound  int64  `json:"bound_micro_usd"`
+}
+
+// MaxPeriod bounds a billing period's name.
+const MaxPeriod = 64
 
 // The stream a run's start and resume share, as server-sent events:
 //
@@ -362,7 +379,15 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input})
+	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input}
+	if body.AI != nil {
+		if err := s.fairUse(ctx, c.Tenant, *body.AI); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		st.Meter = body.AI.Period
+	}
+	rn, err := s.start(ctx, st)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -858,3 +883,68 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 	}
 	return http.StatusOK, map[string]any{"runs": out}, nil
 }
+
+// ErrAIFairUse refuses a chat past its account's AI fair use for the period,
+// until the owner says go on (kiff/tafs#193).
+var ErrAIFairUse = errors.New("ai_fair_use: this period's AI use is past its bound; the owner says go on (POST /usage/ai/go-on) to continue")
+
+// fairUse refuses a chat whose period is past its bound, unless the owner
+// said go on. A run already going finishes: only starting is refused.
+func (s *Server) fairUse(ctx context.Context, tenant string, ai aiBody) error {
+	if !sourceName(ai.Period) || len(ai.Period) > MaxPeriod || ai.Bound < 0 {
+		return bad("ai.period is 1 to %d of a-z, 0-9, '.', '_' or '-', and ai.bound_micro_usd isn't negative", MaxPeriod)
+	}
+	if s.Usage == nil {
+		return unavailable("this server doesn't count AI use")
+	}
+	p, err := s.Usage.Get(ctx, tenant, ai.Period)
+	if err != nil {
+		return err
+	}
+	if !usage.Allowed(p, ai.Bound) {
+		return ErrAIFairUse
+	}
+	return nil
+}
+
+// getAIUsage answers the period's spend and whether the owner said go on.
+func (s *Server) getAIUsage(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	period := r.URL.Query().Get("period")
+	if !sourceName(period) || len(period) > MaxPeriod {
+		return 0, nil, bad("period is 1 to %d of a-z, 0-9, '.', '_' or '-'", MaxPeriod)
+	}
+	if s.Usage == nil {
+		return 0, nil, unavailable("this server doesn't count AI use")
+	}
+	p, err := s.Usage.Get(ctx, c.Tenant, period)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, p, nil
+}
+
+// goOn records the owner's go on for the period. Only tafs cloud calls it,
+// once the owner signed it on their phone.
+func (s *Server) goOn(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	var body struct {
+		Period string `json:"period"`
+	}
+	if err := decode(r, &body); err != nil {
+		return 0, nil, err
+	}
+	if !sourceName(body.Period) || len(body.Period) > MaxPeriod {
+		return 0, nil, bad("period is 1 to %d of a-z, 0-9, '.', '_' or '-'", MaxPeriod)
+	}
+	if s.Usage == nil {
+		return 0, nil, unavailable("this server doesn't count AI use")
+	}
+	p, err := s.Usage.GoOn(ctx, c.Tenant, body.Period, s.now().Add(UsageKeep))
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, p, nil
+}
+
+// UsageKeep is how long a period's spend is kept after its last change:
+// past any billing period's end.
+const UsageKeep = 70 * 24 * time.Hour
