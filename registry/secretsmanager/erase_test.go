@@ -64,13 +64,13 @@ func (e *erasable) DeleteSecret(_ context.Context, in *sm.DeleteSecretInput, _ .
 // keys, which are tafs cloud's (kiff/tafs#185). Asked again, it's done.
 func TestEraseDeletesOnlyTheTenantsOwn(t *testing.T) {
 	e := &erasable{fake: &fake{secrets: map[string]*sm.GetSecretValueOutput{
-		"agents-sealing/t1":  secret("agents-sealing/t1", "k1"),
-		"agents-sealing/t10": secret("agents-sealing/t10", "k10"),
+		"agents-sealing/t1":   secret("agents-sealing/t1", "k1"),
+		"agents-sealing/t10":  secret("agents-sealing/t10", "k10"),
 		"agents-drafts/t1/d1": secret("agents-drafts/t1/d1", "r"),
 		"agents-drafts/t1/d2": secret("agents-drafts/t1/d2", "r"),
 		"agents-drafts/t10/d": secret("agents-drafts/t10/d", "r"),
 		"agents-drafts/t2/d1": secret("agents-drafts/t2/d1", "r"),
-		"agents/t1/kiff/taf": secret("agents/t1/kiff/taf", "key"),
+		"agents/t1/kiff/taf":  secret("agents/t1/kiff/taf", "key"),
 	}}}
 	er := secretsmanager.NewEraser(e, "agents-sealing/", "agents-drafts/")
 	if err := er.Erase(ctx, "t1"); err != nil {
