@@ -141,10 +141,26 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 // checkpoint, an answer recorded) is read again, so the caller doesn't get a
 // conflict it didn't cause.
 func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	rn, err := s.agentRun(ctx, c, r)
+	if err != nil {
+		return 0, nil, err
+	}
+	next, err := s.cancel(ctx, rn)
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, viewRun(next), nil
+}
+
+// cancel is cancelRun for rn, as read: a run saved meanwhile is read again,
+// up to cancelTries times.
+func (s *Server) cancel(ctx context.Context, rn run.Run) (run.Run, error) {
 	for try := 1; ; try++ {
-		rn, err := s.agentRun(ctx, c, r)
-		if err != nil {
-			return 0, nil, err
+		if try > 1 {
+			var err error
+			if rn, err = s.Runs.Get(ctx, rn.Tenant, rn.ID); err != nil {
+				return run.Run{}, err
+			}
 		}
 		switch rn.Status {
 		case run.Paused:
@@ -152,17 +168,15 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 			if errors.Is(err, run.ErrConflict) && try < cancelTries {
 				continue
 			}
-			if err != nil {
-				return 0, nil, err
-			}
-			return http.StatusOK, viewRun(next), nil
+			return next, err
 		case run.Completed, run.Error, run.Cancelled:
-			return 0, nil, conflict("the run has ended")
+			return rn, conflict("the run has ended")
 		}
 		var expires time.Time
 		if rn.Status == run.Pending {
+			var err error
 			if expires, err = s.endedExpires(ctx, rn); err != nil {
-				return 0, nil, err
+				return run.Run{}, err
 			}
 		}
 		next, err := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
@@ -175,10 +189,7 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 		if errors.Is(err, run.ErrConflict) && try < cancelTries {
 			continue
 		}
-		if err != nil {
-			return 0, nil, err
-		}
-		return http.StatusOK, viewRun(next), nil
+		return next, err
 	}
 }
 

@@ -394,6 +394,75 @@ func switching(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 			t.Fatalf("Switching after Delete = %v, %v; want none", ok, err)
 		}
 	})
+
+	// kiff/kiff-cloud#1061: a halt keeps its first At, a resume keeps it too,
+	// and the tenant's own halt is apart from every agent's.
+	t.Run("Halt", func(t *testing.T) {
+		s := newStore(t)
+		if _, err := s.Halt(ctx, "t1", "refunds", at); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("Halt on no agent = %v; want ErrNotFound", err)
+		}
+		if err := s.Put(ctx, Definition("t1", "refunds")); err != nil {
+			t.Fatal(err)
+		}
+		if h, err := s.Halted(ctx, "t1", "refunds"); err != nil || h != (registry.Halt{}) {
+			t.Fatalf("Halted before any = %+v, %v; want the zero Halt", h, err)
+		}
+		if h, err := s.Halt(ctx, "t1", "refunds", at); err != nil || !h.On || !h.At.Equal(at) {
+			t.Fatalf("Halt = %+v, %v", h, err)
+		}
+		if h, err := s.Halt(ctx, "t1", "refunds", at.Add(time.Hour)); err != nil || !h.On || !h.At.Equal(at) {
+			t.Fatalf("Halt again = %+v, %v; want the first halt's At kept", h, err)
+		}
+		if h, _ := s.Halted(ctx, "t2", "refunds"); h.On {
+			t.Fatal("another tenant's agent of the same id is halted")
+		}
+		if h, _ := s.Halted(ctx, "t1", registry.Tenant); h.On {
+			t.Fatal("halting an agent halted its tenant")
+		}
+		if h, err := s.Resume(ctx, "t1", "refunds"); err != nil || h.On || !h.At.Equal(at) {
+			t.Fatalf("Resume = %+v, %v; want off, its At kept", h, err)
+		}
+		if h, err := s.Resume(ctx, "t1", "refunds"); err != nil || h.On {
+			t.Fatalf("Resume again = %+v, %v; want no error", h, err)
+		}
+		later := at.Add(2 * time.Hour)
+		if h, err := s.Halt(ctx, "t1", "refunds", later); err != nil || !h.On || !h.At.Equal(later) {
+			t.Fatalf("Halt after a resume = %+v, %v; want a new halt from %v", h, err, later)
+		}
+
+		if h, err := s.Halt(ctx, "t1", registry.Tenant, at); err != nil || !h.On || !h.At.Equal(at) {
+			t.Fatalf("Halt of the tenant = %+v, %v", h, err)
+		}
+		if h, err := registry.Halts(ctx, s, "t1", "refunds"); err != nil || !h.On || !h.At.Equal(later) {
+			t.Fatalf("Halts = %+v, %v; want halted, from the later halt", h, err)
+		}
+		if _, err := s.Resume(ctx, "t1", "refunds"); err != nil {
+			t.Fatal(err)
+		}
+		if h, _ := registry.Halts(ctx, s, "t1", "refunds"); !h.On {
+			t.Fatal("an agent resumed on its own runs while its tenant is halted")
+		}
+		if _, err := s.Resume(ctx, "t1", registry.Tenant); err != nil {
+			t.Fatal(err)
+		}
+		if h, _ := registry.Halts(ctx, s, "t1", "refunds"); h.On || !h.Before(later) || h.Before(later.Add(time.Second)) {
+			t.Fatalf("Halts after both resumed = %+v; want off, with what came before %v left behind", h, later)
+		}
+
+		if _, err := s.Halt(ctx, "t1", "refunds", later); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Delete(ctx, "t1", "refunds"); err != nil {
+			t.Fatal(err)
+		}
+		if h, err := s.Halted(ctx, "t1", "refunds"); err != nil || h.On {
+			t.Fatalf("Halted after Delete = %+v, %v; want none", h, err)
+		}
+		if h, _ := s.Halted(ctx, "t1", registry.Tenant); !h.At.Equal(at) {
+			t.Fatalf("the tenant's halt after an agent's Delete = %+v; want it kept", h)
+		}
+	})
 }
 
 // cards checks that a version records the Cards it runs under

@@ -23,6 +23,7 @@ import (
 //	agent    pk=G|tenant     sk=id        the live Definition, as JSON in "def"
 //	version  pk=V|tenant|id  sk=%010d n   its Definition in "def", its record in "ver"
 //	switch   pk=W|tenant     sk=id        a switch under way: its version in "n", its mark in "sw"
+//	halt     pk=B|tenant     sk=id or ~   an agent's halt, or the tenant's (sk ~), as JSON in "halt"
 type Agents struct {
 	db    API
 	table string
@@ -44,6 +45,17 @@ func versionsPK(tenant, id string) string { return key("V", tenant, id) }
 func versionSK(n int) string { return fmt.Sprintf("%010d", n) }
 
 func switchPK(tenant string) string { return key("W", tenant) }
+
+func haltPK(tenant string) string { return key("B", tenant) }
+
+// haltSK is id's sort key, or "~" for the tenant's own halt: no agent ID
+// has a "~".
+func haltSK(id string) string {
+	if id == registry.Tenant {
+		return "~"
+	}
+	return id
+}
 
 // Put stores d as the live definition. An agent with versions gets it as its
 // next version, live at once (an upgrade is part of its history); one
@@ -278,6 +290,9 @@ func (a *Agents) Delete(ctx context.Context, tenant, id string) error {
 	if err := a.EndSwitch(ctx, tenant, id); err != nil {
 		return err
 	}
+	if _, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(haltPK(tenant), haltSK(id))}); err != nil {
+		return err
+	}
 	_, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(agentsPK(tenant), id)})
 	return err
 }
@@ -407,4 +422,83 @@ func (a *Agents) SetCards(ctx context.Context, tenant, id string, n int, cards [
 		return registry.ErrNoVersion
 	}
 	return err
+}
+
+// Halt writes the halt only over none or over one resumed, in one
+// conditional write, so a second halt keeps the first one's At.
+func (a *Agents) Halt(ctx context.Context, tenant, id string, at time.Time) (registry.Halt, error) {
+	if id != registry.Tenant {
+		if _, err := a.Get(ctx, tenant, id); err != nil {
+			return registry.Halt{}, err
+		}
+	}
+	h := registry.Halt{On: true, At: at.UTC()}
+	b, err := json.Marshal(h)
+	if err != nil {
+		return registry.Halt{}, err
+	}
+	item := pkey(haltPK(tenant), haltSK(id))
+	item["halt"], item["on"] = s(string(b)), &types.AttributeValueMemberBOOL{Value: true}
+	_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item,
+		ConditionExpression:       aws.String("attribute_not_exists(pk) OR #on = :off"),
+		ExpressionAttributeNames:  map[string]string{"#on": "on"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":off": &types.AttributeValueMemberBOOL{Value: false}}})
+	var failed *types.ConditionalCheckFailedException
+	if !errors.As(err, &failed) {
+		return h, err
+	}
+	return a.Halted(ctx, tenant, id) // halted already: its first At stays
+}
+
+// Resume rewrites the halt, off, only over the halt it read.
+func (a *Agents) Resume(ctx context.Context, tenant, id string) (registry.Halt, error) {
+	if id != registry.Tenant {
+		if _, err := a.Get(ctx, tenant, id); err != nil {
+			return registry.Halt{}, err
+		}
+	}
+	for try := 0; try < 3; try++ {
+		out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: pkey(haltPK(tenant), haltSK(id)), ConsistentRead: aws.Bool(true)})
+		if err != nil {
+			return registry.Halt{}, err
+		}
+		h, err := decodeHalt(out.Item, id)
+		if err != nil || !h.On {
+			return h, err
+		}
+		h.On = false
+		b, err := json.Marshal(h)
+		if err != nil {
+			return registry.Halt{}, err
+		}
+		item := pkey(haltPK(tenant), haltSK(id))
+		item["halt"], item["on"] = s(string(b)), &types.AttributeValueMemberBOOL{Value: false}
+		_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item,
+			ConditionExpression:       aws.String("halt = :was"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{":was": out.Item["halt"]}})
+		var failed *types.ConditionalCheckFailedException
+		if !errors.As(err, &failed) {
+			return h, err
+		}
+	}
+	return registry.Halt{}, fmt.Errorf("dynamodb: the halt of %q kept changing", id)
+}
+
+func (a *Agents) Halted(ctx context.Context, tenant, id string) (registry.Halt, error) {
+	out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: pkey(haltPK(tenant), haltSK(id)), ConsistentRead: aws.Bool(true)})
+	if err != nil {
+		return registry.Halt{}, err
+	}
+	return decodeHalt(out.Item, id)
+}
+
+func decodeHalt(item map[string]types.AttributeValue, id string) (registry.Halt, error) {
+	var h registry.Halt
+	if item == nil {
+		return h, nil
+	}
+	if err := json.Unmarshal([]byte(getS(item, "halt")), &h); err != nil {
+		return registry.Halt{}, fmt.Errorf("dynamodb: halt of %q: %w", id, err)
+	}
+	return h, nil
 }

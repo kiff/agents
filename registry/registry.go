@@ -163,6 +163,38 @@ var ErrNoSwitch = errors.New("registry: this agent isn't switching to that versi
 // replaced: read it again, then replace again.
 var ErrSwitchChanged = errors.New("registry: the switch changed meanwhile")
 
+// Halt is an agent's halt, or its tenant's (kiff/kiff-cloud#1061): while On,
+// no run of it starts or goes on. At is when the latest halt began, and is
+// kept after a resume: a run created before it never runs, so nothing from
+// before a halt comes back once it is resumed.
+type Halt struct {
+	On bool      `json:"on"`
+	At time.Time `json:"at,omitzero"`
+}
+
+// Over is what holds for an agent given its own halt and its tenant's: it is
+// halted while either is on, and nothing created before the later of the two
+// runs. Resuming the tenant leaves an agent halted on its own halted.
+func (h Halt) Over(tenant Halt) Halt {
+	out := Halt{On: h.On || tenant.On, At: h.At}
+	if tenant.At.After(out.At) {
+		out.At = tenant.At
+	}
+	return out
+}
+
+// Before reports whether something created at t comes from before the
+// latest halt, so it never runs, even once resumed.
+func (h Halt) Before(t time.Time) bool { return !h.At.IsZero() && !t.After(h.At) }
+
+// Tenant names the tenant itself, not one of its agents, in the halt calls:
+// no agent's ID is empty.
+const Tenant = ""
+
+// ErrHalted means the agent, or its whole tenant, is halted: nothing of it
+// runs until it is resumed, and what came before the halt never does.
+var ErrHalted = errors.New("registry: this agent is halted; nothing of it runs until it is resumed")
+
 // Digest is a definition's fingerprint, its version number aside: the same
 // definition stored twice has the same digest.
 func Digest(d Definition) (string, error) {
@@ -318,6 +350,32 @@ type Agents interface {
 	Switching(ctx context.Context, tenant, id string) (Switching, bool, error)
 	// EndSwitch removes the agent's mark; none is not an error.
 	EndSwitch(ctx context.Context, tenant, id string) error
+
+	// Halt halts the agent id, or the tenant itself for Tenant, from at, and
+	// returns the halt as stored. Halting what is halted already keeps the
+	// first halt's At. ErrNotFound for an agent not stored. Delete removes
+	// an agent's halt; the tenant's stays.
+	Halt(ctx context.Context, tenant, id string, at time.Time) (Halt, error)
+	// Resume ends the halt of id (or of the tenant, for Tenant), keeping its
+	// At, and returns it as stored. Resuming what isn't halted is not an
+	// error.
+	Resume(ctx context.Context, tenant, id string) (Halt, error)
+	// Halted returns the halt of id (or of the tenant, for Tenant): the zero
+	// Halt if it was never halted.
+	Halted(ctx context.Context, tenant, id string) (Halt, error)
+}
+
+// Halts is what holds for agent id: its own halt over its tenant's.
+func Halts(ctx context.Context, a Agents, tenant, id string) (Halt, error) {
+	own, err := a.Halted(ctx, tenant, id)
+	if err != nil {
+		return Halt{}, err
+	}
+	all, err := a.Halted(ctx, tenant, Tenant)
+	if err != nil {
+		return Halt{}, err
+	}
+	return own.Over(all), nil
 }
 
 // Secrets resolves the reference to an agent's KIFF key. An implementation

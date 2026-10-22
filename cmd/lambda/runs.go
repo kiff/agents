@@ -109,6 +109,11 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 		// the owner is leaving, or late on the next one (kiff/tafs#107).
 		f.log.InfoContext(ctx, "firing skipped: the agent is switching versions", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
 		return nil
+	case errors.Is(err, registry.ErrHalted):
+		// Skipped, not retried: a retry would run it once resumed, and
+		// nothing from before a halt runs (kiff/kiff-cloud#1061).
+		f.log.InfoContext(ctx, "firing skipped: the agent is halted", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
+		return nil
 	case err != nil:
 		return err
 	}

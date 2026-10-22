@@ -111,6 +111,12 @@ func (s *Server) Handler() http.Handler {
 	route("POST /agents/{id}/versions/{n}/live", s.switchVersion)
 	route("POST /agents/{id}/versions/{n}/pending", s.pendingVersion)
 	route("DELETE /agents/{id}/switching", s.cancelSwitch)
+	route("GET /agents/{id}/halt", s.getHalt)
+	route("POST /agents/{id}/halt", s.halt)
+	route("POST /agents/{id}/resume", s.resume)
+	route("GET /halt", s.getHalt)
+	route("POST /halt", s.halt)
+	route("POST /resume", s.resume)
 	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
 	route("GET /skills", s.listSkills)
 	route("GET /skills/{name}/{version}", s.getSkill)
@@ -273,6 +279,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusNotFound, "not found"
 	case errors.Is(err, registry.ErrSwitching):
 		status, msg = http.StatusConflict, "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
+	case errors.Is(err, registry.ErrHalted):
+		status, msg = http.StatusConflict, "halted: this agent, or its whole account, is halted; nothing of it runs until it is resumed"
 	case errors.Is(err, registry.ErrSwitchChanged):
 		status, msg = http.StatusConflict, "the switch changed meanwhile; read it again"
 	case errors.Is(err, registry.ErrNoSwitch):
