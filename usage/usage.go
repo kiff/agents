@@ -4,7 +4,7 @@
 //
 // The caller names the period and the bound with each run it starts (tafs
 // cloud, from the account's plan). The owner's go on is KIFF's, signed on
-// their phone: tafs cloud then sends no bound. This package knows neither
+// their phone: each one raises the bound tafs cloud sends. This package knows neither
 // plans nor currencies, only micro US dollars.
 package usage
 

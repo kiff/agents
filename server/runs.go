@@ -889,8 +889,8 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 var ErrAIFairUse = errors.New("ai_fair_use: this period's AI use is past its bound; the owner says go on in KIFF to continue")
 
 // fairUse refuses a chat whose period is past its bound. A run already going
-// finishes: only starting is refused. The owner's go on is KIFF's: tafs cloud
-// then sends no bound.
+// finishes: only starting is refused. The owner's go on is KIFF's: each one
+// raises the bound tafs cloud sends.
 func (s *Server) fairUse(ctx context.Context, tenant string, ai aiBody) error {
 	if !sourceName(ai.Period) || len(ai.Period) > MaxPeriod || ai.Bound < 0 {
 		return bad("ai.period is 1 to %d of a-z, 0-9, '.', '_' or '-', and ai.bound_micro_usd isn't negative", MaxPeriod)
