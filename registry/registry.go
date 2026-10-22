@@ -419,8 +419,9 @@ type Builder struct {
 	Drafts func(tenant, key string) tool.Tool
 	// Planques are the planque URLs a definition may name, exactly.
 	Planques []string
-	// Planque returns the planque tool for an agent whose KIFF key is key.
-	Planque func(base, tenant, key string) tool.Tool
+	// Planque returns the planque tool for an agent whose KIFF key is key,
+	// reading through the gateway at gateway (kiff/tafs#138).
+	Planque func(base, gateway, tenant, key string) tool.Tool
 	// Skills holds the tenants' skill packages, for definitions that name
 	// some (#101). Without it, such a definition doesn't build.
 	Skills skill.Store
@@ -488,7 +489,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, b.Drafts(tenant, key))
 	}
 	if d.Planque != "" {
-		tools = append(tools, b.Planque(d.Planque, tenant, key))
+		tools = append(tools, b.Planque(d.Planque, d.Gateway, tenant, key))
 	}
 	if d.Workspace {
 		if b.Workspace == nil || run == "" {

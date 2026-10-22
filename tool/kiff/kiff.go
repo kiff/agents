@@ -109,6 +109,16 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 	}
 }
 
+// Call calls the account's tool name through the gateway, as this agent,
+// whether or not the gateway lists it to the agent: KIFF decides it on the
+// agent's Card all the same (Setup's reads, kiff/tafs#138).
+func (c *Client) Call(ctx context.Context, name string, input json.RawMessage) (tool.Result, error) {
+	if err := c.init(ctx); err != nil {
+		return tool.Result{}, err
+	}
+	return (&gatewayTool{c: c, access: tool.Read, spec: model.ToolSpec{Name: name}}).Call(ctx, input)
+}
+
 type gatewayTool struct {
 	c      *Client
 	spec   model.ToolSpec

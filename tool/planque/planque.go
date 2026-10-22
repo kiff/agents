@@ -34,6 +34,23 @@ const Name = "planque"
 type Tool struct {
 	base, tenant, key string
 	http              *http.Client
+	// reads calls a setup_reads tool through KIFF's gateway, with the
+	// agent's own key (kiff/tafs#138, gate A). Nil: no read is made.
+	reads Reader
+}
+
+// Reader calls one of the account's tools through KIFF's gateway, as the
+// agent: KIFF decides it on the agent's Card, issues the permit planque
+// sends it with, and keeps its receipt and its line in the Record.
+type Reader interface {
+	Call(ctx context.Context, name string, input json.RawMessage) (tool.Result, error)
+}
+
+// ReadThrough has the agent's reads (setup_reads) go through KIFF's gateway
+// at r, and returns t.
+func (t *Tool) ReadThrough(r Reader) *Tool {
+	t.reads = r
+	return t
 }
 
 // New returns the planque tool for the agent whose KIFF key is key, on the
@@ -147,16 +164,20 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			return t.catalog(ctx, at+"/catalog", in.Tool)
 		case "read":
 			// A tool the owner approved for Setup to read (setup_reads), by
-			// the name the grant lists (kiff/tafs#174).
+			// the name the grant lists (kiff/tafs#174). It goes through KIFF's
+			// gateway like any call, decided on Setup's own read Card, so it
+			// has a permit, a receipt and a line in the Record (kiff/tafs#138).
 			if in.Tool == "" {
 				return tool.Result{Text: "read needs the tool, by the name the grant lists, and its arguments", IsError: true}, nil
+			}
+			if t.reads == nil {
+				return tool.Result{Text: "reads go through KIFF's gateway, and none is set up here", IsError: true}, nil
 			}
 			args := in.Args
 			if len(args) == 0 || string(args) == "null" {
 				args = json.RawMessage("{}")
 			}
-			body, _ := json.Marshal(map[string]any{"tool": in.Tool, "arguments": args})
-			return t.read(ctx, at+"/read", body)
+			return t.read(ctx, in.Tool, args)
 		case "tools":
 			if len(in.Tools) == 0 || in.Tools[0] != '[' || string(in.Tools) == "[]" {
 				return tool.Result{Text: "tools needs the taf's tools, from the grant's catalog", IsError: true}, nil
@@ -267,27 +288,15 @@ func (t *Tool) grant(ctx context.Context, method, path string, body []byte) (too
 	return tool.Result{Text: string(b)}, nil
 }
 
-// read answers with the vendor's own answer to a setup_reads read: its
-// text, bounded like the catalog, and whether the vendor called it an error.
-func (t *Tool) read(ctx context.Context, path string, body []byte) (tool.Result, error) {
-	raw, refused, err := t.do(ctx, http.MethodPost, path, body)
-	if err != nil || refused != nil {
-		return deref(refused), err
+// read answers with the vendor's own answer to a setup_reads read, through
+// KIFF's gateway: its text, bounded like the catalog, and whether it was an
+// error (the vendor's, or KIFF's refusal).
+func (t *Tool) read(ctx context.Context, name string, args json.RawMessage) (tool.Result, error) {
+	res, err := t.reads.Call(ctx, name, args)
+	if err != nil {
+		return tool.Result{}, err
 	}
-	var res struct {
-		IsError bool `json:"isError"`
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return tool.Result{}, fmt.Errorf("planque: a read's answer that isn't a tool result")
-	}
-	var b strings.Builder
-	for _, c := range res.Content {
-		b.WriteString(c.Text)
-	}
-	text := b.String()
+	text := res.Text
 	if len(text) > MaxCatalog {
 		text = text[:MaxCatalog] + " …(shortened)"
 	}

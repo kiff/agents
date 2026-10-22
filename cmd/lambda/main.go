@@ -198,8 +198,8 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
 		Drafts:   draftTool(claims),
 		Planques: planques,
-		Planque: func(base, tenant, key string) tool.Tool {
-			return planque.New(base, tenant, key, nil)
+		Planque: func(base, gateway, tenant, key string) tool.Tool {
+			return planque.New(base, tenant, key, nil).ReadThrough(kiff.New(gateway, key, nil))
 		},
 	}, Collect: kiff.Collect}
 	// What a chat keeps of its reads for its next messages, sealed under the

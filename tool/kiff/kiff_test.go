@@ -320,3 +320,17 @@ func TestAHoldStaysHeldWhenAFieldDoesntParse(t *testing.T) {
 		t.Fatalf("hold %+v, want the IDs and no expiry", *held.Hold)
 	}
 }
+
+// Setup's reads (kiff/tafs#138): a tool the gateway doesn't list to the
+// agent is still called by its name, with the agent's key, and KIFF decides
+// it on the agent's Card. Nothing is listed first.
+func TestCallsAToolByNameWithoutListing(t *testing.T) {
+	srv, methods := gateway(t, false)
+	got, err := kiff.New(srv.URL, testKey, srv.Client()).Call(context.Background(), "stripe_get_charge", json.RawMessage(`{"charge":"ch_1"}`))
+	if err != nil || got.Text != `{"id":"ch_1"}` || got.IsError {
+		t.Fatalf("read = %+v %v", got, err)
+	}
+	if want := "initialize notifications/initialized tools/call"; strings.Join(*methods, " ") != want {
+		t.Fatalf("methods = %v", *methods)
+	}
+}
