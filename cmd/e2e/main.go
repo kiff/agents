@@ -305,6 +305,8 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if err != nil {
 		return err
 	}
+	// Counts only, never the words, in every run: a drift in length shows (kiff/agents#185).
+	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
 	if t.cfg.judge != nil {
 		if err := t.grade(ctx, tafID); err != nil {
 			return err
@@ -852,8 +854,6 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}
-	// Counts only, never the words: logged so a drift in length shows (kiff/agents#185).
-	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
 	var failed []string
 	passed := 0
 	for _, c := range checks {
