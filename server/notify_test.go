@@ -3,6 +3,7 @@ package server_test
 import (
 	"testing"
 
+	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 )
 
@@ -31,5 +32,26 @@ func TestARunIsAnnouncedOnlyWhereTheServerAllows(t *testing.T) {
 	want := run.Notify{URL: "https://tafs.test/v1/runs/ended", Ref: "ref-0123456789abcdef"}
 	if n := len(f.runner.starts); n != 1 || f.runner.starts[0].Notify != want {
 		t.Fatalf("starts %+v: want one, with its notify", f.runner.starts)
+	}
+}
+
+// A trial is announced the same way, at an allowed URL only.
+func TestATrialIsAnnouncedOnlyWhereTheServerAllows(t *testing.T) {
+	f := newRunFixture(t)
+	f.server.NotifyURLs = []string{"https://tafs.test/v1/runs/ended"}
+	f.restart()
+	f.putAgent("t1", "payouts")
+	code, body := f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": registrytest.Definition("t1", "payouts"), "note": "v2"})
+	f.want(200, code, body, "a version")
+	trial := func(url string) map[string]any {
+		return map[string]any{"input": "x", "notify": map[string]any{"url": url, "ref": "ref-0123456789abcdef"}}
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/trial", trial("https://elsewhere.test/"))
+	f.want(400, code, body, "a URL the server doesn't allow")
+	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/trial", trial("https://tafs.test/v1/runs/ended"))
+	f.want(202, code, body, "an allowed URL")
+	want := run.Notify{URL: "https://tafs.test/v1/runs/ended", Ref: "ref-0123456789abcdef"}
+	if n := len(f.runner.starts); n != 1 || f.runner.starts[0].Notify != want {
+		t.Fatalf("starts %+v", f.runner.starts)
 	}
 }

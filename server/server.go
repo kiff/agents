@@ -175,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 	if s.Drafts != nil {
 		route("POST /drafts/{draft_id}/claim", s.claimDraft)
 	}
+	route("GET /agents/{id}/runs", s.listRuns)
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
 	route("POST /agents/{id}/runs/{run_id}/messages", s.steerRun)

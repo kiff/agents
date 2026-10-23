@@ -1063,8 +1063,9 @@ func TestDeleteAgentWithdrawsItsHeldCalls(t *testing.T) {
 func TestNoRunnerNoStart(t *testing.T) {
 	f := newFixture(t) // a server with Runs and no Runner
 	f.putAgent("t1", "payouts")
+	// The path lists runs (GET), so starting one is a method it doesn't take.
 	code, body := f.do("t1", "POST", "/agents/payouts/runs", `{"input":"x"}`)
-	f.want(404, code, body, "starting a run with no Runner")
+	f.want(405, code, body, "starting a run with no Runner")
 	code, body = f.do("t1", "POST", "/agents/payouts/events", map[string]any{"key": "k", "source": "stripe", "input": "x"})
 	f.want(404, code, body, "an event with no Runner")
 	code, body = f.do("t1", "POST", "/schedules", scheduleBody("morning"))
@@ -1577,4 +1578,45 @@ func TestAContinueAsksKIFFForItsAnswers(t *testing.T) {
 	if asked != before {
 		t.Fatal("asked KIFF for a run its alerts had resolved")
 	}
+}
+
+// An agent's runs list newest first; active=true keeps the ones not ended:
+// what it is doing and waiting on (kiff/tafs#206).
+func TestListRunsAndTheActiveOnes(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "other")
+	mk := func(agent string, st run.Status) run.Run {
+		r := run.New("t1", agent, "s1", run.ByOwner, "x", now)
+		r.Status = st
+		if err := f.runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	done, paused, running := mk("payouts", run.Completed), mk("payouts", run.Paused), mk("payouts", run.Running)
+	mk("other", run.Running)
+	ids := func(body map[string]any) map[string]bool {
+		out := map[string]bool{}
+		for _, r := range body["runs"].([]any) {
+			out[r.(map[string]any)["id"].(string)] = true
+		}
+		return out
+	}
+	code, body := f.do("t1", "GET", "/agents/payouts/runs", nil)
+	f.want(200, code, body, "list")
+	if got := ids(body); len(got) != 3 || !got[done.ID] {
+		t.Fatalf("listed %v", got)
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs?active=true", nil)
+	f.want(200, code, body, "active")
+	if got := ids(body); len(got) != 2 || !got[paused.ID] || !got[running.ID] {
+		t.Fatalf("active %v", got)
+	}
+	code, body = f.do("t1", "GET", "/agents/nobody/runs", nil)
+	f.want(404, code, body, "another agent")
+	code, body = f.do("t2", "GET", "/agents/payouts/runs", nil)
+	f.want(404, code, body, "another tenant")
+	code, body = f.do("t1", "GET", "/agents/payouts/runs?limit=0", nil)
+	f.want(400, code, body, "a bad limit")
 }
