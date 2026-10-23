@@ -158,6 +158,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
 	r.Meter = s.Meter
+	r.Notify = s.Notify
 	r.AgentVersion = d.Version
 	if trial {
 		r.Draft = s.Draft

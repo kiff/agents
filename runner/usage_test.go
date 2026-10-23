@@ -61,3 +61,13 @@ func TestARunWithNoMeterIsntCounted(t *testing.T) {
 		t.Fatalf("counted %d", p.Spent)
 	}
 }
+
+// Where a run is announced is stored with it when it starts (kiff/tafs#206).
+func TestStartStoresTheRunsNotify(t *testing.T) {
+	f := newFixture(t, say("Done."))
+	want := run.Notify{URL: "https://tafs.test/v1/runs/ended", Ref: "ref-0123456789abcdef"}
+	r := f.start(server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "refund order 42", Notify: want})
+	if got := f.get(r.ID); got.Notify != want {
+		t.Fatalf("stored notify %+v", got.Notify)
+	}
+}

@@ -41,6 +41,10 @@ type Agent struct {
 	// System is the agent's instructions, with KIFF's skill in them.
 	System string
 	Tools  []tool.Tool
+	// Deferred are tool name prefixes: a tool whose name starts with one is
+	// left out of the prompt until the model searches for it
+	// (model.ToolSpec.Defer), so a turn that doesn't need it pays nothing.
+	Deferred []string
 
 	// MaxCost is the most a run may cost, in millionths of a US dollar. A run
 	// that reaches it stops before its next model turn.
@@ -370,8 +374,10 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 	byName := make(map[string]tool.Tool, len(a.Tools))
 	specs := make([]model.ToolSpec, 0, len(a.Tools))
 	for _, t := range a.Tools {
-		byName[t.Spec().Name] = t
-		specs = append(specs, t.Spec())
+		s := t.Spec()
+		byName[s.Name] = t
+		s.Defer = slices.ContainsFunc(a.Deferred, func(p string) bool { return strings.HasPrefix(s.Name, p) })
+		specs = append(specs, s)
 	}
 	for first := true; ; first = false {
 		if !(first && checked) {

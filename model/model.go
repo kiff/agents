@@ -30,6 +30,10 @@ const (
 	// as they came, in place, and nothing else reads them.
 	Thinking         BlockKind = "thinking"
 	RedactedThinking BlockKind = "redacted_thinking"
+	// Server is a step the provider ran itself within the reply, such as
+	// finding a deferred tool (ToolSpec.Defer): Data, in the provider's own
+	// encoding. Like thinking, it goes back exactly as it came, in place.
+	Server BlockKind = "server"
 )
 
 // Block is one part of a message.
@@ -41,7 +45,8 @@ type Block struct {
 	Input   json.RawMessage `json:"input,omitempty"`
 	Result  string          `json:"result,omitempty"`
 	IsError bool            `json:"is_error,omitempty"`
-	// Signature and Data belong to a Thinking or RedactedThinking block.
+	// Signature and Data belong to a Thinking or RedactedThinking block;
+	// Data to a Server block too.
 	Signature string `json:"signature,omitempty"`
 	Data      string `json:"data,omitempty"`
 }
@@ -57,6 +62,10 @@ type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	// Defer keeps the tool's definition out of the prompt: the model finds it
+	// by searching when it needs it, so a turn that doesn't pays nothing for
+	// it. A provider that can't search sends it like any other.
+	Defer bool `json:"defer,omitempty"`
 }
 
 // Request is one turn to run. Model is the provider's model id: configuration,
@@ -176,6 +185,9 @@ type Size struct {
 func (r Request) Size() Size {
 	s := Size{System: len(r.System)}
 	for _, t := range r.Tools {
+		if t.Defer { // out of the prompt until a search finds it
+			continue
+		}
 		s.Tools += len(t.Name) + len(t.Description) + len(t.InputSchema)
 	}
 	for _, m := range r.Messages {

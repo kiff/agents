@@ -65,11 +65,11 @@ const (
 )
 
 // Same reports whether two versions of a run are the same run: the same
-// tenant, ID, agent, session, trigger, source and creation time. None of
-// those ever changes; stores list runs by them.
+// tenant, ID, agent, session, trigger, source, creation time and where it is
+// announced. None of those ever changes; stores list runs by most of them.
 func Same(a, b Run) bool {
 	return a.Tenant == b.Tenant && a.ID == b.ID && a.Agent == b.Agent && a.Session == b.Session &&
-		a.Trigger == b.Trigger && a.Source == b.Source && a.Created.Equal(b.Created)
+		a.Trigger == b.Trigger && a.Source == b.Source && a.Created.Equal(b.Created) && a.Notify == b.Notify
 }
 
 // moves is a run's life: where each status may go. Final statuses go nowhere.

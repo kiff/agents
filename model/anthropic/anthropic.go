@@ -112,6 +112,12 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 				blocks = append(blocks, sdk.NewThinkingBlock(b.Signature, b.Text))
 			case model.RedactedThinking:
 				blocks = append(blocks, sdk.NewRedactedThinkingBlock(b.Data))
+			case model.Server: // back exactly as it came, like thinking
+				var u sdk.ContentBlockParamUnion
+				if err := json.Unmarshal([]byte(b.Data), &u); err != nil {
+					return p, fmt.Errorf("anthropic: a server block: %w", err)
+				}
+				blocks = append(blocks, u)
 			default:
 				return p, fmt.Errorf("anthropic: unknown block kind %q", b.Kind)
 			}
@@ -122,6 +128,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 			p.Messages = append(p.Messages, sdk.NewUserMessage(blocks...))
 		}
 	}
+	deferred := false
 	for _, t := range req.Tools {
 		// The whole schema goes through: properties and required in their
 		// fields, every other root keyword ($defs, additionalProperties, …)
@@ -151,7 +158,15 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		if t.Description != "" {
 			tp.Description = sdk.String(t.Description)
 		}
+		if t.Defer {
+			tp.DeferLoading = sdk.Bool(true)
+			deferred = true
+		}
 		p.Tools = append(p.Tools, sdk.ToolUnionParam{OfTool: &tp})
+	}
+	if deferred { // the model finds a deferred tool with this search, which is never deferred
+		p.Tools = append(p.Tools, sdk.ToolUnionParam{OfToolSearchToolRegex20251119: &sdk.ToolSearchToolRegex20251119Param{
+			Type: sdk.ToolSearchToolRegex20251119TypeToolSearchToolRegex20251119}})
 	}
 	if req.NoToolUse && len(p.Tools) > 0 { // with no tools there's nothing to forbid, and the API refuses a choice alone
 		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
@@ -221,6 +236,11 @@ func fromMessage(msg sdk.Message) model.Reply {
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.Thinking, Text: b.Thinking, Signature: b.Signature})
 		case sdk.RedactedThinkingBlock:
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.RedactedThinking, Data: b.Data})
+		case sdk.ServerToolUseBlock, sdk.ToolSearchToolResultBlock:
+			// A tool search the API ran: the next turn needs it back, in place.
+			if raw, err := json.Marshal(c.ToParam()); err == nil {
+				r.Blocks = append(r.Blocks, model.Block{Kind: model.Server, Data: string(raw)})
+			}
 		}
 	}
 	switch msg.StopReason {

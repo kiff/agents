@@ -98,6 +98,10 @@ type Server struct {
 	// Gateways are the gateways a stored agent may name, as in
 	// registry.Builder.
 	Gateways []string
+	// NotifyURLs are the URLs a run started through the API may be
+	// announced to when it ends or pauses (POST /agents/{id}/runs, notify),
+	// exactly; none, no run is.
+	NotifyURLs []string
 
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time

@@ -7,6 +7,7 @@ import (
 	"github.com/kiff/agents/skill"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,20 +32,24 @@ func TestCheckRefuses(t *testing.T) {
 		"long instructions":  func(d *registry.Definition) { d.Instructions = strings.Repeat("x", registry.MaxSize) },
 		"a long tenant":      func(d *registry.Definition) { d.Tenant = strings.Repeat("t", 257) },
 		// 60,000 bytes of text, but 360,000 once encoded.
-		"escapes past the limit": func(d *registry.Definition) { d.Instructions = strings.Repeat("\x01", 60_000) },
-		"no model":               func(d *registry.Definition) { d.Model = "" },
-		"no output price":        func(d *registry.Definition) { d.Price.Output = 0 },
-		"a negative cache":       func(d *registry.Definition) { d.Price.CacheRead = -1 },
-		"no max tokens":          func(d *registry.Definition) { d.MaxTokens = 0 },
-		"an unknown effort":      func(d *registry.Definition) { d.Effort = "extreme" },
-		"an effort's case":       func(d *registry.Definition) { d.Effort = "High" },
-		"no key reference":       func(d *registry.Definition) { d.KeyRef = "" },
-		"no cost cap":            func(d *registry.Definition) { d.MaxCost = 0 },
-		"negative turns":         func(d *registry.Definition) { d.MaxTurns = -1 },
-		"negative history":       func(d *registry.Definition) { d.History = -1 },
-		"a plain http gateway":   func(d *registry.Definition) { d.Gateway = "http://gateway.test/mcp" },
-		"no gateway":             func(d *registry.Definition) { d.Gateway = "" },
-		"a missing keep rule":    func(d *registry.Definition) { delete(d.Keep, session.Usage) },
+		"escapes past the limit":        func(d *registry.Definition) { d.Instructions = strings.Repeat("\x01", 60_000) },
+		"no model":                      func(d *registry.Definition) { d.Model = "" },
+		"no output price":               func(d *registry.Definition) { d.Price.Output = 0 },
+		"a negative cache":              func(d *registry.Definition) { d.Price.CacheRead = -1 },
+		"no max tokens":                 func(d *registry.Definition) { d.MaxTokens = 0 },
+		"an unknown effort":             func(d *registry.Definition) { d.Effort = "extreme" },
+		"an effort's case":              func(d *registry.Definition) { d.Effort = "High" },
+		"no key reference":              func(d *registry.Definition) { d.KeyRef = "" },
+		"no cost cap":                   func(d *registry.Definition) { d.MaxCost = 0 },
+		"negative turns":                func(d *registry.Definition) { d.MaxTurns = -1 },
+		"negative history":              func(d *registry.Definition) { d.History = -1 },
+		"a plain http gateway":          func(d *registry.Definition) { d.Gateway = "http://gateway.test/mcp" },
+		"no gateway":                    func(d *registry.Definition) { d.Gateway = "" },
+		"a missing keep rule":           func(d *registry.Definition) { delete(d.Keep, session.Usage) },
+		"an empty deferred tool prefix": func(d *registry.Definition) { d.DeferredTools = []string{""} },
+		"too many deferred tool prefixes": func(d *registry.Definition) {
+			d.DeferredTools = slices.Repeat([]string{"tafs_"}, registry.MaxDeferred+1)
+		},
 	}
 	if err := registrytest.Definition("t1", "payouts").Check(); err != nil {
 		t.Fatalf("the valid definition is refused: %v", err)
@@ -474,5 +479,22 @@ func TestBuildGivesTheSkillsItNames(t *testing.T) {
 	_ = f.agents.Put(ctx, d)
 	if a, _, err := f.b.Build(ctx, "t1", "payouts"); err != nil || a.System != d.Instructions {
 		t.Fatalf("no skills: %q, %v", a.System, err)
+	}
+}
+
+// The definition's deferred tool prefixes go to the agent (kiff/tafs#206).
+func TestBuildGivesTheDeferredToolPrefixes(t *testing.T) {
+	f := newFixture(t)
+	d := registrytest.Definition("t1", "payouts")
+	d.DeferredTools = []string{"tafs_"}
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(a.Deferred, []string{"tafs_"}) {
+		t.Fatalf("deferred %v", a.Deferred)
 	}
 }

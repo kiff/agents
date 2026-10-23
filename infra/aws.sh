@@ -46,7 +46,9 @@
 # Usage: infra/aws.sh            (from the repository root)
 # Config: AGENTS_REGION (eu-west-1), AGENTS_CALLER_ROLE (tafs-cloud-lambda), the
 # IAM role whose sessions may call the API; AGENTS_PLANQUES
-# (https://planque.kiff.dev), the planques a definition may name (#91).
+# (https://planque.kiff.dev), the planques a definition may name (#91);
+# AGENTS_NOTIFY_URLS (none), the URLs a run may be announced to when it ends
+# or pauses (kiff/tafs#206).
 set -euo pipefail
 
 REGION=${AGENTS_REGION:-eu-west-1}
@@ -68,6 +70,7 @@ DRAFTS_PREFIX=agents-drafts/
 # agents' key prefix too.
 SEALING_PREFIX=agents-sealing/
 PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
+NOTIFY_URLS=${AGENTS_NOTIFY_URLS:-}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
 
 aws() { command aws --region "$REGION" --output text "$@"; }
@@ -190,7 +193,7 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX"}}
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX"}}
 EOF
 )
 ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'

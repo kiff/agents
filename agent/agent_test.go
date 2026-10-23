@@ -1080,3 +1080,24 @@ func TestAGatewayCallLeavesItsReference(t *testing.T) {
 		t.Fatalf("call refs %v", refs)
 	}
 }
+
+// A tool whose name starts with one of Deferred goes to the model deferred,
+// and the others as before (kiff/tafs#206).
+func TestDeferredToolsAreSentDeferred(t *testing.T) {
+	state := &fakeTool{name: "tafs_state", access: tool.Read, result: tool.Result{Text: "{}"}}
+	status := &fakeTool{name: "kiff_status", access: tool.Read, result: tool.Result{Text: "ok"}}
+	m := &script{replies: []model.Reply{say("Nothing waits.")}}
+	_, r := start(t, session.KindRun)
+	a := newAgent(m, status, state)
+	a.Deferred = []string{"tafs_"}
+	if _, _, err := agent.Run(context.Background(), a, r, nil, "What waits?", nil); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, s := range m.reqs[0].Tools {
+		got[s.Name] = s.Defer
+	}
+	if !got["tafs_state"] || got["kiff_status"] || len(got) != 2 {
+		t.Fatalf("deferred %v", got)
+	}
+}

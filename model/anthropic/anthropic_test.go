@@ -454,3 +454,79 @@ func TestTheWindowNeverStallsATurn(t *testing.T) {
 		t.Fatalf("asked the slow model %d times", asked["/v1/models/slow"])
 	}
 }
+
+// searchStream is a turn that searches for a deferred tool, then calls it.
+var searchStream = []string{
+	`{"type":"message_start","message":{"id":"msg_5","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_regex","input":{}}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pattern\":\"tafs_\"}"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"tafs_state"}]}}}`,
+	`{"type":"content_block_stop","index":1}`,
+	`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_9","name":"tafs_state","input":{}}}`,
+	`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+	`{"type":"content_block_stop","index":2}`,
+	`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}`,
+	`{"type":"message_stop"}`,
+}
+
+// A deferred tool goes with defer_loading and the regex search beside it; the
+// search the API ran comes back as server blocks, which the next turn sends
+// back in place, unchanged (kiff/tafs#206).
+func TestADeferredToolIsFoundBySearchAndTheSearchIsSentBack(t *testing.T) {
+	m, sent := serve(t, searchStream)
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	tools := []model.ToolSpec{
+		{Name: "kiff_status", InputSchema: schema},
+		{Name: "tafs_state", Description: "Every taf.", InputSchema: schema, Defer: true},
+	}
+	ask := []model.Block{{Kind: model.Text, Text: "What do my tafs wait on?"}}
+	reply, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools,
+		Messages: []model.Message{{Role: model.User, Blocks: ask}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal((*sent)["tools"])
+	if got := string(b); got != `[{"input_schema":{"properties":{},"type":"object"},"name":"kiff_status"},`+
+		`{"defer_loading":true,"description":"Every taf.","input_schema":{"properties":{},"type":"object"},"name":"tafs_state"},`+
+		`{"name":"tool_search_tool_regex","type":"tool_search_tool_regex_20251119"}]` {
+		t.Fatalf("tools %s", got)
+	}
+	if len(reply.Blocks) != 3 || reply.Blocks[0].Kind != model.Server || reply.Blocks[1].Kind != model.Server ||
+		reply.Blocks[2].Kind != model.ToolUse || reply.Blocks[2].Tool != "tafs_state" {
+		t.Fatalf("blocks %+v", reply.Blocks)
+	}
+
+	// The blocks go through JSON, as a session keeps them, then back.
+	var kept []model.Block
+	raw, _ := json.Marshal(reply.Blocks)
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools, Messages: []model.Message{
+		{Role: model.User, Blocks: ask},
+		{Role: model.Assistant, Blocks: kept},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "toolu_9", Result: "{}"}}},
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = json.Marshal((*sent)["messages"].([]any)[1].(map[string]any)["content"])
+	if got := string(b); got != `[{"id":"srvtoolu_1","input":{"pattern":"tafs_"},"name":"tool_search_tool_regex","type":"server_tool_use"},`+
+		`{"content":{"tool_references":[{"tool_name":"tafs_state","type":"tool_reference"}],"type":"tool_search_tool_search_result"},"tool_use_id":"srvtoolu_1","type":"tool_search_tool_result"},`+
+		`{"id":"toolu_9","input":{},"name":"tafs_state","type":"tool_use"}]` {
+		t.Fatalf("sent back %s", got)
+	}
+}
+
+// Without a deferred tool, no search is offered.
+func TestNoDeferredToolNoSearch(t *testing.T) {
+	m, sent := serve(t, stream)
+	tools := []model.ToolSpec{{Name: "kiff_status", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Hi."}}}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal((*sent)["tools"]); strings.Contains(string(b), "tool_search") || strings.Contains(string(b), "defer_loading") {
+		t.Fatalf("tools %s", b)
+	}
+}
