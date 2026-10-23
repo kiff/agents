@@ -242,7 +242,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	f.api.Withdraw = kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	// A continue asks KIFF for the answers no alert has brought yet, with the
 	// agent's own key (kiff/tafs#206).
-	f.api.Answers = kiff.Answerer(agents, keys)
+	f.api.Answers = kiff.Answerer(agents, keys, &http.Client{Timeout: withdrawTimeout})
 	// Deleting an account erases its sealing key and its drafts' records
 	// too (kiff/tafs#185). The tafs' keys and its alert secret are tafs
 	// cloud's to delete.

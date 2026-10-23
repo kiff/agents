@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
@@ -84,8 +85,10 @@ func heldAnswer(answer string) string {
 
 // Answerer reads KIFF's answers on run r's held calls (Answers) through the
 // gateway of the run's agent, with that agent's own KIFF key: what a
-// continue asks for when no alert has said yet (kiff/tafs#206).
-func Answerer(agents registry.Agents, secrets registry.Secrets) func(ctx context.Context, r run.Run) (map[string]string, error) {
+// continue asks for when no alert has said yet (kiff/tafs#206). hc bounds
+// how long KIFF is waited for: give it a timeout, so a gateway that hangs
+// fails the continue (503) rather than holding it.
+func Answerer(agents registry.Agents, secrets registry.Secrets, hc *http.Client) func(ctx context.Context, r run.Run) (map[string]string, error) {
 	return func(ctx context.Context, r run.Run) (map[string]string, error) {
 		d, err := agents.Get(ctx, r.Tenant, r.Agent)
 		if err != nil {
@@ -99,6 +102,6 @@ func Answerer(agents registry.Agents, secrets registry.Secrets) func(ctx context
 		for _, q := range r.Requirements {
 			exceptions = append(exceptions, q.Exception)
 		}
-		return New(d.Gateway, key, nil).Answers(ctx, exceptions)
+		return New(d.Gateway, key, hc).Answers(ctx, exceptions)
 	}
 }

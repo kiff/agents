@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/tool/kiff"
 )
@@ -65,5 +66,27 @@ func TestAnswersReadsKIFFsAnswersOnHeldCalls(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cursors, []string{"", "p2"}) {
 		t.Fatalf("read pages %q: want it to stop once every hold was found", cursors)
+	}
+}
+
+// A gateway that hangs fails Answers within the client's timeout, so the
+// continue answers 503 instead of waiting with it.
+func TestAnswersFailsWhenTheGatewayHangs(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	start := time.Now()
+	_, err := kiff.New(srv.URL, testKey, &http.Client{Timeout: 100 * time.Millisecond}).Answers(context.Background(), []string{"exc_1"})
+	if err == nil {
+		t.Fatal("a hanging gateway gave answers")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("took %v: the client's timeout must bound it", took)
 	}
 }

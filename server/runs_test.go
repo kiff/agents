@@ -1543,6 +1543,9 @@ func TestAContinueAsksKIFFForItsAnswers(t *testing.T) {
 	askErr = errors.New("gateway down")
 	code, body = f.do("t1", "POST", path, map[string]any{"background": true})
 	f.want(503, code, body, "KIFF not answering")
+	if again, _ := f.runs.Get(ctx, "t1", r.ID); again.Status != run.Paused || !again.Requirements[1].Answered.IsZero() || len(f.background) != 0 {
+		t.Fatalf("stored %+v, handed on %v: KIFF not answering must leave the run as it was", again.Requirements, f.background)
+	}
 	askErr = nil
 
 	answers["exc_2"] = "refused"
