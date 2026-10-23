@@ -295,6 +295,8 @@ func versionNumber(r *http.Request) (int, error) {
 // trialBody is what POST /agents/{id}/versions/{n}/trial takes.
 type trialBody struct {
 	Input string `json:"input"`
+	// Notify announces the trial when it ends, as for a run (kiff/tafs#206).
+	Notify *run.Notify `json:"notify,omitempty"`
 }
 
 // startTrial starts a trial of version n in the background and answers at
@@ -325,6 +327,11 @@ func (s *Server) startTrial(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	notify, err := s.notify(body.Notify)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	id := r.PathValue("id")
 	vs, err := s.Agents.Versions(ctx, c.Tenant, id)
 	if err != nil {
@@ -347,7 +354,7 @@ func (s *Server) startTrial(w http.ResponseWriter, r *http.Request) {
 	if on && sw.N == n && sw.Draft != "" {
 		draft = sw.Draft
 	}
-	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByTrial, Input: body.Input, Version: n, Draft: draft})
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Trigger: run.ByTrial, Input: body.Input, Version: n, Draft: draft, Notify: notify})
 	if err != nil {
 		s.fail(w, r, err)
 		return

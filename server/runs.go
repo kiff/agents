@@ -142,6 +142,48 @@ func (s *Server) agentRun(ctx context.Context, c Caller, r *http.Request) (run.R
 	return rn, nil
 }
 
+// ActiveScanned bounds how many of an agent's newest runs GET
+// /agents/{id}/runs?active=true looks through for the ones not ended.
+const ActiveScanned = 200
+
+// listRuns lists an agent's runs, newest first, at most limit (20 by
+// default, 100 at most), without their paused turn. With active=true, only
+// the PENDING, RUNNING and PAUSED ones among its ActiveScanned newest: what
+// it is doing and waiting on (kiff/tafs#206).
+func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			return 0, nil, bad("limit is 1 to 100")
+		}
+		limit = n
+	}
+	active := r.URL.Query().Get("active") == "true"
+	scan := limit
+	if active {
+		scan = ActiveScanned
+	}
+	runs, err := s.Runs.List(ctx, c.Tenant, id, scan)
+	if err != nil {
+		return 0, nil, err
+	}
+	out := []runView{}
+	for _, rn := range runs {
+		if active && (rn.Status.Final()) {
+			continue
+		}
+		if out = append(out, viewRun(rn)); len(out) == limit {
+			break
+		}
+	}
+	return http.StatusOK, map[string]any{"runs": out}, nil
+}
+
 func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
@@ -363,6 +405,21 @@ type startBody struct {
 	Notify *run.Notify `json:"notify,omitempty"`
 }
 
+// notify checks where a run asks to be announced (kiff/tafs#206): a URL the
+// server allows, exactly, and a ref no one guesses. Nil is nowhere.
+func (s *Server) notify(n *run.Notify) (run.Notify, error) {
+	if n == nil {
+		return run.Notify{}, nil
+	}
+	if !slices.Contains(s.NotifyURLs, n.URL) {
+		return run.Notify{}, bad("notify.url is not one this server announces runs to")
+	}
+	if len(n.Ref) < MinRef || len(n.Ref) > MaxRef {
+		return run.Notify{}, bad("notify.ref is %d to %d bytes", MinRef, MaxRef)
+	}
+	return *n, nil
+}
+
 // MaxRef bounds a notify ref; MinRef keeps it a value no one guesses.
 const (
 	MinRef = 16
@@ -440,16 +497,9 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 		st.Meter = body.AI.Period
 	}
-	if body.Notify != nil {
-		if !slices.Contains(s.NotifyURLs, body.Notify.URL) {
-			s.fail(w, r, bad("notify.url is not one this server announces runs to"))
-			return
-		}
-		if len(body.Notify.Ref) < MinRef || len(body.Notify.Ref) > MaxRef {
-			s.fail(w, r, bad("notify.ref is %d to %d bytes", MinRef, MaxRef))
-			return
-		}
-		st.Notify = *body.Notify
+	if st.Notify, err = s.notify(body.Notify); err != nil {
+		s.fail(w, r, err)
+		return
 	}
 	rn, err := s.start(ctx, st)
 	if err != nil {
