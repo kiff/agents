@@ -1511,3 +1511,70 @@ func TestARefusedRunShowsWhy(t *testing.T) {
 		t.Fatalf("got %v", body)
 	}
 }
+
+// A continue asks KIFF for the answers no alert has brought yet (kiff/tafs#206):
+// what KIFF answered is recorded as an alert records it, and the run goes on
+// once every hold is answered. A hold KIFF still holds keeps it waiting (409),
+// and KIFF not answering is 503, the run untouched.
+func TestAContinueAsksKIFFForItsAnswers(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	answers := map[string]string{"exc_1": "approved"}
+	var askErr error
+	asked := 0
+	f.server.Answers = func(_ context.Context, rn run.Run) (map[string]string, error) {
+		asked++
+		if rn.Tenant != "t1" || rn.Agent != "payouts" {
+			t.Errorf("asked for %s/%s", rn.Tenant, rn.Agent)
+		}
+		return answers, askErr
+	}
+	f.restart()
+	r := f.heldOn("exc_1", "exc_2")
+	path := "/agents/payouts/runs/" + r.ID + "/continue"
+
+	code, body := f.do("t1", "POST", path, map[string]any{"background": true})
+	f.want(409, code, body, "one hold still waiting in KIFF")
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if got.Status != run.Paused || got.Requirements[0].Answer != "approved" || !got.Requirements[1].Answered.IsZero() || len(f.background) != 0 {
+		t.Fatalf("stored %+v, handed on %v: want exc_1 recorded and the run still waiting", got.Requirements, f.background)
+	}
+
+	askErr = errors.New("gateway down")
+	code, body = f.do("t1", "POST", path, map[string]any{"background": true})
+	f.want(503, code, body, "KIFF not answering")
+	if again, _ := f.runs.Get(ctx, "t1", r.ID); again.Status != run.Paused || !again.Requirements[1].Answered.IsZero() || len(f.background) != 0 {
+		t.Fatalf("stored %+v, handed on %v: KIFF not answering must leave the run as it was", again.Requirements, f.background)
+	}
+	askErr = nil
+
+	answers["exc_2"] = "refused"
+	code, body = f.do("t1", "POST", path, map[string]any{"background": true})
+	f.want(202, code, body, "every hold answered in KIFF")
+	got, _ = f.runs.Get(ctx, "t1", r.ID)
+	if got.Requirements[1].Answer != "refused" || !slices.Equal(f.background, []string{"t1/" + r.ID}) {
+		t.Fatalf("stored %+v, handed on %v", got.Requirements, f.background)
+	}
+
+	// By the held call, as the app that answered it knows it: the same run.
+	answers["exc_5"] = "approved"
+	held := f.heldOn("exc_5")
+	code, body = f.do("t1", "POST", "/agents/payouts/holds/exc_5/continue", map[string]any{"background": true})
+	f.want(202, code, body, "continue by the held call")
+	if body["id"] != held.ID {
+		t.Fatalf("continued %v, want run %s", body["id"], held.ID)
+	}
+	code, body = f.do("t1", "POST", "/agents/refunds/holds/exc_5/continue", map[string]any{"background": true})
+	f.want(404, code, body, "another agent's held call")
+	code, body = f.do("t2", "POST", "/agents/payouts/holds/exc_5/continue", map[string]any{"background": true})
+	f.want(404, code, body, "another tenant's held call")
+
+	// A run the alerts already resolved doesn't ask.
+	before := asked
+	other := f.heldResolved()
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+other.ID+"/continue", map[string]any{"background": true})
+	f.want(202, code, body, "a run already resolved")
+	if asked != before {
+		t.Fatal("asked KIFF for a run its alerts had resolved")
+	}
+}

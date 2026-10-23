@@ -216,6 +216,14 @@ func TestASwitchWaitsForAnOldPausedRun(t *testing.T) {
 	}
 	code, body = f.do("t1", "POST", "/agents/payouts/versions/2/pending", map[string]any{})
 	f.want(409, code, body, "pending with an old paused run")
+	// It names the run in the way, so the app can offer to stop it (kiff/tafs#206).
+	blocking, _ := body["blocking"].([]any)
+	if len(blocking) != 1 {
+		t.Fatalf("blocking %v: want the one paused run", body["blocking"])
+	}
+	if b := blocking[0].(map[string]any); b["id"] != old.ID || b["session"] != "sess-old" || b["status"] != string(run.Paused) || b["trigger"] != string(run.ByOwner) {
+		t.Fatalf("blocking %v", b)
+	}
 	if _, b := f.do("t1", "GET", "/agents/payouts/versions", nil); b["switching"] != nil {
 		t.Fatalf("a refused switch left its mark: %v", b["switching"])
 	}

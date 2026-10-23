@@ -75,6 +75,12 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// Answers reads from KIFF, with the run's agent's own key, what it
+	// answered on run r's held calls, by exception (approved, refused,
+	// expired, invalidated), leaving out any still waiting: a continue asks
+	// it when no alert has said yet (kiff/tafs#206). Nil: a continue waits
+	// for the alert or the hold's expiry.
+	Answers func(ctx context.Context, r run.Run) (map[string]string, error)
 	// Usage keeps what each account's chats cost, for AI fair use
 	// (kiff/tafs#193). Nil: a chat that asks to be counted is refused.
 	Usage usage.Store
@@ -155,6 +161,9 @@ func (s *Server) Handler() http.Handler {
 	if s.Runner != nil { // until runs can be executed, there is no starting one
 		mux.HandleFunc("POST /agents/{id}/runs", s.startRun)
 		mux.HandleFunc("POST /agents/{id}/runs/{run_id}/continue", s.continueRun)
+		// The same, for the run that paused on a held call (kiff/tafs#206): what
+		// the app that answered the hold knows.
+		mux.HandleFunc("POST /agents/{id}/holds/{exception}/continue", s.continueRun)
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 		route("POST /agents/{id}/events", s.startEvent)
 		mux.HandleFunc("POST /agents/{id}/versions/{n}/trial", s.startTrial)
