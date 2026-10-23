@@ -304,7 +304,8 @@ func TestExecuteRunsToAnAnswer(t *testing.T) {
 		t.Fatalf("streamed %v %q", kinds, text.String())
 	}
 	// The recording ended: tool calls, kept only until the end, are gone.
-	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Usage, session.AgentMessage}
+	// Each step's timing stays, sizes only: the start, each model turn, the tool call (kiff/tafs#214).
+	want := []session.EventKind{session.Timing, session.OwnerMessage, session.Usage, session.Timing, session.Timing, session.Usage, session.Timing, session.AgentMessage}
 	if got := f.events(r); !slices.Equal(got, want) {
 		t.Fatalf("recorded %v, want %v", got, want)
 	}

@@ -7,6 +7,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Role is who wrote a message.
@@ -137,6 +138,11 @@ type Reply struct {
 	// Refusal is the category a Refused turn was declined for ("cyber",
 	// "bio", …), or "" when the provider named none.
 	Refusal string
+	// FirstToken is how long the turn took to stream its first content (a
+	// thinking, text or tool-input delta), when the provider streams; 0 when
+	// unknown. ThinkingBytes is the size of the thinking it streamed.
+	FirstToken    time.Duration
+	ThinkingBytes int
 }
 
 // Model runs one turn. onText, when set, receives the reply's text as it

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kiff/agents/model"
@@ -561,7 +562,9 @@ func (a Agent) capped(out Outcome) Stop {
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, out *Outcome, emit func(Event)) (model.Reply, error) {
 	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history}
+	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
+	took := time.Since(began)
 	if err != nil {
 		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})
 		return reply, err
@@ -572,6 +575,9 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
 		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost,
 		Context: a.context(ctx, req)}); err != nil {
+		return reply, err
+	}
+	if err := rec.Record(session.Timing, turnTiming(reply, took)); err != nil {
 		return reply, err
 	}
 	if reply.Stop == model.Refused {
@@ -588,6 +594,22 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	}
 	out.Text = strings.TrimSpace(strings.Join(text, "\n"))
 	return reply, nil
+}
+
+// turnTiming is one model turn's Timing: how long it took and streamed
+// before its first content, and the sizes of what it wrote, never the words.
+func turnTiming(reply model.Reply, took time.Duration) session.TimingBody {
+	t := session.TimingBody{Step: "model", MS: took.Milliseconds(), FirstMS: reply.FirstToken.Milliseconds(), ThinkingBytes: reply.ThinkingBytes}
+	for _, b := range reply.Blocks {
+		switch b.Kind {
+		case model.Text:
+			t.TextBytes += len(b.Text)
+		case model.ToolUse:
+			t.ToolInputBytes += len(b.Input)
+			t.ToolCalls++
+		}
+	}
+	return t
 }
 
 // context is what req's input was made of. The window is the model's, when
@@ -628,17 +650,24 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		emit(Event{Kind: CallStart, CallID: c.CallID, Tool: c.Tool, Input: c.Input})
 	}
 	results := make([]ToolResultBody, len(calls))
+	took := make([]time.Duration, len(calls))
 	var wg sync.WaitGroup
 	for i, c := range calls {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			began := time.Now()
 			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c)}
+			took[i] = time.Since(began)
 		}()
 	}
 	wg.Wait()
 	for i, r := range results {
 		if err := rec.Record(session.ToolResult, r); err != nil {
+			return nil, err
+		}
+		if err := rec.Record(session.Timing, session.TimingBody{Step: "tool", Tool: r.Tool, MS: took[i].Milliseconds(),
+			ResultBytes: len(r.Text), Batch: len(calls), IsError: r.IsError}); err != nil {
 			return nil, err
 		}
 		if err := recordRef(rec, r.Result); err != nil {
