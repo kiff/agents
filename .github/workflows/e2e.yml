@@ -6,6 +6,9 @@ name: E2E
 # this commit's runtime, in the job; the model, KIFF (a test account),
 # planque and the fake vendor are real services.
 #
+# The setup agent and the taf are kiff/tafs' own, at eval/tafs.ref, as the
+# Eval runs them: what ships, not a copy kept here (kiff/agents#78).
+#
 # Every night and by hand. It doesn't gate pull requests: it spends money
 # and depends on live services.
 on:
@@ -14,6 +17,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  id-token: write
 concurrency:
   group: e2e
   cancel-in-progress: false
@@ -21,11 +25,21 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      REPORTS: kiff-agents-eval-reports
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: tafs' definitions, at eval/tafs.ref
+        run: |
+          git clone --quiet https://github.com/kiff/tafs tafs
+          git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
+          infra/eval-definitions.sh tafs defs
       - name: The simulated owner
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -35,6 +49,20 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
         # This log is public: in CI the test writes only its steps and the
-        # outcome, and masks every id it learns (cmd/e2e, redacting). Run it
-        # by hand for the details.
-        run: go run ./cmd/e2e -max-cost 4 -owner-turns 14
+        # outcome, and masks every id it learns (cmd/e2e, redacting). The
+        # chat's transcript (setup.md) goes only to the private bucket, so a
+        # failed chat can be read afterwards.
+        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript setup.md
+      # The role assumes only from main (infra/aws.sh).
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: always() && github.ref == 'refs/heads/main'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
+      - name: The transcript, to the private bucket
+        if: always() && github.ref == 'refs/heads/main'
+        run: |
+          key="reports/e2e-$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+          [ -f setup.md ] && aws s3 cp --only-show-errors setup.md "s3://$REPORTS/$key/setup.md"
+          echo "transcript: s3://$REPORTS/$key/"
+
