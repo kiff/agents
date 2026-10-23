@@ -32,6 +32,9 @@ import (
 // one item, with room for its keys: DynamoDB's limit is 400 KB.
 const MaxSize = 300_000
 
+// MaxDeferred bounds a definition's DeferredTools.
+const MaxDeferred = 16
+
 // maxID bounds an agent's ID, and maxTenant a tenant.
 const (
 	maxID     = 128
@@ -94,6 +97,10 @@ type Definition struct {
 	// (#101), each a stored version: the context carries their names and
 	// descriptions, and the skill tool their text.
 	Skills []skill.Ref `json:"skills,omitempty"`
+	// DeferredTools are tool name prefixes, e.g. "tafs_": a tool whose name
+	// starts with one stays out of the prompt until the model searches for
+	// it (kiff/tafs#206), so an ordinary turn costs nothing more for it.
+	DeferredTools []string `json:"deferred_tools,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -245,6 +252,14 @@ func (d Definition) Check() error {
 	}
 	if err := skill.CheckRefs(d.Skills); err != nil {
 		return fmt.Errorf("registry: %w", err)
+	}
+	if len(d.DeferredTools) > MaxDeferred {
+		return fmt.Errorf("registry: at most %d deferred tool prefixes", MaxDeferred)
+	}
+	for _, p := range d.DeferredTools {
+		if p == "" || len(p) > 64 {
+			return errors.New("registry: a deferred tool prefix is 1 to 64 characters")
+		}
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
 	// several times longer (a control character becomes six bytes).
@@ -507,7 +522,8 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, skill.NewTool(ps))
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price,
-		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
+		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, Deferred: d.DeferredTools,
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}

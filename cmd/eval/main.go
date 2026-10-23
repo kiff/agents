@@ -278,6 +278,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		}
 		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.HistoryTokens, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.HistoryTokens, t.Instructions
 		d.Skills = t.Skills // read from -skills: a skill it names that isn't there fails the build
+		d.DeferredTools = t.DeferredTools
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
 		if err != nil {
