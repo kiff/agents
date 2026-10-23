@@ -121,7 +121,14 @@ func viewRun(r run.Run) runView {
 // agentRun is the tenant's run of the agent in the path; a run of another
 // agent is not found.
 func (s *Server) agentRun(ctx context.Context, c Caller, r *http.Request) (run.Run, error) {
-	rn, err := s.Runs.Get(ctx, c.Tenant, r.PathValue("run_id"))
+	var rn run.Run
+	var err error
+	if ex := r.PathValue("exception"); ex != "" {
+		// …/holds/{exception}/…: the run that paused on that held call.
+		rn, err = s.Runs.ByHold(ctx, c.Tenant, ex)
+	} else {
+		rn, err = s.Runs.Get(ctx, c.Tenant, r.PathValue("run_id"))
+	}
 	if err != nil {
 		return run.Run{}, err
 	}

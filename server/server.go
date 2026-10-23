@@ -161,6 +161,9 @@ func (s *Server) Handler() http.Handler {
 	if s.Runner != nil { // until runs can be executed, there is no starting one
 		mux.HandleFunc("POST /agents/{id}/runs", s.startRun)
 		mux.HandleFunc("POST /agents/{id}/runs/{run_id}/continue", s.continueRun)
+		// The same, for the run that paused on a held call (kiff/tafs#206): what
+		// the app that answered the hold knows.
+		mux.HandleFunc("POST /agents/{id}/holds/{exception}/continue", s.continueRun)
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 		route("POST /agents/{id}/events", s.startEvent)
 		mux.HandleFunc("POST /agents/{id}/versions/{n}/trial", s.startTrial)

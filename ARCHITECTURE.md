@@ -157,7 +157,7 @@ verified; the phone never calls it directly.
 | `POST /agents/{id}/runs/{run_id}/resume` | Pick a stream back up from the last event index seen |
 | `POST /agents/{id}/runs/{run_id}/cancel` | Cancel |
 | `POST /agents/{id}/runs/{run_id}/messages` | Steer: a message the owner wrote while the run goes, taken at its next checkpoint (202). 409 for a run that ended or was asked to stop: send it as a new run |
-| `POST /agents/{id}/runs/{run_id}/continue` | Continue a paused run whose requirements KIFF has resolved. Holds no alert has resolved yet are asked of KIFF first; one KIFF still holds is 409, and KIFF not answering is 503 |
+| `POST /agents/{id}/runs/{run_id}/continue`, `POST /agents/{id}/holds/{exception}/continue` | Continue a paused run whose requirements KIFF has resolved, named by its ID or by one of its held calls. Holds no alert has resolved yet are asked of KIFF first; one KIFF still holds is 409, and KIFF not answering is 503 |
 | `GET /sessions?agent_id=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their runs |
 | `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |

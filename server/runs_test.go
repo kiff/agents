@@ -1553,6 +1553,19 @@ func TestAContinueAsksKIFFForItsAnswers(t *testing.T) {
 		t.Fatalf("stored %+v, handed on %v", got.Requirements, f.background)
 	}
 
+	// By the held call, as the app that answered it knows it: the same run.
+	answers["exc_5"] = "approved"
+	held := f.heldOn("exc_5")
+	code, body = f.do("t1", "POST", "/agents/payouts/holds/exc_5/continue", map[string]any{"background": true})
+	f.want(202, code, body, "continue by the held call")
+	if body["id"] != held.ID {
+		t.Fatalf("continued %v, want run %s", body["id"], held.ID)
+	}
+	code, body = f.do("t1", "POST", "/agents/refunds/holds/exc_5/continue", map[string]any{"background": true})
+	f.want(404, code, body, "another agent's held call")
+	code, body = f.do("t2", "POST", "/agents/payouts/holds/exc_5/continue", map[string]any{"background": true})
+	f.want(404, code, body, "another tenant's held call")
+
 	// A run the alerts already resolved doesn't ask.
 	before := asked
 	other := f.heldResolved()
