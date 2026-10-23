@@ -234,6 +234,9 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if f.api == nil || f.api.Withdraw == nil {
 		t.Error("a paused run can't be cancelled: nothing withdraws its held calls from KIFF")
 	}
+	if f.api.Answers == nil {
+		t.Error("a continue can't ask KIFF for the answers its alerts haven't brought")
+	}
 	if f.api.MaxActive != defaultTenantRuns {
 		t.Errorf("a tenant may have %d runs going, want %d by default", f.api.MaxActive, defaultTenantRuns)
 	}

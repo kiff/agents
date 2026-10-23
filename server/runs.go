@@ -282,6 +282,39 @@ func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) 
 	return next, nil
 }
 
+// askKIFF records what KIFF answered on rn's held calls that no alert has
+// reported yet, as the alert would (run.Answer), and returns the run as
+// stored. The answer comes from KIFF, read with the agent's own key, never
+// from the caller: a continue only asks sooner (kiff/tafs#206). A run still
+// paused on a hold KIFF hasn't answered stays as it is.
+func (s *Server) askKIFF(ctx context.Context, rn run.Run) (run.Run, error) {
+	if s.Answers == nil {
+		return rn, nil
+	}
+	answers, err := s.Answers(ctx, rn)
+	if err != nil {
+		if s.Log != nil {
+			s.Log.ErrorContext(ctx, "asking KIFF for held calls' answers", "run", rn.ID, "err", err)
+		}
+		return run.Run{}, unavailable("KIFF couldn't be asked for the held calls' answers: try again, or wait for its alert")
+	}
+	asked := false
+	for _, q := range rn.Requirements {
+		a := answers[q.Exception]
+		if q.Exception == "" || a == "" || !q.Answered.IsZero() {
+			continue
+		}
+		if _, err := run.Answer(ctx, s.Runs, rn.Tenant, q.Exception, a, s.now()); err != nil {
+			return run.Run{}, fmt.Errorf("recording KIFF's answer on held call %s: %w", q.CallID, err)
+		}
+		asked = true
+	}
+	if !asked {
+		return rn, nil
+	}
+	return s.Runs.Get(ctx, rn.Tenant, rn.ID)
+}
+
 // resolved reports whether every requirement of r is resolved.
 func resolved(r run.Run, now time.Time) bool {
 	for _, q := range r.Requirements {
@@ -441,11 +474,15 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, conflict("the run isn't paused: read it"))
 		return
 	}
-	for _, q := range rn.Requirements {
-		if !q.Resolved(s.now()) {
-			s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
+	if !resolved(rn, s.now()) {
+		if rn, err = s.askKIFF(ctx, rn); err != nil {
+			s.fail(w, r, err)
 			return
 		}
+	}
+	if !resolved(rn, s.now()) {
+		s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
+		return
 	}
 	// Continued, the run is active again. The sweep would continue it too,
 	// uncapped: a 429 here only asks the caller not to add one more now.

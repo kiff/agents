@@ -74,7 +74,11 @@ COMPLETED, ERROR and CANCELLED are final.
   ends, so a paused run keeps what it holds for 7 days at most.
 - **Continue** happens once every requirement is resolved. KIFF resolves them,
   only KIFF: the server learns of an answer from KIFF's signed hold-answered
-  alert, or by asking KIFF, never from a request that claims it. Continuing
+  alert, or by asking KIFF, never from a request that claims it. A continue
+  on a run its alerts haven't resolved asks KIFF first (the agent's read-only
+  `kiff_pending`, with its own key) and records what KIFF answered, as the
+  alert would: the app that just answered a hold can have the run go on at
+  once, whether or not the alert reaches it (kiff/tafs#206). Continuing
   collects each held call's outcome from the gateway by its operation ID (an
   approved call is forwarded by KIFF, once; a refused one comes back as
   refused) and the loop carries on with those results, under the same run ID.
@@ -153,7 +157,7 @@ verified; the phone never calls it directly.
 | `POST /agents/{id}/runs/{run_id}/resume` | Pick a stream back up from the last event index seen |
 | `POST /agents/{id}/runs/{run_id}/cancel` | Cancel |
 | `POST /agents/{id}/runs/{run_id}/messages` | Steer: a message the owner wrote while the run goes, taken at its next checkpoint (202). 409 for a run that ended or was asked to stop: send it as a new run |
-| `POST /agents/{id}/runs/{run_id}/continue` | Continue a paused run whose requirements KIFF has resolved |
+| `POST /agents/{id}/runs/{run_id}/continue` | Continue a paused run whose requirements KIFF has resolved. Holds no alert has resolved yet are asked of KIFF first; one KIFF still holds is 409, and KIFF not answering is 503 |
 | `GET /sessions?agent_id=`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | Threads and their runs |
 | `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |
