@@ -90,6 +90,9 @@ type Run struct {
 	// use (kiff/tafs#193), as the caller named it when it started a chat;
 	// empty for a run that isn't counted.
 	Meter string `json:"meter,omitempty"`
+	// Notify is where the run is announced when it ends or pauses
+	// (Notifying): set when it starts, never changed. Zero: nowhere.
+	Notify Notify `json:"notify,omitzero"`
 	// Turns counts the run's model turns so far, across its pauses.
 	Turns int `json:"turns"`
 

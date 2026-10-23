@@ -80,6 +80,7 @@ import (
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/secretsmanager"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/schedule/eventbridge"
@@ -154,6 +155,14 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// Planques an agent may ask for vendor access through (#91); none
 	// unless set, so no agent gets the planque tool by default.
 	planques := split(os.Getenv("AGENTS_PLANQUES"))
+	// The URLs a run may be announced to (kiff/tafs#206), exactly; none
+	// unless set, so no run is announced by default.
+	notifyURLs := split(os.Getenv("AGENTS_NOTIFY_URLS"))
+	for _, u := range notifyURLs {
+		if p, err := url.Parse(u); err != nil || p.Scheme != "https" || p.Host == "" {
+			return nil, fmt.Errorf("lambda: AGENTS_NOTIFY_URLS: %q is not an https URL", u)
+		}
+	}
 	maxActive, err := tenantRuns(os.Getenv("AGENTS_TENANT_RUNS"))
 	if err != nil {
 		return nil, err
@@ -174,7 +183,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	store := dynamodb.New(db, table)
 	agents := dynamodb.NewAgents(db, table)
 	skills := dynamodb.NewSkills(db, table)
-	runs := dynamodb.NewRuns(db, table)
+	// A run started with notify is announced when it ends or pauses, from
+	// any path that moves it (kiff/tafs#206).
+	runs := run.Notifying{Runs: dynamodb.NewRuns(db, table), Log: func(msg string, err error) { log.Warn(msg, "err", err) }}
 	// What each account's chats cost, for AI fair use (kiff/tafs#193): kept
 	// in the same table, counted only for the chats tafs cloud names a period
 	// for.
@@ -230,7 +241,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills, Usage: use},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, NotifyURLs: notifyURLs, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills, Usage: use},
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,

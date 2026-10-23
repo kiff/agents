@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,6 +75,9 @@ type Start struct {
 	// Meter is the billing period the run's cost counts toward for AI fair
 	// use (kiff/tafs#193); empty, it isn't counted.
 	Meter string
+	// Notify is where the run is announced when it ends or pauses
+	// (kiff/tafs#206); zero, nowhere.
+	Notify run.Notify
 	// ID is the run's ID, when the caller names it; empty, a new one. A
 	// caller that may start the same run more than once (a schedule's firing,
 	// delivered at least once) names it, and the second Start returns the run
@@ -354,7 +358,16 @@ type startBody struct {
 	// AI counts the run's cost toward its account's AI fair use, and refuses
 	// to start it past the bound (kiff/tafs#193). Nil: not counted.
 	AI *aiBody `json:"ai,omitempty"`
+	// Notify announces the run when it ends or pauses, at a URL the server
+	// allows (Server.NotifyURLs), with the caller's ref (kiff/tafs#206).
+	Notify *run.Notify `json:"notify,omitempty"`
 }
+
+// MaxRef bounds a notify ref; MinRef keeps it a value no one guesses.
+const (
+	MinRef = 16
+	MaxRef = 128
+)
 
 // aiBody names the billing period a chat counts toward and its bound, in
 // micro US dollars; 0 is no bound, the run is only counted.
@@ -426,6 +439,17 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		st.Meter = body.AI.Period
+	}
+	if body.Notify != nil {
+		if !slices.Contains(s.NotifyURLs, body.Notify.URL) {
+			s.fail(w, r, bad("notify.url is not one this server announces runs to"))
+			return
+		}
+		if len(body.Notify.Ref) < MinRef || len(body.Notify.Ref) > MaxRef {
+			s.fail(w, r, bad("notify.ref is %d to %d bytes", MinRef, MaxRef))
+			return
+		}
+		st.Notify = *body.Notify
 	}
 	rn, err := s.start(ctx, st)
 	if err != nil {
