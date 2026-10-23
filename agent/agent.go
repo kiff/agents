@@ -74,6 +74,10 @@ type Agent struct {
 	// recorded as an owner message, streamed as Steered, and added to what the
 	// model reads next, never inside a tool's result.
 	Steer func(ctx context.Context) ([]string, error)
+
+	// history is how many of a run's messages are its history (Run, Continue):
+	// the prefix the next run renders the same way, cached apart.
+	history int
 }
 
 // SteerNote opens a message the owner wrote while the run went, as the model
@@ -246,6 +250,7 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 	}
 	asked := append(slices.Clone(a.Preface), model.Block{Kind: model.Text, Text: input})
 	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
+	a.history = len(history)
 	if err := rec.Record(session.OwnerMessage, TextBody{Text: input}); err != nil {
 		return Outcome{}, msgs, err
 	}
@@ -294,6 +299,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		model.Message{Role: model.User, Blocks: asked},
 		withoutThinking(r.Paused.Reply),
 		model.Message{Role: model.User, Blocks: results})
+	a.history = len(history)
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns}, emit)
 }
 
@@ -554,7 +560,7 @@ func (a Agent) capped(out Outcome) Stop {
 // turn is one model turn, offered tools (to call, unless noToolUse),
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, out *Outcome, emit func(Event)) (model.Reply, error) {
-	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour()}
+	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history}
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	if err != nil {
 		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})
