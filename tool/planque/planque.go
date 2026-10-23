@@ -85,7 +85,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"On a connected grant, tools {grant, tools} adds the tools sent (only those to add) to what it has: the owner approves the addition once, " +
 			"with no sign-in, and its tools keep working meanwhile. So a taf has one connection per vendor: grants {agent} lists the connections you asked for a taf's agent " +
-			"(id, server, status, tools); add to the one for that vendor rather than requesting another. " +
+			"(id, agent, server, status, created, tools); add to the one for that vendor rather than requesting another. " +
+			"grants with no agent lists every connection you asked for on the account, each with its agent: when you no longer have a taf's agent id " +
+			"or a grant's id, find it there, never ask for a new connection or the owner to sign in again. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. refunds): the tool makes the agent's id from it, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title?, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
@@ -106,7 +108,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
-			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants); not with name"},` +
+			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
@@ -136,10 +138,16 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	case "grants":
 		// The connections this agent asked for a taf's agent, so an
 		// improvement adds to one instead of asking for another (kiff/tafs#138).
-		if in.Agent == "" || strings.ContainsAny(in.Agent, "/?#") {
-			return tool.Result{Text: "grants needs the taf's agent id", IsError: true}, nil
+		// With no agent, every connection it asked for, each naming its agent:
+		// a Setup that lost a taf's agent id finds it again (kiff/planque#49).
+		at := "/v1/accounts/" + url.PathEscape(t.tenant) + "/asked-grants"
+		if in.Agent != "" {
+			if strings.ContainsAny(in.Agent, "/?#") {
+				return tool.Result{Text: "grants takes the taf's agent id, or none for every connection you asked for", IsError: true}, nil
+			}
+			at = "/v1/accounts/" + url.PathEscape(t.tenant) + "/agents/" + url.PathEscape(in.Agent) + "/grants"
 		}
-		raw, refused, err := t.do(ctx, http.MethodGet, "/v1/accounts/"+url.PathEscape(t.tenant)+"/agents/"+url.PathEscape(in.Agent)+"/grants", nil)
+		raw, refused, err := t.do(ctx, http.MethodGet, at, nil)
 		if err != nil || refused != nil {
 			return deref(refused), err
 		}

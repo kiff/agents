@@ -345,13 +345,18 @@ func TestGrantsListsATafsConnections(t *testing.T) {
 	if len(seen) != 1 || seen[0] != "GET /v1/accounts/tnt_1/agents/taf-refunds-x7k3/grants Bearer k_setup" {
 		t.Fatalf("asked: %v", seen)
 	}
-	for _, in := range []string{`{"action":"grants"}`, `{"action":"grants","agent":"../x"}`} {
-		if _, isErr := call(t, tl, in); !isErr {
-			t.Errorf("%s should be refused before planque", in)
-		}
+	if _, isErr := call(t, tl, `{"action":"grants","agent":"../x"}`); !isErr || len(seen) != 1 {
+		t.Errorf("a path in the agent should be refused before planque: %v", seen)
+	}
+	// With no agent, every connection Setup asked for: a lost id is found again (kiff/planque#49).
+	if text, isErr := call(t, tl, `{"action":"grants"}`); isErr || !strings.Contains(text, `"id":"grt_1"`) {
+		t.Fatalf("grants with no agent: %s", text)
+	}
+	if len(seen) != 2 || seen[1] != "GET /v1/accounts/tnt_1/asked-grants Bearer k_setup" {
+		t.Fatalf("asked with no agent: %v", seen)
 	}
 	if spec := tl.Spec(); !strings.Contains(spec.Description, "On a connected grant, tools {grant, tools} adds the tools sent") ||
-		!strings.Contains(spec.Description, "one connection per vendor") {
+		!strings.Contains(spec.Description, "one connection per vendor") || !strings.Contains(spec.Description, "grants with no agent lists every connection") {
 		t.Fatalf("the description doesn't say how to add: %s", spec.Description)
 	}
 }
