@@ -195,7 +195,8 @@ type pendingBody struct {
 // waiting on its owner is answered or stopped first, so it never goes on
 // under the next version with the last one's turns. With replace, a switch to
 // n under way waits for another draft instead (its Cards drafted again),
-// with no gap in which a run could start.
+// with no gap in which a run could start. A 409 for runs in the way names
+// them (blocking: id, session, status, trigger).
 func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	var body pendingBody
 	if err := decode(r, &body); err != nil {
@@ -243,15 +244,23 @@ func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) 
 	if err != nil {
 		return 0, nil, err
 	}
+	var blocking []map[string]any
 	for _, rn := range runs {
 		if !rn.Status.Final() && rn.Trigger != run.ByTrial {
-			if sw.At.Equal(at) { // this request's mark: take it back
-				if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
-					return 0, nil, err
-				}
-			}
-			return 0, nil, conflict("a run of this agent is going or waiting on its owner: answer it, stop it or let it finish, then switch")
+			blocking = append(blocking, map[string]any{"id": rn.ID, "session": rn.Session, "status": rn.Status, "trigger": rn.Trigger})
 		}
+	}
+	if len(blocking) > 0 {
+		if sw.At.Equal(at) { // this request's mark: take it back
+			if err := s.Agents.EndSwitch(ctx, c.Tenant, id); err != nil {
+				return 0, nil, err
+			}
+		}
+		// The runs in the way, so the caller can offer to stop them (kiff/tafs#206).
+		return http.StatusConflict, map[string]any{
+			"error":    "a run of this agent is going or waiting on its owner: answer it, stop it or let it finish, then switch",
+			"blocking": blocking,
+		}, nil
 	}
 	return http.StatusOK, map[string]any{"switching": sw}, nil
 }
