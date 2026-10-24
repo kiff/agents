@@ -180,7 +180,7 @@ type modes struct {
 	live []string // tools pinned to live mode
 	test bool     // a tool pinned to test mode
 	// unchecked are the tools that move money without naming what they act
-	// on, or the read that says their currency (kiff/kiff-cloud#1299).
+	// on, or the read that says their currency.
 	unchecked []string
 }
 
@@ -319,7 +319,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 
 	// 10. A tool that moves money names what it acts on and the read that
 	// says its currency, so KIFF never counts one currency as another
-	// (kiff/kiff-cloud#1299) and the owner's record names the payment.
+	// and the owner's record names the payment.
 	if len(m.unchecked) > 0 {
 		add("names each payment and its currency", eval.Grade{Why: "moves money without its resource and currency read: " + strings.Join(m.unchecked, ", ")})
 	} else {

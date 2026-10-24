@@ -111,7 +111,7 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 		return nil
 	case errors.Is(err, registry.ErrHalted):
 		// Skipped, not retried: a retry would run it once resumed, and
-		// nothing from before a halt runs (kiff/kiff-cloud#1061).
+		// nothing from before a halt runs.
 		f.log.InfoContext(ctx, "firing skipped: the agent is halted", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
 		return nil
 	case err != nil:

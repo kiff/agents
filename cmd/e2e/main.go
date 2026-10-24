@@ -231,7 +231,7 @@ type test struct {
 	refunds []string
 	cardIDs []string // Cards the taf's draft issued
 	// tafAgents are the KIFF agents this run's drafts made, archived at the
-	// end so a run leaves no taf behind (kiff-cloud#1334).
+	// end so a run leaves no taf behind.
 	tafAgents []string
 	draftIDs  []string
 	taf       string   // the taf's agent id, once handed over
@@ -1284,7 +1284,7 @@ func (t *test) checkRecords(ctx context.Context) error {
 
 // cleanup disconnects the grant, revokes the taf's Cards and archives the
 // taf's KIFF agent, unless -keep: the taf's key then reaches nothing, and
-// the account's tafs don't grow with each run (kiff-cloud#1334).
+// the account's tafs don't grow with each run.
 func (t *test) cleanup() {
 	if t.cfg.keep || t.kiff == nil {
 		return

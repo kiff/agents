@@ -1,6 +1,6 @@
 # Continue on a hold: what #15 delivers
 
-**Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, [kiff/kiff-cloud#1245](https://github.com/kiff/kiff-cloud/issues/1245), has shipped.
+**Issue:** [#15](https://github.com/kiff/agents/issues/15) · **Status:** in progress. Its outside dependency, KIFF's withdraw call and expiry alerts, has shipped.
 **PRs:** [#44](https://github.com/kiff/agents/pull/44) (hold IDs), [#45](https://github.com/kiff/agents/pull/45) (Collect), [#49](https://github.com/kiff/agents/pull/49) (runs by hold, answers), [#50](https://github.com/kiff/agents/pull/50) (the alerts handler), [#51](https://github.com/kiff/agents/pull/51) (withdraw), [#52](https://github.com/kiff/agents/pull/52) (expiry in the sweep), [#55](https://github.com/kiff/agents/pull/55) (cancel), [#58](https://github.com/kiff/agents/pull/58) (the continue route)
 
 ## What it's for
@@ -368,7 +368,7 @@ Nothing in code. What's left is the deploy ([#13](13-server.md)), and an
 end-to-end check there: a real hold, answered on the phone, continued on
 Lambda.
 
-## What KIFF now offers (from kiff/kiff-cloud#1245)
+## What KIFF now offers
 
 - **Withdraw:** `POST /v1/me/holds/{exception_id}/withdraw`, with the
   agent's own key. 200 for the agent's own held call, and again for a
@@ -392,11 +392,10 @@ Lambda.
 | Requirements fail closed when they carry no expiry | Built (#32) |
 | `Runner.Collect` hook, and pausing again when it fails | Built (#36) |
 | A run cancelled while held ends CANCELLED once resolved | Built (#36, #38) |
-| Withdraw and expiry alerts in KIFF | Shipped in KIFF (kiff/kiff-cloud#1245) |
+| Withdraw and expiry alerts in KIFF | Shipped in KIFF |
 | Signed HMAC alerts, alert targets | Exist in KIFF |
 
 ## Which IDs a requirement stores
 
 Both (#44). The outcome is collected by `operation` (the gateway's
-`kiff_operation_id`); alerts and withdraw go by `exception`
-(kiff/kiff-cloud#1247). ARCHITECTURE.md says so.
+`kiff_operation_id`); alerts and withdraw go by `exception`. ARCHITECTURE.md says so.

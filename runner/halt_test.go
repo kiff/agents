@@ -14,7 +14,7 @@ import (
 	"github.com/kiff/agents/tool"
 )
 
-// kiff/kiff-cloud#1061: while an agent is halted nothing of it runs. No run
+// While an agent is halted nothing of it runs. No run
 // starts, a trial neither (its reads still reach a vendor); one stored before
 // the halt ends CANCELLED, never started; a paused one goes on only to record
 // what KIFF answered for its held calls and ends before any model turn.

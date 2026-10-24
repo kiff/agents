@@ -60,7 +60,7 @@ The shortest path to tafs switching over: #15, then the deploy. #14 is independe
 
 ## Facts that changed outside this repo
 
-- **kiff/kiff-cloud#1245 shipped.** ARCHITECTURE.md calls it "the likely
+- **KIFF's withdraw call shipped.** ARCHITECTURE.md calls it "the likely
   bottleneck" for #15; it isn't any more. KIFF now has an agent-key call to
   withdraw a held call, and it tells alert targets when a hold expires. See
   [15-continue-on-hold.md](issues/15-continue-on-hold.md).

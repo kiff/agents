@@ -11,8 +11,8 @@ and ARCHITECTURE.md, which says where everything goes and in what order.
   values from the environment.
 - **KIFF is used like any customer uses it**: the public API (`api.kiff.dev`)
   and the gateway (`mcp.kiff.dev`). This repo never holds approvals, Card logic,
-  or a back door into KIFF Cloud. If something is missing in KIFF, open an issue
-  on kiff/kiff-cloud and link it from the issue you're working on.
+  or a back door into KIFF Cloud. If something is missing in KIFF, say so on the
+  issue you're working on: KIFF's side is tracked privately.
 - **Built for tafs first.** Add what tafs needs now, not what a general agent
   platform might need. If no tafs issue asks for it, it waits.
 - **Docs describe what this is and does.** They don't describe what inspired it.
@@ -88,8 +88,8 @@ Issues and PRs are the shared record.
 - The shared types are the contract between issues: sessions, events, the model
   interface and tools. Change them in a PR of their own, and comment on the
   issues that use them.
-- If a finding touches another repo (kiff/tafs, kiff/kiff-cloud), leave it as a
-  comment on that repo's issue.
+- If a finding touches kiff/tafs, leave it as a comment on that repo's issue; if
+  it touches KIFF itself, say so here: KIFF's side is tracked privately.
 
 ## Working
 

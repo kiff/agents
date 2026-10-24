@@ -395,7 +395,7 @@ func switching(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		}
 	})
 
-	// kiff/kiff-cloud#1061: a halt keeps its first At, a resume keeps it too,
+	// A halt keeps its first At, a resume keeps it too,
 	// and the tenant's own halt is apart from every agent's.
 	t.Run("Halt", func(t *testing.T) {
 		s := newStore(t)

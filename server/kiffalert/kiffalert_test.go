@@ -332,8 +332,8 @@ func TestAFailedContinueIsDeliveredAgain(t *testing.T) {
 	}
 }
 
-// A signature made by KIFF's own alert.SignatureHeader (kiff-cloud,
-// apps/api/internal/alert) checks: the scheme is KIFF's, byte for byte.
+// A signature made the way KIFF signs its alerts checks: the scheme is KIFF's,
+// byte for byte.
 func TestKIFFsOwnSignatureChecks(t *testing.T) {
 	body := []byte(`{"tenant_id":"kiff-acct-1","outcome":"hold_answered","hold":{"id":"exc_1","status":"approved"}}`)
 	header := "t=1760605800,v1=626c49dffc5af165d8bf32513062d95528a2cf37b7904511c5e5bdedaa803211"

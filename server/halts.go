@@ -11,7 +11,7 @@ import (
 	"github.com/kiff/agents/run"
 )
 
-// A halt (kiff/kiff-cloud#1061) stops an agent, or every agent of the
+// A halt stops an agent, or every agent of the
 // tenant, until it is resumed: nothing of it starts or goes on (the runner
 // checks), and what came before the halt never runs, even once resumed.
 // Halting is stored first, then each active run is cancelled as a cancel

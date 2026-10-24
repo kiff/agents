@@ -31,7 +31,7 @@ eval: chargebacks: couldn't withdraw update_dispute (exc_…): …: refuse it in
   timeout so a Ctrl+C doesn't skip it. A hold it can't withdraw is logged,
   never fatal.
 - `-kiff-api` (https only, default `https://api.kiff.dev`) is where.
-- KIFF lets the agent's gateway key reach the route since kiff/kiff-cloud#1250.
+- KIFF lets the agent's gateway key reach the route.
 
 **The eval runs what tafs runs.** `eval -run -definitions dir` takes each
 job's agent from `<dir>/<job>.json`, written by `infra/eval-definitions.sh`
@@ -184,6 +184,6 @@ of evidence, and the runs after scored 0.44 for that alone.
   withdraws each run's holds after it. Minting an agent, its Cards and a key
   per run works from the test account's phone session. But that session
   can't revoke the keys it mints (`DELETE /v1/keys/{id}` isn't among KIFF's
-  phone-session routes), so they would pile up: that needs kiff-cloud first.
+  phone-session routes), so they would pile up: that needs KIFF first.
 - **Fix what the reports find**, starting with "stops on held and refused",
   which failed in all three runs above.
