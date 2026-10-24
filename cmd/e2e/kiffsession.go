@@ -26,13 +26,17 @@ import (
 var signedPaths = []string{"/v1/keys", "/v1/me/agent-drafts"}
 
 func signedPath(method, path string) bool {
-	if method != http.MethodPost {
-		return false
+	draft := strings.HasPrefix(path, "/v1/me/agent-drafts/")
+	switch method {
+	case http.MethodPost:
+		return slices.Contains(signedPaths, path) || draft && strings.HasSuffix(path, "/confirm") ||
+			// Archiving a taf at the end of a run (kiff/agents#78, PhoneSignedRules).
+			strings.HasPrefix(path, "/v1/me/agents/") && strings.HasSuffix(path, "/archive")
+	case http.MethodDelete:
+		// Going back from trying a version (kiff/tafs#173).
+		return draft && strings.HasSuffix(path, "/trial")
 	}
-	return slices.Contains(signedPaths, path) ||
-		strings.HasPrefix(path, "/v1/me/agent-drafts/") && strings.HasSuffix(path, "/confirm") ||
-		// Archiving a taf at the end of a run (kiff/agents#78, PhoneSignedRules).
-		strings.HasPrefix(path, "/v1/me/agents/") && strings.HasSuffix(path, "/archive")
+	return false
 }
 
 // kiffSession is KIFF's API as the owner's phone calls it.
