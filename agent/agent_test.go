@@ -1103,6 +1103,35 @@ func TestDeferredToolsAreSentDeferred(t *testing.T) {
 	}
 }
 
+// With DeferVendor, every gateway tool that isn't KIFF's own goes deferred,
+// whatever its name: a vendor's tools a Card adds mid-conversation then leave
+// the cached prefix as it was (#197). KIFF's own and the agent's own stay.
+func TestVendorToolsAreSentDeferred(t *testing.T) {
+	card := &fakeTool{name: "kiff_card", access: tool.Read, gateway: true, result: tool.Result{Text: "{}"}}
+	charges := &fakeTool{name: "list_charges_2coa", access: tool.Read, gateway: true, result: tool.Result{Text: "[]"}}
+	own := &fakeTool{name: "planque", access: tool.Read, result: tool.Result{Text: "ok"}}
+	sent := func(deferVendor bool) map[string]bool {
+		m := &script{replies: []model.Reply{say("Nothing waits.")}}
+		_, r := start(t, session.KindRun)
+		a := newAgent(m, card, charges, own)
+		a.DeferVendor = deferVendor
+		if _, _, err := agent.Run(context.Background(), a, r, nil, "What waits?", nil); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, s := range m.reqs[0].Tools {
+			got[s.Name] = s.Defer
+		}
+		return got
+	}
+	if got := sent(true); !got["list_charges_2coa"] || got["kiff_card"] || got["planque"] || len(got) != 3 {
+		t.Fatalf("deferred %v", got)
+	}
+	if got := sent(false); got["list_charges_2coa"] {
+		t.Fatalf("without DeferVendor, deferred %v", got)
+	}
+}
+
 // Every turn of a run names where its history ends, so the provider caches
 // that prefix apart: the next run renders the same history and reads it back,
 // though it drops this run's tool calls (kiff/tafs#214, item 2).

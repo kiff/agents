@@ -53,6 +53,10 @@ of its eight kinds):
   speed. A fast turn that the provider turns away for its fast limits or its
   load runs at once at standard speed, and the conversation stays at
   standard. Each turn's `usage` event records its `speed`.
+- `defer_vendor_tools` (optional): every gateway tool that isn't KIFF's own
+  (`kiff_*`) goes to the model deferred, whatever its name. A Card that
+  covers a vendor's tools mid-conversation (Setup's reads) then leaves the
+  cached prefix as it was, instead of starting the cache over.
 - `tenant` and `id` come from the verified caller and the path; a body that
   says otherwise is refused.
 - `gateway` must be on the server's own list (`Server.Gateways`), so a
