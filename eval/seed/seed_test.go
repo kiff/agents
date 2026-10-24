@@ -51,6 +51,8 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.disputes = append(f.disputes, map[string]string{"id": fmt.Sprintf("dp_%d", f.n), "status": "needs_response",
 			"payment_intent": id, "pending": "1", "tag": ""})
 		fmt.Fprintf(w, `{"id": %q, "latest_charge": "ch_%d"}`, id, f.n)
+	case r.Method == "GET" && r.URL.Path == "/v1/account":
+		fmt.Fprint(w, `{"id": "acct_evals"}`)
 	case r.Method == "GET" && r.URL.Path == "/v1/disputes":
 		pi := r.Form.Get("payment_intent")
 		var out []string
@@ -198,5 +200,22 @@ func TestChargebacksMatchesTheCase(t *testing.T) {
 	}
 	if !strings.Contains(ChargebacksNote, "Gus Regular") {
 		t.Error("the note doesn't name T-2007's customer")
+	}
+}
+
+// The evals keep to their own test account: a key for another one seeds
+// nothing (kiff/tafs#236, item 11). With no account set, any test key seeds.
+func TestOnlyTheEvalsOwnAccountIsSeeded(t *testing.T) {
+	c, _ := client(t, "sk_test_ok")
+	ctx := context.Background()
+	if err := c.Only(ctx, "acct_evals"); err != nil {
+		t.Fatalf("its own account: %v", err)
+	}
+	if err := c.Only(ctx, ""); err != nil {
+		t.Fatalf("no account set: %v", err)
+	}
+	err := c.Only(ctx, "acct_other")
+	if err == nil || !strings.Contains(err.Error(), "acct_evals") || !strings.Contains(err.Error(), "nothing was seeded") {
+		t.Fatalf("another account: %v", err)
 	}
 }

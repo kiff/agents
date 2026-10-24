@@ -86,6 +86,35 @@ func New(base, key string, hc *http.Client) (*Client, error) {
 	return &Client{url: strings.TrimRight(base, "/"), key: key, http: hc, wait: time.Second}, nil
 }
 
+// Account is the id of the Stripe account the key is for.
+func (c *Client) Account(ctx context.Context) (string, error) {
+	var a struct {
+		ID string `json:"id"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/account", nil, &a); err != nil {
+		return "", err
+	}
+	return a.ID, nil
+}
+
+// Only refuses to seed any account but want, when want is set: the evals keep
+// to their own test account, never one people test in, where what a seed makes
+// piles up in front of theirs and Stripe never deletes a payment
+// (kiff/tafs#236, item 11).
+func (c *Client) Only(ctx context.Context, want string) error {
+	if want == "" {
+		return nil
+	}
+	got, err := c.Account(ctx)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("seed: the key is for Stripe account %s, not the evals' own (%s): nothing was seeded", got, want)
+	}
+	return nil
+}
+
 // Error is an answer from Stripe other than 200: its own message, never the
 // request.
 type Error struct {

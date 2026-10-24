@@ -47,6 +47,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
           STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+          # The evals' own Stripe test account (infra/eval-stripe-account.sh): the seed
+          # refuses any other.
+          EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
         run: |
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat 3 \
             -baseline eval/baseline.json \
