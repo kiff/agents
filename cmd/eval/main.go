@@ -306,49 +306,11 @@ func refs(rs []skill.Ref) []string {
 // loadSkills stores every skill under dir for the eval's tenant (#101):
 // <dir>/<name>/<version>/SKILL.md, and the files beside it, at any depth.
 func (rt *runtime) loadSkills(ctx context.Context, dir string) error {
-	versions, err := filepath.Glob(filepath.Join(dir, "*", "*", "SKILL.md"))
+	ps, err := skill.LoadDir(dir, evalTenant)
 	if err != nil {
-		return err
+		return fmt.Errorf("-skills: %w", err)
 	}
-	if len(versions) == 0 {
-		return fmt.Errorf("-skills: no <name>/<version>/SKILL.md under %s", dir)
-	}
-	for _, path := range versions {
-		root := filepath.Dir(path)
-		md, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		name, description, body, err := skill.Parse(string(md))
-		if err != nil {
-			return fmt.Errorf("-skills: %s: %w", path, err)
-		}
-		if name != filepath.Base(filepath.Dir(root)) {
-			return fmt.Errorf("-skills: %s names %q: its directory must be named so", path, name)
-		}
-		files := map[string]string{}
-		err = filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
-			if err != nil || e.IsDir() || p == path {
-				return err
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				return err
-			}
-			rel, _ := filepath.Rel(root, p)
-			files[filepath.ToSlash(rel)] = string(b)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		p := skill.Package{Tenant: evalTenant, Name: name, Version: filepath.Base(root), Description: description, Body: body}
-		if len(files) > 0 {
-			p.Files = files
-		}
-		if err := p.Check(); err != nil {
-			return fmt.Errorf("-skills: %s: %w", root, err)
-		}
+	for _, p := range ps {
 		if err := rt.skills.Put(ctx, p); err != nil {
 			return err
 		}

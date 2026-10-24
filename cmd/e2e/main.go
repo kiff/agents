@@ -54,6 +54,7 @@ import (
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/skill"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
@@ -84,6 +85,7 @@ type config struct {
 	phone                                           string
 	setupDef                                        string
 	tafDef                                          string
+	skillsDir                                       string      // the skills the definitions may name (-skills); empty: none
 	owner                                           string      // the owner's language: "en" or "es"
 	judge                                           *eval.Judge // grades the setup chat (-grade); nil: not graded
 	maxTurns                                        int
@@ -129,6 +131,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	cfg := config{log: stdout}
 	fs.StringVar(&cfg.setupDef, "setup", "", "the setup agent's definition (JSON, from kiff/tafs' setupdef.ts); empty: the built-in one")
 	fs.StringVar(&cfg.tafDef, "taf", "", "the taf's definition (JSON, a job of kiff/tafs' tafdef.ts, such as refunds.json): its instructions and effort; its answers in the chat are then checked for concision. Empty: a short built-in one")
+	fs.StringVar(&cfg.skillsDir, "skills", "", "a directory of skills, <name>/<version>/SKILL.md each, that -setup and -taf may name (kiff/tafs#218); empty: none")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
 	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es")
 	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, concise messages, no ids asked, the agent's name, choices")
@@ -293,7 +296,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		return err
 	}
 	setupKey := t.cfg.setupKey
-	t.runtime(m)
+	if err := t.runtime(ctx, m); err != nil {
+		return err
+	}
 	if err := t.keys.Create(ctx, t.tenant, "kiff/setup", setupKey); err != nil {
 		return err
 	}
@@ -375,12 +380,26 @@ func (t *test) enrol(ctx context.Context) error {
 }
 
 // runtime is this repository's runtime, in memory, with the setup agent's
-// tools: KIFF's gateway, memory, show, planque and drafts.
-func (t *test) runtime(m model.Model) {
+// tools: KIFF's gateway, memory, show, planque and drafts, and -skills'
+// packages, stored for the test's tenant, for the definitions that name them.
+func (t *test) runtime(ctx context.Context, m model.Model) error {
 	t.keys, t.sessions, t.agents = memory.NewDrafts(), memory.New(), memory.NewAgents()
+	skills := memory.NewSkills()
+	if t.cfg.skillsDir != "" {
+		ps, err := skill.LoadDir(t.cfg.skillsDir, t.tenant)
+		if err != nil {
+			return fmt.Errorf("-skills: %w", err)
+		}
+		for _, p := range ps {
+			if err := skills.Put(ctx, p); err != nil {
+				return err
+			}
+		}
+		t.logf("loaded %d skills", len(ps))
+	}
 	claims := &drafts.Service{Store: t.keys, Keys: t.keys, KIFF: draftsapi.New(kiff.APIURL, t.hc)}
 	t.rn = &runner.Runner{Runs: memory.NewRuns(), Sessions: t.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
-		Agents: t.agents, Secrets: keyring{t.keys}, Model: m, Gateways: []string{kiff.URL},
+		Agents: t.agents, Secrets: keyring{t.keys}, Model: m, Gateways: []string{kiff.URL}, Skills: skills,
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
@@ -391,6 +410,7 @@ func (t *test) runtime(m model.Model) {
 		},
 		Drafts: func(tenant, key string) tool.Tool { return tooldrafts.New(claims, tenant, key) },
 	}}
+	return nil
 }
 
 // keyring reads the agents' keys from the test's store.

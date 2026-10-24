@@ -52,7 +52,7 @@ jobs:
         # outcome, and masks every id it learns (cmd/e2e, redacting). The
         # chat's transcript (setup.md) goes only to the private bucket, so a
         # failed chat can be read afterwards.
-        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript setup.md
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript setup.md
       # The role assumes only from main (infra/aws.sh).
       - uses: aws-actions/configure-aws-credentials@v4
         if: always() && github.ref == 'refs/heads/main'
