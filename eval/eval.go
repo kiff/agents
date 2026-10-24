@@ -32,6 +32,9 @@ type Grade struct {
 	Pass    bool   `json:"pass"`
 	Skipped bool   `json:"skipped,omitempty"`
 	Why     string `json:"why,omitempty"`
+	// Split is how many of a judged check's votes failed when most passed: a
+	// warning, not a fail (AskMajority, #209). Zero when they agreed.
+	Split int `json:"split,omitempty"`
 }
 
 // Check grades one thing a good run does.

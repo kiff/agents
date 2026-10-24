@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kiff/agents/eval"
@@ -14,13 +15,16 @@ import (
 // verdicts is a judge model that passes or fails each rule by a word in it,
 // and keeps what it was asked.
 type verdicts struct {
+	mu    sync.Mutex
 	fail  []string // a rule containing one of these fails
 	asked []string
 }
 
 func (v *verdicts) Turn(_ context.Context, req model.Request, _ func(string)) (model.Reply, error) {
 	prompt := req.Messages[0].Blocks[0].Text
+	v.mu.Lock()
 	v.asked = append(v.asked, prompt)
+	v.mu.Unlock()
 	pass := "true"
 	for _, f := range v.fail {
 		if strings.Contains(prompt, f) {
@@ -59,6 +63,11 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	if len(s.order) != 1 {
 		t.Fatalf("cards %v", s.order)
 	}
+	// Each check asks the judge Votes times (kiff/agents#209): read each rule once, in order.
+	if len(v.asked)%eval.Votes != 0 {
+		t.Fatalf("%d questions to the judge, not %d per check", len(v.asked), eval.Votes)
+	}
+	v.asked = slices.Compact(v.asked)
 	// The language check reads Setup's cards too: their title, text and labels.
 	if !strings.Contains(v.asked[0], "Spanish") || !strings.Contains(v.asked[0], "Modo de Stripe") || !strings.Contains(v.asked[0], "Prueba") ||
 		!strings.Contains(v.asked[0], "Puedes cambiarlo luego.") {
