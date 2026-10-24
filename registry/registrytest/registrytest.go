@@ -497,9 +497,9 @@ func cards(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 	})
 }
 
-// trials checks an agent's open trial (kiff/tafs#173): one per agent,
-// replaced whole, listed across tenants for the sweep, ended only by its
-// own ID, and summed up on its version once ended.
+// trials checks an agent's open trial (kiff/tafs#173): one per agent, opened
+// only where none is, touched and ended only by its own ID, listed across
+// tenants for the sweep, and summed up on its version once ended.
 func trials(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 	ctx := context.Background()
 	at := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
@@ -507,8 +507,8 @@ func trials(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 	t.Run("OneOpenTrialPerAgent", func(t *testing.T) {
 		s := newStore(t)
 		first := registry.Trial{Tenant: "t1", Agent: "refunds", ID: "tr_1", N: 2, Draft: "drf_2", Started: at, Used: at}
-		if err := s.PutTrial(ctx, first); !errors.Is(err, registry.ErrNotFound) {
-			t.Fatalf("PutTrial on no agent = %v; want ErrNotFound", err)
+		if err := s.OpenTrial(ctx, first); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("OpenTrial on no agent = %v; want ErrNotFound", err)
 		}
 		for _, k := range [][2]string{{"t1", "refunds"}, {"t2", "refunds"}} {
 			if err := s.Put(ctx, Definition(k[0], k[1])); err != nil {
@@ -518,8 +518,14 @@ func trials(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		if _, ok, err := s.Trial(ctx, "t1", "refunds"); ok || err != nil {
 			t.Fatalf("Trial before any = %v, %v; want none", ok, err)
 		}
-		if err := s.PutTrial(ctx, first); err != nil {
+		if err := s.OpenTrial(ctx, first); err != nil {
 			t.Fatal(err)
+		}
+		// One open trial per agent: another open, even the same, is refused.
+		for _, again := range []registry.Trial{first, {Tenant: "t1", Agent: "refunds", ID: "tr_x", N: 3, Draft: "drf_3", Started: at, Used: at}} {
+			if err := s.OpenTrial(ctx, again); !errors.Is(err, registry.ErrTrialOpen) {
+				t.Fatalf("OpenTrial over an open one = %v; want ErrTrialOpen", err)
+			}
 		}
 		if got, ok, err := s.Trial(ctx, "t1", "refunds"); !ok || err != nil || !reflect.DeepEqual(got, first) {
 			t.Fatalf("Trial = %+v, %v, %v; want %+v", got, ok, err, first)
@@ -527,27 +533,42 @@ func trials(t *testing.T, newStore func(t *testing.T) registry.Agents) {
 		if _, ok, _ := s.Trial(ctx, "t2", "refunds"); ok {
 			t.Fatal("another tenant's agent of the same id has the trial")
 		}
-		// Its first message names its session; a later one, when it was used.
+		// A message marks when it was used, only by its own ID.
 		used := first
-		used.Session, used.Used = "sess_1", at.Add(time.Hour)
-		if err := s.PutTrial(ctx, used); err != nil {
+		used.Used = at.Add(time.Hour)
+		if err := s.TouchTrial(ctx, "t1", "refunds", "tr_1", used.Used); err != nil {
 			t.Fatal(err)
 		}
+		if err := s.TouchTrial(ctx, "t1", "refunds", "tr_other", at.Add(2*time.Hour)); !errors.Is(err, registry.ErrNoTrial) {
+			t.Fatalf("TouchTrial by another ID = %v; want ErrNoTrial", err)
+		}
 		other := registry.Trial{Tenant: "t2", Agent: "refunds", ID: "tr_9", N: 3, Draft: "drf_9", Started: at, Used: at}
-		if err := s.PutTrial(ctx, other); err != nil {
+		if err := s.OpenTrial(ctx, other); err != nil {
 			t.Fatal(err)
 		}
 		all, err := s.Trials(ctx)
 		if err != nil || len(all) != 2 || !reflect.DeepEqual(all[0], used) || !reflect.DeepEqual(all[1], other) {
 			t.Fatalf("Trials = %+v, %v", all, err)
 		}
-		// A trial that replaced it isn't ended by the old one's ID.
+		// Once it ends, another may open; the old one's ID neither ends nor touches it.
+		if err := s.EndTrial(ctx, "t1", "refunds", "tr_1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.TouchTrial(ctx, "t1", "refunds", "tr_1", at.Add(3*time.Hour)); !errors.Is(err, registry.ErrNoTrial) {
+			t.Fatalf("TouchTrial of an ended one = %v; want ErrNoTrial", err)
+		}
+		if _, ok, _ := s.Trial(ctx, "t1", "refunds"); ok {
+			t.Fatal("touching an ended trial brought it back")
+		}
 		second := registry.Trial{Tenant: "t1", Agent: "refunds", ID: "tr_2", N: 3, Draft: "drf_3", Started: at, Used: at}
-		if err := s.PutTrial(ctx, second); err != nil {
+		if err := s.OpenTrial(ctx, second); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.EndTrial(ctx, "t1", "refunds", "tr_1"); err != nil {
-			t.Fatalf("EndTrial of a replaced one = %v; want nil", err)
+			t.Fatalf("EndTrial of an earlier one = %v; want nil", err)
+		}
+		if err := s.TouchTrial(ctx, "t1", "refunds", "tr_1", at.Add(4*time.Hour)); !errors.Is(err, registry.ErrNoTrial) {
+			t.Fatalf("TouchTrial by an earlier one's ID = %v; want ErrNoTrial", err)
 		}
 		if got, ok, _ := s.Trial(ctx, "t1", "refunds"); !ok || got.ID != "tr_2" {
 			t.Fatalf("after ending the replaced one, Trial = %+v, %v; want tr_2 open", got, ok)

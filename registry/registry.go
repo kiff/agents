@@ -243,6 +243,9 @@ type TrialCounts struct {
 // ErrNoTrial means the agent has no open trial.
 var ErrNoTrial = errors.New("registry: this agent has no open trial")
 
+// ErrTrialOpen means the agent has an open trial already: end it first.
+var ErrTrialOpen = errors.New("registry: this agent has an open trial")
+
 // Halt is an agent's halt, or its tenant's: while On,
 // no run of it starts or goes on. At is when the latest halt began, and is
 // kept after a resume: a run created before it never runs, so nothing from
@@ -457,9 +460,15 @@ type Agents interface {
 	// Halted returns the halt of id (or of the tenant, for Tenant): the zero
 	// Halt if it was never halted.
 	Halted(ctx context.Context, tenant, id string) (Halt, error)
-	// PutTrial stores t as the agent's open trial, replacing any. ErrNotFound
-	// for an agent not stored.
-	PutTrial(ctx context.Context, t Trial) error
+	// OpenTrial stores t as the agent's open trial, only while it has none:
+	// ErrTrialOpen when one is open (even the same), ErrNotFound for an agent
+	// not stored. Two opens at once give one trial.
+	OpenTrial(ctx context.Context, t Trial) error
+	// TouchTrial records that the agent's open trial was used at used, only
+	// while it is still trialID: ErrNoTrial when it ended or another
+	// replaced it, so a message never brings back a trial or overwrites
+	// another.
+	TouchTrial(ctx context.Context, tenant, id, trialID string, used time.Time) error
 	// Trial returns the agent's open trial, and whether it has one.
 	Trial(ctx context.Context, tenant, id string) (Trial, bool, error)
 	// Trials lists every open trial, of every tenant, for the sweep that

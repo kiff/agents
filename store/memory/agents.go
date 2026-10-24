@@ -234,14 +234,30 @@ func (a *Agents) SetCards(_ context.Context, tenant, id string, n int, cards []r
 	return nil
 }
 
-func (a *Agents) PutTrial(_ context.Context, t registry.Trial) error {
+func (a *Agents) OpenTrial(_ context.Context, t registry.Trial) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	k := [2]string{t.Tenant, t.Agent}
 	if _, ok := a.defs[k]; !ok {
 		return registry.ErrNotFound
 	}
+	if _, ok := a.tr[k]; ok {
+		return registry.ErrTrialOpen
+	}
 	t.Started, t.Used = t.Started.UTC(), t.Used.UTC()
+	a.tr[k] = t
+	return nil
+}
+
+func (a *Agents) TouchTrial(_ context.Context, tenant, id, trialID string, used time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := [2]string{tenant, id}
+	t, ok := a.tr[k]
+	if !ok || t.ID != trialID {
+		return registry.ErrNoTrial
+	}
+	t.Used = used.UTC()
 	a.tr[k] = t
 	return nil
 }

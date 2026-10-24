@@ -433,7 +433,9 @@ func (a *Agents) SetCards(ctx context.Context, tenant, id string, n int, cards [
 	return err
 }
 
-func (a *Agents) PutTrial(ctx context.Context, t registry.Trial) error {
+// OpenTrial writes the trial only where the agent has none, in one
+// conditional write: two opens at once give one trial.
+func (a *Agents) OpenTrial(ctx context.Context, t registry.Trial) error {
 	if _, err := a.Get(ctx, t.Tenant, t.Agent); err != nil {
 		return err
 	}
@@ -444,7 +446,38 @@ func (a *Agents) PutTrial(ctx context.Context, t registry.Trial) error {
 	}
 	item := pkey(trialPK, trialSK(t.Tenant, t.Agent))
 	item["tid"], item["tr"] = s(t.ID), s(string(b))
-	_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item})
+	_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item,
+		ConditionExpression: aws.String("attribute_not_exists(pk)")})
+	var open *types.ConditionalCheckFailedException
+	if errors.As(err, &open) {
+		return registry.ErrTrialOpen
+	}
+	return err
+}
+
+// TouchTrial rewrites the trial's last use only while it is still trialID,
+// in one conditional write, like EndTrial's delete.
+func (a *Agents) TouchTrial(ctx context.Context, tenant, id, trialID string, used time.Time) error {
+	t, ok, err := a.Trial(ctx, tenant, id)
+	if err != nil {
+		return err
+	}
+	if !ok || t.ID != trialID {
+		return registry.ErrNoTrial
+	}
+	t.Used = used.UTC()
+	b, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &a.table, Key: pkey(trialPK, trialSK(tenant, id)),
+		UpdateExpression:          aws.String("SET tr = :tr"),
+		ConditionExpression:       aws.String("tid = :tid"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":tr": s(string(b)), ":tid": s(trialID)}})
+	var gone *types.ConditionalCheckFailedException
+	if errors.As(err, &gone) {
+		return registry.ErrNoTrial
+	}
 	return err
 }
 

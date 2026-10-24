@@ -9,6 +9,7 @@ import (
 
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/session"
 )
 
 // An agent's open trial (kiff/tafs#173): the owner chats with one of its
@@ -60,22 +61,52 @@ func (s *Server) openTrial(ctx context.Context, c Caller, r *http.Request) (int,
 	if !slices.ContainsFunc(vs, func(v registry.Version) bool { return v.N == body.N }) {
 		return 0, nil, registry.ErrNoVersion
 	}
-	open, ok, err := s.Agents.Trial(ctx, c.Tenant, id)
+	if open, ok, err := s.Agents.Trial(ctx, c.Tenant, id); err != nil || ok {
+		return s.openAlready(open, ok, err, body)
+	}
+	// The trial's chat is chosen now, before its first message: two first
+	// messages at once share it, and ending the trial deletes the one chat.
+	d, err := s.Agents.GetVersion(ctx, c.Tenant, id, body.N)
 	if err != nil {
 		return 0, nil, err
 	}
-	if ok {
-		if open.N == body.N && open.Draft == body.Draft {
-			return http.StatusOK, map[string]any{"trial": open}, nil
-		}
-		return 0, nil, conflictError{fmt.Sprintf("this agent is already trying version %d: end that trial first", open.N)}
+	rec, err := session.NewRecorderAt(s.Sessions, d.Keep, s.now)
+	if err != nil {
+		return 0, nil, err
+	}
+	sess, err := rec.Open(ctx, c.Tenant, id, session.KindTrial)
+	if err != nil {
+		return 0, nil, err
 	}
 	now := s.now()
-	t := registry.Trial{Tenant: c.Tenant, Agent: id, ID: run.NewID(), N: body.N, Draft: body.Draft, Started: now, Used: now}
-	if err := s.Agents.PutTrial(ctx, t); err != nil {
+	t := registry.Trial{Tenant: c.Tenant, Agent: id, ID: run.NewID(), N: body.N, Draft: body.Draft, Session: sess.ID, Started: now, Used: now}
+	if err := s.Agents.OpenTrial(ctx, t); err != nil {
+		// Another open got there first, or the agent is gone: its chat isn't this one.
+		if derr := s.Sessions.Delete(context.WithoutCancel(ctx), c.Tenant, sess.ID); derr != nil {
+			err = errors.Join(err, fmt.Errorf("removing the chat it opened: %w", derr))
+		}
+		if errors.Is(err, registry.ErrTrialOpen) {
+			open, ok, rerr := s.Agents.Trial(ctx, c.Tenant, id)
+			return s.openAlready(open, ok, rerr, body)
+		}
 		return 0, nil, err
 	}
 	return http.StatusOK, map[string]any{"trial": t}, nil
+}
+
+// openAlready answers an open of a trial when the agent has one: the same
+// version and draft is the same trial; another is a conflict, ended first.
+func (s *Server) openAlready(open registry.Trial, ok bool, err error, body openTrialBody) (int, any, error) {
+	if err != nil {
+		return 0, nil, err
+	}
+	if !ok { // ended meanwhile: the owner opens it again
+		return 0, nil, conflictError{"the trial changed while it was opened: try again"}
+	}
+	if open.N == body.N && open.Draft == body.Draft {
+		return http.StatusOK, map[string]any{"trial": open}, nil
+	}
+	return 0, nil, conflictError{fmt.Sprintf("this agent is already trying version %d: end that trial first", open.N)}
 }
 
 func (s *Server) getOpenTrial(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
@@ -127,13 +158,17 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, conflictError{"this trial went unused for a week, and is ending"})
 		return
 	}
-	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: t.Session, Trigger: run.ByTrial, Input: body.Input, Version: t.N, Draft: t.Draft})
-	if err != nil {
+	// Marked used only while it is still this trial: one that ended meanwhile,
+	// or was replaced, takes no message and isn't brought back.
+	if err := s.Agents.TouchTrial(ctx, c.Tenant, id, t.ID, now); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	t.Session, t.Used = rn.Session, now
-	if err := s.Agents.PutTrial(ctx, t); err != nil {
+	t.Used = now
+	// In the trial's own chat, chosen when it opened: if the trial ends now,
+	// its chat is gone and the run can't start in it.
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: t.Session, Trigger: run.ByTrial, Input: body.Input, Version: t.N, Draft: t.Draft})
+	if err != nil {
 		s.fail(w, r, err)
 		return
 	}

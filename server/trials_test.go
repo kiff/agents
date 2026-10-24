@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/session"
 )
 
 // putVersionTwo stores version 2 of payouts, not live.
@@ -31,7 +34,7 @@ func TestATrialIsOneChatWithAVersion(t *testing.T) {
 	code, body := f.do("t1", "PUT", "/agents/payouts/trial", map[string]any{"n": 2, "draft": "drf_t2"})
 	f.want(200, code, body, "open trial")
 	tr := body["trial"].(map[string]any)
-	if tr["n"] != float64(2) || tr["draft"] != "drf_t2" || tr["session"] != nil || tr["id"] == "" {
+	if tr["n"] != float64(2) || tr["draft"] != "drf_t2" || tr["session"] == nil || tr["id"] == "" {
 		t.Fatalf("trial = %v", tr)
 	}
 	id := tr["id"]
@@ -161,7 +164,7 @@ func TestTheSweepEndsIdleTrialsInKIFFFirst(t *testing.T) {
 	idle := registry.Trial{Tenant: "t1", Agent: "payouts", ID: "tr_old", N: 2, Draft: "drf_t2", Started: old, Used: old}
 	fresh := registry.Trial{Tenant: "t1", Agent: "bills", ID: "tr_new", N: 1, Draft: "drf_b1", Started: now, Used: now}
 	for _, tr := range []registry.Trial{idle, fresh} {
-		if err := f.agents.PutTrial(ctx, tr); err != nil {
+		if err := f.agents.OpenTrial(ctx, tr); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -200,5 +203,80 @@ func TestTheSweepEndsIdleTrialsInKIFFFirst(t *testing.T) {
 	}
 	if _, err := f.server.SweepTrials(ctx); err != nil || len(asked) != 2 {
 		t.Fatalf("a second sweep asked KIFF again: %v, %v", err, asked)
+	}
+}
+
+// kiff/agents#215 review: a trial's chat is chosen when it opens, so two first
+// messages share it; and a message to a trial that has ended takes nothing
+// and doesn't bring it back.
+func TestATrialsChatIsChosenWhenItOpens(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putVersionTwo()
+	code, body := f.do("t1", "PUT", "/agents/payouts/trial", map[string]any{"n": 2, "draft": "drf_t2"})
+	f.want(200, code, body, "open trial")
+	sess := body["trial"].(map[string]any)["session"]
+	if sess == nil || sess == "" {
+		t.Fatalf("an open trial has no chat yet: %v", body)
+	}
+	for _, input := range []string{"Refund ch_1.", "And ch_2."} {
+		code, body = f.do("t1", "POST", "/agents/payouts/trial/messages", map[string]any{"input": input})
+		f.want(202, code, body, "trial message")
+		if got := body["run"].(map[string]any)["session"]; got != sess {
+			t.Fatalf("a message ran in %v, not the trial's chat %v", got, sess)
+		}
+	}
+
+	code, body = f.do("t1", "DELETE", "/agents/payouts/trial", map[string]any{"why": "back"})
+	f.want(200, code, body, "end trial")
+	code, body = f.do("t1", "POST", "/agents/payouts/trial/messages", map[string]any{"input": "one more"})
+	f.want(404, code, body, "a message after the trial ended")
+	if _, ok, _ := f.agents.Trial(context.Background(), "t1", "payouts"); ok {
+		t.Fatal("a message after the end brought the trial back")
+	}
+}
+
+// Two opens at once, of different versions, give one trial and a 409, and
+// leave one trial chat: the one that lost removes the chat it opened.
+func TestTwoOpensAtOnceGiveOneTrial(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putVersionTwo()
+	codes := make(chan int, 2)
+	var wg sync.WaitGroup
+	for _, open := range []map[string]any{{"n": 2, "draft": "drf_t2"}, {"n": 1, "draft": "drf_t1"}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			code, _ := f.do("t1", "PUT", "/agents/payouts/trial", open)
+			codes <- code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	var got []int
+	for c := range codes {
+		got = append(got, c)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []int{200, 409}) {
+		t.Fatalf("two opens at once answered %v; want one 200 and one 409", got)
+	}
+	tr, ok, err := f.agents.Trial(context.Background(), "t1", "payouts")
+	if err != nil || !ok {
+		t.Fatalf("no trial after two opens: %v", err)
+	}
+	all, err := f.store.List(context.Background(), "t1", "payouts", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trials []string
+	for _, s := range all {
+		if s.Kind == session.KindTrial {
+			trials = append(trials, s.ID)
+		}
+	}
+	if !slices.Equal(trials, []string{tr.Session}) {
+		t.Fatalf("trial chats = %v; want only the open trial's %s", trials, tr.Session)
 	}
 }
