@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/kiff/agents/model"
@@ -70,6 +71,44 @@ func (j *Judge) Ask(ctx context.Context, rule, text string) (Grade, error) {
 		return Grade{}, fmt.Errorf("%w: %q", ErrVerdict, s)
 	}
 	return Grade{Pass: *v.Pass, Why: v.Why}, nil
+}
+
+// Votes is how many times AskMajority asks.
+const Votes = 3
+
+// AskMajority asks the rule Votes times at once and goes by the majority
+// (#209): one call can disagree with itself on the same text from one night
+// to the next, and a single dissent shouldn't fail a run. The Grade fails
+// when most votes fail, with one failing vote's reason. When fewer failed,
+// it passes with Split set to how many did, and that reason: a warning.
+func (j *Judge) AskMajority(ctx context.Context, rule, text string) (Grade, error) {
+	votes := make([]Grade, Votes)
+	errs := make([]error, Votes)
+	var wg sync.WaitGroup
+	for i := range votes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			votes[i], errs[i] = j.Ask(ctx, rule, text)
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return Grade{}, err
+	}
+	var failed []Grade
+	for _, v := range votes {
+		if !v.Pass {
+			failed = append(failed, v)
+		}
+	}
+	if len(failed) == 0 {
+		return votes[0], nil
+	}
+	if 2*len(failed) > Votes {
+		return Grade{Pass: false, Why: failed[0].Why}, nil
+	}
+	return Grade{Pass: true, Why: failed[0].Why, Split: len(failed)}, nil
 }
 
 // Spent is what the judge has cost so far, in millionths of a US dollar.

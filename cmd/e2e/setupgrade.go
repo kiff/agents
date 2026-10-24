@@ -209,7 +209,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	add := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
 
 	// 1. The owner's language, in everything Setup wrote.
-	g, err := j.Ask(ctx, fmt.Sprintf("Every numbered text below is written in %s. Proper names, product and company names, ids, "+
+	g, err := j.AskMajority(ctx, fmt.Sprintf("Every numbered text below is written in %s. Proper names, product and company names, ids, "+
 		"URLs, amounts and tool names don't count against it, nor does the word taf (tafs' word for an agent, in every language).", o.language), numbered(s.texts()))
 	if err != nil {
 		return nil, err
@@ -217,14 +217,14 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	add("in the owner's language", g)
 
 	// 2. Concise, as judged for what each message had to say.
-	if g, err = j.Ask(ctx, Concise, numbered(s.messages)); err != nil {
+	if g, err = j.AskMajority(ctx, Concise, numbered(s.messages)); err != nil {
 		return nil, err
 	}
 	add("concise", g)
 
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in
 	// a component (a confirm can ask too).
-	g, err = j.Ask(ctx, "None of these texts (messages, and the titles, texts and options of what was shown) asks the owner to give, "+
+	g, err = j.AskMajority(ctx, "None of these texts (messages, and the titles, texts and options of what was shown) asks the owner to give, "+
 		"type or choose an id, an identifier, an agent name for a system, a key, a token or JSON. Naming one the agent chose itself is fine.",
 		numbered(s.texts()))
 	if err != nil {
@@ -240,7 +240,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 
 	// 5. A choice is offered as one to tap, not as a list to type back.
-	g, err = j.Ask(ctx, "No message asks the owner to choose between fixed options by listing them in prose for the owner to "+
+	g, err = j.AskMajority(ctx, "No message asks the owner to choose between fixed options by listing them in prose for the owner to "+
 		"type one back. Questions the owner answers in their own words are fine, and so is a choice shown as tappable options "+
 		"(the 'choices shown' section lists those).",
 		"Messages:\n"+numbered(s.messages)+"\nChoices shown:\n"+numbered(confirms(s)))
@@ -330,7 +330,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	// one questions card, not one confirm after another (kiff/tafs#138,
 	// item 57): the owner waited about 10 s for each.
 	if asked := askedInOrder(s); len(asked) > 1 {
-		g, err = j.Ask(ctx, "Choices the owner taps that don't depend on each other's answers were asked together, in one "+
+		g, err = j.AskMajority(ctx, "Choices the owner taps that don't depend on each other's answers were asked together, in one "+
 			"questions card, not as confirms one after another. A confirm on its own is fine when its options depend on an "+
 			"earlier answer, when it asks the owner to agree to something shown first (rules, a plan, a change), or when it was "+
 			"the only question at that point.",

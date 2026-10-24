@@ -527,9 +527,14 @@ func (t *test) tafConcise(ctx context.Context) error {
 	if t.cfg.judge == nil {
 		return nil
 	}
-	g, err := t.cfg.judge.Ask(ctx, Concise, numbered(t.tafSaid))
+	g, err := t.cfg.judge.AskMajority(ctx, Concise, numbered(t.tafSaid))
 	if err != nil {
 		return err
+	}
+	if g.Split > 0 {
+		// One judge of three disagreed: a warning, not a fail (kiff/agents#209).
+		fmt.Fprintf(t.cfg.log, "taf  warn concise: %d of %d judges said not\n", g.Split, eval.Votes)
+		t.logf("taf  concise, the dissent: %s", g.Why)
 	}
 	if !g.Pass {
 		t.logf("taf  not concise: %s", g.Why)
@@ -920,6 +925,10 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			passed++
 		}
 		line := fmt.Sprintf("  %s  %s", mark, c.Name)
+		if c.Pass && c.Split > 0 {
+			// Most judges passed it: a warning, not a fail (kiff/agents#209).
+			line = fmt.Sprintf("  warn  %s (%d of %d judges said not)", c.Name, c.Split, eval.Votes)
+		}
 		// A judged check's reason quotes the chat: not in a public log.
 		if !c.Pass && c.Why != "" && (!t.out.ci || counted[c.Name]) {
 			line += ": " + oneLine(c.Why)
