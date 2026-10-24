@@ -87,7 +87,7 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 			} `json:"tools"`
 			NextCursor string `json:"nextCursor"`
 		}
-		if err := c.call(ctx, "tools/list", params, &page); err != nil {
+		if err := c.read(ctx, "tools/list", params, true, &page); err != nil {
 			return nil, err
 		}
 		for _, t := range page.Tools {
@@ -287,12 +287,12 @@ func (c *Client) init(ctx context.Context) error {
 			Experimental map[string]json.RawMessage `json:"experimental"`
 		} `json:"capabilities"`
 	}
-	if err := c.post(ctx, "initialize", params, true, &res); err != nil {
+	if err := c.read(ctx, "initialize", params, true, &res); err != nil {
 		return err
 	}
 	var trials bool
 	c.trials = json.Unmarshal(res.Capabilities.Experimental[TrialCapability], &trials) == nil && trials
-	if err := c.post(ctx, "notifications/initialized", nil, false, nil); err != nil {
+	if err := c.read(ctx, "notifications/initialized", nil, false, nil); err != nil {
 		return err
 	}
 	c.ready = true
@@ -307,6 +307,39 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		return ErrNoTrials
 	}
 	return c.post(ctx, method, params, true, out)
+}
+
+// ReadRetryWait is how long a read waits before its one retry after the
+// gateway answered 502.
+var ReadRetryWait = time.Second
+
+// read posts a message that only reads (opening the session, listing tools)
+// and, when the gateway answers 502 (a deploy, a cold start), tries once
+// more. An action (tools/call) is never retried here: the gateway may have
+// sent it already.
+func (c *Client) read(ctx context.Context, method string, params any, withID bool, out any) error {
+	err := c.post(ctx, method, params, withID, out)
+	var h *HTTPError
+	if !errors.As(err, &h) || h.Status != http.StatusBadGateway {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return err
+	case <-time.After(ReadRetryWait):
+	}
+	return c.post(ctx, method, params, withID, out)
+}
+
+// HTTPError is a gateway answer that wasn't 2xx.
+type HTTPError struct {
+	Method string
+	Status int
+	Body   string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("kiff: %s: HTTP %d: %s", e.Method, e.Status, e.Body)
 }
 
 // TrialCapability is the experimental capability a gateway that decides
@@ -377,7 +410,7 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	}
 	if resp.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("kiff: %s: HTTP %d: %s", method, resp.StatusCode, c.redact(strings.TrimSpace(string(snippet))))
+		return &HTTPError{Method: method, Status: resp.StatusCode, Body: c.redact(strings.TrimSpace(string(snippet)))}
 	}
 	if !withID {
 		return nil

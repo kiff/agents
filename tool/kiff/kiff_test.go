@@ -334,3 +334,58 @@ func TestCallsAToolByNameWithoutListing(t *testing.T) {
 		t.Fatalf("methods = %v", *methods)
 	}
 }
+
+// A read that the gateway answers 502 (a deploy, a cold start) is tried once
+// more: opening the session and listing tools. An action never is: a
+// tools/call answered 502 may have been sent, so it fails as it came. A
+// second 502 on a read fails too.
+func TestA502IsRetriedOnceOnReadsOnly(t *testing.T) {
+	kiff.ReadRetryWait = time.Millisecond
+	var mu sync.Mutex
+	seen := map[string]int{}
+	failFirst := map[string]bool{"initialize": true, "tools/list": true}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		mu.Lock()
+		seen[msg.Method]++
+		n := seen[msg.Method]
+		mu.Unlock()
+		if (failFirst[msg.Method] && n == 1) || msg.Method == "tools/call" {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		if msg.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any = map[string]any{"capabilities": map[string]any{}}
+		if msg.Method == "tools/list" {
+			result = map[string]any{"tools": []any{map[string]any{"name": "stripe_refund", "inputSchema": map[string]any{"type": "object"}}}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": result})
+	}))
+	defer srv.Close()
+	c := kiff.New(srv.URL, testKey, srv.Client())
+	tools, err := c.Tools(context.Background())
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools: %v %v", tools, err)
+	}
+	if _, err := tools[0].Call(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("call: %v", err)
+	}
+	if seen["initialize"] != 2 || seen["tools/list"] != 2 || seen["tools/call"] != 1 {
+		t.Fatalf("sent: %v", seen)
+	}
+	// Two 502s in a row: the read fails.
+	always := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer always.Close()
+	if _, err := kiff.New(always.URL, testKey, always.Client()).Tools(context.Background()); err == nil {
+		t.Fatal("a gateway that keeps answering 502 listed tools")
+	}
+}
