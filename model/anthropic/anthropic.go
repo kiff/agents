@@ -33,19 +33,29 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 	if err != nil {
 		return model.Reply{}, err
 	}
+	start := time.Now()
 	stream := m.client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
 	var msg sdk.Message
+	var first time.Duration
+	thinking := 0
 	for stream.Next() {
 		ev := stream.Current()
 		if err := msg.Accumulate(ev); err != nil {
 			return model.Reply{}, fmt.Errorf("anthropic: %w", err)
 		}
-		if onText == nil {
+		d, ok := ev.AsAny().(sdk.ContentBlockDeltaEvent)
+		if !ok {
 			continue
 		}
-		if d, ok := ev.AsAny().(sdk.ContentBlockDeltaEvent); ok {
-			if t, ok := d.Delta.AsAny().(sdk.TextDelta); ok {
+		if first == 0 {
+			first = time.Since(start)
+		}
+		switch t := d.Delta.AsAny().(type) {
+		case sdk.ThinkingDelta:
+			thinking += len(t.Thinking)
+		case sdk.TextDelta:
+			if onText != nil {
 				onText(t.Text)
 			}
 		}
@@ -53,7 +63,9 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 	if err := stream.Err(); err != nil {
 		return model.Reply{}, fmt.Errorf("anthropic: %w", err)
 	}
-	return fromMessage(msg), nil
+	r := fromMessage(msg)
+	r.FirstToken, r.ThinkingBytes = first, thinking
+	return r, nil
 }
 
 // Window is the model's context window, from the Models API. It asks once

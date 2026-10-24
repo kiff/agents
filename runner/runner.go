@@ -317,6 +317,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		}
 		history, _ := p.history()
 		a.Preface = p.preface(loop, a.Tools, rn.now())
+		// From the run's creation to its first model turn: the claim, the
+		// build, the session's read and any cold start, on that turn's Usage.
+		a.Started = rn.now().Sub(r.Created)
 		out, msgs, err := agent.Run(loop, a, recording, history, r.Input, emit)
 		out, err = x.more(loop, a, recording, msgs, out, err, emit)
 		return x.stop(ctx, recording, d.Keep, out, err)
