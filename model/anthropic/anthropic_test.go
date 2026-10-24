@@ -538,3 +538,124 @@ func TestNoDeferredToolNoSearch(t *testing.T) {
 		t.Fatalf("tools %s", b)
 	}
 }
+
+// fastStream is a turn the API says it ran fast.
+var fastStream = []string{
+	`{"type":"message_start","message":{"id":"msg_f","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"usage":{"input_tokens":5,"output_tokens":1,"speed":"fast"}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+	`{"type":"message_stop"}`,
+}
+
+// calls answers each request with the next answer: a status and its events,
+// and keeps what each request asked for.
+type call struct {
+	status int
+	events []string
+}
+
+type asked struct {
+	beta  string
+	speed any
+}
+
+func answering(t *testing.T, answers ...call) (*anthropic.Model, *[]asked) {
+	t.Helper()
+	var mu sync.Mutex
+	got := &[]asked{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		body, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(body, &b)
+		n := len(*got)
+		*got = append(*got, asked{beta: r.Header.Get("anthropic-beta"), speed: b["speed"]})
+		if n >= len(answers) {
+			t.Errorf("request %d: no answer left", n+1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		a := answers[n]
+		if a.status != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(a.status)
+			kind := map[int]string{http.StatusTooManyRequests: "rate_limit_error", 529: "overloaded_error"}[a.status]
+			if kind == "" {
+				kind = "invalid_request_error"
+			}
+			fmt.Fprintf(w, `{"type":"error","error":{"type":%q,"message":"slow down"}}`, kind)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range a.events {
+			var head struct{ Type string }
+			_ = json.Unmarshal([]byte(ev), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, ev)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("k"), option.WithMaxRetries(0)), got
+}
+
+var goTurn = []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "go"}}}}
+
+// A fast turn asks for fast output with its beta, and says it ran fast.
+func TestAFastTurnAsksForFastOutput(t *testing.T) {
+	m, got := answering(t, call{http.StatusOK, fastStream})
+	reply, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 8, Messages: goTurn, Fast: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 || !strings.Contains((*got)[0].beta, anthropic.FastBeta) || (*got)[0].speed != "fast" {
+		t.Fatalf("asked %+v", *got)
+	}
+	if !reply.Fast {
+		t.Fatal("the API said fast; the reply doesn't")
+	}
+
+	// A turn that isn't asks for neither.
+	m, got = answering(t, call{http.StatusOK, stream})
+	reply, err = m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 8, Messages: goTurn}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (*got)[0].beta != "" || (*got)[0].speed != nil || reply.Fast {
+		t.Fatalf("a standard turn asked %+v, fast %v", *got, reply.Fast)
+	}
+}
+
+// Fast output has its own, lower limits: a fast turn the API turns away, for
+// its limits or its load, runs again at once at standard speed and is
+// answered, never failed.
+func TestAFastTurnTurnedAwayRunsAtStandardSpeed(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, 529} {
+		m, got := answering(t, call{status, nil}, call{http.StatusOK, stream})
+		var text strings.Builder
+		reply, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 8, Messages: goTurn, Fast: true},
+			func(s string) { text.WriteString(s) })
+		if err != nil {
+			t.Fatalf("%d: %v", status, err)
+		}
+		if len(*got) != 2 || (*got)[1].speed != nil || strings.Contains((*got)[1].beta, anthropic.FastBeta) {
+			t.Fatalf("%d: asked %+v", status, *got)
+		}
+		if reply.Fast || text.String() != "Looking it up." {
+			t.Fatalf("%d: fast %v, text %q", status, reply.Fast, text.String())
+		}
+	}
+}
+
+// Any other failure of a fast turn is the turn's failure, as for any turn:
+// only the API's limits or load send it to standard speed.
+func TestAFastTurnsOtherFailureIsNotRetried(t *testing.T) {
+	m, got := answering(t, call{http.StatusBadRequest, nil})
+	if _, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 8, Messages: goTurn, Fast: true}, nil); err == nil {
+		t.Fatal("a 400 passed")
+	}
+	if len(*got) != 1 {
+		t.Fatalf("asked %d times", len(*got))
+	}
+}

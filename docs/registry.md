@@ -45,6 +45,14 @@ of its eight kinds):
   prices set, every turn uses the prompt cache; without them it doesn't, so
   the cost cap never counts cache tokens as free (#77). `CacheWrite` is the
   5-minute write price (1.25× input on Claude).
+- `speed` (optional): `"fast"` runs the turns at the provider's fast output
+  when someone waits on the run (an owner's message, a trial, an eval), never
+  for a schedule or an event. `price_fast` is what those turns cost, and
+  counts the cache as `price` does, so the cost cap counts them at their
+  price. A conversation keeps the speed it began with, since the cache is per
+  speed. A fast turn that the provider turns away for its fast limits or its
+  load runs at once at standard speed, and the conversation stays at
+  standard. Each turn's `usage` event records its `speed`.
 - `tenant` and `id` come from the verified caller and the path; a body that
   says otherwise is refused.
 - `gateway` must be on the server's own list (`Server.Gateways`), so a

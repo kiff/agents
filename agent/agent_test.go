@@ -1182,3 +1182,62 @@ func TestTimingsAreRecordedWithSizesOnly(t *testing.T) {
 		}
 	}
 }
+
+// A fast agent asks for fast turns and pays the fast price for those the
+// provider ran fast. Once a turn couldn't run fast, the rest of the run asks
+// for standard, since the provider's cache is per speed. Each turn records
+// its speed.
+func TestAFastAgentKeepsOneSpeed(t *testing.T) {
+	lookup := &fakeTool{name: "stripe_get_charge", access: tool.Read, result: tool.Result{Text: "ch_1: €40"}}
+	fast := func(r model.Reply) model.Reply { r.Fast = true; return r }
+	m := &script{replies: []model.Reply{
+		fast(use("c1", "stripe_get_charge", `{"charge":"ch_1"}`)),
+		use("c2", "stripe_get_charge", `{"charge":"ch_1"}`), // turned away fast: ran at standard
+		say("ch_1 is €40."),
+	}}
+	store, r := start(t, session.KindChat)
+	a := newAgent(m, lookup)
+	a.Fast, a.PriceFast = true, model.Price{Input: 2 * price.Input, Output: 2 * price.Output}
+	out, _, err := agent.Run(context.Background(), a, r, nil, "How much was ch_1?", func(agent.Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked := []bool{m.reqs[0].Fast, m.reqs[1].Fast, m.reqs[2].Fast}; !equal(asked, []bool{true, true, false}) {
+		t.Fatalf("asked fast %v", asked)
+	}
+	if out.Cost != 2000+1000+1000 {
+		t.Fatalf("cost %d: the fast turn at the fast price, the others at standard", out.Cost)
+	}
+	if err := r.Flush(context.Background()); err != nil { // recorded in the background
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var speeds []string
+	for _, e := range events {
+		var u session.UsageBody
+		if e.Kind == session.Usage && json.Unmarshal(e.Body, &u) == nil {
+			speeds = append(speeds, u.Speed)
+		}
+	}
+	if !equal(speeds, []string{session.SpeedFast, session.SpeedStandard, session.SpeedStandard}) {
+		t.Fatalf("speeds %v", speeds)
+	}
+	if session.SpeedOf(events) != session.SpeedStandard {
+		t.Fatal("the session's speed isn't its last turn's")
+	}
+
+	// An agent that isn't fast never asks, and records no speed.
+	m = &script{replies: []model.Reply{say("Hello.")}}
+	store, r = start(t, session.KindChat)
+	if _, _, err := agent.Run(context.Background(), newAgent(m), r, nil, "Hi", func(agent.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Flush(context.Background())
+	_, events, _ = store.Read(context.Background(), "t1", r.Session().ID)
+	if m.reqs[0].Fast || strings.Contains(string(events[len(events)-2].Body), "speed") {
+		t.Fatalf("a standard agent asked fast %v, recorded %s", m.reqs[0].Fast, events[len(events)-2].Body)
+	}
+}

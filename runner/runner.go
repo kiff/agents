@@ -301,6 +301,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its history: %w", err))
 	}
+	a.Fast = fast(d, r.Trigger, events)
 	rec, err := session.NewRecorderAt(rn.Sessions, d.Keep, rn.now)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, err)
@@ -763,4 +764,21 @@ func (x *execution) repause(ctx context.Context, rec *session.Recording, r run.R
 func (x *execution) current(ctx context.Context, err error) (run.Run, error) {
 	r, gerr := x.rn.Runs.Get(ctx, x.tenant, x.id)
 	return r, errors.Join(err, gerr)
+}
+
+// fast says whether a run's turns go at the fast speed: its agent is set to,
+// someone waits on it (an owner's message, a trial, an eval; never a
+// schedule or an event), and its conversation began fast and stayed so. The
+// provider's cache is per speed, so a conversation never changes speed.
+func fast(d registry.Definition, trigger run.Trigger, events []session.Event) bool {
+	if d.Speed != registry.SpeedFast {
+		return false
+	}
+	switch trigger {
+	case run.ByOwner, run.ByTrial, run.ByEval:
+	default:
+		return false
+	}
+	speed := session.SpeedOf(events)
+	return speed == "" || speed == session.SpeedFast
 }

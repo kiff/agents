@@ -545,3 +545,28 @@ func BenchmarkResume(b *testing.B) {
 		}
 	}
 }
+
+// A session's speed is its last turn's that says one: turns that say none (a
+// summary, or turns from before speeds were recorded) don't change it, and
+// a session with only those ran at standard.
+func TestSpeedOf(t *testing.T) {
+	usage := func(speed string) session.Event {
+		b, _ := json.Marshal(session.UsageBody{Model: "m", Speed: speed})
+		return session.Event{Kind: session.Usage, Body: b}
+	}
+	other := session.Event{Kind: session.OwnerMessage, Body: json.RawMessage(`{"text":"hi"}`)}
+	for _, c := range []struct {
+		name   string
+		events []session.Event
+		want   string
+	}{
+		{"no turn yet", []session.Event{other}, ""},
+		{"fast", []session.Event{other, usage("fast"), usage("")}, session.SpeedFast},
+		{"fell back", []session.Event{usage("fast"), usage("standard"), other}, session.SpeedStandard},
+		{"before speeds", []session.Event{usage(""), other}, session.SpeedStandard},
+	} {
+		if got := session.SpeedOf(c.events); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}

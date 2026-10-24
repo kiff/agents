@@ -5,7 +5,10 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,14 +30,45 @@ func New(opts ...option.RequestOption) *Model {
 	return &Model{client: sdk.NewClient(opts...)}
 }
 
-// Turn streams one turn and returns it whole.
+// FastBeta is the beta that turns on fast output (Request.Fast).
+const FastBeta = "fast-mode-2026-02-01"
+
+// Turn streams one turn and returns it whole. A fast turn the API turns
+// away for its fast limits (a 429, or overloaded) before anything streamed
+// runs again at once at standard speed, so someone waiting gets an answer,
+// only slower; the SDK's own retries would wait instead.
 func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
+	r, streamed, err := m.turn(ctx, req, onText)
+	if err != nil && req.Fast && !streamed && busy(err) {
+		req.Fast = false
+		r, _, err = m.turn(ctx, req, onText)
+	}
+	return r, err
+}
+
+// busy says the API turned a call away for its limits or its load.
+func busy(err error) bool {
+	var apiErr *sdk.Error
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode == 529) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "rate_limit_error") || strings.Contains(msg, "overloaded_error")
+}
+
+// turn streams one turn; streamed says whether any of it came.
+func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, bool, error) {
 	params, err := toParams(req)
 	if err != nil {
-		return model.Reply{}, err
+		return model.Reply{}, false, err
+	}
+	var opts []option.RequestOption
+	if req.Fast {
+		opts = append(opts, option.WithHeaderAdd("anthropic-beta", FastBeta), option.WithJSONSet("speed", "fast"),
+			option.WithMaxRetries(0))
 	}
 	start := time.Now()
-	stream := m.client.Messages.NewStreaming(ctx, params)
+	stream := m.client.Messages.NewStreaming(ctx, params, opts...)
 	defer stream.Close()
 	var msg sdk.Message
 	var first time.Duration
@@ -42,7 +76,7 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 	for stream.Next() {
 		ev := stream.Current()
 		if err := msg.Accumulate(ev); err != nil {
-			return model.Reply{}, fmt.Errorf("anthropic: %w", err)
+			return model.Reply{}, first != 0, fmt.Errorf("anthropic: %w", err)
 		}
 		d, ok := ev.AsAny().(sdk.ContentBlockDeltaEvent)
 		if !ok {
@@ -61,11 +95,17 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return model.Reply{}, fmt.Errorf("anthropic: %w", err)
+		return model.Reply{}, first != 0, fmt.Errorf("anthropic: %w", err)
 	}
 	r := fromMessage(msg)
 	r.FirstToken, r.ThinkingBytes = first, thinking
-	return r, nil
+	// The API says the speed it ran at in usage.speed; a fast call it
+	// accepted without saying ran fast.
+	r.Fast = req.Fast
+	if speed, ok := msg.Usage.JSON.ExtraFields["speed"]; ok && speed.Valid() {
+		r.Fast = speed.Raw() == `"fast"`
+	}
+	return r, true, nil
 }
 
 // Window is the model's context window, from the Models API. It asks once

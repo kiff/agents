@@ -204,6 +204,40 @@ type UsageBody struct {
 	Context *ContextBody `json:"context,omitempty"`
 	// Timing is how long the turn took, when the caller timed it.
 	Timing *TurnTiming `json:"timing,omitempty"`
+	// Speed is the speed the turn ran at, for an agent that runs fast while
+	// someone waits: "fast", or "standard" when it couldn't. Empty for the
+	// others. A conversation keeps the speed it began with (SpeedOf).
+	Speed string `json:"speed,omitempty"`
+}
+
+// The speeds a turn runs at (UsageBody.Speed).
+const (
+	SpeedFast     = "fast"
+	SpeedStandard = "standard"
+)
+
+// SpeedOf is the speed a session's turns ran at last: the last Usage that
+// says one, or "" when it has no turn yet. A conversation keeps one speed,
+// since the provider's cache is per speed: one that began at standard, or
+// fell back to it, stays there. Turns that say none (a summary, or turns
+// from before speeds were recorded) don't change it; a session with only
+// those ran at standard.
+func SpeedOf(events []Event) string {
+	turns := false
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != Usage {
+			continue
+		}
+		turns = true
+		var u UsageBody
+		if json.Unmarshal(events[i].Body, &u) == nil && u.Speed != "" {
+			return u.Speed
+		}
+	}
+	if turns {
+		return SpeedStandard
+	}
+	return ""
 }
 
 // Prompt is the call's whole input, in tokens: what it sent fresh, what the
