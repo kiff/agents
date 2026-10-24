@@ -42,13 +42,17 @@ type turnTiming struct {
 func turnTimings(events []session.Event) []turnTiming {
 	var out []turnTiming
 	for _, e := range events {
-		var u session.UsageBody
+		// The speed read apart from the body, so a runtime from before speeds measures too.
+		var u struct {
+			session.UsageBody
+			Speed string `json:"speed"`
+		}
 		if e.Kind != session.Usage || json.Unmarshal(e.Body, &u) != nil {
 			continue
 		}
 		tt := turnTiming{speed: u.Speed, read: u.CacheRead, written: u.CacheWrite + u.CacheWrite1h}
 		if tt.speed == "" {
-			tt.speed = session.SpeedStandard
+			tt.speed = "standard"
 		}
 		if u.Timing != nil {
 			tt.ms, tt.first = u.Timing.MS, u.Timing.FirstMS
@@ -70,7 +74,7 @@ func summarize(turns []turnTiming) turnSummary {
 	var firsts []int64
 	for _, u := range turns {
 		s.turns++
-		if u.speed == session.SpeedFast {
+		if u.speed == "fast" {
 			s.fast++
 		}
 		s.total += time.Duration(u.ms) * time.Millisecond

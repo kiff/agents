@@ -10,8 +10,10 @@ import (
 
 func TestSetupTimingsAreEachTurnsAndTheirTotals(t *testing.T) {
 	usage := func(speed string, ms, first, read, write int64) session.Event {
-		b, _ := json.Marshal(session.UsageBody{Model: "m", Speed: speed, CacheRead: read, CacheWrite: write,
-			Timing: &session.TurnTiming{MS: ms, FirstMS: first}})
+		b, _ := json.Marshal(struct {
+			session.UsageBody
+			Speed string `json:"speed,omitempty"`
+		}{session.UsageBody{Model: "m", CacheRead: read, CacheWrite: write, Timing: &session.TurnTiming{MS: ms, FirstMS: first}}, speed})
 		return session.Event{Kind: session.Usage, Body: b}
 	}
 	events := []session.Event{
@@ -21,7 +23,7 @@ func TestSetupTimingsAreEachTurnsAndTheirTotals(t *testing.T) {
 		usage("", 3000, 700, 5300, 0),
 	}
 	turns := turnTimings(events)
-	if len(turns) != 3 || turns[2].speed != session.SpeedStandard {
+	if len(turns) != 3 || turns[2].speed != "standard" {
 		t.Fatalf("turns %+v", turns)
 	}
 	s := summarize(turns)
