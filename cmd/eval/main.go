@@ -586,7 +586,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 				}
 				s := s.WithIDs(ids)
 				if *seedEach {
-					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
+					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"), env("EVAL_STRIPE_ACCOUNT"))
 					if err != nil {
 						return fmt.Errorf("%s: seed: %w", s.Name, err)
 					}
@@ -709,7 +709,7 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env f
 	if fs.NArg() != 1 || fs.Arg(0) != "chargebacks" {
 		return errors.New("eval seed: name one case to seed: chargebacks")
 	}
-	ids, closed, err := seedChargebacks(ctx, env("STRIPE_API_KEY"))
+	ids, closed, err := seedChargebacks(ctx, env("STRIPE_API_KEY"), env("EVAL_STRIPE_ACCOUNT"))
 	if err != nil {
 		return err
 	}
@@ -733,9 +733,12 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env f
 // seedChargebacks closes what an earlier seed left open, seeds the
 // Chargebacks case again, and returns its Stripe ids by reference and how
 // many it closed.
-func seedChargebacks(ctx context.Context, key string) (map[string][]string, int, error) {
+func seedChargebacks(ctx context.Context, key, account string) (map[string][]string, int, error) {
 	c, err := seed.New(stripeURL, key, nil)
 	if err != nil {
+		return nil, 0, err
+	}
+	if err := c.Only(ctx, account); err != nil {
 		return nil, 0, err
 	}
 	closed, err := c.Close(ctx, "chargebacks")
