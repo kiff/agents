@@ -260,6 +260,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	if sp, dp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); sp != "" || dp != "" {
 		f.api.Erase = secretsmanager.NewEraser(secrets, sp, dp).Erase
 	}
+	// The sweep ends a trial idle for a week in KIFF first, with the agent's
+	// own key, which may end only its own trials (kiff/tafs#173).
+	f.api.EndKIFFTrial = kiff.TrialEnder(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.

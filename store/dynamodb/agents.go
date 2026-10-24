@@ -23,6 +23,8 @@ import (
 //	agent    pk=G|tenant     sk=id        the live Definition, as JSON in "def"
 //	version  pk=V|tenant|id  sk=%010d n   its Definition in "def", its record in "ver"
 //	switch   pk=W|tenant     sk=id        a switch under way: its version in "n", its mark in "sw"
+//	trial    pk=T            sk=tenant,id an open trial (kiff/tafs#173): its ID in "tid", the Trial in "tr";
+//	                                      one partition, so the sweep lists them all in one query
 //	halt     pk=B|tenant     sk=id or ~   an agent's halt, or the tenant's (sk ~), as JSON in "halt"
 type Agents struct {
 	db    API
@@ -46,7 +48,11 @@ func versionSK(n int) string { return fmt.Sprintf("%010d", n) }
 
 func switchPK(tenant string) string { return key("W", tenant) }
 
-func haltPK(tenant string) string { return key("B", tenant) }
+// trialPK is the one partition of every open trial; trialSK names one.
+const trialPK = "T"
+
+func trialSK(tenant, id string) string { return key("", tenant, id) }
+func haltPK(tenant string) string      { return key("B", tenant) }
 
 // haltSK is id's sort key, or "~" for the tenant's own halt: no agent ID
 // has a "~".
@@ -290,6 +296,9 @@ func (a *Agents) Delete(ctx context.Context, tenant, id string) error {
 	if err := a.EndSwitch(ctx, tenant, id); err != nil {
 		return err
 	}
+	if _, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(trialPK, trialSK(tenant, id))}); err != nil {
+		return err
+	}
 	if _, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(haltPK(tenant), haltSK(id))}); err != nil {
 		return err
 	}
@@ -422,6 +431,115 @@ func (a *Agents) SetCards(ctx context.Context, tenant, id string, n int, cards [
 		return registry.ErrNoVersion
 	}
 	return err
+}
+
+func (a *Agents) PutTrial(ctx context.Context, t registry.Trial) error {
+	if _, err := a.Get(ctx, t.Tenant, t.Agent); err != nil {
+		return err
+	}
+	t.Started, t.Used = t.Started.UTC(), t.Used.UTC()
+	b, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	item := pkey(trialPK, trialSK(t.Tenant, t.Agent))
+	item["tid"], item["tr"] = s(t.ID), s(string(b))
+	_, err = a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item})
+	return err
+}
+
+func (a *Agents) Trial(ctx context.Context, tenant, id string) (registry.Trial, bool, error) {
+	out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: pkey(trialPK, trialSK(tenant, id)), ConsistentRead: aws.Bool(true)})
+	if err != nil || out.Item == nil {
+		return registry.Trial{}, false, err
+	}
+	t, err := decodeTrial(out.Item)
+	return t, err == nil, err
+}
+
+func (a *Agents) Trials(ctx context.Context) ([]registry.Trial, error) {
+	in := &ddb.QueryInput{
+		TableName:                 &a.table,
+		KeyConditionExpression:    aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(trialPK)},
+	}
+	var out []registry.Trial
+	for {
+		page, err := a.db.Query(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range page.Items {
+			t, err := decodeTrial(item)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, t)
+		}
+		if page.LastEvaluatedKey == nil {
+			return out, nil
+		}
+		in.ExclusiveStartKey = page.LastEvaluatedKey
+	}
+}
+
+// EndTrial deletes the trial only while it is still trialID, in one
+// conditional delete: a trial that replaced it stays.
+func (a *Agents) EndTrial(ctx context.Context, tenant, id, trialID string) error {
+	_, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(trialPK, trialSK(tenant, id)),
+		ConditionExpression:       aws.String("tid = :tid"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":tid": s(trialID)}})
+	var other *types.ConditionalCheckFailedException
+	if errors.As(err, &other) {
+		return nil
+	}
+	return err
+}
+
+func decodeTrial(item map[string]types.AttributeValue) (registry.Trial, error) {
+	var t registry.Trial
+	if err := json.Unmarshal([]byte(getS(item, "tr")), &t); err != nil {
+		return registry.Trial{}, fmt.Errorf("dynamodb: trial %q: %w", getS(item, "sk"), err)
+	}
+	return t, nil
+}
+
+// AddTrialSummary rewrites version n's record with one more trial, only
+// over the record it read, so two summaries written at once both stay.
+func (a *Agents) AddTrialSummary(ctx context.Context, tenant, id string, n int, sum registry.TrialSummary) error {
+	if n < 1 {
+		return registry.ErrNoVersion
+	}
+	key := pkey(versionsPK(tenant, id), versionSK(n))
+	for try := 0; try < 3; try++ {
+		out, err := a.db.GetItem(ctx, &ddb.GetItemInput{TableName: &a.table, Key: key, ConsistentRead: aws.Bool(true), ProjectionExpression: aws.String("ver")})
+		if err != nil {
+			return err
+		}
+		if out.Item == nil {
+			return registry.ErrNoVersion
+		}
+		was := getS(out.Item, "ver")
+		var v registry.Version
+		if err := json.Unmarshal([]byte(was), &v); err != nil {
+			return fmt.Errorf("dynamodb: version %d of %q: %w", n, id, err)
+		}
+		sum.Started, sum.Ended = sum.Started.UTC(), sum.Ended.UTC()
+		v.Trials = append(v.Trials, sum)
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		_, err = a.db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &a.table, Key: key,
+			UpdateExpression:          aws.String("SET ver = :v"),
+			ConditionExpression:       aws.String("ver = :was"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{":v": s(string(b)), ":was": s(was)}})
+		var changed *types.ConditionalCheckFailedException
+		if !errors.As(err, &changed) {
+			return err
+		}
+	}
+	return fmt.Errorf("dynamodb: version %d of %q kept changing while its trial was recorded", n, id)
 }
 
 // Halt writes the halt only over none or over one resumed, in one

@@ -154,6 +154,8 @@ type Version struct {
 	// Cards are the KIFF Cards this version ran under, each at the revision
 	// it had when the version went live: what going back to it restores.
 	Cards []CardRevision `json:"cards,omitempty"`
+	// Trials are the trials of this version that have ended, oldest first.
+	Trials []TrialSummary `json:"trials,omitempty"`
 }
 
 // CardRevision is one KIFF Card at one revision (kiff/tafs#107).
@@ -166,7 +168,7 @@ type CardRevision struct {
 // version's Card revision waits for its owner's confirmation in KIFF, and
 // until the switch is done or dropped no run of the agent starts or goes on,
 // so nothing runs with one version's definition under another's Cards.
-// Trials still run: their writes are never sent.
+// Trials still run: their writes go only under their own draft's Cards.
 type Switching struct {
 	N int `json:"n"`
 	// Draft is the KIFF draft whose confirmation the switch waits for.
@@ -186,6 +188,60 @@ var ErrNoSwitch = errors.New("registry: this agent isn't switching to that versi
 // ErrSwitchChanged means the switch kept changing while its draft was being
 // replaced: read it again, then replace again.
 var ErrSwitchChanged = errors.New("registry: the switch changed meanwhile")
+
+// Trial is an agent's open trial of version N (kiff/tafs#173): the owner
+// chats with that version under its own trial Card while the live version
+// keeps its schedule and Cards. One per agent.
+type Trial struct {
+	Tenant string `json:"tenant"`
+	Agent  string `json:"agent"`
+	// ID tells this trial from one that replaced it, so ending an old one
+	// never ends the new one.
+	ID string `json:"id"`
+	N  int    `json:"n"`
+	// Draft is the KIFF draft of the trial's Card: its calls go under it.
+	Draft string `json:"draft"`
+	// Session is the trial's chat; empty until its first message.
+	Session string    `json:"session,omitempty"`
+	Started time.Time `json:"started"`
+	// Used is when the owner last wrote in it: a trial idle for TrialIdle
+	// ends.
+	Used time.Time `json:"used"`
+}
+
+// TrialIdle is how long a trial lasts unused.
+const TrialIdle = 7 * 24 * time.Hour
+
+// Idle reports whether t has gone unused for TrialIdle at now.
+func (t Trial) Idle(now time.Time) bool { return now.Sub(t.Used) >= TrialIdle }
+
+// Why a trial ended.
+const (
+	TrialInstalled = "installed"
+	TrialBack      = "back"
+	TrialIdled     = "idle"
+	TrialReplaced  = "replaced"
+)
+
+// TrialSummary is what a version keeps of a trial once it ends, its chat
+// deleted: when, how it ended, and what its calls came to.
+type TrialSummary struct {
+	Started time.Time `json:"started"`
+	Ended   time.Time `json:"ended"`
+	Why     string    `json:"why"`
+	Calls   int       `json:"calls"`
+	Held    int       `json:"held"`
+	Refused int       `json:"refused"`
+}
+
+// TrialCounts is what KIFF counted of a trial's calls: the source of a
+// TrialSummary's numbers.
+type TrialCounts struct {
+	Calls, Held, Refused int
+}
+
+// ErrNoTrial means the agent has no open trial.
+var ErrNoTrial = errors.New("registry: this agent has no open trial")
 
 // Halt is an agent's halt, or its tenant's: while On,
 // no run of it starts or goes on. At is when the latest halt began, and is
@@ -354,8 +410,8 @@ type Agents interface {
 	Get(ctx context.Context, tenant, id string) (Definition, error)
 	// List returns the tenant's definitions, by ID.
 	List(ctx context.Context, tenant string) ([]Definition, error)
-	// Delete removes the tenant's definition, its versions and its switching
-	// mark. Deleting one
+	// Delete removes the tenant's definition, its versions, its switching
+	// mark and its open trial's mark. Deleting one
 	// that isn't there is not an error, so a retry is safe.
 	Delete(ctx context.Context, tenant, id string) error
 
@@ -401,6 +457,20 @@ type Agents interface {
 	// Halted returns the halt of id (or of the tenant, for Tenant): the zero
 	// Halt if it was never halted.
 	Halted(ctx context.Context, tenant, id string) (Halt, error)
+	// PutTrial stores t as the agent's open trial, replacing any. ErrNotFound
+	// for an agent not stored.
+	PutTrial(ctx context.Context, t Trial) error
+	// Trial returns the agent's open trial, and whether it has one.
+	Trial(ctx context.Context, tenant, id string) (Trial, bool, error)
+	// Trials lists every open trial, of every tenant, for the sweep that
+	// ends idle ones.
+	Trials(ctx context.Context) ([]Trial, error)
+	// EndTrial removes the agent's open trial if it is still trialID; another
+	// one, or none, is left as it is, and is not an error.
+	EndTrial(ctx context.Context, tenant, id, trialID string) error
+	// AddTrialSummary records an ended trial on version n; ErrNoVersion for a
+	// version the agent doesn't have.
+	AddTrialSummary(ctx context.Context, tenant, id string, n int, s TrialSummary) error
 }
 
 // Halts is what holds for agent id: its own halt over its tenant's.
