@@ -242,6 +242,8 @@ type test struct {
 	tafSaid   []string // the taf's answers in the chat, checked with -taf
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
+	// setupSkills are the skills Setup's definition names, by name (kiff/tafs#218).
+	setupSkills []string
 }
 
 // logf is a detail of a step: in the log for a run by hand only (see
@@ -309,6 +311,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if err := t.agents.Put(ctx, setup); err != nil {
 		return err
 	}
+	for _, r := range setup.Skills {
+		t.setupSkills = append(t.setupSkills, r.Name)
+	}
 
 	fmt.Fprintln(t.cfg.log, "== the setup chat")
 	tafID, draftID, err := t.converse(ctx)
@@ -318,6 +323,12 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	}
 	// Counts only, never the words, in every run: a drift in length shows (kiff/agents#185).
 	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
+	if len(t.setupSkills) > 0 {
+		// Setting up a new taf needs none of Setup's skills (kiff/tafs#218).
+		if err := t.readNone(ctx, t.setupSession); err != nil {
+			return err
+		}
+	}
 	if t.cfg.judge != nil {
 		if err := t.grade(ctx, tafID); err != nil {
 			return err
@@ -343,6 +354,12 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 			return errors.New("-improve runs against the fake vendor")
 		}
 		if err := t.improve(ctx, tafID); err != nil {
+			return err
+		}
+	}
+	if len(t.setupSkills) > 0 {
+		fmt.Fprintln(t.cfg.log, "== Setup's skills")
+		if err := t.skillChoice(ctx); err != nil {
 			return err
 		}
 	}
