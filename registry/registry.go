@@ -112,6 +112,12 @@ type Definition struct {
 	// starts with one stays out of the prompt until the model searches for
 	// it (kiff/tafs#206), so an ordinary turn costs nothing more for it.
 	DeferredTools []string `json:"deferred_tools,omitempty"`
+	// DeferVendorTools defers every gateway tool that isn't KIFF's own
+	// (kiff_*): a vendor's tools, which KIFF's gateway lists once a Card
+	// covers them, mid-conversation for Setup's reads. Deferred, they stay
+	// out of the cached prefix, so a conversation's cache doesn't start
+	// over when they appear (#197).
+	DeferVendorTools bool `json:"defer_vendor_tools,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -539,7 +545,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, skill.NewTool(ps))
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast,
-		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, Deferred: d.DeferredTools,
+		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
 		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err

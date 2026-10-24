@@ -51,6 +51,10 @@ type Agent struct {
 	// left out of the prompt until the model searches for it
 	// (model.ToolSpec.Defer), so a turn that doesn't need it pays nothing.
 	Deferred []string
+	// DeferVendor defers every gateway tool that isn't KIFF's own (kiff_*),
+	// whatever its name: tools a Card adds mid-conversation then leave the
+	// cached prefix as it was.
+	DeferVendor bool
 
 	// MaxCost is the most a run may cost, in millionths of a US dollar. A run
 	// that reaches it stops before its next model turn.
@@ -88,6 +92,10 @@ type Agent struct {
 	// the prefix the next run renders the same way, cached apart.
 	history int
 }
+
+// KIFFToolPrefix starts the name of every tool KIFF's gateway serves itself
+// (kiff_card, kiff_pending); any other gateway tool is a vendor's.
+const KIFFToolPrefix = "kiff_"
 
 // SteerNote opens a message the owner wrote while the run went, as the model
 // reads it: it comes between the agent's turns, not as a new request.
@@ -400,7 +408,8 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 	for _, t := range a.Tools {
 		s := t.Spec()
 		byName[s.Name] = t
-		s.Defer = slices.ContainsFunc(a.Deferred, func(p string) bool { return strings.HasPrefix(s.Name, p) })
+		s.Defer = slices.ContainsFunc(a.Deferred, func(p string) bool { return strings.HasPrefix(s.Name, p) }) ||
+			(a.DeferVendor && t.Gateway() && !strings.HasPrefix(s.Name, KIFFToolPrefix))
 		specs = append(specs, s)
 	}
 	var waited []session.ToolTiming // the last turn's tool calls, for the next turn's Usage
