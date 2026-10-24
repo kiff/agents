@@ -29,7 +29,9 @@
 #
 # The model key's secret can be another one in the region, outside the agents'
 # prefix: a replica of the key the caller already keeps, for example
-# (AGENTS_MODEL_KEY_SECRET=<name>). When it doesn't exist, the key is read from
+# (AGENTS_MODEL_KEY_SECRET=<name>). Unset, an existing function keeps the one it
+# already reads, and a new one uses agents-model/anthropic. When it doesn't
+# exist, the key is read from
 # stdin, so it never appears in a command line or a log:
 #
 #   some-command-printing-the-key | infra/aws.sh
@@ -75,6 +77,14 @@ MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
 
 aws() { command aws --region "$REGION" --output text "$@"; }
 say() { echo "• $*" >&2; }
+
+# An existing function keeps the model key's secret it already reads: a rerun
+# without AGENTS_MODEL_KEY_SECRET must never point it at another secret.
+if [ -z "${AGENTS_MODEL_KEY_SECRET:-}" ]; then
+  current=$(aws lambda get-function-configuration --function-name "$FN" \
+    --query 'Environment.Variables.AGENTS_MODEL_KEY_SECRET' 2>/dev/null || true)
+  if [ -n "$current" ] && [ "$current" != "None" ]; then MODEL_SECRET=$current; fi
+fi
 
 ACCOUNT=$(aws sts get-caller-identity --query Account)
 ARN_FN="arn:aws:lambda:$REGION:$ACCOUNT:function:$FN"
