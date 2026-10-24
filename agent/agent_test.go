@@ -146,9 +146,9 @@ func TestAFullTurnIsRecordedAndStreamed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tool call and its result are dropped when the run ends (the default
-	// keep rule); a run's last answer is its report. Each model turn and tool
-	// call keeps its timing, sizes only (kiff/tafs#214).
-	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Timing, session.Timing, session.Usage, session.Timing, session.Report}
+	// keep rule); a run's last answer is its report. Timing a run writes no
+	// event of its own: it rides on each turn's Usage (kiff/tafs#214).
+	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Usage, session.Report}
 	if got := kinds(events); !equal(got, want) {
 		t.Fatalf("recorded %v, want %v", got, want)
 	}
@@ -340,8 +340,8 @@ func TestAPausedRunContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := events[len(events)-4:]
-	if got := kinds(last); !equal(got, []session.EventKind{session.ToolResult, session.Usage, session.Timing, session.Report}) {
+	last := events[len(events)-3:]
+	if got := kinds(last); !equal(got, []session.EventKind{session.ToolResult, session.Usage, session.Report}) {
 		t.Fatalf("recorded on continuing: %v", got)
 	}
 }
@@ -1127,9 +1127,10 @@ func TestEachTurnNamesWhereTheHistoryEnds(t *testing.T) {
 	}
 }
 
-// Each model turn and tool call records how long it took, with sizes and
-// never content: a turn's tool calls and tool input, a call's result size and
-// how many calls ran beside it (kiff/tafs#214, item 2).
+// Each model turn records how long it took on its Usage, with sizes and
+// never content: its tool calls and tool input, and the tool calls of the
+// turn before, each with its time, result size and how many calls ran beside
+// it (kiff/tafs#214, item 2). It writes no event of its own.
 func TestTimingsAreRecordedWithSizesOnly(t *testing.T) {
 	lookup := &fakeTool{name: "stripe_charge", access: tool.Read, gateway: true, result: tool.Result{Text: "ch_1: 30 EUR"}}
 	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
@@ -1139,7 +1140,9 @@ func TestTimingsAreRecordedWithSizesOnly(t *testing.T) {
 	}, Stop: model.CallTools, Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}, ThinkingBytes: 40}
 	m := &script{replies: []model.Reply{two, say("Refunded ch_1.")}}
 	store, r := start(t, session.KindRun)
-	if _, _, err := agent.Run(context.Background(), newAgent(m, lookup, refund), r, nil, "Refund ch_1.", nil); err != nil {
+	a := newAgent(m, lookup, refund)
+	a.Started = 1500 * time.Millisecond
+	if _, _, err := agent.Run(context.Background(), a, r, nil, "Refund ch_1.", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.End(context.Background()); err != nil {
@@ -1149,32 +1152,33 @@ func TestTimingsAreRecordedWithSizesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var steps []session.TimingBody
+	var turns []session.TurnTiming
 	for _, e := range events {
-		if e.Kind != session.Timing {
+		if e.Kind != session.Usage {
 			continue
 		}
-		var b session.TimingBody
-		if err := json.Unmarshal(e.Body, &b); err != nil {
-			t.Fatal(err)
+		var u session.UsageBody
+		if err := json.Unmarshal(e.Body, &u); err != nil || u.Timing == nil {
+			t.Fatalf("usage %s: %v", e.Body, err)
 		}
 		if strings.Contains(string(e.Body), "ch_1") || strings.Contains(string(e.Body), "EUR") {
 			t.Fatalf("a timing holds content: %s", e.Body)
 		}
-		steps = append(steps, b)
+		turns = append(turns, *u.Timing)
 	}
-	if len(steps) != 4 {
-		t.Fatalf("timings: %+v", steps)
+	if len(turns) != 2 {
+		t.Fatalf("timings: %+v", turns)
 	}
-	if s := steps[0]; s.Step != "model" || s.ToolCalls != 2 || s.ToolInputBytes != 2*len(`{"charge":"ch_1"}`) || s.ThinkingBytes != 40 {
+	if s := turns[0]; s.ToolCalls != 2 || s.ToolInputBytes != 2*len(`{"charge":"ch_1"}`) || s.ThinkingBytes != 40 || s.StartMS != 1500 || len(s.Waited) != 0 {
 		t.Errorf("the first turn: %+v", s)
 	}
-	for _, s := range steps[1:3] {
-		if s.Step != "tool" || s.Batch != 2 || s.ResultBytes == 0 {
-			t.Errorf("a tool call: %+v", s)
-		}
+	s := turns[1]
+	if s.TextBytes != len("Refunded ch_1.") || s.ToolCalls != 0 || s.StartMS != 0 || len(s.Waited) != 2 {
+		t.Fatalf("the answer: %+v", s)
 	}
-	if s := steps[3]; s.Step != "model" || s.TextBytes != len("Refunded ch_1.") || s.ToolCalls != 0 {
-		t.Errorf("the answer: %+v", s)
+	for i, want := range []string{"stripe_charge", "stripe_refund"} {
+		if w := s.Waited[i]; w.Tool != want || w.Batch != 2 || w.ResultBytes == 0 {
+			t.Errorf("a tool call: %+v", w)
+		}
 	}
 }

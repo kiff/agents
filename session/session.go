@@ -80,9 +80,6 @@ const (
 	// runner: a session's events as the API shows them leave it out.
 	KeptRead EventKind = "kept_read"
 
-	// Timing is how long a step of a run took, with sizes only, never
-	// content: the run's start, each model turn, each tool call (TimingBody).
-	Timing EventKind = "timing"
 	// Summary is the agent's summary of a chat's earlier runs, written once
 	// they no longer fit its history (SummaryBody): kept like the agent's
 	// messages, so the runs it covers needn't be read again.
@@ -98,7 +95,7 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 // it keeps working. A component, a trial's write, a call's reference and a
 // summary are kept like the agent's messages. A KeptRead left out is not
 // written at all (Policy.Rule).
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead, Timing: Usage}
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires
@@ -162,25 +159,34 @@ type SummaryBody struct {
 	Runs    int    `json:"runs"`
 }
 
-// TimingBody is the body of a Timing event: one step of a run, in
-// milliseconds, with sizes in bytes and never what was said or read.
-//   - Step "start": from the run's creation to its first model turn.
-//   - Step "model": one model turn, its first streamed content (FirstMS),
-//     what it streamed of thinking, text and tool input, and its tool calls.
-//   - Step "tool": one tool call, its result's size, and how many calls ran
-//     beside it in the same turn (Batch, itself included).
-type TimingBody struct {
-	Step           string `json:"step"`
-	MS             int64  `json:"ms"`
-	FirstMS        int64  `json:"first_ms,omitempty"`
-	ThinkingBytes  int    `json:"thinking_bytes,omitempty"`
-	TextBytes      int    `json:"text_bytes,omitempty"`
-	ToolInputBytes int    `json:"tool_input_bytes,omitempty"`
-	ToolCalls      int    `json:"tool_calls,omitempty"`
-	Tool           string `json:"tool,omitempty"`
-	ResultBytes    int    `json:"result_bytes,omitempty"`
-	Batch          int    `json:"batch,omitempty"`
-	IsError        bool   `json:"is_error,omitempty"`
+// TurnTiming is how long one model turn took, on its Usage event, with
+// sizes in bytes and never what was said: the whole turn (MS), its first
+// streamed content (FirstMS), what it streamed of thinking, text and tool
+// input, its tool calls, and the tool calls it waited on. On a run's first turn, StartMS is from the
+// run's creation to that turn: the claim, the build, the session's read and
+// any cold start. It rides on Usage, which every turn writes anyway, so
+// timing a run costs no write of its own.
+type TurnTiming struct {
+	MS             int64 `json:"ms"`
+	FirstMS        int64 `json:"first_ms,omitempty"`
+	ThinkingBytes  int   `json:"thinking_bytes,omitempty"`
+	TextBytes      int   `json:"text_bytes,omitempty"`
+	ToolInputBytes int   `json:"tool_input_bytes,omitempty"`
+	ToolCalls      int   `json:"tool_calls,omitempty"`
+	StartMS        int64 `json:"start_ms,omitempty"`
+	// Waited is the tool calls of the turn before, whose results this turn
+	// read: each call's time and result size.
+	Waited []ToolTiming `json:"waited,omitempty"`
+}
+
+// ToolTiming is one tool call's time, its result's size, and how many calls
+// ran beside it in the same turn (Batch, itself included).
+type ToolTiming struct {
+	Tool        string `json:"tool"`
+	MS          int64  `json:"ms"`
+	ResultBytes int    `json:"result_bytes,omitempty"`
+	Batch       int    `json:"batch,omitempty"`
+	IsError     bool   `json:"is_error,omitempty"`
 }
 
 // UsageBody is the body of a Usage event: what one model call used and cost.
@@ -196,6 +202,8 @@ type UsageBody struct {
 	CostMicroUSD int64 `json:"cost_micro_usd"`
 	// Context is what the call's input was made of, when the caller knew.
 	Context *ContextBody `json:"context,omitempty"`
+	// Timing is how long the turn took, when the caller timed it.
+	Timing *TurnTiming `json:"timing,omitempty"`
 }
 
 // Prompt is the call's whole input, in tokens: what it sent fresh, what the

@@ -64,6 +64,9 @@ type Agent struct {
 	// what it read earlier (the runner makes it, kiff/tafs#138). It is
 	// never recorded, so each run, and each continuation, reads its own.
 	Preface []model.Block
+	// Started is how long the run took from its creation to its first model
+	// turn, recorded on that turn's Usage; 0 when unknown.
+	Started time.Duration
 	// Spent is what the run spent before its loop, such as on a summary, in
 	// millionths of a US dollar: it counts toward MaxCost.
 	Spent int64
@@ -134,6 +137,11 @@ type ToolResultBody struct {
 	CallID string `json:"call_id"`
 	Tool   string `json:"tool"`
 	tool.Result
+	// took is how long the call took, and batch how many calls ran beside
+	// it in the same turn, itself included: recorded on the next turn's
+	// Usage (session.ToolTiming), not with the result, which a run drops.
+	took  time.Duration
+	batch int
 }
 
 // TrialWriteBody is the body of a TrialWrite event: a trial's call through
@@ -386,6 +394,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		s.Defer = slices.ContainsFunc(a.Deferred, func(p string) bool { return strings.HasPrefix(s.Name, p) })
 		specs = append(specs, s)
 	}
+	var waited []session.ToolTiming // the last turn's tool calls, for the next turn's Usage
 	for first := true; ; first = false {
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
@@ -406,7 +415,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 				return out, msgs, err
 			}
 		}
-		reply, err := a.turn(ctx, rec, msgs, specs, false, &out, emit)
+		reply, err := a.turn(ctx, rec, msgs, specs, false, waited, &out, emit)
 		if err != nil {
 			return out, msgs, err
 		}
@@ -438,9 +447,11 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		blocks := make([]model.Block, len(results))
 		var held bool
+		waited = make([]session.ToolTiming, len(results))
 		for i, r := range results {
 			blocks[i] = resultBlock(r)
 			held = held || r.Held()
+			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError}
 		}
 		if held {
 			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
@@ -535,7 +546,7 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	// keeps, and Continue sends, stay as they are.
 	asked := slices.Clone(msgs)
 	asked[len(asked)-1].Blocks = append(slices.Clone(blocks), model.Block{Kind: model.Text, Text: PauseNote})
-	reply, err := a.turn(ctx, rec, asked, specs, true, &out, emit)
+	reply, err := a.turn(ctx, rec, asked, specs, true, nil, &out, emit)
 	if err != nil {
 		return out, msgs, err
 	}
@@ -560,7 +571,7 @@ func (a Agent) capped(out Outcome) Stop {
 
 // turn is one model turn, offered tools (to call, unless noToolUse),
 // recorded and costed into out, whose Text becomes the turn's text.
-func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, out *Outcome, emit func(Event)) (model.Reply, error) {
+func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, waited []session.ToolTiming, out *Outcome, emit func(Event)) (model.Reply, error) {
 	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history}
 	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
@@ -574,10 +585,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	out.Turns++
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
 		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost,
-		Context: a.context(ctx, req)}); err != nil {
-		return reply, err
-	}
-	if err := rec.Record(session.Timing, turnTiming(reply, took)); err != nil {
+		Context: a.context(ctx, req), Timing: a.turnTiming(reply, took, out.Turns == 1, waited)}); err != nil {
 		return reply, err
 	}
 	if reply.Stop == model.Refused {
@@ -596,10 +604,15 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	return reply, nil
 }
 
-// turnTiming is one model turn's Timing: how long it took and streamed
-// before its first content, and the sizes of what it wrote, never the words.
-func turnTiming(reply model.Reply, took time.Duration) session.TimingBody {
-	t := session.TimingBody{Step: "model", MS: took.Milliseconds(), FirstMS: reply.FirstToken.Milliseconds(), ThinkingBytes: reply.ThinkingBytes}
+// turnTiming is one model turn's timing: how long it took and streamed
+// before its first content, and the sizes of what it wrote, never the
+// words, with the tool calls whose results it read; on the run's first
+// turn, how long the run took to get to it.
+func (a Agent) turnTiming(reply model.Reply, took time.Duration, first bool, waited []session.ToolTiming) *session.TurnTiming {
+	t := &session.TurnTiming{MS: took.Milliseconds(), FirstMS: reply.FirstToken.Milliseconds(), ThinkingBytes: reply.ThinkingBytes, Waited: waited}
+	if first {
+		t.StartMS = a.Started.Milliseconds()
+	}
 	for _, b := range reply.Blocks {
 		switch b.Kind {
 		case model.Text:
@@ -650,7 +663,6 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		emit(Event{Kind: CallStart, CallID: c.CallID, Tool: c.Tool, Input: c.Input})
 	}
 	results := make([]ToolResultBody, len(calls))
-	took := make([]time.Duration, len(calls))
 	var wg sync.WaitGroup
 	for i, c := range calls {
 		wg.Add(1)
@@ -658,16 +670,12 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			defer wg.Done()
 			began := time.Now()
 			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c)}
-			took[i] = time.Since(began)
+			results[i].took, results[i].batch = time.Since(began), len(calls)
 		}()
 	}
 	wg.Wait()
 	for i, r := range results {
 		if err := rec.Record(session.ToolResult, r); err != nil {
-			return nil, err
-		}
-		if err := rec.Record(session.Timing, session.TimingBody{Step: "tool", Tool: r.Tool, MS: took[i].Milliseconds(),
-			ResultBytes: len(r.Text), Batch: len(calls), IsError: r.IsError}); err != nil {
 			return nil, err
 		}
 		if err := recordRef(rec, r.Result); err != nil {
