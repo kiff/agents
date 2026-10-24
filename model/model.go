@@ -94,6 +94,13 @@ type Request struct {
 	// hour instead of five minutes. Set it only when the turn's Price counts
 	// an hour's writes (Price.CachesAnHour).
 	CacheLong bool
+	// HistoryEnd is how many of Messages, from the first, are the run's
+	// history: earlier runs as the session keeps them. With Cache, the last of
+	// them also takes a breakpoint: the next run renders the same history plus
+	// this run's messages, so it reads that prefix back. The breakpoint on the
+	// last message can't serve it, since the next run drops this run's tool
+	// calls and results.
+	HistoryEnd int
 }
 
 // Efforts are the effort levels a Request may name, lowest first.

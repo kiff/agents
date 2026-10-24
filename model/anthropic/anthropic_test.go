@@ -317,6 +317,14 @@ func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
 			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "x"}, {Kind: model.Thinking, Text: "t", Signature: "s"}}},
 		}}, "system,message 1 block 0"},
 		"no cache": {model.Request{Model: "m", MaxTokens: 1, System: "s", Tools: tools, Messages: msgs}, ""},
+		// The history's end too, which the next run renders the same way: the last
+		// message can't serve it, since the next run drops this run's tool calls.
+		"the history's end": {model.Request{Model: "m", MaxTokens: 1, System: "s", Cache: true, HistoryEnd: 2, Messages: append([]model.Message{
+			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "earlier"}}},
+			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "earlier answer"}}},
+		}, msgs...)}, "system,message 1 block 0,message 4 block 0"},
+		"no history": {model.Request{Model: "m", MaxTokens: 1, System: "be brief", Tools: tools, Messages: msgs, Cache: true, HistoryEnd: 0},
+			"system,message 2 block 0"},
 	}
 	for name, c := range cases {
 		if got := strings.Join(cached(sent(t, c.req)), ","); got != c.want {

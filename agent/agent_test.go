@@ -1101,3 +1101,27 @@ func TestDeferredToolsAreSentDeferred(t *testing.T) {
 		t.Fatalf("deferred %v", got)
 	}
 }
+
+// Every turn of a run names where its history ends, so the provider caches
+// that prefix apart: the next run renders the same history and reads it back,
+// though it drops this run's tool calls (kiff/tafs#214, item 2).
+func TestEachTurnNamesWhereTheHistoryEnds(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	m := &script{replies: []model.Reply{use("c1", "stripe_refund", `{"charge":"ch_1"}`), say("Refunded ch_1.")}}
+	_, r := start(t, session.KindRun)
+	history := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Earlier."}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "Done earlier."}}},
+	}
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund), r, history, "Work the refund queue.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.reqs) != 2 {
+		t.Fatalf("turns: %d", len(m.reqs))
+	}
+	for i, req := range m.reqs {
+		if req.HistoryEnd != len(history) {
+			t.Errorf("turn %d: history ends at %d, want %d", i+1, req.HistoryEnd, len(history))
+		}
+	}
+}

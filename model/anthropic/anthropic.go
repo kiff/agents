@@ -172,21 +172,23 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
 	}
 	if req.Cache {
-		markCache(&p, req.CacheLong)
+		markCache(&p, req.CacheLong, req.HistoryEnd)
 	}
 	return p, nil
 }
 
-// markCache sets two of the API's four cache breakpoints. The prompt renders
-// tools, then system, then messages, and a breakpoint caches everything
-// before it: one on the system prompt (or the last tool, without one) caches
-// the prefix every turn shares; one on the last message's last block caches
-// the conversation, which the next turn reads back and extends.
+// markCache sets up to three of the API's four cache breakpoints. The prompt
+// renders tools, then system, then messages, and a breakpoint caches
+// everything before it: one on the system prompt (or the last tool, without
+// one) caches the prefix every turn shares; one on the history's last message
+// (historyEnd) caches the earlier runs, which the next run renders the same
+// way and reads back; one on the last message's last block caches the
+// conversation, which this run's next turn reads back and extends.
 //
 // long keeps the shared prefix an hour: an owner's next message often comes
-// after more than five minutes. The conversation's breakpoint stays five
+// after more than five minutes. The conversation's breakpoints stay five
 // minutes; the API wants the longer one first, as it is here.
-func markCache(p *sdk.MessageNewParams, long bool) {
+func markCache(p *sdk.MessageNewParams, long bool, historyEnd int) {
 	cc := sdk.NewCacheControlEphemeralParam()
 	shared := cc
 	if long {
@@ -200,7 +202,14 @@ func markCache(p *sdk.MessageNewParams, long bool) {
 	if len(p.Messages) == 0 {
 		return
 	}
-	blocks := p.Messages[len(p.Messages)-1].Content
+	if historyEnd > 0 && historyEnd < len(p.Messages) {
+		markLast(p.Messages[historyEnd-1].Content, cc)
+	}
+	markLast(p.Messages[len(p.Messages)-1].Content, cc)
+}
+
+// markLast puts cc on the last block of blocks that takes a breakpoint.
+func markLast(blocks []sdk.ContentBlockParamUnion, cc sdk.CacheControlEphemeralParam) {
 	for i := len(blocks) - 1; i >= 0; i-- { // thinking blocks take no breakpoint
 		b := &blocks[i]
 		switch {
