@@ -32,13 +32,18 @@ func TestCheckRefuses(t *testing.T) {
 		"long instructions":  func(d *registry.Definition) { d.Instructions = strings.Repeat("x", registry.MaxSize) },
 		"a long tenant":      func(d *registry.Definition) { d.Tenant = strings.Repeat("t", 257) },
 		// 60,000 bytes of text, but 360,000 once encoded.
-		"escapes past the limit":        func(d *registry.Definition) { d.Instructions = strings.Repeat("\x01", 60_000) },
-		"no model":                      func(d *registry.Definition) { d.Model = "" },
-		"no output price":               func(d *registry.Definition) { d.Price.Output = 0 },
-		"a negative cache":              func(d *registry.Definition) { d.Price.CacheRead = -1 },
-		"no max tokens":                 func(d *registry.Definition) { d.MaxTokens = 0 },
-		"an unknown effort":             func(d *registry.Definition) { d.Effort = "extreme" },
-		"an effort's case":              func(d *registry.Definition) { d.Effort = "High" },
+		"escapes past the limit":  func(d *registry.Definition) { d.Instructions = strings.Repeat("\x01", 60_000) },
+		"no model":                func(d *registry.Definition) { d.Model = "" },
+		"no output price":         func(d *registry.Definition) { d.Price.Output = 0 },
+		"a negative cache":        func(d *registry.Definition) { d.Price.CacheRead = -1 },
+		"no max tokens":           func(d *registry.Definition) { d.MaxTokens = 0 },
+		"an unknown effort":       func(d *registry.Definition) { d.Effort = "extreme" },
+		"an effort's case":        func(d *registry.Definition) { d.Effort = "High" },
+		"an unknown speed":        func(d *registry.Definition) { d.Speed = "turbo" },
+		"fast with no fast price": func(d *registry.Definition) { d.Speed = "fast" },
+		"a fast price without the cache": func(d *registry.Definition) {
+			d.Speed, d.PriceFast = "fast", model.Price{Input: 2 * d.Price.Input, Output: 2 * d.Price.Output}
+		},
 		"no key reference":              func(d *registry.Definition) { d.KeyRef = "" },
 		"no cost cap":                   func(d *registry.Definition) { d.MaxCost = 0 },
 		"negative turns":                func(d *registry.Definition) { d.MaxTurns = -1 },
@@ -60,6 +65,12 @@ func TestCheckRefuses(t *testing.T) {
 		if err := d.Check(); err != nil {
 			t.Errorf("effort %q refused: %v", e, err)
 		}
+	}
+	fast := registrytest.Definition("t1", "payouts")
+	fast.Speed, fast.PriceFast = "fast", model.Price{Input: 2 * fast.Price.Input, Output: 2 * fast.Price.Output,
+		CacheRead: 2 * fast.Price.CacheRead, CacheWrite: 2 * fast.Price.CacheWrite, CacheWrite1h: 2 * fast.Price.CacheWrite1h}
+	if err := fast.Check(); err != nil {
+		t.Errorf("a fast agent with its price refused: %v", err)
 	}
 	for name, change := range cases {
 		d := registrytest.Definition("t1", "payouts")

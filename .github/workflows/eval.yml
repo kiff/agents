@@ -63,7 +63,8 @@ jobs:
         # bucket, so a failed chat can be read afterwards. Then the improve
         # case (kiff/tafs#107): Setup makes the taf's next version, a trial
         # decides it, the owner switches, it runs. A failed check fails the
-        # night.
+        # night. Setup runs at the fast output (#197): its cap keeps the same
+        # room.
         if: always()
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -72,7 +73,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 5 -owner-turns 14 -transcript setup.md
+        run: go run ./cmd/e2e -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 10 -owner-turns 14 -transcript setup.md
       # The role assumes only from main (infra/aws.sh), so a measure on a branch
       # (eval/tafs-<sha>) keeps no full report: its log's scores are the result,
       # and a red run means a check failed, not the upload.

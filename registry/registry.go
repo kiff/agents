@@ -41,6 +41,12 @@ const (
 	maxTenant = 256
 )
 
+// The speeds a definition runs at (Definition.Speed).
+const (
+	SpeedStandard = "standard"
+	SpeedFast     = "fast"
+)
+
 // Definition is a stored agent: what it is told, which model at which price,
 // where its tools are, what is kept of its runs, and what a run may spend.
 type Definition struct {
@@ -57,6 +63,11 @@ type Definition struct {
 	// Effort is how hard the model works ("low", "medium", "high", "xhigh",
 	// "max"); empty is the provider's default (medium on Opus 5.5).
 	Effort string `json:"effort,omitempty"`
+	// Speed "fast" runs its turns at the provider's fast speed, at PriceFast,
+	// when someone waits on the run: an owner's message, a trial or an eval,
+	// never a schedule or an event. Empty or "standard": standard speed.
+	Speed     string      `json:"speed,omitempty"`
+	PriceFast model.Price `json:"price_fast"`
 
 	// Gateway is the URL of KIFF's gateway the agent's tools come from.
 	Gateway string `json:"gateway"`
@@ -232,6 +243,12 @@ func (d Definition) Check() error {
 		return errors.New("registry: max tokens must be positive")
 	case d.Effort != "" && !slices.Contains(model.Efforts, d.Effort):
 		return fmt.Errorf("registry: effort is empty or one of %s", strings.Join(model.Efforts, ", "))
+	case d.Speed != "" && d.Speed != SpeedStandard && d.Speed != SpeedFast:
+		return errors.New(`registry: speed is empty, "standard" or "fast"`)
+	case d.Speed == SpeedFast && (d.PriceFast.Input <= 0 || d.PriceFast.Output <= 0 || d.PriceFast.CacheRead < 0 || d.PriceFast.CacheWrite < 0 || d.PriceFast.CacheWrite1h < 0):
+		return errors.New("registry: a fast agent needs its fast price: positive input and output, and no negative cache price")
+	case d.Speed == SpeedFast && (d.PriceFast.Caches() != d.Price.Caches() || d.PriceFast.CachesAnHour() != d.Price.CachesAnHour()):
+		return errors.New("registry: the fast price counts the cache as the standard price does")
 	case d.KeyRef == "":
 		return errors.New("registry: a reference to the agent's KIFF key is required")
 	case d.MaxCost <= 0:
@@ -521,7 +538,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		system += "\n\n" + skill.Catalog(ps)
 		tools = append(tools, skill.NewTool(ps))
 	}
-	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price,
+	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, Deferred: d.DeferredTools,
 		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
 	if err := a.Check(); err != nil {

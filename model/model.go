@@ -86,6 +86,11 @@ type Request struct {
 	// Effort is how hard the model works on the turn ("low" to "max"), for
 	// providers that take it; empty is the provider's default.
 	Effort string
+	// Fast asks for the provider's fast output, at its higher price, for a
+	// turn someone waits on. A provider that can't serve it fast right now
+	// (its own, lower limits) runs the turn at standard speed: Reply.Fast
+	// says which it was.
+	Fast bool
 	// Cache asks the provider to cache the prompt: its stable prefix (tools
 	// and system prompt) and the conversation up to its last message, so the
 	// next turn reads them from the cache. Writing the cache costs more than
@@ -143,6 +148,9 @@ type Reply struct {
 	// unknown. ThinkingBytes is the size of the thinking it streamed.
 	FirstToken    time.Duration
 	ThinkingBytes int
+	// Fast says the turn ran at the provider's fast speed (Request.Fast), so
+	// its Usage costs at the fast price.
+	Fast bool
 }
 
 // Model runs one turn. onText, when set, receives the reply's text as it

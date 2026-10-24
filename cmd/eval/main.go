@@ -277,7 +277,8 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 			return d, fmt.Errorf("%s: the job's agent has a workspace, and the eval gives none yet", s.Name)
 		}
 		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.HistoryTokens, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.HistoryTokens, t.Instructions
-		d.Skills = t.Skills // read from -skills: a skill it names that isn't there fails the build
+		d.Speed, d.PriceFast = t.Speed, t.PriceFast // measured as it runs: fast where someone waits
+		d.Skills = t.Skills                         // read from -skills: a skill it names that isn't there fails the build
 		d.DeferredTools = t.DeferredTools
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))

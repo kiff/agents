@@ -38,6 +38,11 @@ type Agent struct {
 	// Effort is how hard the model works on each turn; empty is the
 	// provider's default.
 	Effort string
+	// Fast runs the turns at the provider's fast speed, at PriceFast, for a
+	// run someone waits on. A turn that couldn't run fast runs at standard,
+	// and the rest of the run stays there: the cache is per speed.
+	Fast      bool
+	PriceFast model.Price
 
 	// System is the agent's instructions, with KIFF's skill in them.
 	System string
@@ -232,6 +237,10 @@ type Outcome struct {
 	// Turn is the turn a paused run paused in, to continue from: the model's
 	// message, and the results of the calls KIFF didn't hold.
 	Turn *run.Turn `json:"turn,omitempty"`
+
+	// standard: a fast agent's turn ran at standard speed, so the rest of
+	// the run does too.
+	standard bool
 }
 
 // ModelFailed is the Error event a failed model turn records.
@@ -572,7 +581,8 @@ func (a Agent) capped(out Outcome) Stop {
 // turn is one model turn, offered tools (to call, unless noToolUse),
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, waited []session.ToolTiming, out *Outcome, emit func(Event)) (model.Reply, error) {
-	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history}
+	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history,
+		Fast: a.Fast && !out.standard}
 	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	took := time.Since(began)
@@ -580,12 +590,19 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 		_ = rec.Record(session.Error, ErrorBody{Message: ModelFailed})
 		return reply, err
 	}
-	cost := a.Price.Cost(reply.Usage)
+	price, speed := a.Price, ""
+	switch {
+	case reply.Fast:
+		price, speed = a.PriceFast, session.SpeedFast
+	case a.Fast:
+		speed, out.standard = session.SpeedStandard, true
+	}
+	cost := price.Cost(reply.Usage)
 	out.Cost += cost
 	out.Turns++
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
 		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost,
-		Context: a.context(ctx, req), Timing: a.turnTiming(reply, took, out.Turns == 1, waited)}); err != nil {
+		Context: a.context(ctx, req), Timing: a.turnTiming(reply, took, out.Turns == 1, waited), Speed: speed}); err != nil {
 		return reply, err
 	}
 	if reply.Stop == model.Refused {
