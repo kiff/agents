@@ -187,7 +187,7 @@ var ErrNoSwitch = errors.New("registry: this agent isn't switching to that versi
 // replaced: read it again, then replace again.
 var ErrSwitchChanged = errors.New("registry: the switch changed meanwhile")
 
-// Halt is an agent's halt, or its tenant's (kiff/kiff-cloud#1061): while On,
+// Halt is an agent's halt, or its tenant's: while On,
 // no run of it starts or goes on. At is when the latest halt began, and is
 // kept after a resume: a run created before it never runs, so nothing from
 // before a halt comes back once it is resumed.

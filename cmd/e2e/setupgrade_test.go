@@ -238,7 +238,7 @@ func TestTestOrLiveIsTheOwnersChoice(t *testing.T) {
 }
 
 // A tool that moves money names its resource and a read of the same grant,
-// by name, that says its currency (kiff/kiff-cloud#1299).
+// by name, that says its currency.
 func TestUncheckedMoney(t *testing.T) {
 	lookup := &struct {
 		Tool string `json:"tool"`

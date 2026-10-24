@@ -92,9 +92,9 @@ Turning off each guard fails its test: the allowlist, the URL check, the agent's
 
 Turning off each guard fails its test.
 
-**The setup agent itself (kiff/tafs#53, kiff-cloud#1255 and #1256).**
+**The setup agent itself (kiff/tafs#53).**
 - **Its definition:** `setupdef.ts` in kiff/tafs: `show`, `planque` and `drafts` on, KIFF's gateway, and a cost cap per run.
-- **Its key:** it holds no tools. Its key comes from a no-tools draft (kiff-cloud#1255) and carries no role, so it can call none of the account's tools. KIFF's gateway lists it only KIFF's own (`kiff_card`, `kiff_pending`; kiff-cloud#1256). That replaces "its own Card allows setup only": no Card is needed for an agent that can call nothing.
+- **Its key:** it holds no tools. Its key comes from a no-tools draft and carries no role, so it can call none of the account's tools. KIFF's gateway lists it only KIFF's own (`kiff_card`, `kiff_pending`). That replaces "its own Card allows setup only": no Card is needed for an agent that can call nothing.
 - **What `kiff_draft` tells the model:** a Card as KIFF issues it (`count` or `sum(<argument>)`, the windows `calendar_day`, `rolling_1h`, `rolling_24h` and `lifetime`, at least one aggregate, `on_exceed`). Without it, the model guessed formats KIFF refuses.
 
 **The simulated-owner end-to-end test (`cmd/e2e`, #96).** A scripted owner talks to the setup agent and ends with a Refunds taf. The runtime runs in the test's process, at the commit tested. The model, KIFF (a test account), planque and the vendor are the real services.

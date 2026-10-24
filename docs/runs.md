@@ -141,7 +141,7 @@ for _, q := range r.Requirements {
 
 ## A halt
 
-The owner halts one agent, or every agent of the account (kiff/kiff-cloud#1061).
+The owner halts one agent, or every agent of the account.
 kiff/agents stops its side; KIFF refuses the agent's calls on its own.
 
 - The halt is stored first (`registry.Agents.Halt`), then each active run is

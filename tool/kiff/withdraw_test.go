@@ -13,8 +13,8 @@ import (
 	"github.com/kiff/agents/tool/kiff"
 )
 
-// api is a fake KIFF API with the withdraw route, answering as kiff-cloud's
-// withdrawHold does: exc_held is withdrawn (200, and 200 again), exc_sent was
+// api is a fake KIFF API with the withdraw route, answering as KIFF's withdraw
+// call does: exc_held is withdrawn (200, and 200 again), exc_sent was
 // already sent (409, status approved), anything else is 404.
 func api(t *testing.T) *httptest.Server {
 	t.Helper()

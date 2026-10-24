@@ -448,7 +448,7 @@ func TestTheKeyedModelKnowsTheWindow(t *testing.T) {
 }
 
 // A firing of a halted agent is skipped, not retried: a retry would run it
-// once resumed, and nothing from before a halt runs (kiff/kiff-cloud#1061).
+// once resumed, and nothing from before a halt runs.
 func TestAFiringOfAHaltedAgentIsSkipped(t *testing.T) {
 	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
 	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))

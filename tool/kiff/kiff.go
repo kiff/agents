@@ -250,7 +250,7 @@ type meta struct {
 	ResourceArgument json.RawMessage `json:"resource_argument"`
 	// ResourcePath is where that argument's value is in the call's
 	// arguments, dotted ("parameters.charge"): the name itself when it's at
-	// the top level (a sealed connection's resource_path, kiff-cloud#1179).
+	// the top level (a sealed connection's resource_path).
 	ResourcePath  json.RawMessage `json:"resource_path"`
 	OperationID   json.RawMessage `json:"operation_id"`
 	ExceptionID   json.RawMessage `json:"exception_id"`

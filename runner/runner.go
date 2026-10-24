@@ -48,7 +48,7 @@ const (
 	// started (kiff/tafs#107).
 	FailedSwitching = "the agent is switching versions, so the run didn't start"
 	// FailedHalted: the agent, or its tenant, was halted before the run
-	// started or went on from a pause (kiff/kiff-cloud#1061).
+	// started or went on from a pause.
 	FailedHalted = "the agent is halted, so the run didn't go on"
 )
 
@@ -104,7 +104,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		}
 	}
 	// Nothing of a halted agent, or of one whose tenant is halted, starts:
-	// not even a trial, whose reads still reach a vendor (kiff/kiff-cloud#1061).
+	// not even a trial, whose reads still reach a vendor.
 	if err := rn.notHalted(ctx, s.Tenant, s.Agent, time.Time{}); err != nil {
 		return run.Run{}, err
 	}
@@ -195,8 +195,8 @@ func (rn *Runner) notSwitching(ctx context.Context, tenant, agent string) error 
 	return nil
 }
 
-// notHalted is registry.ErrHalted while the agent or its tenant is halted
-// (kiff/kiff-cloud#1061), or for a run created at or before the latest halt
+// notHalted is registry.ErrHalted while the agent or its tenant is halted,
+// or for a run created at or before the latest halt
 // (created zero: none to check), so what came before a halt never runs, even
 // once resumed; nil otherwise.
 func (rn *Runner) notHalted(ctx context.Context, tenant, agent string, created time.Time) error {
@@ -361,7 +361,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 }
 
 // NotCollected is a held call's result when the run's agent was halted before
-// it was collected (kiff/kiff-cloud#1061): nothing asked KIFF for it, so it
+// it was collected: nothing asked KIFF for it, so it
 // wasn't sent.
 const NotCollected = "The agent was halted before this call was collected. It was not sent."
 
@@ -510,7 +510,7 @@ type execution struct {
 	// (stop), so the caller sends them on.
 	unread []int
 	// halted: the agent was halted when this paused run was claimed, so its
-	// held calls aren't collected (kiff/kiff-cloud#1061), and it ends
+	// held calls aren't collected, and it ends
 	// CANCELLED saying so.
 	halted bool
 }

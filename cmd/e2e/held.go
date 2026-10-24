@@ -19,11 +19,11 @@ import (
 // The owner answers a held call on the phone, as the tafs app does (kiff/tafs
 // #31): Face ID signs KIFF's kiff.answer.v1 message over this hold, this
 // answer and the hold's accounting version, with the phone's key, and the
-// answer goes to KIFF with the signature (kiff-cloud #1218). A session bound
+// answer goes to KIFF with the signature. A session bound
 // to a phone's key can't answer any other way.
 
-// answerMessage is KIFF's kiff.answer.v1, one field per line (kiff-cloud
-// apps/api/internal/auth/devicekey.go; kiff/tafs KIFFClient.answerMessage).
+// answerMessage is KIFF's signed answer message, kiff.answer.v1, one field per
+// line (as kiff/tafs KIFFClient.answerMessage writes it).
 // No next step and no note: the owner's answer only.
 func answerMessage(tenant, exception, answer string, version int64, signedAt string) []byte {
 	return []byte(strings.Join([]string{"kiff.answer.v1", tenant, exception, answer, "", "", strconv.FormatInt(version, 10), signedAt}, "\n"))

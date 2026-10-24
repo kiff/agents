@@ -9,7 +9,7 @@ import (
 	"github.com/kiff/agents/run"
 )
 
-// A halt (kiff/kiff-cloud#1061) is stored, then cancels every active run of
+// A halt is stored, then cancels every active run of
 // the agent as a cancel does: a pending one now, a running one at its next
 // checkpoint, a paused one with its held calls withdrawn in KIFF. An ended
 // run is left as it is. A resume keeps when the halt began.
