@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 
 // setupTimings writes each of the setup chat's model turns to the
 // transcript, never the log: its speed, how long it took, how long before
-// its first content, and the cache it read and wrote; then the chat's
-// totals. They are what kiff/agents#197 is judged by, before and after.
+// its first content, the cache it read and wrote and what it cost; then
+// the chat's totals. They are what kiff/agents#197 is judged by, before and after.
 func (t *test) setupTimings(ctx context.Context) {
 	if t.setupSession == "" {
 		return
@@ -24,11 +25,11 @@ func (t *test) setupTimings(ctx context.Context) {
 	}
 	turns := turnTimings(events)
 	for i, u := range turns {
-		t.logf("setup turn %d: speed %s, %d ms, first %d ms, cache read %d, written %d", i+1, u.speed, u.ms, u.first, u.read, u.written)
+		t.logf("setup turn %d: speed %s, %d ms, first %d ms, cache read %d, written %d, cost %s", i+1, u.speed, u.ms, u.first, u.read, u.written, usd(u.cost))
 	}
 	if s := summarize(turns); s.turns > 0 {
-		t.logf("setup turns: %d (%d fast), %s in all, first content at %s median, cache read %d, written %d",
-			s.turns, s.fast, s.total, s.medianFirst, s.read, s.written)
+		t.logf("setup turns: %d (%d fast), %s in all, first content at %s median, cache read %d, written %d, cost %s",
+			s.turns, s.fast, s.total, s.medianFirst, s.read, s.written, usd(s.cost))
 	}
 }
 
@@ -36,6 +37,7 @@ type turnTiming struct {
 	speed         string
 	ms, first     int64
 	read, written int64
+	cost          int64 // millionths of a US dollar, as the turn's usage records it
 }
 
 // turnTimings is each model turn of events, in order.
@@ -50,7 +52,7 @@ func turnTimings(events []session.Event) []turnTiming {
 		if e.Kind != session.Usage || json.Unmarshal(e.Body, &u) != nil {
 			continue
 		}
-		tt := turnTiming{speed: u.Speed, read: u.CacheRead, written: u.CacheWrite + u.CacheWrite1h}
+		tt := turnTiming{speed: u.Speed, read: u.CacheRead, written: u.CacheWrite + u.CacheWrite1h, cost: u.CostMicroUSD}
 		if tt.speed == "" {
 			tt.speed = "standard"
 		}
@@ -67,6 +69,7 @@ type turnSummary struct {
 	total         time.Duration
 	medianFirst   time.Duration
 	read, written int64
+	cost          int64
 }
 
 func summarize(turns []turnTiming) turnSummary {
@@ -80,6 +83,7 @@ func summarize(turns []turnTiming) turnSummary {
 		s.total += time.Duration(u.ms) * time.Millisecond
 		s.read += u.read
 		s.written += u.written
+		s.cost += u.cost
 		firsts = append(firsts, u.first)
 	}
 	if len(firsts) > 0 {
@@ -88,3 +92,6 @@ func summarize(turns []turnTiming) turnSummary {
 	}
 	return s
 }
+
+// usd is a cost in millionths of a US dollar, to the cent's tenth.
+func usd(micro int64) string { return fmt.Sprintf("$%.3f", float64(micro)/1e6) }
