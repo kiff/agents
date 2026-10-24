@@ -69,7 +69,16 @@ func (c *client) do(ctx context.Context, method, path string, body any) (answer,
 		return answer{}, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Read whole: an answer cut short decodes as nothing, and a grant that
+	// was there reads as missing. An account's grants list grows with every
+	// run (kiff/tafs#214).
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer+1))
+	if err != nil {
+		return answer{}, err
+	}
+	if len(raw) > maxAnswer {
+		return answer{}, fmt.Errorf("%s %s: the answer is over %d bytes", method, path, maxAnswer)
+	}
 	a := answer{Status: resp.StatusCode, Raw: string(raw)}
 	_ = json.Unmarshal(raw, &a.Body)
 	return a, nil
@@ -196,6 +205,9 @@ type grant struct {
 	Raw json.RawMessage `json:"-"`
 }
 
+// maxAnswer bounds an answer the e2e reads.
+const maxAnswer = 32 << 20
+
 func (p *phone) grants(ctx context.Context) ([]grant, error) {
 	a, err := p.planque.do(ctx, http.MethodGet, p.accountPath()+"/grants", nil)
 	if err != nil {
@@ -207,7 +219,9 @@ func (p *phone) grants(ctx context.Context) ([]grant, error) {
 	var out struct {
 		Grants []grant `json:"grants"`
 	}
-	_ = json.Unmarshal([]byte(a.Raw), &out)
+	if err := json.Unmarshal([]byte(a.Raw), &out); err != nil {
+		return nil, fmt.Errorf("planque grants: %w", err)
+	}
 	return out.Grants, nil
 }
 
