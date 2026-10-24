@@ -258,6 +258,13 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 			t.logf("agent: %s", oneLine(text))
 		}
 		t.logToolErrors(ctx, ch.Session, r.ID)
+		if turn == 0 && slices.Contains(t.setupSkills, "change-a-taf") {
+			// Changing a taf is a skill Setup reads before its first answer (kiff/tafs#218). A
+			// miss is noted and the case goes on, so the run still shows how the change went.
+			if err := t.readIt(ctx, ch.Session, "change-a-taf", "improving the taf"); err != nil {
+				t.skillMisses = append(t.skillMisses, err.Error())
+			}
+		}
 		msg = ""
 		for _, c := range shown {
 			key := c.Type + "/" + c.ID + "/" + c.Grant + "/" + c.Draft

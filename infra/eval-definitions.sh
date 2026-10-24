@@ -5,8 +5,9 @@
 #	infra/eval-definitions.sh <tafs checkout> <out dir>
 #
 # <out>/<job>.json is tafdef.ts' definition() for the job, with no owner
-# notes; <out>/setup.json is setupdef.ts' setup agent; <out>/source.json
-# names the tafs commit it came from. Check out
+# notes; <out>/setup.json is setupdef.ts' setup agent; <out>/skills holds
+# the skills those definitions may name (runtime/skills, kiff/tafs#218), when
+# tafs has any; <out>/source.json names the tafs commit it came from. Check out
 # tafs at eval/tafs.ref first, so the eval runs what that commit runs:
 #
 #	git clone https://github.com/kiff/tafs && git -C tafs checkout "$(cat eval/tafs.ref)"
@@ -33,3 +34,8 @@ writeFileSync(join(out, "setup.json"), JSON.stringify(setupDefinition("eval-setu
 writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", commit, jobs: JOBS.map((j) => j.id) }, null, 2) + "\n");
 console.log(`wrote ${JOBS.length} job definitions and Setup's from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
 JS
+rm -rf "$out/skills"
+if [ -d "$tafs/runtime/skills" ]; then
+  cp -R "$tafs/runtime/skills" "$out/skills"
+  echo "copied kiff/tafs' skills to $out/skills"
+fi
