@@ -305,3 +305,28 @@ func TestArchivingATafIsSigned(t *testing.T) {
 		}
 	}
 }
+
+// An account's grants list grows with every run: a list over a megabyte is
+// read whole, so a grant at its end is found, and one cut short or not
+// JSON is an error, never an empty list (kiff/tafs#214).
+func TestPhoneReadsALongGrantsList(t *testing.T) {
+	var gs []string
+	for i := range 3000 {
+		gs = append(gs, fmt.Sprintf(`{"id":"grt_%04d","status":"disconnected","text":"%s"}`, i, strings.Repeat("x", 400)))
+	}
+	list := `{"grants":[` + strings.Join(gs, ",") + `]}`
+	body := list
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer srv.Close()
+	p := &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1"}
+	if len(list) < 1<<20 {
+		t.Fatalf("the list is only %d bytes", len(list))
+	}
+	if g, err := p.grant(context.Background(), "grt_2999"); err != nil || g.ID != "grt_2999" {
+		t.Fatalf("the last grant of a long list: %+v %v", g, err)
+	}
+	body = list[:len(list)/2]
+	if _, err := p.grants(context.Background()); err == nil {
+		t.Fatal("a list cut short read as a list")
+	}
+}
