@@ -35,7 +35,10 @@ writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", comm
 console.log(`wrote ${JOBS.length} job definitions and Setup's from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
 JS
 rm -rf "$out/skills"
-if [ -d "$tafs/runtime/skills" ]; then
+# Only skills as packages, <name>/<version>/SKILL.md: runtime/skills also holds
+# the kiff skill tafs pastes into its definitions (kiff/SKILL.md), which is no
+# package, and copying it alone would hand -skills nothing it can load.
+if ls "$tafs"/runtime/skills/*/*/SKILL.md >/dev/null 2>&1; then
   cp -R "$tafs/runtime/skills" "$out/skills"
   echo "copied kiff/tafs' skills to $out/skills"
 fi
