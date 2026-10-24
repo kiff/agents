@@ -63,8 +63,8 @@ jobs:
         # bucket, so a failed chat can be read afterwards. Then the improve
         # case (kiff/tafs#107): Setup makes the taf's next version, a trial
         # decides it, the owner switches, it runs. A failed check fails the
-        # night. Setup runs at the fast output, twice the price (#197): its cap
-        # is $10, the room $5 gave at the standard price.
+        # night. Setup runs at the fast output (#197): its cap keeps the same
+        # room.
         if: always()
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
