@@ -244,6 +244,9 @@ type test struct {
 	setupSession string
 	// setupSkills are the skills Setup's definition names, by name (kiff/tafs#218).
 	setupSkills []string
+	// skillMisses are the skills cases that failed so far: the test fails on them at its end,
+	// after every case ran.
+	skillMisses []string
 }
 
 // logf is a detail of a step: in the log for a run by hand only (see
@@ -360,10 +363,16 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if len(t.setupSkills) > 0 {
 		fmt.Fprintln(t.cfg.log, "== Setup's skills")
 		if err := t.skillChoice(ctx); err != nil {
-			return err
+			t.skillMisses = append(t.skillMisses, err.Error())
 		}
 	}
-	return t.checkRecords(ctx)
+	if err := t.checkRecords(ctx); err != nil {
+		return err
+	}
+	if len(t.skillMisses) > 0 {
+		return fmt.Errorf("Setup's skills: %s", strings.Join(t.skillMisses, "; "))
+	}
+	return nil
 }
 
 // enrol makes sure planque has the owner's phone: the first time, the
