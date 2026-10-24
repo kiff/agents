@@ -237,8 +237,6 @@ type test struct {
 	taf       string   // the taf's agent id, once handed over
 	said      said     // what Setup wrote, for -grade
 	tafSaid   []string // the taf's answers in the chat, checked with -taf
-	// setupSession is the setup chat's session, for its turns' timings.
-	setupSession string
 }
 
 // logf is a detail of a step: in the log for a run by hand only (see
@@ -307,7 +305,6 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 
 	fmt.Fprintln(t.cfg.log, "== the setup chat")
 	tafID, draftID, err := t.converse(ctx)
-	t.setupTimings(ctx) // also after a failed chat: a slow one is worth reading
 	if err != nil {
 		return err
 	}
@@ -588,7 +585,6 @@ func answerQuestions(c component, own string) string {
 // each component the agent shows, until it shows the result.
 func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) {
 	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup"}
-	defer func() { t.setupSession = ch.Session }()
 	o := owners[t.cfg.owner]
 	// What an owner would say: the outcome, in their words and language.
 	msg := o.ask(t.cfg.vendor)
