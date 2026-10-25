@@ -37,8 +37,8 @@ func (s Status) Final() bool { return s == Completed || s == Error || s == Cance
 // Requester is who asked for a run (#219): a member of the account, a
 // door's sender, or a manager acting on someone's work. The agent acts on
 // its own Cards whoever asks; the requester is whose thread the run is in,
-// and who it is attributed to. Until KIFF verifies it, the caller asserts it
-// from the person's own signed-in session or the door's checked sender.
+// and who it is attributed to. The caller names it, from the person's own
+// signed-in session or the door's checked sender.
 type Requester struct {
 	Kind RequesterKind `json:"kind"`
 	ID   string        `json:"id"`
