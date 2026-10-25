@@ -222,10 +222,13 @@ func (rn *Runner) mayUse(ctx context.Context, tenant, agent string, q run.Reques
 		return fmt.Errorf("%w: the account couldn't say: %v", run.ErrNoAccess, err)
 	}
 	if !a.Use {
-		return run.ErrNoAccess
+		return errDenied
 	}
 	return nil
 }
+
+// errDenied is the account's "no", as against no answer.
+var errDenied = fmt.Errorf("%w: the account says no", run.ErrNoAccess)
 
 // notHalted is registry.ErrHalted while the agent or its tenant is halted,
 // or for a run created at or before the latest halt
@@ -597,9 +600,17 @@ func (x *execution) cancelled(ctx context.Context) (bool, error) {
 	}
 	// A turn ran since the last checkpoint: what it took has been read.
 	x.seen, x.hasSeen, x.unread = r, true, nil
-	// The member who asked may have lost the agent meanwhile (#221).
-	if x.noAccess || x.rn.mayUse(ctx, x.tenant, r.Agent, r.Requester) != nil {
-		x.noAccess = true
+	// The member who asked may have lost the agent meanwhile (#221). A run
+	// already going asks twice before it stops, so one passing failure to
+	// answer doesn't end long work; a "no" stops it at once.
+	if !x.noAccess {
+		err := x.rn.mayUse(ctx, x.tenant, r.Agent, r.Requester)
+		if err != nil && !errors.Is(err, errDenied) {
+			err = x.rn.mayUse(ctx, x.tenant, r.Agent, r.Requester)
+		}
+		x.noAccess = err != nil
+	}
+	if x.noAccess {
 		return true, nil
 	}
 	return r.Cancel, nil

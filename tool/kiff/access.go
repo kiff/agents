@@ -93,6 +93,13 @@ func Accessor(agents registry.Agents, secrets registry.Secrets, hc *http.Client,
 			return run.Access{}, err
 		}
 		mu.Lock()
+		// Expired answers go as new ones come, so the cache holds about
+		// one minute's worth however long the process lives.
+		for old, c := range cache {
+			if !now().Before(c.until) {
+				delete(cache, old)
+			}
+		}
 		cache[k] = kept{a: a, until: now().Add(AccessTTL)}
 		mu.Unlock()
 		return a, nil

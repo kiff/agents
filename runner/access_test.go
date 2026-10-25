@@ -110,3 +110,32 @@ func TestAPausedRunCollectsNothingWithoutAccess(t *testing.T) {
 		t.Errorf("held call results = %q", results)
 	}
 }
+
+// #221: a going run asks again once before it stops, so one passing
+// failure to answer doesn't end it; two in a row do.
+func TestAGoingRunAsksAgainOnceBeforeItStops(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		fails int
+		want  run.Status
+	}{
+		{"one blip", 1, run.Completed},
+		{"no answer twice", 2, run.Cancelled},
+	} {
+		f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Done."))
+		failing := 0
+		f.r.Access = func(context.Context, string, string, string) (run.Access, error) {
+			if failing > 0 {
+				failing--
+				return run.Access{}, errors.New("the account didn't answer")
+			}
+			return run.Access{Use: true}, nil
+		}
+		going := f.start(server.Start{Input: "refund order 42", Requester: ana})
+		f.refund.onCall = func() { failing = c.fails }
+		got, err := f.r.Execute(ctx, "t1", going.ID, nil)
+		if err != nil || got.Status != c.want {
+			t.Errorf("%s: %+v, %v; want %s", c.name, got.Status, err, c.want)
+		}
+	}
+}
