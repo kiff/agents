@@ -40,6 +40,7 @@ type runner struct {
 	execs     []string
 	deadlines []time.Time   // each Execute's context deadline (zero: none)
 	failing   error         // Execute fails with it, after the run started
+	refusing  error         // Start refuses with it, as the runner refuses a run it won't start
 	badCall   bool          // Execute first emits a tool call whose input isn't JSON
 	hold      chan struct{} // when set, Execute waits on it after its first event
 }
@@ -47,7 +48,11 @@ type runner struct {
 func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	rr.mu.Lock()
 	rr.starts = append(rr.starts, s)
+	refusing := rr.refusing
 	rr.mu.Unlock()
+	if refusing != nil {
+		return run.Run{}, refusing
+	}
 	opened := s.Session == "" // the contract: the run says whether it opened its session
 	if opened {
 		s.Session = "s-" + run.NewID()
