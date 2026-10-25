@@ -1818,3 +1818,29 @@ func TestSteeringIsEachRequesters(t *testing.T) {
 	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": who("zoe")})
 	f.want(200, code, body, "zoe stopping her run")
 }
+
+// An agent of the account asking on its own (Coach handing a taf a task)
+// has chats of its own: its live message goes on in its own chat, and no
+// person lists it, reads it or writes into it.
+func TestAnAgentsChatIsNoPersons(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	coach := map[string]any{"kind": "agent", "id": "setup"}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "refund order 42", "background": true, "chat": "live", "requester": coach})
+	f.want(202, code, body, "coach's task")
+	own, _ := body["session"].(string)
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "refund order 43", "background": true, "chat": "live", "requester": coach})
+	f.want(202, code, body, "coach's next task")
+	if body["session"] != own {
+		t.Fatalf("coach's live task went to %v, not its own chat %s", body["session"], own)
+	}
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=member:ana", nil)
+	f.want(200, code, body, "ana's chats")
+	if list, _ := body["sessions"].([]any); len(list) != 0 {
+		t.Fatalf("ana lists coach's chat: %v", list)
+	}
+	code, body = f.do("t1", "GET", "/sessions/"+own+"?owner=member:ana", nil)
+	f.want(404, code, body, "ana reading coach's chat")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "background": true, "session_id": own, "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(404, code, body, "ana writing into coach's chat")
+}
