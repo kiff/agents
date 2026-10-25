@@ -254,6 +254,11 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// A continue asks KIFF for the answers no alert has brought yet, with the
 	// agent's own key (kiff/tafs#206).
 	f.api.Answers = kiff.Answerer(agents, keys, &http.Client{Timeout: withdrawTimeout})
+	// A member's run, and their reads, need the account to say they may use
+	// the agent (#221): asked with the agent's own key, kept a minute.
+	access := kiff.Accessor(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI, nil)
+	f.api.Access = access
+	rn.Access = access
 	// Deleting an account erases its sealing key and its drafts' records
 	// too (kiff/tafs#185). The tafs' keys and its alert secret are tafs
 	// cloud's to delete.

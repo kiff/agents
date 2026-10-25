@@ -325,6 +325,11 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	if !theirs(rn, q) {
 		return 0, nil, run.ErrNotFound // another person's run
 	}
+	if q.Kind == run.ByMember {
+		if err := s.mayRead(ctx, c.Tenant, rn.Agent, q.Key()); err != nil {
+			return 0, nil, err
+		}
+	}
 	if q.Key() != "" {
 		if err := s.flood(ctx, c.Tenant, rn.Agent, q); err != nil {
 			return 0, nil, err

@@ -76,6 +76,10 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// Access answers whether a member may use or oversee an agent (#221): a
+	// member reads their sessions with it, and writes into their runs, only
+	// if they may. Nil: nothing is checked. The runner checks runs.
+	Access run.AccessFunc
 	// Answers reads from KIFF, with the run's agent's own key, what it
 	// answered on run r's held calls, by exception (approved, refused,
 	// expired, invalidated), leaving out any still waiting: a continue asks
@@ -328,6 +332,15 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var fl floodError
 	var tooBig *http.MaxBytesError
 	status, msg := http.StatusInternalServerError, "internal error"
+	if errors.Is(err, run.ErrNoAccess) {
+		// The account says this person may not use the agent (#221), or
+		// couldn't say: the app says so, and nothing more.
+		if s.Log != nil {
+			s.Log.InfoContext(r.Context(), "no access", "method", r.Method, "path", r.URL.Path, "err", err)
+		}
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no_access", "need": "use"})
+		return
+	}
 	switch {
 	case errors.Is(err, ErrUnauthorized):
 		status, msg = http.StatusUnauthorized, "the caller is not verified"
@@ -687,6 +700,9 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	if err != nil {
 		return 0, nil, err
 	}
+	if err := s.mayRead(ctx, c.Tenant, agent, owner); err != nil {
+		return 0, nil, err
+	}
 	var list []session.Session
 	if owner != "" {
 		list, err = s.Sessions.ListOwned(ctx, c.Tenant, agent, owner, limit)
@@ -726,6 +742,23 @@ func scopeParam(r *http.Request) (string, error) {
 	return v, nil
 }
 
+// mayRead is run.ErrNoAccess unless owner, when a member, may use or
+// oversee the agent (#221); any other owner, or none, reads as before.
+func (s *Server) mayRead(ctx context.Context, tenant, agent, owner string) error {
+	kind, id, _ := strings.Cut(owner, ":")
+	if s.Access == nil || run.RequesterKind(kind) != run.ByMember {
+		return nil
+	}
+	a, err := s.Access(ctx, tenant, agent, id)
+	if err != nil {
+		return fmt.Errorf("%w: the account couldn't say: %v", run.ErrNoAccess, err)
+	}
+	if !a.Use && !a.Oversee {
+		return run.ErrNoAccess
+	}
+	return nil
+}
+
 // ownerParam is the "owner" query parameter, a requester's key
 // ("member:<subject>"), checked; empty when there is none.
 func ownerParam(r *http.Request) (string, error) {
@@ -749,6 +782,9 @@ func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int
 	events = session.Shown(events)
 	if err == nil && owner != "" && !sess.OwnedBy(owner) {
 		err = session.ErrNotFound // another person's thread (#219)
+	}
+	if err == nil {
+		err = s.mayRead(ctx, c.Tenant, sess.Agent, owner)
 	}
 	if err != nil {
 		return 0, nil, err

@@ -47,6 +47,9 @@ const (
 	// FailedSwitching: the agent began switching versions before the run
 	// started (kiff/tafs#107).
 	FailedSwitching = "the agent is switching versions, so the run didn't start"
+	// FailedNoAccess: the member who asked may no longer use the agent
+	// (#221), or the account couldn't say whether they may.
+	FailedNoAccess = "the person who asked may no longer use this agent, so the run stopped"
 	// FailedHalted: the agent, or its tenant, was halted before the run
 	// started or went on from a pause.
 	FailedHalted = "the agent is halted, so the run didn't go on"
@@ -73,6 +76,11 @@ type Runner struct {
 	// Usage adds a counted run's cost to its period each time the run pauses
 	// or ends (kiff/tafs#193). Nil: nothing is counted.
 	Usage usage.Store
+	// Access answers whether a member may use the agent (#221). A member's
+	// run starts only if they may, and stops at its next checkpoint once they
+	// may not; no answer is no. Runs no member asked for aren't checked. Nil:
+	// nothing is checked.
+	Access run.AccessFunc
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 }
@@ -106,6 +114,9 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	// Nothing of a halted agent, or of one whose tenant is halted, starts:
 	// not even a trial, whose reads still reach a vendor.
 	if err := rn.notHalted(ctx, s.Tenant, s.Agent, time.Time{}); err != nil {
+		return run.Run{}, err
+	}
+	if err := rn.mayUse(ctx, s.Tenant, s.Agent, s.Requester); err != nil {
 		return run.Run{}, err
 	}
 	trial := s.Trigger == run.ByTrial
@@ -195,6 +206,23 @@ func (rn *Runner) notSwitching(ctx context.Context, tenant, agent string) error 
 	}
 	if on {
 		return fmt.Errorf("%w (to version %d)", registry.ErrSwitching, sw.N)
+	}
+	return nil
+}
+
+// mayUse is run.ErrNoAccess unless the requester may use the agent (#221):
+// a member, as the account answers; anyone else, as before. An answer that
+// couldn't be had is no.
+func (rn *Runner) mayUse(ctx context.Context, tenant, agent string, q run.Requester) error {
+	if rn.Access == nil || q.Kind != run.ByMember {
+		return nil
+	}
+	a, err := rn.Access(ctx, tenant, agent, q.ID)
+	if err != nil {
+		return fmt.Errorf("%w: the account couldn't say: %v", run.ErrNoAccess, err)
+	}
+	if !a.Use {
+		return run.ErrNoAccess
 	}
 	return nil
 }
@@ -291,6 +319,20 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		loop = run.WithTrial(loop, run.Trial{Draft: r.Draft, Run: r.ID})
 		version = r.AgentVersion
 	}
+	// The member who asked must still be able to use the agent (#221): a run
+	// of someone who lost it ends CANCELLED, never started; a paused one
+	// stops at its first checkpoint, as a halted one does.
+	if err := rn.mayUse(ctx, tenant, r.Agent, r.Requester); err != nil {
+		x.noAccess = true
+		if !paused {
+			next, serr := x.saveStop(ctx, func(n *run.Run) error {
+				n.Status, n.Cancel, n.Error, n.Expires = run.Cancelled, true, FailedNoAccess, expires(nil, rn.now())
+				return nil
+			})
+			return next, errors.Join(err, serr)
+		}
+	}
+
 	// Its tools know their run, and act for whoever asked: the memory tool
 	// reads and writes that person's notes (#219).
 	ctx = run.WithRef(ctx, run.Ref{Session: r.Session, Run: r.ID})
@@ -350,13 +392,20 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		a.Spent = rn.fold(loop, a, recording, &p)
 	}
 	var held []agent.ToolResultBody
-	if x.halted {
-		held = notCollected(r.Requirements)
-	} else if held, err = rn.Collect(ctx, a, r.Requirements); err != nil {
-		return x.repause(ctx, recording, r, fmt.Errorf("collecting its held calls: %w", err))
+	// Collecting an approved hold is what has KIFF send it: not for a halted
+	// agent, nor for a member who may no longer use it (#221).
+	switch {
+	case x.halted:
+		held = notCollected(r.Requirements, NotCollected)
+	case x.noAccess:
+		held = notCollected(r.Requirements, NotCollectedNoAccess)
+	default:
+		if held, err = rn.Collect(ctx, a, r.Requirements); err != nil {
+			return x.repause(ctx, recording, r, fmt.Errorf("collecting its held calls: %w", err))
+		}
 	}
 	for i := range held {
-		if x.halted {
+		if x.halted || x.noAccess {
 			break // never asked of KIFF: not an outcome to explain
 		}
 		for _, q := range r.Requirements {
@@ -377,11 +426,15 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 // wasn't sent.
 const NotCollected = "The agent was halted before this call was collected. It was not sent."
 
-// notCollected is each requirement's result as NotCollected.
-func notCollected(reqs []run.Requirement) []agent.ToolResultBody {
+// NotCollectedNoAccess is a held call's result when the member who asked
+// may no longer use the agent (#221): it wasn't collected, so not sent.
+const NotCollectedNoAccess = "The person who asked may no longer use this agent, so this call wasn't collected. It was not sent."
+
+// notCollected is each requirement's result as text.
+func notCollected(reqs []run.Requirement, text string) []agent.ToolResultBody {
 	out := make([]agent.ToolResultBody, 0, len(reqs))
 	for _, q := range reqs {
-		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: NotCollected, IsError: true}})
+		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: text, IsError: true}})
 	}
 	return out
 }
@@ -525,6 +578,9 @@ type execution struct {
 	// held calls aren't collected, and it ends
 	// CANCELLED saying so.
 	halted bool
+	// noAccess: the member who asked may no longer use the agent (#221), so
+	// the run stopped at a checkpoint, saying so.
+	noAccess bool
 }
 
 // cancelled is the loop's checkpoint: whether the run was asked to stop. A
@@ -541,6 +597,11 @@ func (x *execution) cancelled(ctx context.Context) (bool, error) {
 	}
 	// A turn ran since the last checkpoint: what it took has been read.
 	x.seen, x.hasSeen, x.unread = r, true, nil
+	// The member who asked may have lost the agent meanwhile (#221).
+	if x.noAccess || x.rn.mayUse(ctx, x.tenant, r.Agent, r.Requester) != nil {
+		x.noAccess = true
+		return true, nil
+	}
 	return r.Cancel, nil
 }
 
@@ -716,8 +777,11 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			}
 		case out.Stop == agent.Cancelled:
 			n.Status, n.Stop, n.Output = run.Cancelled, string(out.Stop), out.Text
-			if x.halted {
+			switch {
+			case x.halted:
 				n.Error = FailedHalted
+			case x.noAccess:
+				n.Error = FailedNoAccess
 			}
 		default:
 			n.Status, n.Stop, n.Output, n.Refusal = run.Completed, string(out.Stop), out.Text, out.Refusal
