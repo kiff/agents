@@ -52,6 +52,10 @@ const (
 	ByMember  RequesterKind = "member"  // a person on the account, by their KIFF subject
 	ByDoor    RequesterKind = "door"    // a door's sender, by the door's id for them
 	ByManager RequesterKind = "manager" // a manager acting on someone's work, by their KIFF subject
+	// ByAgent is another agent of the account asking on its own, by its
+	// agent id: Coach handing a taf a task. Its chats are its own, so no
+	// person lists them, and it isn't a person the account is asked about.
+	ByAgent RequesterKind = "agent"
 )
 
 // requesterKey keys a run's requester on a context.
@@ -103,7 +107,7 @@ func (q Requester) Key() string {
 // ":" (a key's separator) and no "|" (the stores' separator in keys).
 func (q Requester) Valid() bool {
 	switch q.Kind {
-	case ByMember, ByDoor, ByManager:
+	case ByMember, ByDoor, ByManager, ByAgent:
 	default:
 		return false
 	}
