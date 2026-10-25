@@ -600,7 +600,11 @@ func (s *Server) forget(ctx context.Context, c Caller, r *http.Request) (int, an
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, r.PathValue("name")); err != nil {
+	name, err := noteName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, name); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
@@ -611,8 +615,12 @@ func (s *Server) forget(ctx context.Context, c Caller, r *http.Request) (int, an
 // requester no longer has it as their own. A shared note of that name with
 // other text is a conflict: forget it first.
 func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
-	id, name := r.PathValue("id"), r.PathValue("name")
+	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	name, err := noteName(r)
+	if err != nil {
 		return 0, nil, err
 	}
 	scope, err := scopeParam(r)
@@ -692,6 +700,16 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 		list = []session.Session{}
 	}
 	return http.StatusOK, map[string]any{"sessions": list}, nil
+}
+
+// noteName is the note named in the path. No note's name starts with "@"
+// (the memory tool takes none): a store may key a requester's notes so.
+func noteName(r *http.Request) (string, error) {
+	name := r.PathValue("name")
+	if strings.HasPrefix(name, "@") {
+		return "", bad("no note's name starts with @")
+	}
+	return name, nil
 }
 
 // scopeParam is the "scope" query parameter, a requester's key, checked as

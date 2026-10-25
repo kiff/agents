@@ -205,15 +205,49 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 // checkpoint, an answer recorded) is read again, so the caller doesn't get a
 // conflict it didn't cause.
 func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	// requester, if the body names one (#219): a run another requester asked
+	// for isn't theirs to stop.
+	var body struct {
+		Requester *run.Requester `json:"requester,omitempty"`
+	}
+	if r.ContentLength != 0 {
+		if err := decode(r, &body); err != nil {
+			return 0, nil, err
+		}
+	}
+	q, err := requesterOf(body.Requester)
+	if err != nil {
+		return 0, nil, err
+	}
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
 		return 0, nil, err
+	}
+	if !theirs(rn, q) {
+		return 0, nil, run.ErrNotFound // another person's run
 	}
 	next, err := s.cancel(ctx, rn)
 	if err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, viewRun(next), nil
+}
+
+// requesterOf is a body's requester, checked; none when it names none.
+func requesterOf(q *run.Requester) (run.Requester, error) {
+	if q == nil {
+		return run.Requester{}, nil
+	}
+	if !q.Valid() {
+		return run.Requester{}, bad("requester is {kind: member, door or manager; id}")
+	}
+	return *q, nil
+}
+
+// theirs reports whether q may act on rn (#219): a caller naming no one, a
+// run no one asked for, or q's own.
+func theirs(rn run.Run, q run.Requester) bool {
+	return q.Key() == "" || rn.Requester.Key() == "" || rn.Requester == q
 }
 
 // cancel is cancelRun for rn, as read: a run saved meanwhile is read again,
@@ -280,20 +314,18 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	if strings.TrimSpace(body.Text) == "" || len(body.Text) > MaxInput {
 		return 0, nil, bad("the text is 1 to %d bytes", MaxInput)
 	}
-	var q run.Requester
-	if body.Requester != nil {
-		if q = *body.Requester; !q.Valid() {
-			return 0, nil, bad("requester is {kind: member, door or manager; id}")
-		}
+	q, err := requesterOf(body.Requester)
+	if err != nil {
+		return 0, nil, err
 	}
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
 		return 0, nil, err
 	}
+	if !theirs(rn, q) {
+		return 0, nil, run.ErrNotFound // another person's run
+	}
 	if q.Key() != "" {
-		if rn.Requester.Key() != "" && rn.Requester != q {
-			return 0, nil, run.ErrNotFound // another person's run
-		}
 		if err := s.flood(ctx, c.Tenant, rn.Agent, q); err != nil {
 			return 0, nil, err
 		}

@@ -1809,4 +1809,12 @@ func TestSteeringIsEachRequesters(t *testing.T) {
 	// Without a requester, steering is as before: no guard, any run.
 	code, body = steer(nil)
 	f.want(202, code, body, "a steer naming no one")
+
+	// Stopping: another person's run is not found; one's own stops.
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": who("ana")})
+	f.want(404, code, body, "ana stopping zoe's run")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": map[string]any{"kind": "member", "id": "a|b"}})
+	f.want(400, code, body, "stopping as a bad requester")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": who("zoe")})
+	f.want(200, code, body, "zoe stopping her run")
 }

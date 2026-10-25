@@ -416,6 +416,11 @@ func TestEachPersonsMemories(t *testing.T) {
 	f.want(204, code, body, "luis forgets his")
 	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=luis", nil)
 	f.want(400, code, body, "a bad scope")
+	// A name can't reach a person's note through the shared scope.
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/@member:ana%7Cvendors", nil)
+	f.want(400, code, body, "forgetting a name starting with @")
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/@member:ana%7Cvendors/share?scope=member:ana", nil)
+	f.want(400, code, body, "sharing a name starting with @")
 	notes, _ := f.store.ListNotes(ctx, "t1", "payouts")
 	if len(notes) != 3 || notes[0].Name != "tone" || notes[0].Scope != session.Shared || notes[2].Scope != "member:ana" {
 		t.Fatalf("left %+v", notes)

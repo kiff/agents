@@ -745,7 +745,9 @@ func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit in
 			return nil, err
 		}
 		for _, item := range metas {
-			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) {
+			// The index filtered by owner; the session itself decides, so a
+			// stale index entry never shows another person's session.
+			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) && (owner == "" || m.Session.OwnedBy(owner)) {
 				out = append(out, m.Session)
 			}
 		}
