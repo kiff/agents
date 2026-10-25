@@ -420,6 +420,47 @@ type startBody struct {
 // in within the last half hour is the one their next message goes on in.
 const DefaultLiveChat = 30 * time.Minute
 
+// The flood guard's defaults (Server.FloodMessages, FloodWindow): ten
+// messages in ten minutes, per requester and agent.
+const (
+	DefaultFloodMessages = 10
+	DefaultFloodWindow   = 10 * time.Minute
+)
+
+// floodScan is how many of the agent's latest runs the flood guard reads. On
+// an agent busier than that, it counts only what it reads, and lets through
+// rather than refuses.
+const floodScan = 100
+
+// flood refuses a requester's message past their flood guard: their own
+// messages to the agent in the window, never anyone else's (#219).
+func (s *Server) flood(ctx context.Context, tenant, agent string, q run.Requester) error {
+	limit, window := s.FloodMessages, s.FloodWindow
+	if limit <= 0 {
+		limit = DefaultFloodMessages
+	}
+	if window <= 0 {
+		window = DefaultFloodWindow
+	}
+	runs, err := s.Runs.List(ctx, tenant, agent, floodScan)
+	if err != nil {
+		return err
+	}
+	since, n := s.now().Add(-window), 0
+	for _, r := range runs {
+		if r.Created.Before(since) {
+			break // newest first: the rest are older
+		}
+		if r.Trigger == run.ByOwner && r.Requester == q {
+			n++
+		}
+	}
+	if n >= limit {
+		return floodError{n: limit, window: window}
+	}
+	return nil
+}
+
 // liveChats is how many of a requester's latest sessions liveChat reads to
 // find their latest chat among their trials and the sessions with no owner.
 const liveChats = 20
@@ -441,10 +482,10 @@ func (s *Server) liveChat(ctx context.Context, tenant, agent string, q run.Reque
 		if sess.Owner != q.Key() || sess.Kind != session.KindChat {
 			continue
 		}
-		if s.now().Sub(sess.Updated) < window {
+		if !sess.Archived && s.now().Sub(sess.Updated) < window {
 			return sess.ID, nil
 		}
-		return "", nil // their latest chat has gone quiet
+		return "", nil // their latest chat has gone quiet, or they put it away
 	}
 	return "", nil
 }
@@ -548,6 +589,12 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			err = session.ErrNotFound
 		}
 		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
+	if q.Key() != "" {
+		if err := s.flood(ctx, c.Tenant, id, q); err != nil {
 			s.fail(w, r, err)
 			return
 		}

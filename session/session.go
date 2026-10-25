@@ -47,6 +47,10 @@ type Session struct {
 	// Empty for a job's session, and for sessions from before owners. Set
 	// once, when the session is opened.
 	Owner string `json:"owner,omitempty"`
+	// Archived is set when its owner put the chat away (kiff/tafs#82): it
+	// leaves their list, and a live message no longer goes on in it. It is
+	// kept for its retention all the same.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // OwnedBy reports whether owner (a requester's Key, or empty for none) may
@@ -370,6 +374,9 @@ type Store interface {
 	// moves on to expires, if later: retention starts again when a run ends.
 	// Ending a run that isn't open is ErrEnded.
 	EndRun(ctx context.Context, tenant, session, run string, expires time.Time) error
+	// SetArchived archives the session, or puts it back (Session.Archived).
+	// A session that isn't there is ErrNotFound.
+	SetArchived(ctx context.Context, tenant, id string, archived bool) error
 	// Delete removes a session and its events.
 	Delete(ctx context.Context, tenant, id string) error
 	// DeleteAgent removes all of an agent's sessions and events.

@@ -1690,3 +1690,55 @@ func TestEachRequestersChatIsTheirOwn(t *testing.T) {
 	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=boss:ana", nil)
 	f.want(400, code, body, "an unknown owner kind")
 }
+
+// A chat its owner archives is put away (kiff/tafs#82): their next live
+// message starts a new chat, and another person can't archive it.
+func TestAnArchivedChatIsPutAway(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	live := func(who string) map[string]any {
+		return map[string]any{"input": "hi", "background": true, "chat": "live", "requester": map[string]any{"kind": "member", "id": who}}
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana")
+	ana, _ := body["session"].(string)
+	code, body = f.do("t1", "POST", "/sessions/"+ana+"/archive?owner=member:luis", nil)
+	f.want(404, code, body, "luis archiving ana's chat")
+	code, body = f.do("t1", "POST", "/sessions/"+ana+"/archive?owner=member:ana", nil)
+	f.want(200, code, body, "ana archiving her chat")
+	if sess, _ := body["session"].(map[string]any); sess["archived"] != true {
+		t.Fatalf("archived = %v", body["session"])
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana after archiving")
+	if body["session"] == ana {
+		t.Fatal("a live message went on in the chat she archived")
+	}
+	code, body = f.do("t1", "POST", "/sessions/"+ana+"/unarchive?owner=member:ana", nil)
+	f.want(200, code, body, "ana putting it back")
+	if sess, _ := body["session"].(map[string]any); sess["archived"] == true {
+		t.Fatalf("still archived: %v", body["session"])
+	}
+}
+
+// The flood guard counts each requester's own messages: one person at the
+// limit is refused, and another still writes (#219).
+func TestTheFloodGuardIsPerRequester(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.server.FloodMessages = 2
+	msg := func(who string) map[string]any {
+		return map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "member", "id": who}}
+	}
+	for i := range 2 {
+		code, body := f.do("t1", "POST", "/agents/payouts/runs", msg("ana"))
+		f.want(202, code, body, fmt.Sprintf("ana's message %d", i+1))
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", msg("ana"))
+	f.want(429, code, body, "ana past her guard")
+	if m, _ := body["error"].(string); !strings.Contains(m, "2 messages in 10 minutes") {
+		t.Fatalf("refusal = %q", m)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("luis"))
+	f.want(202, code, body, "luis, while ana is at her guard")
+}

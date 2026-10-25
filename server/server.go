@@ -111,6 +111,11 @@ type Server struct {
 	// still the one a message goes on in, when it asks for its live chat
 	// (POST /agents/{id}/runs, chat "live"). Zero is DefaultLiveChat.
 	LiveChat time.Duration
+	// FloodMessages is how many messages one requester may send one agent
+	// in FloodWindow (#219): one busy person doesn't hold back the rest.
+	// Zero is DefaultFloodMessages; FloodWindow zero is DefaultFloodWindow.
+	FloodMessages int
+	FloodWindow   time.Duration
 
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
@@ -160,6 +165,8 @@ func (s *Server) Handler() http.Handler {
 	route("GET /sessions", s.listSessions)
 	route("GET /sessions/{id}", s.getSession)
 	route("DELETE /sessions/{id}", s.deleteSession)
+	route("POST /sessions/{id}/archive", s.archiveSession(true))
+	route("POST /sessions/{id}/unarchive", s.archiveSession(false))
 
 	route("POST /schedules", s.createSchedule)
 	route("GET /schedules", s.listSchedules)
@@ -289,6 +296,16 @@ func (t tooManyError) Error() string {
 	return fmt.Sprintf("the tenant has %d runs going and may have %d: wait for one to end, then try again", t.n, t.max)
 }
 
+// floodError is a requester's message past their own flood guard.
+type floodError struct {
+	n      int
+	window time.Duration
+}
+
+func (f floodError) Error() string {
+	return fmt.Sprintf("that's %d messages in %d minutes; wait a little before writing again", f.n, int(f.window.Minutes()))
+}
+
 // RetryAfter is how long a 429 asks the caller to wait, in seconds.
 const RetryAfter = 30
 
@@ -307,6 +324,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var cf conflictError
 	var un unavailableError
 	var tm tooManyError
+	var fl floodError
 	var tooBig *http.MaxBytesError
 	status, msg := http.StatusInternalServerError, "internal error"
 	switch {
@@ -333,6 +351,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusRequestEntityTooLarge, "the body is too large"
 	case errors.As(err, &tm):
 		status, msg = http.StatusTooManyRequests, tm.Error()
+		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
+	case errors.As(err, &fl):
+		status, msg = http.StatusTooManyRequests, fl.Error()
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
 	case errors.As(err, &un):
 		status, msg = http.StatusServiceUnavailable, un.Error()
@@ -636,6 +657,31 @@ func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int
 		events = []session.Event{}
 	}
 	return http.StatusOK, map[string]any{"session": sess, "events": events}, nil
+}
+
+// archiveSession archives a session, or puts it back (kiff/tafs#82): with an
+// owner, only one that is theirs, or has no owner (#219). It answers the
+// session as it now is.
+func (s *Server) archiveSession(archived bool) func(context.Context, Caller, *http.Request) (int, any, error) {
+	return func(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+		owner, err := ownerParam(r)
+		if err != nil {
+			return 0, nil, err
+		}
+		id := r.PathValue("id")
+		sess, _, err := s.Sessions.Read(ctx, c.Tenant, id)
+		if err == nil && owner != "" && !sess.OwnedBy(owner) {
+			err = session.ErrNotFound
+		}
+		if err == nil {
+			err = s.Sessions.SetArchived(ctx, c.Tenant, id, archived)
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		sess.Archived = archived
+		return http.StatusOK, map[string]any{"session": sess}, nil
+	}
 }
 
 // deleteSession leaves "not found" to the Store's Delete, which also

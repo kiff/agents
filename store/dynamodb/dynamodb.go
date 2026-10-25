@@ -228,12 +228,13 @@ type meta struct {
 func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 	m := meta{Session: session.Session{
 		ID: getS(item, "id"), Tenant: tenant,
-		Agent:   getS(item, "agent"),
-		Kind:    session.Kind(getS(item, "kind")),
-		Started: getTime(item, "started"),
-		Updated: getTime(item, "updated"),
-		Expires: getTime(item, "expires"),
-		Owner:   getS(item, "owner"),
+		Agent:    getS(item, "agent"),
+		Kind:     session.Kind(getS(item, "kind")),
+		Started:  getTime(item, "started"),
+		Updated:  getTime(item, "updated"),
+		Expires:  getTime(item, "expires"),
+		Owner:    getS(item, "owner"),
+		Archived: getBool(item, "archived"),
 	}, isk: getS(item, "isk"), deleting: getBool(item, "deleting")}
 	if v, ok := item["held"].(*types.AttributeValueMemberSS); ok {
 		m.Held = slices.Sorted(slices.Values(v.Value))
@@ -821,6 +822,36 @@ func keysOf(items []map[string]types.AttributeValue) []map[string]types.Attribut
 		keys[i] = map[string]types.AttributeValue{"pk": item["pk"], "sk": item["sk"]}
 	}
 	return keys
+}
+
+// SetArchived sets or removes the session item's "archived", only on a
+// session that is there and not being deleted. The index entry doesn't
+// carry it: a listing reads the session items anyway.
+func (st *Store) SetArchived(ctx context.Context, tenant, id string, archived bool) error {
+	u := &ddb.UpdateItemInput{
+		TableName:                &st.table,
+		Key:                      pkey(sessionPK(tenant, id), metaSK),
+		ConditionExpression:      aws.String("attribute_exists(pk) AND attribute_not_exists(deleting)"),
+		ExpressionAttributeNames: map[string]string{"#archived": "archived"},
+	}
+	if archived {
+		u.UpdateExpression = aws.String("SET #archived = :yes")
+		u.ExpressionAttributeValues = map[string]types.AttributeValue{":yes": yes}
+	} else {
+		u.UpdateExpression = aws.String("REMOVE #archived")
+	}
+	_, err := st.db.UpdateItem(ctx, u)
+	var failed *types.ConditionalCheckFailedException
+	if errors.As(err, &failed) {
+		return session.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := st.meta(ctx, tenant, id); err != nil {
+		return err // expired: it's gone, whatever the update found
+	}
+	return nil
 }
 
 func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {

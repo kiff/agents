@@ -198,6 +198,17 @@ func (m *Store) list(tenant, agent string, keep func(session.Session) bool, limi
 	return out, nil
 }
 
+func (m *Store) SetArchived(_ context.Context, tenant, id string, archived bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return session.ErrNotFound
+	}
+	ms.s.Archived = archived
+	return nil
+}
+
 func (m *Store) Hold(_ context.Context, tenant, id, run string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

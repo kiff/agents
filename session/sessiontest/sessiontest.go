@@ -50,6 +50,7 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"ListNewestFirst", listNewestFirst},
 		{"ListLimitIsTheNewest", listLimitIsTheNewest},
 		{"ListOwnedIsTheOwners", listOwnedIsTheOwners},
+		{"ArchivedIsKept", archivedIsKept},
 		{"ConcurrentRecordsAllLand", concurrentRecordsAllLand},
 		{"ConcurrentRunsInOneSession", concurrentRunsInOneSession},
 		{"BodiesAreCopied", bodiesAreCopied},
@@ -688,6 +689,33 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	}
 	if all := list(t, b, "t1", 0); len(all) != 4 {
 		t.Fatalf("List still lists every session: %d", len(all))
+	}
+}
+
+// A chat its owner archives says so when listed and read, and can be put
+// back; one that isn't there can't be archived.
+func archivedIsKept(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(0), c)
+	s, err := r.OpenOwned(ctx, "t1", "refunds", session.KindChat, "member:ana")
+	check(t, err)
+	check(t, b.SetArchived(ctx, "t1", s.ID, true))
+	got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 0)
+	check(t, err)
+	if len(got) != 1 || !got[0].Archived || got[0].Owner != "member:ana" {
+		t.Fatalf("listed = %+v", got)
+	}
+	if read, _, err := b.Read(ctx, "t1", s.ID); err != nil || !read.Archived {
+		t.Fatalf("read = %+v, %v", read, err)
+	}
+	check(t, b.SetArchived(ctx, "t1", s.ID, false))
+	if read, _, _ := b.Read(ctx, "t1", s.ID); read.Archived {
+		t.Fatal("put back, it's still archived")
+	}
+	if err := b.SetArchived(ctx, "t1", "nope", true); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("archiving a session that isn't there: %v", err)
+	}
+	if err := b.SetArchived(ctx, "t2", s.ID, true); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("archiving another tenant's session: %v", err)
 	}
 }
 
