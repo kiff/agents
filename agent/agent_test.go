@@ -355,6 +355,33 @@ func TestWhatAPausedRunKeepsIsBounded(t *testing.T) {
 	}
 }
 
+// Long tool inputs aren't cut like results: the kept turns stay within
+// BeforeBytes, the newest kept, so the run still pauses and keeps its hold.
+func TestWhatAPausedRunKeepsFitsItsByteBudget(t *testing.T) {
+	big := `{"q":"` + strings.Repeat("y", 100<<10) + `"}`
+	var replies []model.Reply
+	for i := range 10 {
+		replies = append(replies, use(fmt.Sprintf("l%d", i), "stripe_get", big))
+	}
+	replies = append(replies, use("c2", "stripe_refund", `{}`), say("Waiting."))
+	m := &script{replies: replies}
+	a := newAgent(m, lookupTool(), heldRefund())
+	a.MaxTurns, a.MaxCost = 100, 100_000_000
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), a, r, nil, "Go.", nil)
+	if err != nil || out.Stop != agent.Paused {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+	before := out.Turn.Before
+	raw, _ := json.Marshal(before)
+	if len(raw) > agent.BeforeBytes || len(before) == 0 || len(before)%2 != 0 {
+		t.Fatalf("kept %d messages, %d bytes", len(before), len(raw))
+	}
+	if before[len(before)-2].Blocks[0].CallID != "l9" || before[0].Role != model.Assistant {
+		t.Fatalf("kept from %+v to %+v", before[0].Blocks[0].CallID, before[len(before)-2].Blocks[0].CallID)
+	}
+}
+
 func approved() []agent.ToolResultBody {
 	return []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "refunded re_1", State: "allowed"}}}
 }

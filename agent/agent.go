@@ -573,18 +573,21 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 }
 
 // BeforeResultMax is the most of one earlier result a paused run keeps for
-// when it continues (Turn.Before), in bytes, and BeforeMax the most of its
-// earlier turns: a stored run stays well under its store's item size.
+// when it continues (Turn.Before), in bytes, BeforeMax the most of its
+// earlier turns, and BeforeBytes the most they take as JSON, so a paused
+// turn stays well under what a store keeps (3 MiB in DynamoDB): long
+// assistant turns or tool inputs never stop a run from pausing.
 const (
 	BeforeResultMax = 8 << 10
 	BeforeMax       = 24
+	BeforeBytes     = 512 << 10
 )
 
 // before is a run's own turns before the one it paused in, as it keeps them
 // to continue: msgs is the run's conversation up to and including the paused
 // turn's reply, and the run's input is at index start. A turn too long ago
 // is left out from the oldest, a whole assistant turn and its results at a
-// time, and a long result keeps its start.
+// time, as are turns past the byte budget, and a long result keeps its start.
 func before(msgs []model.Message, start int) []model.Message {
 	if start+1 >= len(msgs)-1 {
 		return nil
@@ -605,7 +608,20 @@ func before(msgs []model.Message, start int) []model.Message {
 		m.Blocks = blocks
 		out = append(out, m)
 	}
+	// Within the byte budget too, from the oldest, a pair at a time.
+	for len(out) > 0 && jsonSize(out) > BeforeBytes {
+		out = out[min(2, len(out)):]
+	}
 	return out
+}
+
+// jsonSize is how many bytes msgs take as JSON, as a store keeps them.
+func jsonSize(msgs []model.Message) int {
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		return 0
+	}
+	return len(raw)
 }
 
 // capped is the cap a run has reached, if any.
