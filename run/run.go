@@ -137,6 +137,10 @@ type Run struct {
 	// Requester is who asked for the run (#219); zero for a run no one
 	// asked for (a schedule's, an event's) or from before requesters.
 	Requester Requester `json:"requester,omitzero"`
+	// NewSession is whether the run opened its session: with a live chat,
+	// the server picks the session, and the caller learns from this whether
+	// the message began a new one (#219).
+	NewSession bool `json:"new_session,omitempty"`
 	// Source is what started the run within its trigger: the schedule's ID
 	// for a scheduled run, the event's for one an event started; empty for
 	// the owner's runs and evals'. ListSource lists the runs one source
@@ -264,6 +268,9 @@ type Steering struct {
 	At   time.Time `json:"at"`
 	// Taken is set when the run took the message, at a checkpoint.
 	Taken bool `json:"taken,omitempty"`
+	// Requester is who wrote it, if the caller said (#219): their flood
+	// guard counts it.
+	Requester Requester `json:"requester,omitzero"`
 }
 
 // Taken is the text of each message the run has taken, in order.

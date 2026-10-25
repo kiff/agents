@@ -48,7 +48,8 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	rr.mu.Lock()
 	rr.starts = append(rr.starts, s)
 	rr.mu.Unlock()
-	if s.Session == "" {
+	opened := s.Session == "" // the contract: the run says whether it opened its session
+	if opened {
 		s.Session = "s-" + run.NewID()
 		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now, Owner: s.Requester.Key()}); err != nil {
 			return run.Run{}, err
@@ -57,7 +58,7 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		return run.Run{}, session.ErrNotFound // the contract: another tenant's, agent's or person's session isn't found
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
-	r.Source, r.AgentVersion, r.Draft, r.Requester = s.Source, s.Version, s.Draft, s.Requester
+	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession = s.Source, s.Version, s.Draft, s.Requester, opened
 	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
 		r.ID = s.ID
 		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {
@@ -1637,10 +1638,16 @@ func TestEachRequestersChatIsTheirOwn(t *testing.T) {
 	if req, _ := body["requester"].(map[string]any); req["kind"] != "member" || req["id"] != "ana" {
 		t.Fatalf("the run's requester = %v", body["requester"])
 	}
+	if body["new_session"] != true {
+		t.Fatalf("ana's first message: new_session = %v", body["new_session"])
+	}
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
 	f.want(202, code, body, "ana again")
 	if body["session"] != ana {
 		t.Fatalf("ana's next message went to %v, want her live chat %s", body["session"], ana)
+	}
+	if v, ok := body["new_session"]; !ok || v != false {
+		t.Fatalf("ana's message in her live chat: new_session = %v (present %v)", v, ok)
 	}
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("luis"))
 	f.want(202, code, body, "luis")
@@ -1741,4 +1748,60 @@ func TestTheFloodGuardIsPerRequester(t *testing.T) {
 	}
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("luis"))
 	f.want(202, code, body, "luis, while ana is at her guard")
+}
+
+// A message steered into a run counts toward its writer's flood guard, and a
+// run another person asked for isn't theirs to steer (#219).
+func TestSteeringIsEachRequesters(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.server.FloodMessages = 3
+	who := func(id string) map[string]any { return map[string]any{"kind": "member", "id": id} }
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": who("ana")})
+	f.want(202, code, body, "ana's run")
+	id, _ := body["id"].(string)
+	steer := func(by map[string]any) (int, map[string]any) {
+		b := map[string]any{"text": "only the €20 one"}
+		if by != nil {
+			b["requester"] = by
+		}
+		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages", b)
+	}
+
+	code, body = steer(who("luis"))
+	f.want(404, code, body, "luis steering ana's run")
+	code, body = steer(map[string]any{"kind": "member", "id": "a|b"})
+	f.want(400, code, body, "a bad requester")
+	code, body = steer(who("ana"))
+	f.want(202, code, body, "ana steering")
+	if st, _ := body["steering"].([]any); len(st) != 1 || st[0].(map[string]any)["requester"].(map[string]any)["id"] != "ana" {
+		t.Fatalf("steering = %v", body["steering"])
+	}
+	// Her run and one steer are two; a third message is her last.
+	code, body = steer(who("ana"))
+	f.want(202, code, body, "ana's third message")
+	code, body = steer(who("ana"))
+	f.want(429, code, body, "ana steering past her guard")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": who("ana")})
+	f.want(429, code, body, "ana's new run past her guard")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": who("luis")})
+	f.want(202, code, body, "luis meanwhile")
+
+	// A run from before the window still holds messages steered in it.
+	old := run.New("t1", "payouts", "s-old", run.ByOwner, "hi", now.Add(-time.Hour))
+	old.Requester = run.Requester{Kind: run.ByMember, ID: "zoe"}
+	if err := f.runs.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	id = old.ID
+	for i := range 3 {
+		code, body = steer(who("zoe"))
+		f.want(202, code, body, fmt.Sprintf("zoe's steer %d into an older run", i+1))
+	}
+	code, body = steer(who("zoe"))
+	f.want(429, code, body, "zoe past her guard, by steers alone")
+
+	// Without a requester, steering is as before: no guard, any run.
+	code, body = steer(nil)
+	f.want(202, code, body, "a steer naming no one")
 }

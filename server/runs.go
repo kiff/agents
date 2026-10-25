@@ -92,12 +92,15 @@ type Start struct {
 // runView is a run as the API shows it: no paused turn (it holds what tools
 // returned, and exists only to continue the run) and no claim.
 type runView struct {
-	ID              string            `json:"id"`
-	Agent           string            `json:"agent"`
-	Session         string            `json:"session"`
-	Trigger         run.Trigger       `json:"trigger"`
-	Source          string            `json:"source,omitempty"`
-	Requester       run.Requester     `json:"requester,omitzero"`
+	ID        string        `json:"id"`
+	Agent     string        `json:"agent"`
+	Session   string        `json:"session"`
+	Trigger   run.Trigger   `json:"trigger"`
+	Source    string        `json:"source,omitempty"`
+	Requester run.Requester `json:"requester,omitzero"`
+	// NewSession is whether the run opened its session (#219); always
+	// present, so a client can rely on it.
+	NewSession      bool              `json:"new_session"`
 	Status          run.Status        `json:"status"`
 	Stop            string            `json:"stop,omitempty"`
 	Refusal         string            `json:"refusal,omitempty"`
@@ -120,7 +123,7 @@ type runView struct {
 }
 
 func viewRun(r run.Run) runView {
-	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
+	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
@@ -257,6 +260,9 @@ func (s *Server) cancel(ctx context.Context, rn run.Run) (run.Run, error) {
 // steerBody is what POST /agents/{id}/runs/{run_id}/messages takes.
 type steerBody struct {
 	Text string `json:"text"`
+	// Requester is who wrote the message (#219): it counts toward their
+	// flood guard, and a run another person asked for isn't theirs to steer.
+	Requester *run.Requester `json:"requester,omitempty"`
 }
 
 // steerRun gives a run that hasn't ended a message the owner wrote while it
@@ -264,7 +270,8 @@ type steerBody struct {
 // turn, and streamed then as a delta (owner_message). It answers 202 with the
 // run. A run that has ended, or was asked to stop, is a conflict: the caller
 // starts a new run with the message, as for any message. So is one that has
-// taken run.MaxSteering messages.
+// taken run.MaxSteering messages. With a requester, a run another requester
+// asked for is not found, and the message counts toward their flood guard.
 func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	var body steerBody
 	if err := decode(r, &body); err != nil {
@@ -273,11 +280,25 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	if strings.TrimSpace(body.Text) == "" || len(body.Text) > MaxInput {
 		return 0, nil, bad("the text is 1 to %d bytes", MaxInput)
 	}
+	var q run.Requester
+	if body.Requester != nil {
+		if q = *body.Requester; !q.Valid() {
+			return 0, nil, bad("requester is {kind: member, door or manager; id}")
+		}
+	}
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
 		return 0, nil, err
 	}
-	next, err := run.Steer(ctx, s.Runs, c.Tenant, rn.ID, body.Text, s.now())
+	if q.Key() != "" {
+		if rn.Requester.Key() != "" && rn.Requester != q {
+			return 0, nil, run.ErrNotFound // another person's run
+		}
+		if err := s.flood(ctx, c.Tenant, rn.Agent, q); err != nil {
+			return 0, nil, err
+		}
+	}
+	next, err := run.SteerBy(ctx, s.Runs, c.Tenant, rn.ID, body.Text, q, s.now())
 	switch {
 	case errors.Is(err, run.ErrTransition):
 		return 0, nil, conflict("the run has ended, or was asked to stop: send the message as a new run")
@@ -429,11 +450,13 @@ const (
 
 // floodScan is how many of the agent's latest runs the flood guard reads. On
 // an agent busier than that, it counts only what it reads, and lets through
-// rather than refuses.
+// rather than refuses; so it does for a message steered into a run older
+// than those.
 const floodScan = 100
 
 // flood refuses a requester's message past their flood guard: their own
-// messages to the agent in the window, never anyone else's (#219).
+// messages to the agent in the window, never anyone else's (#219). A
+// message is a run they started, or one they steered into a run.
 func (s *Server) flood(ctx context.Context, tenant, agent string, q run.Requester) error {
 	limit, window := s.FloodMessages, s.FloodWindow
 	if limit <= 0 {
@@ -448,11 +471,14 @@ func (s *Server) flood(ctx context.Context, tenant, agent string, q run.Requeste
 	}
 	since, n := s.now().Add(-window), 0
 	for _, r := range runs {
-		if r.Created.Before(since) {
-			break // newest first: the rest are older
-		}
-		if r.Trigger == run.ByOwner && r.Requester == q {
+		// An older run may hold a message steered in the window: read on.
+		if r.Trigger == run.ByOwner && r.Requester == q && !r.Created.Before(since) {
 			n++
+		}
+		for _, m := range r.Steering {
+			if m.Requester == q && !m.At.Before(since) {
+				n++
+			}
 		}
 	}
 	if n >= limit {

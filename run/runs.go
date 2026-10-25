@@ -366,6 +366,11 @@ func Save(ctx context.Context, runs Runs, r Run, now time.Time, change func(*Run
 // stop, is ErrTransition: the caller sends the text as a new run, as for any
 // message. It returns the run as stored.
 func Steer(ctx context.Context, runs Runs, tenant, id, text string, now time.Time) (Run, error) {
+	return SteerBy(ctx, runs, tenant, id, text, Requester{}, now)
+}
+
+// SteerBy is Steer, the message written by q (#219).
+func SteerBy(ctx context.Context, runs Runs, tenant, id, text string, q Requester, now time.Time) (Run, error) {
 	for try := 1; ; try++ {
 		r, err := runs.Get(ctx, tenant, id)
 		if err != nil {
@@ -378,7 +383,7 @@ func Steer(ctx context.Context, runs Runs, tenant, id, text string, now time.Tim
 			case len(n.Steering) >= MaxSteering || steeringBytes(n.Steering)+len(text) > MaxSteeringBytes:
 				return ErrFull
 			}
-			n.Steering = append(n.Steering, Steering{Text: text, At: now.UTC()})
+			n.Steering = append(n.Steering, Steering{Text: text, At: now.UTC(), Requester: q})
 			return nil
 		})
 		if errors.Is(err, ErrConflict) && try < SaveTries {

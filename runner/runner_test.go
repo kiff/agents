@@ -259,8 +259,14 @@ func TestARequestersSessionIsTheirs(t *testing.T) {
 	if s, _, err := f.store.Read(ctx, "t1", r.Session); err != nil || s.Owner != "member:ana" {
 		t.Fatalf("the session = %+v, %v; want ana's", s, err)
 	}
-	if next := f.start(server.Start{Session: r.Session, Input: "and again", Requester: ana}); next.Session != r.Session {
-		t.Fatalf("ana's next message is in %s, want %s", next.Session, r.Session)
+	if !r.NewSession {
+		t.Fatal("the run that opened ana's session doesn't say so")
+	}
+	if next := f.start(server.Start{Session: r.Session, Input: "and again", Requester: ana}); next.Session != r.Session || next.NewSession {
+		t.Fatalf("ana's next message is in %s (new %v), want %s, not new", next.Session, next.NewSession, r.Session)
+	}
+	if got, err := f.runs.Get(ctx, "t1", r.ID); err != nil || !got.NewSession {
+		t.Fatalf("stored, the run = %+v, %v; want new_session kept", got, err)
 	}
 	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: r.Session, Input: "x", Requester: luis}); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("luis going on in ana's session: %v, want not found", err)
