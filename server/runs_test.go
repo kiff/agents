@@ -1748,6 +1748,11 @@ func TestTheFloodGuardIsPerRequester(t *testing.T) {
 	}
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("luis"))
 	f.want(202, code, body, "luis, while ana is at her guard")
+	// A door's sender has the door's own caps: none here.
+	for i := range 3 {
+		code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "door", "id": "d1-sender"}})
+		f.want(202, code, body, fmt.Sprintf("a door's sender, message %d", i+1))
+	}
 }
 
 // A message steered into a run counts toward its writer's flood guard, and a

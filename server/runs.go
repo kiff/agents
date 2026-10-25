@@ -456,8 +456,13 @@ const floodScan = 100
 
 // flood refuses a requester's message past their flood guard: their own
 // messages to the agent in the window, never anyone else's (#219). A
-// message is a run they started, or one they steered into a run.
+// message is a run they started, or one they steered into a run. A door's
+// sender is held back by the door's own caps, before the message gets
+// here: refusing it here would only have the delivery tried again.
 func (s *Server) flood(ctx context.Context, tenant, agent string, q run.Requester) error {
+	if q.Kind == run.ByDoor {
+		return nil
+	}
 	limit, window := s.FloodMessages, s.FloodWindow
 	if limit <= 0 {
 		limit = DefaultFloodMessages
