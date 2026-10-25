@@ -69,7 +69,9 @@ type Start struct {
 	// Requester is who asked (run.Run.Requester): a new session is theirs,
 	// and an existing one must be theirs, or have no owner.
 	Requester run.Requester
-	Input     string
+	// Grant is the account's run grant the requester came from (run.Run.Grant).
+	Grant string
+	Input string
 	// Version is the agent's version a trial runs (kiff/tafs#107); 0 runs
 	// the live one. Draft is the KIFF draft its writes are decided against.
 	// Only a trial (Trigger run.ByTrial) has either.
@@ -472,6 +474,9 @@ type startBody struct {
 	// if its last message is within Server.LiveChat, else a new one. It
 	// needs a requester and no session_id. Empty: session_id, or a new one.
 	Chat string `json:"chat,omitempty"`
+	// RunGrant is the account's grant for a member's run: the requester
+	// is the person KIFF signed it for (Server.ResolveGrant).
+	RunGrant string `json:"run_grant,omitempty"`
 }
 
 // DefaultLiveChat is Server.LiveChat's default: a chat the requester wrote
@@ -633,6 +638,11 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	grant := strings.TrimSpace(body.RunGrant)
+	if q, err = s.granted(r.Context(), c.Tenant, r.PathValue("id"), q, grant); err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	switch body.Chat {
 	case "":
 	case "live":
@@ -675,7 +685,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 		body.SessionID = live
 	}
-	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q}
+	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant}
 	if body.AI != nil {
 		if err := s.fairUse(ctx, c.Tenant, *body.AI); err != nil {
 			s.fail(w, r, err)
@@ -1231,3 +1241,31 @@ func (s *Server) getAIUsage(ctx context.Context, c Caller, r *http.Request) (int
 // UsageKeep is how long a period's spend is kept after its last change:
 // past any billing period's end.
 const UsageKeep = 70 * 24 * time.Hour
+
+// granted is the run's requester given its grant: the member KIFF signed
+// the grant for. A requester in the body must be that member. Without a
+// grant, the requester stands as asserted, unless the server requires
+// grants for members (RequireGrant).
+func (s *Server) granted(ctx context.Context, tenant, agent string, q run.Requester, grant string) (run.Requester, error) {
+	if grant == "" {
+		if s.RequireGrant && q.Kind == run.ByMember {
+			return q, fmt.Errorf("%w: a member's run needs the account's run grant", run.ErrNoAccess)
+		}
+		return q, nil
+	}
+	if s.ResolveGrant == nil {
+		return q, unavailable("this server doesn't take run grants")
+	}
+	subject, err := s.ResolveGrant(ctx, tenant, agent, grant)
+	if err != nil {
+		return q, fmt.Errorf("%w: the run grant: %v", run.ErrNoAccess, err)
+	}
+	granted := run.Requester{Kind: run.ByMember, ID: subject}
+	if q.Key() != "" && q != granted {
+		return q, bad("requester isn't the person the run grant is for")
+	}
+	if !granted.Valid() {
+		return q, fmt.Errorf("%w: the run grant names no person", run.ErrNoAccess)
+	}
+	return granted, nil
+}

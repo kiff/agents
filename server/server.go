@@ -80,6 +80,14 @@ type Server struct {
 	// member reads their sessions with it, and writes into their runs, only
 	// if they may. Nil: nothing is checked. The runner checks runs.
 	Access run.AccessFunc
+	// ResolveGrant asks the account who a run grant was signed for, for
+	// this agent: the person's KIFF subject. A grant KIFF doesn't vouch
+	// for is an error. Nil: grants aren't taken.
+	ResolveGrant func(ctx context.Context, tenant, agent, grant string) (string, error)
+	// RequireGrant refuses a member's run without a grant: once the
+	// account mints them, a member is who KIFF says, not who the caller
+	// asserts.
+	RequireGrant bool
 	// Answers reads from KIFF, with the run's agent's own key, what it
 	// answered on run r's held calls, by exception (approved, refused,
 	// expired, invalidated), leaving out any still waiting: a continue asks
