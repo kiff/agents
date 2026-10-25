@@ -66,7 +66,10 @@ type Start struct {
 	Trigger                run.Trigger
 	// Source is what started it within its trigger (run.Run.Source).
 	Source string
-	Input  string
+	// Requester is who asked (run.Run.Requester): a new session is theirs,
+	// and an existing one must be theirs, or have no owner.
+	Requester run.Requester
+	Input     string
 	// Version is the agent's version a trial runs (kiff/tafs#107); 0 runs
 	// the live one. Draft is the KIFF draft its writes are decided against.
 	// Only a trial (Trigger run.ByTrial) has either.
@@ -94,6 +97,7 @@ type runView struct {
 	Session         string            `json:"session"`
 	Trigger         run.Trigger       `json:"trigger"`
 	Source          string            `json:"source,omitempty"`
+	Requester       run.Requester     `json:"requester,omitzero"`
 	Status          run.Status        `json:"status"`
 	Stop            string            `json:"stop,omitempty"`
 	Refusal         string            `json:"refusal,omitempty"`
@@ -116,7 +120,7 @@ type runView struct {
 }
 
 func viewRun(r run.Run) runView {
-	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
+	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
@@ -403,6 +407,46 @@ type startBody struct {
 	// Notify announces the run when it ends or pauses, at a URL the server
 	// allows (Server.NotifyURLs), with the caller's ref (kiff/tafs#206).
 	Notify *run.Notify `json:"notify,omitempty"`
+	// Requester is who asks (#219): a new session is theirs, and a named
+	// one must be theirs or have no owner.
+	Requester *run.Requester `json:"requester,omitempty"`
+	// Chat "live" goes on in the requester's live chat: their latest chat,
+	// if its last message is within Server.LiveChat, else a new one. It
+	// needs a requester and no session_id. Empty: session_id, or a new one.
+	Chat string `json:"chat,omitempty"`
+}
+
+// DefaultLiveChat is Server.LiveChat's default: a chat the requester wrote
+// in within the last half hour is the one their next message goes on in.
+const DefaultLiveChat = 30 * time.Minute
+
+// liveChats is how many of a requester's latest sessions liveChat reads to
+// find their latest chat among their trials and the sessions with no owner.
+const liveChats = 20
+
+// liveChat is the requester's live chat with the agent (#219): their
+// latest chat, if its last message is recent enough; else empty, and the
+// message starts a new one. Only a chat the requester owns is theirs: never
+// another person's, nor one from before owners.
+func (s *Server) liveChat(ctx context.Context, tenant, agent string, q run.Requester) (string, error) {
+	list, err := s.Sessions.ListOwned(ctx, tenant, agent, q.Key(), liveChats)
+	if err != nil {
+		return "", err
+	}
+	window := s.LiveChat
+	if window <= 0 {
+		window = DefaultLiveChat
+	}
+	for _, sess := range list {
+		if sess.Owner != q.Key() || sess.Kind != session.KindChat {
+			continue
+		}
+		if s.now().Sub(sess.Updated) < window {
+			return sess.ID, nil
+		}
+		return "", nil // their latest chat has gone quiet
+	}
+	return "", nil
 }
 
 // notify checks where a run asks to be announced (kiff/tafs#206): a URL the
@@ -473,15 +517,34 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
 		return
 	}
+	var q run.Requester
+	if body.Requester != nil {
+		if q = *body.Requester; !q.Valid() {
+			s.fail(w, r, bad("requester is {kind: member, door or manager; id}"))
+			return
+		}
+	}
+	switch body.Chat {
+	case "":
+	case "live":
+		if q.Key() == "" || body.SessionID != "" {
+			s.fail(w, r, bad(`chat "live" needs a requester, and no session_id`))
+			return
+		}
+	default:
+		s.fail(w, r, bad(`chat is "live", or left out`))
+		return
+	}
 	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	if body.SessionID != "" {
-		// A session is one agent's thread: another agent's is not found.
+		// A session is one agent's thread, and an owned one its owner's:
+		// another agent's, or another person's, is not found.
 		sess, _, err := s.Sessions.Read(ctx, c.Tenant, body.SessionID)
-		if err == nil && sess.Agent != id {
+		if err == nil && (sess.Agent != id || !sess.OwnedBy(q.Key())) {
 			err = session.ErrNotFound
 		}
 		if err != nil {
@@ -489,7 +552,15 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input}
+	if body.Chat == "live" {
+		live, err := s.liveChat(ctx, c.Tenant, id, q)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		body.SessionID = live
+	}
+	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q}
 	if body.AI != nil {
 		if err := s.fairUse(ctx, c.Tenant, *body.AI); err != nil {
 			s.fail(w, r, err)

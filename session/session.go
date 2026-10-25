@@ -49,6 +49,14 @@ type Session struct {
 	Owner string `json:"owner,omitempty"`
 }
 
+// OwnedBy reports whether owner (a requester's Key, or empty for none) may
+// read or go on in the session (#219): one with no owner (a job's, or one
+// from before owners) is anyone's, as before; an owned one is only its
+// owner's.
+func (s Session) OwnedBy(owner string) bool {
+	return s.Owner == "" || s.Owner == owner
+}
+
 // Expired reports whether the session is gone as of now: its Expires has
 // passed and no run in it is held.
 func (s Session) Expired(now time.Time) bool {

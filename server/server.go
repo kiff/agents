@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kiff/agents/drafts"
@@ -106,6 +107,10 @@ type Server struct {
 	// announced to when it ends or pauses (POST /agents/{id}/runs, notify),
 	// exactly; none, no run is.
 	NotifyURLs []string
+	// LiveChat is how long after its last message a requester's chat is
+	// still the one a message goes on in, when it asks for its live chat
+	// (POST /agents/{id}/runs, chat "live"). Zero is DefaultLiveChat.
+	LiveChat time.Duration
 
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
@@ -579,7 +584,18 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 		}
 		limit = n
 	}
-	list, err := s.Sessions.List(ctx, c.Tenant, agent, limit)
+	// owner: one requester's sessions and those with no owner (#219);
+	// without it, every session of the agent, as before.
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var list []session.Session
+	if owner != "" {
+		list, err = s.Sessions.ListOwned(ctx, c.Tenant, agent, owner, limit)
+	} else {
+		list, err = s.Sessions.List(ctx, c.Tenant, agent, limit)
+	}
 	if err != nil {
 		return 0, nil, err
 	}
@@ -589,9 +605,30 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	return http.StatusOK, map[string]any{"sessions": list}, nil
 }
 
+// ownerParam is the "owner" query parameter, a requester's key
+// ("member:<subject>"), checked; empty when there is none.
+func ownerParam(r *http.Request) (string, error) {
+	v := r.URL.Query().Get("owner")
+	if v == "" {
+		return "", nil
+	}
+	kind, id, _ := strings.Cut(v, ":")
+	if q := (run.Requester{Kind: run.RequesterKind(kind), ID: id}); !q.Valid() {
+		return "", bad("owner is a requester's kind and id, as in member:<subject>")
+	}
+	return v, nil
+}
+
 func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
 	sess, events, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
 	events = session.Shown(events)
+	if err == nil && owner != "" && !sess.OwnedBy(owner) {
+		err = session.ErrNotFound // another person's thread (#219)
+	}
 	if err != nil {
 		return 0, nil, err
 	}

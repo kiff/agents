@@ -141,7 +141,8 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		case run.ByTrial:
 			kind = session.KindTrial
 		}
-		sess, err := rec.Open(ctx, s.Tenant, s.Agent, kind)
+		// A requester's new session is theirs (#219).
+		sess, err := rec.OpenOwned(ctx, s.Tenant, s.Agent, kind, s.Requester.Key())
 		if err != nil {
 			return run.Run{}, err
 		}
@@ -151,12 +152,14 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		if err != nil {
 			return run.Run{}, err
 		}
-		if sess.Agent != s.Agent {
+		// Another agent's session, or another person's, is not found.
+		if sess.Agent != s.Agent || !sess.OwnedBy(s.Requester.Key()) {
 			return run.Run{}, session.ErrNotFound
 		}
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
+	r.Requester = s.Requester
 	r.Meter = s.Meter
 	r.Notify = s.Notify
 	r.AgentVersion = d.Version

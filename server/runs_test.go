@@ -50,14 +50,14 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	rr.mu.Unlock()
 	if s.Session == "" {
 		s.Session = "s-" + run.NewID()
-		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now}); err != nil {
+		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now, Owner: s.Requester.Key()}); err != nil {
 			return run.Run{}, err
 		}
-	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent {
-		return run.Run{}, session.ErrNotFound // the contract: another tenant's or agent's session isn't found
+	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent || !sess.OwnedBy(s.Requester.Key()) {
+		return run.Run{}, session.ErrNotFound // the contract: another tenant's, agent's or person's session isn't found
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
-	r.Source, r.AgentVersion, r.Draft = s.Source, s.Version, s.Draft
+	r.Source, r.AgentVersion, r.Draft, r.Requester = s.Source, s.Version, s.Draft, s.Requester
 	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
 		r.ID = s.ID
 		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {
@@ -1619,4 +1619,74 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 	f.want(404, code, body, "another tenant")
 	code, body = f.do("t1", "GET", "/agents/payouts/runs?limit=0", nil)
 	f.want(400, code, body, "a bad limit")
+}
+
+// Each person's chat with a shared agent is theirs alone (#219): a live
+// message goes on in its requester's own recent chat, never another's; a
+// person can't name, list or read another's; a quiet chat isn't taken up
+// again; and the run says who asked.
+func TestEachRequestersChatIsTheirOwn(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	live := func(who string) map[string]any {
+		return map[string]any{"input": "refund ch_1", "background": true, "chat": "live", "requester": map[string]any{"kind": "member", "id": who}}
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana's first message")
+	ana, _ := body["session"].(string)
+	if req, _ := body["requester"].(map[string]any); req["kind"] != "member" || req["id"] != "ana" {
+		t.Fatalf("the run's requester = %v", body["requester"])
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana again")
+	if body["session"] != ana {
+		t.Fatalf("ana's next message went to %v, want her live chat %s", body["session"], ana)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("luis"))
+	f.want(202, code, body, "luis")
+	luis, _ := body["session"].(string)
+	if luis == "" || luis == ana {
+		t.Fatalf("luis's message went to %q: ana's chat is %s", luis, ana)
+	}
+
+	// Naming another person's chat, listing or reading it: not found.
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "background": true, "session_id": ana, "requester": map[string]any{"kind": "member", "id": "luis"}})
+	f.want(404, code, body, "luis naming ana's chat")
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=member:luis", nil)
+	f.want(200, code, body, "luis's sessions")
+	listed, _ := body["sessions"].([]any)
+	if len(listed) != 1 || listed[0].(map[string]any)["id"] != luis {
+		t.Fatalf("luis's sessions = %v", listed)
+	}
+	code, body = f.do("t1", "GET", "/sessions/"+ana+"?owner=member:luis", nil)
+	f.want(404, code, body, "luis reading ana's chat")
+	code, body = f.do("t1", "GET", "/sessions/"+ana+"?owner=member:ana", nil)
+	f.want(200, code, body, "ana reading her chat")
+
+	// A chat quiet for longer than the live window isn't taken up again.
+	quiet := session.Session{ID: "s-quiet", Tenant: "t1", Agent: "payouts", Kind: session.KindChat, Started: now.Add(-2 * time.Hour), Updated: now.Add(-time.Hour), Owner: "member:zoe"}
+	if err := f.store.Create(ctx, quiet); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("zoe"))
+	f.want(202, code, body, "zoe after an hour")
+	if body["session"] == "s-quiet" {
+		t.Fatal("a chat quiet for an hour was taken up again")
+	}
+
+	for _, c := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"live with no requester", map[string]any{"input": "x", "chat": "live"}},
+		{"live with a session", map[string]any{"input": "x", "chat": "live", "session_id": ana, "requester": map[string]any{"kind": "member", "id": "ana"}}},
+		{"an unknown chat", map[string]any{"input": "x", "chat": "newest"}},
+		{"an unknown requester kind", map[string]any{"input": "x", "requester": map[string]any{"kind": "boss", "id": "ana"}}},
+		{"a requester id with a colon", map[string]any{"input": "x", "requester": map[string]any{"kind": "member", "id": "a:b"}}},
+	} {
+		code, body := f.do("t1", "POST", "/agents/payouts/runs", c.body)
+		f.want(400, code, body, c.name)
+	}
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=boss:ana", nil)
+	f.want(400, code, body, "an unknown owner kind")
 }

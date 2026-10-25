@@ -245,6 +245,35 @@ func TestStartInTheConversationsSession(t *testing.T) {
 	}
 }
 
+// A requester's new session is theirs, and the run says who asked (#219).
+// Another person can't go on in it; a session with no owner (from before
+// owners) is still anyone's.
+func TestARequestersSessionIsTheirs(t *testing.T) {
+	f := newFixture(t)
+	ana := run.Requester{Kind: run.ByMember, ID: "ana"}
+	luis := run.Requester{Kind: run.ByMember, ID: "luis"}
+	r := f.start(server.Start{Input: "refund order 42", Requester: ana})
+	if r.Requester != ana {
+		t.Fatalf("the run's requester = %+v", r.Requester)
+	}
+	if s, _, err := f.store.Read(ctx, "t1", r.Session); err != nil || s.Owner != "member:ana" {
+		t.Fatalf("the session = %+v, %v; want ana's", s, err)
+	}
+	if next := f.start(server.Start{Session: r.Session, Input: "and again", Requester: ana}); next.Session != r.Session {
+		t.Fatalf("ana's next message is in %s, want %s", next.Session, r.Session)
+	}
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: r.Session, Input: "x", Requester: luis}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("luis going on in ana's session: %v, want not found", err)
+	}
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: r.Session, Input: "x"}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("no requester going on in ana's session: %v, want not found", err)
+	}
+	old := f.start(server.Start{Input: "hello"}) // no requester: a session with no owner
+	if next := f.start(server.Start{Session: old.Session, Input: "and again", Requester: luis}); next.Session != old.Session {
+		t.Fatalf("a session with no owner refused luis")
+	}
+}
+
 func TestStartRefuses(t *testing.T) {
 	f := newFixture(t)
 	if err := f.agents.Put(ctx, registrytest.Definition("t1", "other")); err != nil {

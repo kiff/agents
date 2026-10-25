@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/kiff/agents/model"
@@ -32,6 +33,47 @@ const (
 
 // Final reports whether a run in this status can change no more.
 func (s Status) Final() bool { return s == Completed || s == Error || s == Cancelled }
+
+// Requester is who asked for a run (#219): a member of the account, a
+// door's sender, or a manager acting on someone's work. The agent acts on
+// its own Cards whoever asks; the requester is whose thread the run is in,
+// and who it is attributed to. Until KIFF verifies it, the caller asserts it
+// from the person's own signed-in session or the door's checked sender.
+type Requester struct {
+	Kind RequesterKind `json:"kind"`
+	ID   string        `json:"id"`
+}
+
+// RequesterKind is what kind of requester asked.
+type RequesterKind string
+
+const (
+	ByMember  RequesterKind = "member"  // a person on the account, by their KIFF subject
+	ByDoor    RequesterKind = "door"    // a door's sender, by the door's id for them
+	ByManager RequesterKind = "manager" // a manager acting on someone's work, by their KIFF subject
+)
+
+// MaxRequesterID is the longest requester ID.
+const MaxRequesterID = 200
+
+// Key is the requester as a session's owner: "member:<subject>". Empty for
+// no requester.
+func (q Requester) Key() string {
+	if q.ID == "" {
+		return ""
+	}
+	return string(q.Kind) + ":" + q.ID
+}
+
+// Valid reports whether q names a requester of a known kind.
+func (q Requester) Valid() bool {
+	switch q.Kind {
+	case ByMember, ByDoor, ByManager:
+	default:
+		return false
+	}
+	return q.ID != "" && len(q.ID) <= MaxRequesterID && !strings.ContainsAny(q.ID, ":\n")
+}
 
 // Trigger is what started a run.
 type Trigger string
@@ -57,6 +99,9 @@ type Run struct {
 	Agent   string  `json:"agent"`
 	Session string  `json:"session"`
 	Trigger Trigger `json:"trigger"`
+	// Requester is who asked for the run (#219); zero for a run no one
+	// asked for (a schedule's, an event's) or from before requesters.
+	Requester Requester `json:"requester,omitzero"`
 	// Source is what started the run within its trigger: the schedule's ID
 	// for a scheduled run, the event's for one an event started; empty for
 	// the owner's runs and evals'. ListSource lists the runs one source
