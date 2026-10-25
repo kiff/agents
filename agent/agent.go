@@ -289,9 +289,9 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 // resumed; Continue records the held calls' results in it. It reads nothing
 // from the run's events, so what the keep rules dropped doesn't matter.
 //
-// The continued run sees history, its input and the turn it paused in, not
-// any earlier turns of its own. Its cost and turns carry on from r's, so the
-// caps hold across pauses.
+// The continued run sees history, its input, its own turns before the one it
+// paused in (Turn.Before), and that turn. Its cost and turns carry on from
+// r's, so the caps hold across pauses.
 func Continue(ctx context.Context, a Agent, rec *session.Recording, history []model.Message, r run.Run, held []ToolResultBody, emit func(Event)) (Outcome, []model.Message, error) {
 	if err := a.Check(); err != nil {
 		return Outcome{}, history, err
@@ -321,20 +321,19 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	for _, text := range r.Taken() {
 		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + text})
 	}
-	msgs := append(append([]model.Message(nil), history...),
-		model.Message{Role: model.User, Blocks: asked},
-		withoutThinking(r.Paused.Reply),
-		model.Message{Role: model.User, Blocks: results})
+	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
+	msgs = append(msgs, r.Paused.Before...)
+	msgs = append(msgs, withoutThinking(r.Paused.Reply), model.Message{Role: model.User, Blocks: results})
 	a.history = len(history)
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns}, emit)
 }
 
 // withoutThinking is a paused turn's reply as a continued run sends it: its
 // thinking left out. A thinking block is valid only in the conversation it
-// was made in, and a continued run's is another one: it leaves out the turns
-// between the input and the paused one, and its tools are listed again. The
-// model provider refuses such a block (a 400, so the run would end in
-// ERROR), and asks for it to be removed.
+// was made in, and a continued run's is another one: its tools are listed
+// again, and what the owner wrote meanwhile follows its input. The model
+// provider refuses such a block (a 400, so the run would end in ERROR), and
+// asks for it to be removed.
 func withoutThinking(m model.Message) model.Message {
 	blocks := make([]model.Block, 0, len(m.Blocks))
 	for _, b := range m.Blocks {
@@ -536,6 +535,7 @@ func (a Agent) steer(ctx context.Context, rec *session.Recording, msgs *[]model.
 // tools but forbidden to call them.
 func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, specs []model.ToolSpec, emit func(Event)) (Outcome, []model.Message, error) {
 	turn.Results = nil
+	turn.Before = before(msgs, a.history)
 	blocks := make([]model.Block, len(results))
 	for i, r := range results {
 		blocks[i] = resultBlock(r)
@@ -570,6 +570,58 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	}
 	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 	return out, msgs, a.say(rec, out.Text, true)
+}
+
+// BeforeResultMax is the most of one earlier result a paused run keeps for
+// when it continues (Turn.Before), in bytes, BeforeMax the most of its
+// earlier turns, and BeforeBytes the most they take as JSON, so a paused
+// turn stays well under what a store keeps (3 MiB in DynamoDB): long
+// assistant turns or tool inputs never stop a run from pausing.
+const (
+	BeforeResultMax = 8 << 10
+	BeforeMax       = 24
+	BeforeBytes     = 512 << 10
+)
+
+// before is a run's own turns before the one it paused in, as it keeps them
+// to continue: msgs is the run's conversation up to and including the paused
+// turn's reply, and the run's input is at index start. A turn too long ago
+// is left out from the oldest, a whole assistant turn and its results at a
+// time, as are turns past the byte budget, and a long result keeps its start.
+func before(msgs []model.Message, start int) []model.Message {
+	if start+1 >= len(msgs)-1 {
+		return nil
+	}
+	turns := msgs[start+1 : len(msgs)-1]
+	for len(turns) > BeforeMax {
+		turns = turns[2:] // an assistant turn and the results that answered it
+	}
+	out := make([]model.Message, 0, len(turns))
+	for _, m := range turns {
+		m = withoutThinking(m)
+		blocks := slices.Clone(m.Blocks)
+		for i, b := range blocks {
+			if b.Kind == model.ToolResult && len(b.Result) > BeforeResultMax {
+				blocks[i].Result = strings.ToValidUTF8(b.Result[:BeforeResultMax], "") + "\n[cut: the rest was here when you read it]"
+			}
+		}
+		m.Blocks = blocks
+		out = append(out, m)
+	}
+	// Within the byte budget too, from the oldest, a pair at a time.
+	for len(out) > 0 && jsonSize(out) > BeforeBytes {
+		out = out[min(2, len(out)):]
+	}
+	return out
+}
+
+// jsonSize is how many bytes msgs take as JSON, as a store keeps them.
+func jsonSize(msgs []model.Message) int {
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		return 0
+	}
+	return len(raw)
 }
 
 // capped is the cap a run has reached, if any.

@@ -201,7 +201,10 @@ compares them with `main` on every PR.
 
 ## Known limits, accepted
 
-- A continued run sees only the turn it paused in, not its own earlier turns
-  (#18).
+- A continued run sees the turn it paused in and its own earlier turns since
+  its input, their thinking left out (kiff/tafs, the 755 device test: it
+  looked a payment up, was approved, then said it hadn't looked). A very long
+  run keeps only its latest 24 earlier turns, and a long result its first
+  8 KiB.
 - The turn that says what a paused run waits for costs one model call per
   pause. It stays, because it's what the owner reads (#28).

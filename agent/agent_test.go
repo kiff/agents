@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -286,6 +287,99 @@ func paused(t *testing.T, store *memory.Store, rec *session.Recorder, a agent.Ag
 	}
 	return run.Run{ID: "r1", Tenant: "t1", Agent: "rae", Session: s.ID, Status: run.Running, Input: "Work the refund queue.",
 		Cost: out.Cost, Turns: out.Turns, Requirements: out.Requirements, Paused: out.Turn}, s
+}
+
+// A run that looked something up before the turn KIFF held continues knowing
+// it did (kiff/tafs, the 755 device test): its earlier turns, without their
+// thinking, come between its input and the paused turn. Before, the continued
+// run saw only the refund it asked for, and said it had refunded without
+// looking the payment up.
+func TestAContinuedRunSeesWhatItDidBeforeThePause(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := use("c1", "stripe_get", `{"charge":"ch_big"}`)
+	lookup.Blocks = append([]model.Block{{Kind: model.Thinking, Text: "Look first.", Signature: "sig"}}, lookup.Blocks...)
+	refund := use("c2", "stripe_refund", `{"charge":"ch_big"}`)
+	m := &script{replies: []model.Reply{lookup, refund, say("Waiting for you."), say("Refunded ch_big.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	want := []model.Message{
+		{Role: model.Assistant, Blocks: use("c1", "stripe_get", `{"charge":"ch_big"}`).Blocks},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`}}},
+	}
+	if !reflect.DeepEqual(stored.Paused.Before, want) {
+		t.Fatalf("kept before the pause: %+v", stored.Paused.Before)
+	}
+
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.Continue(ctx, a, r, nil, stored, approved(), nil); err != nil {
+		t.Fatal(err)
+	}
+	got := m.reqs[3].Messages
+	if len(got) != 5 || !reflect.DeepEqual(got[1:3], want) || got[3].Blocks[0].CallID != "c2" || got[4].Blocks[0].Result != "refunded re_1" {
+		t.Fatalf("continued with %+v", got)
+	}
+}
+
+// A long earlier result is kept cut, and a long run keeps only its latest
+// earlier turns, so a stored run stays small.
+func TestWhatAPausedRunKeepsIsBounded(t *testing.T) {
+	big := lookupTool()
+	big.result = tool.Result{Text: strings.Repeat("x", agent.BeforeResultMax+100)}
+	var replies []model.Reply
+	for i := range agent.BeforeMax {
+		replies = append(replies, use(fmt.Sprintf("l%d", i), "stripe_get", `{}`))
+	}
+	replies = append(replies, use("c2", "stripe_refund", `{}`), say("Waiting."))
+	m := &script{replies: replies}
+	a := newAgent(m, big, heldRefund())
+	a.MaxTurns, a.MaxCost = 100, 100_000_000
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), a, r, nil, "Go.", nil)
+	if err != nil || out.Stop != agent.Paused {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+	before := out.Turn.Before
+	if len(before) != agent.BeforeMax || before[0].Blocks[0].CallID != fmt.Sprintf("l%d", agent.BeforeMax/2) {
+		t.Fatalf("kept %d turns, from %+v", len(before), before[0])
+	}
+	if res := before[1].Blocks[0].Result; len(res) > agent.BeforeResultMax+64 || !strings.HasPrefix(res, "xxx") {
+		t.Fatalf("kept a result of %d bytes", len(res))
+	}
+}
+
+// Long tool inputs aren't cut like results: the kept turns stay within
+// BeforeBytes, the newest kept, so the run still pauses and keeps its hold.
+func TestWhatAPausedRunKeepsFitsItsByteBudget(t *testing.T) {
+	big := `{"q":"` + strings.Repeat("y", 100<<10) + `"}`
+	var replies []model.Reply
+	for i := range 10 {
+		replies = append(replies, use(fmt.Sprintf("l%d", i), "stripe_get", big))
+	}
+	replies = append(replies, use("c2", "stripe_refund", `{}`), say("Waiting."))
+	m := &script{replies: replies}
+	a := newAgent(m, lookupTool(), heldRefund())
+	a.MaxTurns, a.MaxCost = 100, 100_000_000
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), a, r, nil, "Go.", nil)
+	if err != nil || out.Stop != agent.Paused {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+	before := out.Turn.Before
+	raw, _ := json.Marshal(before)
+	if len(raw) > agent.BeforeBytes || len(before) == 0 || len(before)%2 != 0 {
+		t.Fatalf("kept %d messages, %d bytes", len(before), len(raw))
+	}
+	if before[len(before)-2].Blocks[0].CallID != "l9" || before[0].Role != model.Assistant {
+		t.Fatalf("kept from %+v to %+v", before[0].Blocks[0].CallID, before[len(before)-2].Blocks[0].CallID)
+	}
 }
 
 func approved() []agent.ToolResultBody {
