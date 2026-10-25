@@ -61,7 +61,10 @@ COMPLETED, ERROR and CANCELLED are final.
   input), its `kiff_operation_id` (the outcome is collected by repeating the
   call with it), KIFF's exception ID (what alerts name and withdraw takes) and
   the hold's expiry. It also keeps the turn it paused in: the
-  model's message and the results of the calls KIFF didn't hold. Requirements
+  model's message and the results of the calls KIFF didn't hold, and its own
+  earlier turns since its input (their thinking left out, the latest 24, a
+  long result cut at 8 KiB), so a continued run knows what it already did.
+  Requirements
   and that turn belong to the run, not to its events, so the keep rules never
   drop them before the run ends: continuing never depends on what was kept.
 - **A hold that nobody answers expires** in KIFF: after the Card's hold expiry

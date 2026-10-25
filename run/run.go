@@ -295,6 +295,13 @@ func (r Run) steering(taken bool) []string {
 type Turn struct {
 	Reply   model.Message `json:"reply"`
 	Results []model.Block `json:"results,omitempty"`
+	// Before is what the run did before the turn it paused in, since its
+	// input: its earlier turns and their results, thinking left out (see
+	// agent.Continue). Without them a continued run didn't know what it had
+	// already done: it looked a payment up, the refund was held and approved,
+	// and it then said it had refunded without looking (kiff/tafs, the 755
+	// device test). Empty for a run that paused in its first turn.
+	Before []model.Message `json:"before,omitempty"`
 }
 
 // NewID returns a new run ID.
