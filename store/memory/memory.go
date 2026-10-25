@@ -173,11 +173,19 @@ func (m *Store) State(_ context.Context, tenant, id, run string) (session.RunSta
 }
 
 func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]session.Session, error) {
+	return m.list(tenant, agent, func(session.Session) bool { return true }, limit)
+}
+
+func (m *Store) ListOwned(_ context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+	return m.list(tenant, agent, func(s session.Session) bool { return s.Owner == "" || s.Owner == owner }, limit)
+}
+
+func (m *Store) list(tenant, agent string, keep func(session.Session) bool, limit int) ([]session.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []session.Session
 	for id, ms := range m.sessions {
-		if ms.s.Agent == agent && m.get(tenant, id) != nil {
+		if ms.s.Agent == agent && keep(ms.s) && m.get(tenant, id) != nil {
 			s := ms.s
 			s.Held = slices.Clone(s.Held)
 			out = append(out, s)

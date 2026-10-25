@@ -125,10 +125,15 @@ func indexSK(updated time.Time, id string) string {
 // minuteOf is the minute an index sort key starts with.
 func minuteOf(sk string) string { return sk[:20] }
 
-// indexItem is a session's index entry, with the TTL the session carries.
-func indexItem(tenant, agent, isk, id string, expires time.Time, held int) map[string]types.AttributeValue {
+// indexItem is a session's index entry, with the TTL the session carries
+// and its owner, if any, so ListOwned reads one owner's sessions from the
+// index alone.
+func indexItem(tenant, agent, isk, id, owner string, expires time.Time, held int) map[string]types.AttributeValue {
 	item := pkey(indexPK(tenant, agent), isk)
 	item["id"] = s(id)
+	if owner != "" {
+		item["owner"] = s(owner)
+	}
 	if held == 0 && !expires.IsZero() {
 		item["ttl"] = ttl(expires)
 	}
@@ -202,6 +207,9 @@ func metaItem(se session.Session) map[string]types.AttributeValue {
 	item["updated"] = nanos(se.Updated)
 	item["expires"] = nanos(se.Expires)
 	item["isk"] = s(indexSK(se.Updated, se.ID))
+	if se.Owner != "" {
+		item["owner"] = s(se.Owner)
+	}
 	item["runs"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}}
 	if !se.Expires.IsZero() {
 		item["ttl"] = ttl(se.Expires)
@@ -225,6 +233,7 @@ func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 		Started: getTime(item, "started"),
 		Updated: getTime(item, "updated"),
 		Expires: getTime(item, "expires"),
+		Owner:   getS(item, "owner"),
 	}, isk: getS(item, "isk"), deleting: getBool(item, "deleting")}
 	if v, ok := item["held"].(*types.AttributeValueMemberSS); ok {
 		m.Held = slices.Sorted(slices.Values(v.Value))
@@ -287,7 +296,7 @@ func eventOf(id string, item map[string]types.AttributeValue) session.Event {
 
 func (st *Store) Create(ctx context.Context, se session.Session) error {
 	se.Held = nil
-	index := indexItem(se.Tenant, se.Agent, indexSK(se.Updated, se.ID), se.ID, se.Expires, 0)
+	index := indexItem(se.Tenant, se.Agent, indexSK(se.Updated, se.ID), se.ID, se.Owner, se.Expires, 0)
 	_, err := st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
 		{Put: &types.Put{TableName: &st.table, Item: metaItem(se), ConditionExpression: aws.String("attribute_not_exists(pk)")}},
 		{Put: &types.Put{TableName: &st.table, Item: index}},
@@ -551,7 +560,7 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 		c.expiryAsRead(m) // they decide the moved entry's TTL
 		move = []types.TransactWriteItem{
 			{Delete: &types.Delete{TableName: &st.table, Key: pkey(indexPK(tenant, m.Agent), m.isk)}},
-			{Put: &types.Put{TableName: &st.table, Item: indexItem(tenant, m.Agent, isk, id, expires, len(m.Held))}},
+			{Put: &types.Put{TableName: &st.table, Item: indexItem(tenant, m.Agent, isk, id, m.Owner, expires, len(m.Held))}},
 		}
 		index = nil // the moved entry carries its TTL itself
 	}
@@ -677,12 +686,33 @@ const listPage = 8
 // session in an older minute was updated before all of those. So it reads
 // about as many sessions as it returns, however long the agent's history.
 func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]session.Session, error) {
+	return st.list(ctx, tenant, agent, "", limit)
+}
+
+// ListOwned reads the agent's index newest first, keeping the entries of
+// owner and those with no owner (#219). It reads past other owners'
+// entries, which a filter drops after the read: what it costs grows with the
+// sessions of the agent's other users updated since, not with the agent's
+// history.
+func (st *Store) ListOwned(ctx context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+	if owner == "" {
+		return nil, errors.New("dynamodb: ListOwned needs an owner")
+	}
+	return st.list(ctx, tenant, agent, owner, limit)
+}
+
+func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
 	in := &ddb.QueryInput{
 		TableName:                 &st.table,
 		KeyConditionExpression:    aws.String("pk = :pk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(indexPK(tenant, agent))},
 		ScanIndexForward:          aws.Bool(false),
 		ConsistentRead:            aws.Bool(true),
+	}
+	if owner != "" {
+		in.FilterExpression = aws.String("attribute_not_exists(#owner) OR #owner = :owner")
+		in.ExpressionAttributeNames = map[string]string{"#owner": "owner"}
+		in.ExpressionAttributeValues[":owner"] = s(owner)
 	}
 	if limit > 0 {
 		in.Limit = aws.Int32(int32(min(limit+listPage, 1000)))

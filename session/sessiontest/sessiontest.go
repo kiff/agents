@@ -49,6 +49,7 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"TenantsAreApart", tenantsAreApart},
 		{"ListNewestFirst", listNewestFirst},
 		{"ListLimitIsTheNewest", listLimitIsTheNewest},
+		{"ListOwnedIsTheOwners", listOwnedIsTheOwners},
 		{"ConcurrentRecordsAllLand", concurrentRecordsAllLand},
 		{"ConcurrentRunsInOneSession", concurrentRunsInOneSession},
 		{"BodiesAreCopied", bodiesAreCopied},
@@ -633,6 +634,60 @@ func listLimitIsTheNewest(t *testing.T, b Backend, c *clock) {
 				t.Fatalf("limit %d: session %d is %s, want %s", limit, i, l[i].ID, all[i].ID)
 			}
 		}
+	}
+}
+
+// An owned session is its owner's thread (#219): ListOwned gives an owner
+// their sessions and the ones from before owners, never another owner's,
+// newest first, after the session moves in the index as it's written to.
+func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(0), c)
+	openOwned := func(owner string) *session.Recording {
+		t.Helper()
+		s, err := r.OpenOwned(ctx, "t1", "refunds", session.KindChat, owner)
+		check(t, err)
+		return startRun(t, c, r, s, "r1")
+	}
+	legacy := begin(t, c, r, "refunds", session.KindChat)
+	c.add(time.Minute)
+	ana := openOwned("member:ana")
+	c.add(time.Minute)
+	luis := openOwned("member:luis")
+	c.add(time.Minute)
+	anaAgain := openOwned("member:ana")
+	c.add(2 * time.Minute)
+	record(t, ana, session.OwnerMessage, "again") // moves ana's first chat in the index
+	check(t, ana.Flush(ctx))
+
+	ids := func(l []session.Session) []string {
+		var out []string
+		for _, s := range l {
+			out = append(out, s.ID)
+		}
+		return out
+	}
+	got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 0)
+	check(t, err)
+	want := []string{ana.Session().ID, anaAgain.Session().ID, legacy.Session().ID}
+	if !slices.Equal(ids(got), want) {
+		t.Fatalf("ana's = %v, want %v", ids(got), want)
+	}
+	if got[0].Owner != "member:ana" || got[2].Owner != "" {
+		t.Fatalf("owners = %q, %q", got[0].Owner, got[2].Owner)
+	}
+	if got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 1); err != nil || !slices.Equal(ids(got), want[:1]) {
+		t.Fatalf("ana's, limit 1 = %v, %v", ids(got), err)
+	}
+	got, err = b.ListOwned(ctx, "t1", "refunds", "member:luis", 0)
+	check(t, err)
+	if want := []string{luis.Session().ID, legacy.Session().ID}; !slices.Equal(ids(got), want) {
+		t.Fatalf("luis's = %v, want %v", ids(got), want)
+	}
+	if s, _ := read(t, b, luis); s.Owner != "member:luis" {
+		t.Fatalf("read back, owner = %q", s.Owner)
+	}
+	if all := list(t, b, "t1", 0); len(all) != 4 {
+		t.Fatalf("List still lists every session: %d", len(all))
 	}
 }
 

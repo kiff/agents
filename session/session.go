@@ -42,6 +42,11 @@ type Session struct {
 	Updated time.Time `json:"updated"`
 	Expires time.Time `json:"expires,omitzero"`
 	Held    []string  `json:"held,omitempty"`
+	// Owner is who the session is the thread of (#219): the requester who
+	// opened it, as run.Requester's Key ("member:<subject>", "door:<id>").
+	// Empty for a job's session, and for sessions from before owners. Set
+	// once, when the session is opened.
+	Owner string `json:"owner,omitempty"`
 }
 
 // Expired reports whether the session is gone as of now: its Expires has
@@ -343,6 +348,11 @@ type Store interface {
 	State(ctx context.Context, tenant, session, run string) (RunState, error)
 	// List returns an agent's sessions, most recently updated first, at most limit.
 	List(ctx context.Context, tenant, agent string, limit int) ([]Session, error)
+	// ListOwned is List for one owner: the agent's sessions whose Owner is
+	// owner, and those with no owner (from before owners, kept as they
+	// were), most recently updated first, at most limit. Never another
+	// owner's.
+	ListOwned(ctx context.Context, tenant, agent, owner string, limit int) ([]Session, error)
 	// Hold marks an open run paused: the session doesn't expire until the run
 	// ends. Holding a held run again changes nothing; a run that isn't open
 	// can't be held (ErrEnded).

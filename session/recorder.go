@@ -58,10 +58,15 @@ func (r *Recorder) expires(now time.Time) time.Time {
 	return time.Time{}
 }
 
-// Open creates a session, a thread for an agent's runs.
+// Open creates a session, a thread for an agent's runs, with no owner.
 func (r *Recorder) Open(ctx context.Context, tenant, agent string, kind Kind) (Session, error) {
+	return r.OpenOwned(ctx, tenant, agent, kind, "")
+}
+
+// OpenOwned creates a session that is owner's thread (Session.Owner).
+func (r *Recorder) OpenOwned(ctx context.Context, tenant, agent string, kind Kind, owner string) (Session, error) {
 	now := r.now().UTC()
-	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Started: now, Updated: now, Expires: r.expires(now)}
+	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Started: now, Updated: now, Expires: r.expires(now), Owner: owner}
 	if err := r.store.Create(ctx, s); err != nil {
 		return Session{}, err
 	}
