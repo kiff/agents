@@ -36,6 +36,7 @@
 package dynamodb
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1057,21 +1058,52 @@ func (st *Store) ListNotes(ctx context.Context, tenant, agent string) ([]session
 	}
 	out := make([]session.Note, len(items))
 	for i, item := range items {
-		out[i] = session.Note{Tenant: tenant, Agent: agent, Name: getS(item, "sk"), Text: getS(item, "text"), Updated: getTime(item, "updated")}
+		// A note from before scopes has no "name": its sort key is its name,
+		// and it is shared.
+		name := getS(item, "name")
+		if name == "" {
+			name = getS(item, "sk")
+		}
+		out[i] = session.Note{Tenant: tenant, Agent: agent, Scope: getS(item, "scope"), Name: name, Text: getS(item, "text"),
+			Updated: getTime(item, "updated"), Session: getS(item, "session"), Run: getS(item, "run"), Requester: getS(item, "requester")}
 	}
-	return out, nil // in sort key order: by name
+	slices.SortFunc(out, func(a, b session.Note) int { return cmp.Or(cmp.Compare(a.Scope, b.Scope), cmp.Compare(a.Name, b.Name)) })
+	return out, nil
+}
+
+// noteSK is a note's sort key: a shared note's is its name, as before
+// scopes; a requester's is "@<scope>|<name>", apart from every shared one
+// (the memory tool takes no name that starts with "@").
+func noteSK(scope, name string) string {
+	if scope == session.Shared {
+		return name
+	}
+	return "@" + scope + "|" + name
 }
 
 func (st *Store) PutNote(ctx context.Context, note session.Note) error {
-	item := pkey(notesPK(note.Tenant, note.Agent), note.Name)
+	item := pkey(notesPK(note.Tenant, note.Agent), noteSK(note.Scope, note.Name))
+	item["name"] = s(note.Name)
+	if note.Scope != session.Shared {
+		item["scope"] = s(note.Scope)
+	}
 	item["text"] = s(note.Text)
 	item["updated"] = nanos(note.Updated)
+	if note.Session != "" {
+		item["session"] = s(note.Session)
+	}
+	if note.Run != "" {
+		item["run"] = s(note.Run)
+	}
+	if note.Requester != "" {
+		item["requester"] = s(note.Requester)
+	}
 	_, err := st.db.PutItem(ctx, &ddb.PutItemInput{TableName: &st.table, Item: item})
 	return err
 }
 
-func (st *Store) DeleteNote(ctx context.Context, tenant, agent, name string) error {
-	_, err := st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(notesPK(tenant, agent), name)})
+func (st *Store) DeleteNote(ctx context.Context, tenant, agent, scope, name string) error {
+	_, err := st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(notesPK(tenant, agent), noteSK(scope, name))})
 	return err
 }
 

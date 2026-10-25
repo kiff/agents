@@ -10,6 +10,7 @@
 package run
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -53,6 +54,39 @@ const (
 	ByManager RequesterKind = "manager" // a manager acting on someone's work, by their KIFF subject
 )
 
+// requesterKey keys a run's requester on a context.
+type requesterKey struct{}
+
+// WithRequester marks ctx with the run's requester: set by the runner from
+// the stored run, never by the model, so a tool acts for whoever asked
+// (#219).
+func WithRequester(ctx context.Context, q Requester) context.Context {
+	return context.WithValue(ctx, requesterKey{}, q)
+}
+
+// RequesterFrom is the requester ctx is marked with, and whether it is.
+func RequesterFrom(ctx context.Context) (Requester, bool) {
+	q, ok := ctx.Value(requesterKey{}).(Requester)
+	return q, ok
+}
+
+// Ref names the run a tool is called in: its session and its ID. Set by the
+// runner, never by the model.
+type Ref struct{ Session, Run string }
+
+type refKey struct{}
+
+// WithRef marks ctx with the run it belongs to.
+func WithRef(ctx context.Context, r Ref) context.Context {
+	return context.WithValue(ctx, refKey{}, r)
+}
+
+// RefFrom is the run ctx is marked with, and whether it is.
+func RefFrom(ctx context.Context) (Ref, bool) {
+	r, ok := ctx.Value(refKey{}).(Ref)
+	return r, ok
+}
+
 // MaxRequesterID is the longest requester ID.
 const MaxRequesterID = 200
 
@@ -65,14 +99,15 @@ func (q Requester) Key() string {
 	return string(q.Kind) + ":" + q.ID
 }
 
-// Valid reports whether q names a requester of a known kind.
+// Valid reports whether q names a requester of a known kind. An ID has no
+// ":" (a key's separator) and no "|" (the stores' separator in keys).
 func (q Requester) Valid() bool {
 	switch q.Kind {
 	case ByMember, ByDoor, ByManager:
 	default:
 		return false
 	}
-	return q.ID != "" && len(q.ID) <= MaxRequesterID && !strings.ContainsAny(q.ID, ":\n")
+	return q.ID != "" && len(q.ID) <= MaxRequesterID && !strings.ContainsAny(q.ID, ":|\n")
 }
 
 // Trigger is what started a run.

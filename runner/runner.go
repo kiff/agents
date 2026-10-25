@@ -290,6 +290,14 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		loop = run.WithTrial(loop, run.Trial{Draft: r.Draft, Run: r.ID})
 		version = r.AgentVersion
 	}
+	// Its tools know their run, and act for whoever asked: the memory tool
+	// reads and writes that person's notes (#219).
+	ctx = run.WithRef(ctx, run.Ref{Session: r.Session, Run: r.ID})
+	loop = run.WithRef(loop, run.Ref{Session: r.Session, Run: r.ID})
+	if r.Requester.Key() != "" {
+		ctx = run.WithRequester(ctx, r.Requester)
+		loop = run.WithRequester(loop, r.Requester)
+	}
 	a, d, err := rn.Builder.BuildVersion(ctx, tenant, r.Agent, r.ID, version)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))

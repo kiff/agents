@@ -161,6 +161,7 @@ func (s *Server) Handler() http.Handler {
 	route("PUT /skills/{name}/{version}", s.putSkill)
 	route("GET /agents/{id}/memories", s.listMemories)
 	route("DELETE /agents/{id}/memories/{name}", s.forget)
+	route("POST /agents/{id}/memories/{name}/share", s.shareMemory)
 
 	route("GET /sessions", s.listSessions)
 	route("GET /sessions/{id}", s.getSession)
@@ -569,9 +570,18 @@ func (s *Server) listMemories(ctx context.Context, c Caller, r *http.Request) (i
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
+	// owner: a person's view (#219), the shared notes and their own;
+	// without it, every note, each with its scope.
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
 	notes, err := s.Notes.ListNotes(ctx, c.Tenant, id)
 	if err != nil {
 		return 0, nil, err
+	}
+	if owner != "" {
+		notes = session.NotesFor(notes, owner)
 	}
 	if notes == nil {
 		notes = []session.Note{}
@@ -584,10 +594,68 @@ func (s *Server) forget(ctx context.Context, c Caller, r *http.Request) (int, an
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
-	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, r.PathValue("name")); err != nil {
+	// scope: a requester's note (#219), "member:<subject>"; without it, the
+	// shared one of that name.
+	scope, err := scopeParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, r.PathValue("name")); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// shareMemory makes one requester's note shared (#219): every run of the
+// agent reads it from then on. It keeps where the note came from, and the
+// requester no longer has it as their own. A shared note of that name with
+// other text is a conflict: forget it first.
+func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	id, name := r.PathValue("id"), r.PathValue("name")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	scope, err := scopeParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if scope == session.Shared {
+		return 0, nil, bad("scope names whose note to share, as in member:<subject>")
+	}
+	notes, err := s.Notes.ListNotes(ctx, c.Tenant, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	var own, shared *session.Note
+	for i, n := range notes {
+		switch {
+		case n.Name != name:
+		case n.Scope == scope:
+			own = &notes[i]
+		case n.Scope == session.Shared:
+			shared = &notes[i]
+		}
+	}
+	if own == nil {
+		return 0, nil, session.ErrNotFound
+	}
+	if shared != nil && shared.Text != own.Text {
+		return 0, nil, conflict("a shared note of that name already says something else: forget it first")
+	}
+	n := *own
+	n.Scope = session.Shared
+	if n.Requester == "" {
+		n.Requester = scope
+	}
+	// Shared first: a failure between the two leaves the note in both
+	// places, never in neither, and sharing again finishes it.
+	if err := s.Notes.PutNote(ctx, n); err != nil {
+		return 0, nil, err
+	}
+	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, name); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, n, nil
 }
 
 // Sessions.
@@ -624,6 +692,20 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 		list = []session.Session{}
 	}
 	return http.StatusOK, map[string]any{"sessions": list}, nil
+}
+
+// scopeParam is the "scope" query parameter, a requester's key, checked as
+// owner is; empty is the shared scope.
+func scopeParam(r *http.Request) (string, error) {
+	v := r.URL.Query().Get("scope")
+	if v == "" {
+		return session.Shared, nil
+	}
+	kind, id, _ := strings.Cut(v, ":")
+	if q := (run.Requester{Kind: run.RequesterKind(kind), ID: id}); !q.Valid() {
+		return "", bad("scope is a requester's kind and id, as in member:<subject>")
+	}
+	return v, nil
 }
 
 // ownerParam is the "owner" query parameter, a requester's key

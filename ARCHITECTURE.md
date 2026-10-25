@@ -160,7 +160,7 @@ verified; the phone never calls it directly.
 | `POST /agents/{id}/runs/{run_id}/messages` | Steer: a message the owner wrote while the run goes, taken at its next checkpoint (202). 409 for a run that ended or was asked to stop: send it as a new run |
 | `POST /agents/{id}/runs/{run_id}/continue`, `POST /agents/{id}/holds/{exception}/continue` | Continue a paused run whose requirements KIFF has resolved, named by its ID or by one of its held calls. Holds no alert has resolved yet are asked of KIFF first; one KIFF still holds is 409, and KIFF not answering is 503 |
 | `GET /sessions?agent_id=&owner=`, `GET /sessions/{id}?owner=`, `DELETE /sessions/{id}`, `POST /sessions/{id}/archive?owner=`, `POST /sessions/{id}/unarchive?owner=` | Threads and their runs. With `owner` (a requester, `member:<id>`), only that person's threads and those from before owners: another person's is 404 (#219). Archiving puts a chat away: it says `archived`, and a live message no longer goes on in it |
-| `GET /agents/{id}/memories`, `DELETE /agents/{id}/memories/{name}` | Read and forget notes |
+| `GET /agents/{id}/memories?owner=`, `DELETE /agents/{id}/memories/{name}?scope=`, `POST /agents/{id}/memories/{name}/share?scope=` | Read and forget notes. Each note has a `scope`: none for a shared note, or a requester's key (`member:<id>`) for a person's own (#219). With `owner`, the shared notes and that person's own; without it, every note. Forgetting names the note's scope (none: the shared one). Sharing makes a person's note shared, keeping where it came from: 404 if they have none of that name, 409 if a shared one of that name says something else |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |
 | `POST /agents/{id}/events` | Work that came in (a Stripe event, an e-invoice), verified by the caller: one background run per event key |
 | `POST /kiff/alerts` | KIFF's signed hold-answered alert: resolve the requirement, continue the run in the background. Answers 200 once the answer is recorded, whatever the run's state (a repeat, a cancelled run), so KIFF stops redelivering |
@@ -230,7 +230,13 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   recorded: each run makes its own.
 - **Memory** is the agent's notes, written through its memory tool. Each update
   costs a tool call, so the turn and cost caps bound it; notes live until
-  forgotten or the agent is removed.
+  forgotten or the agent is removed. A note is shared, or one requester's
+  (#219). A person's run reads the shared notes and their own, and writes
+  and forgets only their own; a door's sender reads the shared ones and
+  changes none; a run no one asked for (a schedule's) reads and writes the
+  shared ones. Each note keeps the session, run and requester it came from.
+  Notes from before scopes are shared. A person's note becomes shared only
+  through the share route.
 - **Removing an agent** withdraws its paused runs' held calls in KIFF, then deletes its sessions, runs, events, notes and schedules.
 
 ## Running it
