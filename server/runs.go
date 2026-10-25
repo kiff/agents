@@ -239,7 +239,7 @@ func requesterOf(q *run.Requester) (run.Requester, error) {
 		return run.Requester{}, nil
 	}
 	if !q.Valid() {
-		return run.Requester{}, bad("requester is {kind: member, door or manager; id}")
+		return run.Requester{}, bad("requester is {kind: member, door, manager or agent; id}")
 	}
 	return *q, nil
 }
@@ -629,7 +629,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	var q run.Requester
 	if body.Requester != nil {
 		if q = *body.Requester; !q.Valid() {
-			s.fail(w, r, bad("requester is {kind: member, door or manager; id}"))
+			s.fail(w, r, bad("requester is {kind: member, door, manager or agent; id}"))
 			return
 		}
 	}
