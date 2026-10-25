@@ -10,9 +10,11 @@
 package run
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/kiff/agents/model"
@@ -32,6 +34,81 @@ const (
 
 // Final reports whether a run in this status can change no more.
 func (s Status) Final() bool { return s == Completed || s == Error || s == Cancelled }
+
+// Requester is who asked for a run (#219): a member of the account, a
+// door's sender, or a manager acting on someone's work. The agent acts on
+// its own Cards whoever asks; the requester is whose thread the run is in,
+// and who it is attributed to. The caller names it, from the person's own
+// signed-in session or the door's checked sender.
+type Requester struct {
+	Kind RequesterKind `json:"kind"`
+	ID   string        `json:"id"`
+}
+
+// RequesterKind is what kind of requester asked.
+type RequesterKind string
+
+const (
+	ByMember  RequesterKind = "member"  // a person on the account, by their KIFF subject
+	ByDoor    RequesterKind = "door"    // a door's sender, by the door's id for them
+	ByManager RequesterKind = "manager" // a manager acting on someone's work, by their KIFF subject
+)
+
+// requesterKey keys a run's requester on a context.
+type requesterKey struct{}
+
+// WithRequester marks ctx with the run's requester: set by the runner from
+// the stored run, never by the model, so a tool acts for whoever asked
+// (#219).
+func WithRequester(ctx context.Context, q Requester) context.Context {
+	return context.WithValue(ctx, requesterKey{}, q)
+}
+
+// RequesterFrom is the requester ctx is marked with, and whether it is.
+func RequesterFrom(ctx context.Context) (Requester, bool) {
+	q, ok := ctx.Value(requesterKey{}).(Requester)
+	return q, ok
+}
+
+// Ref names the run a tool is called in: its session and its ID. Set by the
+// runner, never by the model.
+type Ref struct{ Session, Run string }
+
+type refKey struct{}
+
+// WithRef marks ctx with the run it belongs to.
+func WithRef(ctx context.Context, r Ref) context.Context {
+	return context.WithValue(ctx, refKey{}, r)
+}
+
+// RefFrom is the run ctx is marked with, and whether it is.
+func RefFrom(ctx context.Context) (Ref, bool) {
+	r, ok := ctx.Value(refKey{}).(Ref)
+	return r, ok
+}
+
+// MaxRequesterID is the longest requester ID.
+const MaxRequesterID = 200
+
+// Key is the requester as a session's owner: "member:<subject>". Empty for
+// no requester.
+func (q Requester) Key() string {
+	if q.ID == "" {
+		return ""
+	}
+	return string(q.Kind) + ":" + q.ID
+}
+
+// Valid reports whether q names a requester of a known kind. An ID has no
+// ":" (a key's separator) and no "|" (the stores' separator in keys).
+func (q Requester) Valid() bool {
+	switch q.Kind {
+	case ByMember, ByDoor, ByManager:
+	default:
+		return false
+	}
+	return q.ID != "" && len(q.ID) <= MaxRequesterID && !strings.ContainsAny(q.ID, ":|\n")
+}
 
 // Trigger is what started a run.
 type Trigger string
@@ -57,6 +134,13 @@ type Run struct {
 	Agent   string  `json:"agent"`
 	Session string  `json:"session"`
 	Trigger Trigger `json:"trigger"`
+	// Requester is who asked for the run (#219); zero for a run no one
+	// asked for (a schedule's, an event's) or from before requesters.
+	Requester Requester `json:"requester,omitzero"`
+	// NewSession is whether the run opened its session: with a live chat,
+	// the server picks the session, and the caller learns from this whether
+	// the message began a new one (#219).
+	NewSession bool `json:"new_session,omitempty"`
 	// Source is what started the run within its trigger: the schedule's ID
 	// for a scheduled run, the event's for one an event started; empty for
 	// the owner's runs and evals'. ListSource lists the runs one source
@@ -184,6 +268,9 @@ type Steering struct {
 	At   time.Time `json:"at"`
 	// Taken is set when the run took the message, at a checkpoint.
 	Taken bool `json:"taken,omitempty"`
+	// Requester is who wrote it, if the caller said (#219): their flood
+	// guard counts it.
+	Requester Requester `json:"requester,omitzero"`
 }
 
 // Taken is the text of each message the run has taken, in order.

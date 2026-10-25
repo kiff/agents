@@ -49,6 +49,8 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"TenantsAreApart", tenantsAreApart},
 		{"ListNewestFirst", listNewestFirst},
 		{"ListLimitIsTheNewest", listLimitIsTheNewest},
+		{"ListOwnedIsTheOwners", listOwnedIsTheOwners},
+		{"ArchivedIsKept", archivedIsKept},
 		{"ConcurrentRecordsAllLand", concurrentRecordsAllLand},
 		{"ConcurrentRunsInOneSession", concurrentRunsInOneSession},
 		{"BodiesAreCopied", bodiesAreCopied},
@@ -636,6 +638,87 @@ func listLimitIsTheNewest(t *testing.T, b Backend, c *clock) {
 	}
 }
 
+// An owned session is its owner's thread (#219): ListOwned gives an owner
+// their sessions and the ones from before owners, never another owner's,
+// newest first, after the session moves in the index as it's written to.
+func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(0), c)
+	openOwned := func(owner string) *session.Recording {
+		t.Helper()
+		s, err := r.OpenOwned(ctx, "t1", "refunds", session.KindChat, owner)
+		check(t, err)
+		return startRun(t, c, r, s, "r1")
+	}
+	legacy := begin(t, c, r, "refunds", session.KindChat)
+	c.add(time.Minute)
+	ana := openOwned("member:ana")
+	c.add(time.Minute)
+	luis := openOwned("member:luis")
+	c.add(time.Minute)
+	anaAgain := openOwned("member:ana")
+	c.add(2 * time.Minute)
+	record(t, ana, session.OwnerMessage, "again") // moves ana's first chat in the index
+	check(t, ana.Flush(ctx))
+
+	ids := func(l []session.Session) []string {
+		var out []string
+		for _, s := range l {
+			out = append(out, s.ID)
+		}
+		return out
+	}
+	got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 0)
+	check(t, err)
+	want := []string{ana.Session().ID, anaAgain.Session().ID, legacy.Session().ID}
+	if !slices.Equal(ids(got), want) {
+		t.Fatalf("ana's = %v, want %v", ids(got), want)
+	}
+	if got[0].Owner != "member:ana" || got[2].Owner != "" {
+		t.Fatalf("owners = %q, %q", got[0].Owner, got[2].Owner)
+	}
+	if got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 1); err != nil || !slices.Equal(ids(got), want[:1]) {
+		t.Fatalf("ana's, limit 1 = %v, %v", ids(got), err)
+	}
+	got, err = b.ListOwned(ctx, "t1", "refunds", "member:luis", 0)
+	check(t, err)
+	if want := []string{luis.Session().ID, legacy.Session().ID}; !slices.Equal(ids(got), want) {
+		t.Fatalf("luis's = %v, want %v", ids(got), want)
+	}
+	if s, _ := read(t, b, luis); s.Owner != "member:luis" {
+		t.Fatalf("read back, owner = %q", s.Owner)
+	}
+	if all := list(t, b, "t1", 0); len(all) != 4 {
+		t.Fatalf("List still lists every session: %d", len(all))
+	}
+}
+
+// A chat its owner archives says so when listed and read, and can be put
+// back; one that isn't there can't be archived.
+func archivedIsKept(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(0), c)
+	s, err := r.OpenOwned(ctx, "t1", "refunds", session.KindChat, "member:ana")
+	check(t, err)
+	check(t, b.SetArchived(ctx, "t1", s.ID, true))
+	got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 0)
+	check(t, err)
+	if len(got) != 1 || !got[0].Archived || got[0].Owner != "member:ana" {
+		t.Fatalf("listed = %+v", got)
+	}
+	if read, _, err := b.Read(ctx, "t1", s.ID); err != nil || !read.Archived {
+		t.Fatalf("read = %+v, %v", read, err)
+	}
+	check(t, b.SetArchived(ctx, "t1", s.ID, false))
+	if read, _, _ := b.Read(ctx, "t1", s.ID); read.Archived {
+		t.Fatal("put back, it's still archived")
+	}
+	if err := b.SetArchived(ctx, "t1", "nope", true); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("archiving a session that isn't there: %v", err)
+	}
+	if err := b.SetArchived(ctx, "t2", s.ID, true); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("archiving another tenant's session: %v", err)
+	}
+}
+
 // Tool calls may run in parallel and record at once: every event lands, once,
 // numbered without gaps.
 func concurrentRecordsAllLand(t *testing.T, b Backend, c *clock) {
@@ -723,13 +806,45 @@ func notes(t *testing.T, b Backend, c *clock) {
 	if len(n) != 2 || n[0].Name != "a" || n[1].Text != "3" {
 		t.Fatalf("notes = %+v", n)
 	}
-	check(t, b.DeleteNote(ctx, "t1", "refunds", "a"))
-	check(t, b.DeleteNote(ctx, "t1", "refunds", "missing"))
+	check(t, b.DeleteNote(ctx, "t1", "refunds", session.Shared, "a"))
+	check(t, b.DeleteNote(ctx, "t1", "refunds", session.Shared, "missing"))
 	if n := listNotes(t, b, "t2", "refunds"); len(n) != 0 {
 		t.Fatalf("t2 sees t1's notes")
 	}
 	if n := listNotes(t, b, "t1", "refunds"); len(n) != 1 || n[0].Name != "b" {
 		t.Fatalf("after forgetting: %+v", n)
+	}
+
+	// Scopes (#219): a requester's note of a name is apart from the shared
+	// one and from another requester's, and keeps where it came from.
+	ana, luis := "member:ana", "member:luis"
+	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Scope: ana, Name: "b", Text: "ana's",
+		Session: "s1", Run: "r1", Requester: ana}))
+	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Scope: luis, Name: "b", Text: "luis's"}))
+	// A name that looks like a scoped key stays a shared note of its own.
+	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: "member:ana|b", Text: "shared"}))
+	n = listNotes(t, b, "t1", "refunds")
+	if len(n) != 4 || n[0].Scope != session.Shared || n[0].Name != "b" || n[0].Text != "3" ||
+		n[1].Name != "member:ana|b" || n[2].Scope != ana || n[2].Text != "ana's" || n[3].Scope != luis || n[3].Text != "luis's" {
+		t.Fatalf("scoped notes = %+v", n)
+	}
+	if n[2].Session != "s1" || n[2].Run != "r1" || n[2].Requester != ana {
+		t.Fatalf("ana's note lost its source: %+v", n[2])
+	}
+	if got := session.NotesFor(n, ana); len(got) != 3 || got[2].Text != "ana's" {
+		t.Fatalf("ana reads %+v", got)
+	}
+	if got := session.NotesFor(n, ""); len(got) != 2 {
+		t.Fatalf("no requester reads %+v", got)
+	}
+	check(t, b.DeleteNote(ctx, "t1", "refunds", ana, "b"))
+	n = listNotes(t, b, "t1", "refunds")
+	if len(n) != 3 || n[0].Text != "3" || n[2].Scope != luis {
+		t.Fatalf("after ana forgets hers: %+v", n)
+	}
+	check(t, b.DeleteNotes(ctx, "t1", "refunds"))
+	if n := listNotes(t, b, "t1", "refunds"); len(n) != 0 {
+		t.Fatalf("after forgetting all: %+v", n)
 	}
 }
 

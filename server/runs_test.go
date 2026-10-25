@@ -48,16 +48,17 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	rr.mu.Lock()
 	rr.starts = append(rr.starts, s)
 	rr.mu.Unlock()
-	if s.Session == "" {
+	opened := s.Session == "" // the contract: the run says whether it opened its session
+	if opened {
 		s.Session = "s-" + run.NewID()
-		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now}); err != nil {
+		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now, Owner: s.Requester.Key()}); err != nil {
 			return run.Run{}, err
 		}
-	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent {
-		return run.Run{}, session.ErrNotFound // the contract: another tenant's or agent's session isn't found
+	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent || !sess.OwnedBy(s.Requester.Key()) {
+		return run.Run{}, session.ErrNotFound // the contract: another tenant's, agent's or person's session isn't found
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
-	r.Source, r.AgentVersion, r.Draft = s.Source, s.Version, s.Draft
+	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession = s.Source, s.Version, s.Draft, s.Requester, opened
 	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
 		r.ID = s.ID
 		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {
@@ -1619,4 +1620,201 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 	f.want(404, code, body, "another tenant")
 	code, body = f.do("t1", "GET", "/agents/payouts/runs?limit=0", nil)
 	f.want(400, code, body, "a bad limit")
+}
+
+// Each person's chat with a shared agent is theirs alone (#219): a live
+// message goes on in its requester's own recent chat, never another's; a
+// person can't name, list or read another's; a quiet chat isn't taken up
+// again; and the run says who asked.
+func TestEachRequestersChatIsTheirOwn(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	live := func(who string) map[string]any {
+		return map[string]any{"input": "refund ch_1", "background": true, "chat": "live", "requester": map[string]any{"kind": "member", "id": who}}
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana's first message")
+	ana, _ := body["session"].(string)
+	if req, _ := body["requester"].(map[string]any); req["kind"] != "member" || req["id"] != "ana" {
+		t.Fatalf("the run's requester = %v", body["requester"])
+	}
+	if body["new_session"] != true {
+		t.Fatalf("ana's first message: new_session = %v", body["new_session"])
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana again")
+	if body["session"] != ana {
+		t.Fatalf("ana's next message went to %v, want her live chat %s", body["session"], ana)
+	}
+	if v, ok := body["new_session"]; !ok || v != false {
+		t.Fatalf("ana's message in her live chat: new_session = %v (present %v)", v, ok)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("luis"))
+	f.want(202, code, body, "luis")
+	luis, _ := body["session"].(string)
+	if luis == "" || luis == ana {
+		t.Fatalf("luis's message went to %q: ana's chat is %s", luis, ana)
+	}
+
+	// Naming another person's chat, listing or reading it: not found.
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "background": true, "session_id": ana, "requester": map[string]any{"kind": "member", "id": "luis"}})
+	f.want(404, code, body, "luis naming ana's chat")
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=member:luis", nil)
+	f.want(200, code, body, "luis's sessions")
+	listed, _ := body["sessions"].([]any)
+	if len(listed) != 1 || listed[0].(map[string]any)["id"] != luis {
+		t.Fatalf("luis's sessions = %v", listed)
+	}
+	code, body = f.do("t1", "GET", "/sessions/"+ana+"?owner=member:luis", nil)
+	f.want(404, code, body, "luis reading ana's chat")
+	code, body = f.do("t1", "GET", "/sessions/"+ana+"?owner=member:ana", nil)
+	f.want(200, code, body, "ana reading her chat")
+
+	// A chat quiet for longer than the live window isn't taken up again.
+	quiet := session.Session{ID: "s-quiet", Tenant: "t1", Agent: "payouts", Kind: session.KindChat, Started: now.Add(-2 * time.Hour), Updated: now.Add(-time.Hour), Owner: "member:zoe"}
+	if err := f.store.Create(ctx, quiet); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("zoe"))
+	f.want(202, code, body, "zoe after an hour")
+	if body["session"] == "s-quiet" {
+		t.Fatal("a chat quiet for an hour was taken up again")
+	}
+
+	for _, c := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"live with no requester", map[string]any{"input": "x", "chat": "live"}},
+		{"live with a session", map[string]any{"input": "x", "chat": "live", "session_id": ana, "requester": map[string]any{"kind": "member", "id": "ana"}}},
+		{"an unknown chat", map[string]any{"input": "x", "chat": "newest"}},
+		{"an unknown requester kind", map[string]any{"input": "x", "requester": map[string]any{"kind": "boss", "id": "ana"}}},
+		{"a requester id with a colon", map[string]any{"input": "x", "requester": map[string]any{"kind": "member", "id": "a:b"}}},
+	} {
+		code, body := f.do("t1", "POST", "/agents/payouts/runs", c.body)
+		f.want(400, code, body, c.name)
+	}
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=boss:ana", nil)
+	f.want(400, code, body, "an unknown owner kind")
+}
+
+// A chat its owner archives is put away (kiff/tafs#82): their next live
+// message starts a new chat, and another person can't archive it.
+func TestAnArchivedChatIsPutAway(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	live := func(who string) map[string]any {
+		return map[string]any{"input": "hi", "background": true, "chat": "live", "requester": map[string]any{"kind": "member", "id": who}}
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana")
+	ana, _ := body["session"].(string)
+	code, body = f.do("t1", "POST", "/sessions/"+ana+"/archive?owner=member:luis", nil)
+	f.want(404, code, body, "luis archiving ana's chat")
+	code, body = f.do("t1", "POST", "/sessions/"+ana+"/archive?owner=member:ana", nil)
+	f.want(200, code, body, "ana archiving her chat")
+	if sess, _ := body["session"].(map[string]any); sess["archived"] != true {
+		t.Fatalf("archived = %v", body["session"])
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", live("ana"))
+	f.want(202, code, body, "ana after archiving")
+	if body["session"] == ana {
+		t.Fatal("a live message went on in the chat she archived")
+	}
+	code, body = f.do("t1", "POST", "/sessions/"+ana+"/unarchive?owner=member:ana", nil)
+	f.want(200, code, body, "ana putting it back")
+	if sess, _ := body["session"].(map[string]any); sess["archived"] == true {
+		t.Fatalf("still archived: %v", body["session"])
+	}
+}
+
+// The flood guard counts each requester's own messages: one person at the
+// limit is refused, and another still writes (#219).
+func TestTheFloodGuardIsPerRequester(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.server.FloodMessages = 2
+	msg := func(who string) map[string]any {
+		return map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "member", "id": who}}
+	}
+	for i := range 2 {
+		code, body := f.do("t1", "POST", "/agents/payouts/runs", msg("ana"))
+		f.want(202, code, body, fmt.Sprintf("ana's message %d", i+1))
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", msg("ana"))
+	f.want(429, code, body, "ana past her guard")
+	if m, _ := body["error"].(string); !strings.Contains(m, "2 messages in 10 minutes") {
+		t.Fatalf("refusal = %q", m)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("luis"))
+	f.want(202, code, body, "luis, while ana is at her guard")
+	// A door's sender has the door's own caps: none here.
+	for i := range 3 {
+		code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "door", "id": "d1-sender"}})
+		f.want(202, code, body, fmt.Sprintf("a door's sender, message %d", i+1))
+	}
+}
+
+// A message steered into a run counts toward its writer's flood guard, and a
+// run another person asked for isn't theirs to steer (#219).
+func TestSteeringIsEachRequesters(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.server.FloodMessages = 3
+	who := func(id string) map[string]any { return map[string]any{"kind": "member", "id": id} }
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": who("ana")})
+	f.want(202, code, body, "ana's run")
+	id, _ := body["id"].(string)
+	steer := func(by map[string]any) (int, map[string]any) {
+		b := map[string]any{"text": "only the €20 one"}
+		if by != nil {
+			b["requester"] = by
+		}
+		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages", b)
+	}
+
+	code, body = steer(who("luis"))
+	f.want(404, code, body, "luis steering ana's run")
+	code, body = steer(map[string]any{"kind": "member", "id": "a|b"})
+	f.want(400, code, body, "a bad requester")
+	code, body = steer(who("ana"))
+	f.want(202, code, body, "ana steering")
+	if st, _ := body["steering"].([]any); len(st) != 1 || st[0].(map[string]any)["requester"].(map[string]any)["id"] != "ana" {
+		t.Fatalf("steering = %v", body["steering"])
+	}
+	// Her run and one steer are two; a third message is her last.
+	code, body = steer(who("ana"))
+	f.want(202, code, body, "ana's third message")
+	code, body = steer(who("ana"))
+	f.want(429, code, body, "ana steering past her guard")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": who("ana")})
+	f.want(429, code, body, "ana's new run past her guard")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": who("luis")})
+	f.want(202, code, body, "luis meanwhile")
+
+	// A run from before the window still holds messages steered in it.
+	old := run.New("t1", "payouts", "s-old", run.ByOwner, "hi", now.Add(-time.Hour))
+	old.Requester = run.Requester{Kind: run.ByMember, ID: "zoe"}
+	if err := f.runs.Create(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	id = old.ID
+	for i := range 3 {
+		code, body = steer(who("zoe"))
+		f.want(202, code, body, fmt.Sprintf("zoe's steer %d into an older run", i+1))
+	}
+	code, body = steer(who("zoe"))
+	f.want(429, code, body, "zoe past her guard, by steers alone")
+
+	// Without a requester, steering is as before: no guard, any run.
+	code, body = steer(nil)
+	f.want(202, code, body, "a steer naming no one")
+
+	// Stopping: another person's run is not found; one's own stops.
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": who("ana")})
+	f.want(404, code, body, "ana stopping zoe's run")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": map[string]any{"kind": "member", "id": "a|b"}})
+	f.want(400, code, body, "stopping as a bad requester")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+id+"/cancel", map[string]any{"requester": who("zoe")})
+	f.want(200, code, body, "zoe stopping her run")
 }

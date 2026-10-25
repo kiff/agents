@@ -356,6 +356,77 @@ func TestMemories(t *testing.T) {
 	}
 }
 
+// #219: a person reads the shared notes and their own; a note of theirs is
+// forgotten by its scope, and made shared on purpose.
+func TestEachPersonsMemories(t *testing.T) {
+	f := newFixture(t)
+	f.putAgent("t1", "payouts")
+	put := func(scope, name, text string) {
+		_ = f.store.PutNote(ctx, session.Note{Tenant: "t1", Agent: "payouts", Scope: scope, Name: name, Text: text, Updated: now, Session: "s1"})
+	}
+	put(session.Shared, "vendors", "x")
+	put("member:ana", "tone", "short")
+	put("member:ana", "vendors", "y")
+	put("member:luis", "tone", "long")
+	names := func(body map[string]any) (out []string) {
+		for _, n := range body["memories"].([]any) {
+			m := n.(map[string]any)
+			scope, _ := m["scope"].(string)
+			out = append(out, scope+"/"+m["name"].(string))
+		}
+		return out
+	}
+
+	code, body := f.do("t1", "GET", "/agents/payouts/memories?owner=member:ana", nil)
+	f.want(200, code, body, "ana's view")
+	if got := names(body); !slices.Equal(got, []string{"/vendors", "member:ana/tone", "member:ana/vendors"}) {
+		t.Fatalf("ana sees %v", got)
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/memories", nil)
+	f.want(200, code, body, "every note")
+	if got := names(body); len(got) != 4 {
+		t.Fatalf("all: %v", got)
+	}
+	for _, q := range []string{"owner=ana", "owner=member:a|b", "owner=boss:ana"} {
+		code, body = f.do("t1", "GET", "/agents/payouts/memories?"+q, nil)
+		f.want(400, code, body, q)
+	}
+
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/tone/share", nil)
+	f.want(400, code, body, "sharing without a scope")
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/missing/share?scope=member:ana", nil)
+	f.want(404, code, body, "sharing a missing note")
+	code, body = f.do("t2", "POST", "/agents/payouts/memories/tone/share?scope=member:ana", nil)
+	f.want(404, code, body, "sharing another tenant's note")
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/vendors/share?scope=member:ana", nil)
+	f.want(409, code, body, "sharing over a shared note that says otherwise")
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/tone/share?scope=member:ana", nil)
+	f.want(200, code, body, "share")
+	if body["scope"] != nil || body["requester"] != "member:ana" || body["session"] != "s1" || body["text"] != "short" {
+		t.Fatalf("shared %v", body)
+	}
+	// Luis now reads it too, beside his own of that name.
+	code, body = f.do("t1", "GET", "/agents/payouts/memories?owner=member:luis", nil)
+	f.want(200, code, body, "luis's view")
+	if got := names(body); !slices.Equal(got, []string{"/tone", "/vendors", "member:luis/tone"}) {
+		t.Fatalf("luis sees %v", got)
+	}
+
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=member:luis", nil)
+	f.want(204, code, body, "luis forgets his")
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=luis", nil)
+	f.want(400, code, body, "a bad scope")
+	// A name can't reach a person's note through the shared scope.
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/@member:ana%7Cvendors", nil)
+	f.want(400, code, body, "forgetting a name starting with @")
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/@member:ana%7Cvendors/share?scope=member:ana", nil)
+	f.want(400, code, body, "sharing a name starting with @")
+	notes, _ := f.store.ListNotes(ctx, "t1", "payouts")
+	if len(notes) != 3 || notes[0].Name != "tone" || notes[0].Scope != session.Shared || notes[2].Scope != "member:ana" {
+		t.Fatalf("left %+v", notes)
+	}
+}
+
 func TestSessions(t *testing.T) {
 	f := newFixture(t)
 	f.session("t1", "s1", "payouts")

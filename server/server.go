@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kiff/agents/drafts"
@@ -106,6 +107,15 @@ type Server struct {
 	// announced to when it ends or pauses (POST /agents/{id}/runs, notify),
 	// exactly; none, no run is.
 	NotifyURLs []string
+	// LiveChat is how long after its last message a requester's chat is
+	// still the one a message goes on in, when it asks for its live chat
+	// (POST /agents/{id}/runs, chat "live"). Zero is DefaultLiveChat.
+	LiveChat time.Duration
+	// FloodMessages is how many messages one requester may send one agent
+	// in FloodWindow (#219): one busy person doesn't hold back the rest.
+	// Zero is DefaultFloodMessages; FloodWindow zero is DefaultFloodWindow.
+	FloodMessages int
+	FloodWindow   time.Duration
 
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
@@ -151,10 +161,13 @@ func (s *Server) Handler() http.Handler {
 	route("PUT /skills/{name}/{version}", s.putSkill)
 	route("GET /agents/{id}/memories", s.listMemories)
 	route("DELETE /agents/{id}/memories/{name}", s.forget)
+	route("POST /agents/{id}/memories/{name}/share", s.shareMemory)
 
 	route("GET /sessions", s.listSessions)
 	route("GET /sessions/{id}", s.getSession)
 	route("DELETE /sessions/{id}", s.deleteSession)
+	route("POST /sessions/{id}/archive", s.archiveSession(true))
+	route("POST /sessions/{id}/unarchive", s.archiveSession(false))
 
 	route("POST /schedules", s.createSchedule)
 	route("GET /schedules", s.listSchedules)
@@ -284,6 +297,16 @@ func (t tooManyError) Error() string {
 	return fmt.Sprintf("the tenant has %d runs going and may have %d: wait for one to end, then try again", t.n, t.max)
 }
 
+// floodError is a requester's message past their own flood guard.
+type floodError struct {
+	n      int
+	window time.Duration
+}
+
+func (f floodError) Error() string {
+	return fmt.Sprintf("that's %d messages in %d minutes; wait a little before writing again", f.n, int(f.window.Minutes()))
+}
+
 // RetryAfter is how long a 429 asks the caller to wait, in seconds.
 const RetryAfter = 30
 
@@ -302,6 +325,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var cf conflictError
 	var un unavailableError
 	var tm tooManyError
+	var fl floodError
 	var tooBig *http.MaxBytesError
 	status, msg := http.StatusInternalServerError, "internal error"
 	switch {
@@ -328,6 +352,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusRequestEntityTooLarge, "the body is too large"
 	case errors.As(err, &tm):
 		status, msg = http.StatusTooManyRequests, tm.Error()
+		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
+	case errors.As(err, &fl):
+		status, msg = http.StatusTooManyRequests, fl.Error()
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
 	case errors.As(err, &un):
 		status, msg = http.StatusServiceUnavailable, un.Error()
@@ -543,9 +570,18 @@ func (s *Server) listMemories(ctx context.Context, c Caller, r *http.Request) (i
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
+	// owner: a person's view (#219), the shared notes and their own;
+	// without it, every note, each with its scope.
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
 	notes, err := s.Notes.ListNotes(ctx, c.Tenant, id)
 	if err != nil {
 		return 0, nil, err
+	}
+	if owner != "" {
+		notes = session.NotesFor(notes, owner)
 	}
 	if notes == nil {
 		notes = []session.Note{}
@@ -558,10 +594,76 @@ func (s *Server) forget(ctx context.Context, c Caller, r *http.Request) (int, an
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		return 0, nil, err
 	}
-	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, r.PathValue("name")); err != nil {
+	// scope: a requester's note (#219), "member:<subject>"; without it, the
+	// shared one of that name.
+	scope, err := scopeParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	name, err := noteName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, name); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// shareMemory makes one requester's note shared (#219): every run of the
+// agent reads it from then on. It keeps where the note came from, and the
+// requester no longer has it as their own. A shared note of that name with
+// other text is a conflict: forget it first.
+func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	name, err := noteName(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	scope, err := scopeParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if scope == session.Shared {
+		return 0, nil, bad("scope names whose note to share, as in member:<subject>")
+	}
+	notes, err := s.Notes.ListNotes(ctx, c.Tenant, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	var own, shared *session.Note
+	for i, n := range notes {
+		switch {
+		case n.Name != name:
+		case n.Scope == scope:
+			own = &notes[i]
+		case n.Scope == session.Shared:
+			shared = &notes[i]
+		}
+	}
+	if own == nil {
+		return 0, nil, session.ErrNotFound
+	}
+	if shared != nil && shared.Text != own.Text {
+		return 0, nil, conflict("a shared note of that name already says something else: forget it first")
+	}
+	n := *own
+	n.Scope = session.Shared
+	if n.Requester == "" {
+		n.Requester = scope
+	}
+	// Shared first: a failure between the two leaves the note in both
+	// places, never in neither, and sharing again finishes it.
+	if err := s.Notes.PutNote(ctx, n); err != nil {
+		return 0, nil, err
+	}
+	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, name); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, n, nil
 }
 
 // Sessions.
@@ -579,7 +681,18 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 		}
 		limit = n
 	}
-	list, err := s.Sessions.List(ctx, c.Tenant, agent, limit)
+	// owner: one requester's sessions and those with no owner (#219);
+	// without it, every session of the agent, as before.
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	var list []session.Session
+	if owner != "" {
+		list, err = s.Sessions.ListOwned(ctx, c.Tenant, agent, owner, limit)
+	} else {
+		list, err = s.Sessions.List(ctx, c.Tenant, agent, limit)
+	}
 	if err != nil {
 		return 0, nil, err
 	}
@@ -589,9 +702,54 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	return http.StatusOK, map[string]any{"sessions": list}, nil
 }
 
+// noteName is the note named in the path. No note's name starts with "@"
+// (the memory tool takes none): a store may key a requester's notes so.
+func noteName(r *http.Request) (string, error) {
+	name := r.PathValue("name")
+	if strings.HasPrefix(name, "@") {
+		return "", bad("no note's name starts with @")
+	}
+	return name, nil
+}
+
+// scopeParam is the "scope" query parameter, a requester's key, checked as
+// owner is; empty is the shared scope.
+func scopeParam(r *http.Request) (string, error) {
+	v := r.URL.Query().Get("scope")
+	if v == "" {
+		return session.Shared, nil
+	}
+	kind, id, _ := strings.Cut(v, ":")
+	if q := (run.Requester{Kind: run.RequesterKind(kind), ID: id}); !q.Valid() {
+		return "", bad("scope is a requester's kind and id, as in member:<subject>")
+	}
+	return v, nil
+}
+
+// ownerParam is the "owner" query parameter, a requester's key
+// ("member:<subject>"), checked; empty when there is none.
+func ownerParam(r *http.Request) (string, error) {
+	v := r.URL.Query().Get("owner")
+	if v == "" {
+		return "", nil
+	}
+	kind, id, _ := strings.Cut(v, ":")
+	if q := (run.Requester{Kind: run.RequesterKind(kind), ID: id}); !q.Valid() {
+		return "", bad("owner is a requester's kind and id, as in member:<subject>")
+	}
+	return v, nil
+}
+
 func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
 	sess, events, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
 	events = session.Shown(events)
+	if err == nil && owner != "" && !sess.OwnedBy(owner) {
+		err = session.ErrNotFound // another person's thread (#219)
+	}
 	if err != nil {
 		return 0, nil, err
 	}
@@ -599,6 +757,31 @@ func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int
 		events = []session.Event{}
 	}
 	return http.StatusOK, map[string]any{"session": sess, "events": events}, nil
+}
+
+// archiveSession archives a session, or puts it back (kiff/tafs#82): with an
+// owner, only one that is theirs, or has no owner (#219). It answers the
+// session as it now is.
+func (s *Server) archiveSession(archived bool) func(context.Context, Caller, *http.Request) (int, any, error) {
+	return func(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+		owner, err := ownerParam(r)
+		if err != nil {
+			return 0, nil, err
+		}
+		id := r.PathValue("id")
+		sess, _, err := s.Sessions.Read(ctx, c.Tenant, id)
+		if err == nil && owner != "" && !sess.OwnedBy(owner) {
+			err = session.ErrNotFound
+		}
+		if err == nil {
+			err = s.Sessions.SetArchived(ctx, c.Tenant, id, archived)
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		sess.Archived = archived
+		return http.StatusOK, map[string]any{"session": sess}, nil
+	}
 }
 
 // deleteSession leaves "not found" to the Store's Delete, which also

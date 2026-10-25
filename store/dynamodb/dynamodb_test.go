@@ -686,3 +686,33 @@ func TestAnAppendMovesTheIndexEntry(t *testing.T) {
 		t.Fatalf("index entries per session: %v, want one each", entries)
 	}
 }
+
+// A session's own owner decides whose list it is in: an index entry that
+// lost its owner (stale, or written before owners) never shows another
+// person's session (#219).
+func TestAStaleIndexEntryShowsNoOneElsesSession(t *testing.T) {
+	db := local(t)
+	name := table(t, db)
+	st := dynamodb.NewAt(db, name, time.Now)
+	ana := session.Session{ID: "s-ana", Tenant: "t1", Agent: "refunds", Kind: session.KindChat, Owner: "member:ana", Started: time.Now(), Updated: time.Now()}
+	if err := st.Create(ctx, ana); err != nil {
+		t.Fatal(err)
+	}
+	pk := "A|2:t1|7:refunds" // the agent's index
+	out, err := db.Query(ctx, &ddb.QueryInput{TableName: &name, KeyConditionExpression: aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": &types.AttributeValueMemberS{Value: pk}}})
+	if err != nil || len(out.Items) != 1 {
+		t.Fatalf("the index: %v, %v", out, err)
+	}
+	if _, err := db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &name,
+		Key:              map[string]types.AttributeValue{"pk": out.Items[0]["pk"], "sk": out.Items[0]["sk"]},
+		UpdateExpression: aws.String("REMOVE #owner"), ExpressionAttributeNames: map[string]string{"#owner": "owner"}}); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := st.ListOwned(ctx, "t1", "refunds", "member:luis", 20); err != nil || len(list) != 0 {
+		t.Fatalf("luis lists %+v, %v", list, err)
+	}
+	if list, err := st.ListOwned(ctx, "t1", "refunds", "member:ana", 20); err != nil || len(list) != 1 {
+		t.Fatalf("ana lists %+v, %v", list, err)
+	}
+}

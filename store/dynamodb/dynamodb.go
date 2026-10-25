@@ -36,6 +36,7 @@
 package dynamodb
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -125,10 +126,15 @@ func indexSK(updated time.Time, id string) string {
 // minuteOf is the minute an index sort key starts with.
 func minuteOf(sk string) string { return sk[:20] }
 
-// indexItem is a session's index entry, with the TTL the session carries.
-func indexItem(tenant, agent, isk, id string, expires time.Time, held int) map[string]types.AttributeValue {
+// indexItem is a session's index entry, with the TTL the session carries
+// and its owner, if any, so ListOwned reads one owner's sessions from the
+// index alone.
+func indexItem(tenant, agent, isk, id, owner string, expires time.Time, held int) map[string]types.AttributeValue {
 	item := pkey(indexPK(tenant, agent), isk)
 	item["id"] = s(id)
+	if owner != "" {
+		item["owner"] = s(owner)
+	}
 	if held == 0 && !expires.IsZero() {
 		item["ttl"] = ttl(expires)
 	}
@@ -202,6 +208,9 @@ func metaItem(se session.Session) map[string]types.AttributeValue {
 	item["updated"] = nanos(se.Updated)
 	item["expires"] = nanos(se.Expires)
 	item["isk"] = s(indexSK(se.Updated, se.ID))
+	if se.Owner != "" {
+		item["owner"] = s(se.Owner)
+	}
 	item["runs"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}}
 	if !se.Expires.IsZero() {
 		item["ttl"] = ttl(se.Expires)
@@ -220,11 +229,13 @@ type meta struct {
 func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 	m := meta{Session: session.Session{
 		ID: getS(item, "id"), Tenant: tenant,
-		Agent:   getS(item, "agent"),
-		Kind:    session.Kind(getS(item, "kind")),
-		Started: getTime(item, "started"),
-		Updated: getTime(item, "updated"),
-		Expires: getTime(item, "expires"),
+		Agent:    getS(item, "agent"),
+		Kind:     session.Kind(getS(item, "kind")),
+		Started:  getTime(item, "started"),
+		Updated:  getTime(item, "updated"),
+		Expires:  getTime(item, "expires"),
+		Owner:    getS(item, "owner"),
+		Archived: getBool(item, "archived"),
 	}, isk: getS(item, "isk"), deleting: getBool(item, "deleting")}
 	if v, ok := item["held"].(*types.AttributeValueMemberSS); ok {
 		m.Held = slices.Sorted(slices.Values(v.Value))
@@ -287,7 +298,7 @@ func eventOf(id string, item map[string]types.AttributeValue) session.Event {
 
 func (st *Store) Create(ctx context.Context, se session.Session) error {
 	se.Held = nil
-	index := indexItem(se.Tenant, se.Agent, indexSK(se.Updated, se.ID), se.ID, se.Expires, 0)
+	index := indexItem(se.Tenant, se.Agent, indexSK(se.Updated, se.ID), se.ID, se.Owner, se.Expires, 0)
 	_, err := st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
 		{Put: &types.Put{TableName: &st.table, Item: metaItem(se), ConditionExpression: aws.String("attribute_not_exists(pk)")}},
 		{Put: &types.Put{TableName: &st.table, Item: index}},
@@ -551,7 +562,7 @@ func (st *Store) append(ctx context.Context, tenant, id, run string, events []se
 		c.expiryAsRead(m) // they decide the moved entry's TTL
 		move = []types.TransactWriteItem{
 			{Delete: &types.Delete{TableName: &st.table, Key: pkey(indexPK(tenant, m.Agent), m.isk)}},
-			{Put: &types.Put{TableName: &st.table, Item: indexItem(tenant, m.Agent, isk, id, expires, len(m.Held))}},
+			{Put: &types.Put{TableName: &st.table, Item: indexItem(tenant, m.Agent, isk, id, m.Owner, expires, len(m.Held))}},
 		}
 		index = nil // the moved entry carries its TTL itself
 	}
@@ -677,12 +688,33 @@ const listPage = 8
 // session in an older minute was updated before all of those. So it reads
 // about as many sessions as it returns, however long the agent's history.
 func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]session.Session, error) {
+	return st.list(ctx, tenant, agent, "", limit)
+}
+
+// ListOwned reads the agent's index newest first, keeping the entries of
+// owner and those with no owner (#219). It reads past other owners'
+// entries, which a filter drops after the read: what it costs grows with the
+// sessions of the agent's other users updated since, not with the agent's
+// history.
+func (st *Store) ListOwned(ctx context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+	if owner == "" {
+		return nil, errors.New("dynamodb: ListOwned needs an owner")
+	}
+	return st.list(ctx, tenant, agent, owner, limit)
+}
+
+func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
 	in := &ddb.QueryInput{
 		TableName:                 &st.table,
 		KeyConditionExpression:    aws.String("pk = :pk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(indexPK(tenant, agent))},
 		ScanIndexForward:          aws.Bool(false),
 		ConsistentRead:            aws.Bool(true),
+	}
+	if owner != "" {
+		in.FilterExpression = aws.String("attribute_not_exists(#owner) OR #owner = :owner")
+		in.ExpressionAttributeNames = map[string]string{"#owner": "owner"}
+		in.ExpressionAttributeValues[":owner"] = s(owner)
 	}
 	if limit > 0 {
 		in.Limit = aws.Int32(int32(min(limit+listPage, 1000)))
@@ -713,7 +745,9 @@ func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]s
 			return nil, err
 		}
 		for _, item := range metas {
-			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) {
+			// The index filtered by owner; the session itself decides, so a
+			// stale index entry never shows another person's session.
+			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) && (owner == "" || m.Session.OwnedBy(owner)) {
 				out = append(out, m.Session)
 			}
 		}
@@ -791,6 +825,36 @@ func keysOf(items []map[string]types.AttributeValue) []map[string]types.Attribut
 		keys[i] = map[string]types.AttributeValue{"pk": item["pk"], "sk": item["sk"]}
 	}
 	return keys
+}
+
+// SetArchived sets or removes the session item's "archived", only on a
+// session that is there and not being deleted. The index entry doesn't
+// carry it: a listing reads the session items anyway.
+func (st *Store) SetArchived(ctx context.Context, tenant, id string, archived bool) error {
+	u := &ddb.UpdateItemInput{
+		TableName:                &st.table,
+		Key:                      pkey(sessionPK(tenant, id), metaSK),
+		ConditionExpression:      aws.String("attribute_exists(pk) AND attribute_not_exists(deleting)"),
+		ExpressionAttributeNames: map[string]string{"#archived": "archived"},
+	}
+	if archived {
+		u.UpdateExpression = aws.String("SET #archived = :yes")
+		u.ExpressionAttributeValues = map[string]types.AttributeValue{":yes": yes}
+	} else {
+		u.UpdateExpression = aws.String("REMOVE #archived")
+	}
+	_, err := st.db.UpdateItem(ctx, u)
+	var failed *types.ConditionalCheckFailedException
+	if errors.As(err, &failed) {
+		return session.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := st.meta(ctx, tenant, id); err != nil {
+		return err // expired: it's gone, whatever the update found
+	}
+	return nil
 }
 
 func (st *Store) Hold(ctx context.Context, tenant, id, run string) error {
@@ -996,21 +1060,52 @@ func (st *Store) ListNotes(ctx context.Context, tenant, agent string) ([]session
 	}
 	out := make([]session.Note, len(items))
 	for i, item := range items {
-		out[i] = session.Note{Tenant: tenant, Agent: agent, Name: getS(item, "sk"), Text: getS(item, "text"), Updated: getTime(item, "updated")}
+		// A note from before scopes has no "name": its sort key is its name,
+		// and it is shared.
+		name := getS(item, "name")
+		if name == "" {
+			name = getS(item, "sk")
+		}
+		out[i] = session.Note{Tenant: tenant, Agent: agent, Scope: getS(item, "scope"), Name: name, Text: getS(item, "text"),
+			Updated: getTime(item, "updated"), Session: getS(item, "session"), Run: getS(item, "run"), Requester: getS(item, "requester")}
 	}
-	return out, nil // in sort key order: by name
+	slices.SortFunc(out, func(a, b session.Note) int { return cmp.Or(cmp.Compare(a.Scope, b.Scope), cmp.Compare(a.Name, b.Name)) })
+	return out, nil
+}
+
+// noteSK is a note's sort key: a shared note's is its name, as before
+// scopes; a requester's is "@<scope>|<name>", apart from every shared one
+// (the memory tool takes no name that starts with "@").
+func noteSK(scope, name string) string {
+	if scope == session.Shared {
+		return name
+	}
+	return "@" + scope + "|" + name
 }
 
 func (st *Store) PutNote(ctx context.Context, note session.Note) error {
-	item := pkey(notesPK(note.Tenant, note.Agent), note.Name)
+	item := pkey(notesPK(note.Tenant, note.Agent), noteSK(note.Scope, note.Name))
+	item["name"] = s(note.Name)
+	if note.Scope != session.Shared {
+		item["scope"] = s(note.Scope)
+	}
 	item["text"] = s(note.Text)
 	item["updated"] = nanos(note.Updated)
+	if note.Session != "" {
+		item["session"] = s(note.Session)
+	}
+	if note.Run != "" {
+		item["run"] = s(note.Run)
+	}
+	if note.Requester != "" {
+		item["requester"] = s(note.Requester)
+	}
 	_, err := st.db.PutItem(ctx, &ddb.PutItemInput{TableName: &st.table, Item: item})
 	return err
 }
 
-func (st *Store) DeleteNote(ctx context.Context, tenant, agent, name string) error {
-	_, err := st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(notesPK(tenant, agent), name)})
+func (st *Store) DeleteNote(ctx context.Context, tenant, agent, scope, name string) error {
+	_, err := st.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &st.table, Key: pkey(notesPK(tenant, agent), noteSK(scope, name))})
 	return err
 }
 

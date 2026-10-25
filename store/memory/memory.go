@@ -18,7 +18,7 @@ type Store struct {
 
 	mu       sync.Mutex
 	sessions map[string]*memSession     // by session id
-	notes    map[[3]string]session.Note // by tenant, agent, name
+	notes    map[[4]string]session.Note // by tenant, agent, scope, name
 }
 
 type memSession struct {
@@ -32,7 +32,7 @@ func New() *Store { return NewAt(time.Now) }
 
 // NewAt returns an empty store whose clock decides what has expired.
 func NewAt(now func() time.Time) *Store {
-	return &Store{now: now, sessions: map[string]*memSession{}, notes: map[[3]string]session.Note{}}
+	return &Store{now: now, sessions: map[string]*memSession{}, notes: map[[4]string]session.Note{}}
 }
 
 var (
@@ -173,11 +173,19 @@ func (m *Store) State(_ context.Context, tenant, id, run string) (session.RunSta
 }
 
 func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]session.Session, error) {
+	return m.list(tenant, agent, func(session.Session) bool { return true }, limit)
+}
+
+func (m *Store) ListOwned(_ context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+	return m.list(tenant, agent, func(s session.Session) bool { return s.Owner == "" || s.Owner == owner }, limit)
+}
+
+func (m *Store) list(tenant, agent string, keep func(session.Session) bool, limit int) ([]session.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []session.Session
 	for id, ms := range m.sessions {
-		if ms.s.Agent == agent && m.get(tenant, id) != nil {
+		if ms.s.Agent == agent && keep(ms.s) && m.get(tenant, id) != nil {
 			s := ms.s
 			s.Held = slices.Clone(s.Held)
 			out = append(out, s)
@@ -188,6 +196,17 @@ func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]sess
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *Store) SetArchived(_ context.Context, tenant, id string, archived bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return session.ErrNotFound
+	}
+	ms.s.Archived = archived
+	return nil
 }
 
 func (m *Store) Hold(_ context.Context, tenant, id, run string) error {
@@ -279,21 +298,21 @@ func (m *Store) ListNotes(_ context.Context, tenant, agent string) ([]session.No
 			out = append(out, n)
 		}
 	}
-	slices.SortFunc(out, func(a, b session.Note) int { return cmp.Compare(a.Name, b.Name) })
+	slices.SortFunc(out, func(a, b session.Note) int { return cmp.Or(cmp.Compare(a.Scope, b.Scope), cmp.Compare(a.Name, b.Name)) })
 	return out, nil
 }
 
 func (m *Store) PutNote(_ context.Context, n session.Note) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.notes[[3]string{n.Tenant, n.Agent, n.Name}] = n
+	m.notes[[4]string{n.Tenant, n.Agent, n.Scope, n.Name}] = n
 	return nil
 }
 
-func (m *Store) DeleteNote(_ context.Context, tenant, agent, name string) error {
+func (m *Store) DeleteNote(_ context.Context, tenant, agent, scope, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.notes, [3]string{tenant, agent, name})
+	delete(m.notes, [4]string{tenant, agent, scope, name})
 	return nil
 }
 

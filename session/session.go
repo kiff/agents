@@ -42,6 +42,23 @@ type Session struct {
 	Updated time.Time `json:"updated"`
 	Expires time.Time `json:"expires,omitzero"`
 	Held    []string  `json:"held,omitempty"`
+	// Owner is who the session is the thread of (#219): the requester who
+	// opened it, as run.Requester's Key ("member:<subject>", "door:<id>").
+	// Empty for a job's session, and for sessions from before owners. Set
+	// once, when the session is opened.
+	Owner string `json:"owner,omitempty"`
+	// Archived is set when its owner put the chat away (kiff/tafs#82): it
+	// leaves their list, and a live message no longer goes on in it. It is
+	// kept for its retention all the same.
+	Archived bool `json:"archived,omitempty"`
+}
+
+// OwnedBy reports whether owner (a requester's Key, or empty for none) may
+// read or go on in the session (#219): one with no owner (a job's, or one
+// from before owners) is anyone's, as before; an owned one is only its
+// owner's.
+func (s Session) OwnedBy(owner string) bool {
+	return s.Owner == "" || s.Owner == owner
 }
 
 // Expired reports whether the session is gone as of now: its Expires has
@@ -343,6 +360,11 @@ type Store interface {
 	State(ctx context.Context, tenant, session, run string) (RunState, error)
 	// List returns an agent's sessions, most recently updated first, at most limit.
 	List(ctx context.Context, tenant, agent string, limit int) ([]Session, error)
+	// ListOwned is List for one owner: the agent's sessions whose Owner is
+	// owner, and those with no owner (from before owners, kept as they
+	// were), most recently updated first, at most limit. Never another
+	// owner's.
+	ListOwned(ctx context.Context, tenant, agent, owner string, limit int) ([]Session, error)
 	// Hold marks an open run paused: the session doesn't expire until the run
 	// ends. Holding a held run again changes nothing; a run that isn't open
 	// can't be held (ErrEnded).
@@ -352,6 +374,9 @@ type Store interface {
 	// moves on to expires, if later: retention starts again when a run ends.
 	// Ending a run that isn't open is ErrEnded.
 	EndRun(ctx context.Context, tenant, session, run string, expires time.Time) error
+	// SetArchived archives the session, or puts it back (Session.Archived).
+	// A session that isn't there is ErrNotFound.
+	SetArchived(ctx context.Context, tenant, id string, archived bool) error
 	// Delete removes a session and its events.
 	Delete(ctx context.Context, tenant, id string) error
 	// DeleteAgent removes all of an agent's sessions and events.
