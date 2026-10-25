@@ -270,6 +270,11 @@ const TrialHeader = "KIFF-Trial"
 // refuses a trial's write that names none.
 const TrialRunHeader = "KIFF-Trial-Run"
 
+// RunGrantHeader carries the run's grant on each of its calls: the person
+// KIFF signed it for asked, so KIFF records the call, and any hold it
+// opens, as theirs. Set from the stored run only, never from the model.
+const RunGrantHeader = "KIFF-Run-Grant"
+
 // init opens the MCP session once.
 func (c *Client) init(ctx context.Context) error {
 	c.mu.Lock()
@@ -392,6 +397,9 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 		if t.Run != "" {
 			req.Header.Set(TrialRunHeader, t.Run)
 		}
+	}
+	if g := run.GrantFrom(ctx); g != "" {
+		req.Header.Set(RunGrantHeader, g)
 	}
 	c.smu.Lock()
 	if c.session != "" {
