@@ -1254,7 +1254,9 @@ func (s *Server) granted(ctx context.Context, tenant, agent string, q run.Reques
 		return q, nil
 	}
 	if s.ResolveGrant == nil {
-		return q, unavailable("this server doesn't take run grants")
+		// Grants aren't taken yet: the requester stands as asserted, so a
+		// caller may send grants before this server takes them.
+		return q, nil
 	}
 	subject, err := s.ResolveGrant(ctx, tenant, agent, grant)
 	if err != nil {

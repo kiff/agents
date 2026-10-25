@@ -1857,13 +1857,16 @@ func TestAnAgentsChatIsNoPersons(t *testing.T) {
 func TestARunGrantNamesWhoAsked(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
+	// Before grants are taken, one sent is ignored: the run is as asserted.
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_ana", "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "a grant before grants are taken")
 	f.server.ResolveGrant = func(_ context.Context, tenant, agent, grant string) (string, error) {
 		if tenant == "t1" && agent == "payouts" && grant == "krg_ana" {
 			return "ana", nil
 		}
 		return "", errors.New("KIFF answered 403")
 	}
-	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_ana"})
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_ana"})
 	f.want(202, code, body, "ana's grant")
 	if q, _ := body["requester"].(map[string]any); q["kind"] != "member" || q["id"] != "ana" {
 		t.Fatalf("requester = %v, want member ana", body["requester"])

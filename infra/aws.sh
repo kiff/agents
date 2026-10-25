@@ -50,7 +50,9 @@
 # IAM role whose sessions may call the API; AGENTS_PLANQUES
 # (https://planque.kiff.dev), the planques a definition may name (#91);
 # AGENTS_NOTIFY_URLS (none), the URLs a run may be announced to when it ends
-# or pauses (kiff/tafs#206).
+# or pauses (kiff/tafs#206); AGENTS_RUN_GRANTS (as the function has it, else
+# unset), whether a member's run takes the account's run grant: unset, no;
+# take; require.
 set -euo pipefail
 
 REGION=${AGENTS_REGION:-eu-west-1}
@@ -74,6 +76,7 @@ SEALING_PREFIX=agents-sealing/
 PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
 NOTIFY_URLS=${AGENTS_NOTIFY_URLS:-}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
+RUN_GRANTS=${AGENTS_RUN_GRANTS:-}
 
 aws() { command aws --region "$REGION" --output text "$@"; }
 say() { echo "• $*" >&2; }
@@ -84,6 +87,12 @@ if [ -z "${AGENTS_MODEL_KEY_SECRET:-}" ]; then
   current=$(aws lambda get-function-configuration --function-name "$FN" \
     --query 'Environment.Variables.AGENTS_MODEL_KEY_SECRET' 2>/dev/null || true)
   if [ -n "$current" ] && [ "$current" != "None" ]; then MODEL_SECRET=$current; fi
+fi
+# And whether it takes run grants: a rerun without AGENTS_RUN_GRANTS keeps it.
+if [ -z "${AGENTS_RUN_GRANTS+set}" ]; then
+  current=$(aws lambda get-function-configuration --function-name "$FN" \
+    --query 'Environment.Variables.AGENTS_RUN_GRANTS' 2>/dev/null || true)
+  if [ -n "$current" ] && [ "$current" != "None" ]; then RUN_GRANTS=$current; fi
 fi
 
 ACCOUNT=$(aws sts get-caller-identity --query Account)
@@ -203,7 +212,8 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX"}}
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
+ "AGENTS_RUN_GRANTS":"$RUN_GRANTS"}}
 EOF
 )
 ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'
