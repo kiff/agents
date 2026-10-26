@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/kiff/agents/run"
@@ -171,9 +172,9 @@ func TestANoteOfUnknownOriginIsQuarantined(t *testing.T) {
 		code, got := f.do("t1", "POST", "/agents/payouts/memories/legacy/share"+q, nil)
 		f.want(400, code, got, "releasing by "+name)
 	}
-	code, got := f.do("t1", "POST", "/agents/payouts/memories/job/share?by=member:ana", nil)
+	code, got := f.do("t1", "POST", "/agents/payouts/memories/job/share?by=member:ana&as=service", nil)
 	f.want(409, code, got, "releasing a note shared already")
-	code, got = f.do("t1", "POST", "/agents/payouts/memories/legacy/share?by=member:ana", nil)
+	code, got = f.do("t1", "POST", "/agents/payouts/memories/legacy/share?by=member:ana&as=service", nil)
 	f.want(200, code, got, "ana shares it on purpose")
 	if got := names("owner=member:luis"); fmt.Sprint(got) != "[job false legacy false]" {
 		t.Fatalf("after release luis sees %v", got)
@@ -190,4 +191,44 @@ func TestAWriteNamesThePersonOrTheServiceNotBoth(t *testing.T) {
 	f.want(400, code, body, "a steer naming ana and the service")
 	code, body = f.do("t1", "POST", "/agents/payouts/runs?as=service", map[string]any{"input": "x", "background": true, "requester": ana})
 	f.want(400, code, body, "a start naming ana and the service")
+}
+
+// Deleting a thread, forgetting a note and sharing one name the person, who
+// acts only on their own, or say the service acts; naming no one is refused.
+func TestDeletingForgettingAndSharingNameWhoActs(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	rec, err := session.NewRecorder(f.store, session.DefaultPolicy(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	anas, err := rec.OpenOwned(ctx, "t1", "payouts", session.KindChat, "member:ana")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.PutNote(ctx, session.Note{Tenant: "t1", Agent: "payouts", Scope: "member:ana", Name: "tone", Text: "short", Updated: now, Run: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, c := range map[string]struct{ method, path string }{
+		"deleting a thread": {"DELETE", "/sessions/" + anas.ID},
+		"forgetting a note": {"DELETE", "/agents/payouts/memories/tone?scope=member:ana"},
+		"sharing a note":    {"POST", "/agents/payouts/memories/tone/share?scope=member:ana"},
+	} {
+		code, got := f.do("t1", c.method, c.path, nil)
+		f.want(400, code, got, name+" naming no one")
+		sep := "?"
+		if strings.Contains(c.path, "?") {
+			sep = "&"
+		}
+		code, got = f.do("t1", c.method, c.path+sep+"owner=member:luis", nil)
+		f.want(404, code, got, name+" as luis, not his")
+	}
+
+	code, got := f.do("t1", "POST", "/agents/payouts/memories/tone/share?scope=member:ana&owner=member:ana", nil)
+	f.want(200, code, got, "ana sharing her own note")
+	code, got = f.do("t1", "DELETE", "/agents/payouts/memories/tone?as=service", nil)
+	f.want(204, code, got, "the service forgetting the shared note")
+	code, got = f.do("t1", "DELETE", "/sessions/"+anas.ID+"?owner=member:ana", nil)
+	f.want(204, code, got, "ana deleting her own thread")
 }
