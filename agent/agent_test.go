@@ -539,6 +539,10 @@ func TestTheCostCapStopsTheRun(t *testing.T) {
 	if out.Stop != agent.CostCap || out.Cost != 2000 || len(m.reqs) != 2 {
 		t.Fatalf("outcome %+v after %d turns", out, len(m.reqs))
 	}
+	// It says why, never ending in silence.
+	if !strings.HasSuffix(out.Text, agent.CostCapNote) {
+		t.Fatalf("text %q, want it to end with the cost cap note", out.Text)
+	}
 }
 
 // An agent with a write tool outside KIFF's gateway doesn't start, and neither

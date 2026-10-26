@@ -416,7 +416,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
 				out.Stop = stop
-				return out, msgs, nil
+				return out, msgs, a.sayCapped(rec, &out, emit)
 			}
 			if a.Cancel != nil {
 				stop, err := a.Cancel(ctx)
@@ -727,6 +727,27 @@ func (a Agent) say(rec *session.Recording, text string, last bool) error {
 	return rec.Record(kind, TextBody{Text: text})
 }
 
+// CostCapNote and TurnCapNote are what the chat is told when a run stops
+// at a cap, so it never ends in silence.
+const (
+	CostCapNote = "I stopped: this answer would cost more than this taf's limit for one task. Ask again for something narrower, or raise the limit."
+	TurnCapNote = "I stopped: this answer took more steps than this taf's limit for one task. Ask again for something narrower."
+)
+
+// sayCapped tells the chat why the run stopped at out's cap.
+func (a Agent) sayCapped(rec *session.Recording, out *Outcome, emit func(Event)) error {
+	note := CostCapNote
+	if out.Stop == TurnCap {
+		note = TurnCapNote
+	}
+	if out.Text != "" {
+		note = "\n\n" + note
+	}
+	emit(Event{Kind: TextDelta, Text: note})
+	out.Text += note
+	return a.say(rec, note, true)
+}
+
 // callTools records the calls in order, runs them in parallel, and records
 // their results in the order of the calls.
 func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map[string]tool.Tool, calls []model.Block, emit func(Event)) ([]ToolResultBody, error) {
@@ -812,7 +833,26 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 	if err != nil {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}
+	r.Text = capResult(r.Text, MaxToolResult)
 	return r
+}
+
+// MaxToolResult bounds what one tool result puts in the model's context, in
+// bytes: a whole export (a 250 KB list) is written to the cache each turn
+// it is carried, and spends a run's cost cap in a few turns.
+const MaxToolResult = 32 << 10
+
+// capResult is text cut to at most n bytes, on a rune, telling the model
+// how much it got and to ask again for less.
+func capResult(text string, n int) string {
+	if len(text) <= n {
+		return text
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + fmt.Sprintf("\n…(cut at %d KB of %d KB: this result is too long to read whole. Call again for less, with a filter or a smaller limit, if what you need isn't above.)", n>>10, (len(text)+1023)>>10)
 }
 
 // SummarySystem is what the model is told when it summarises the part of a
