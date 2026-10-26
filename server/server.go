@@ -724,7 +724,7 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	if grant := readGrantHeader(r); grant != "" {
 		// Another person's sessions, listed: their titles and times, never
 		// what's in them. Each one read needs its own grant.
-		err = s.mayReadAnothers(ctx, c.Tenant, agent, owner, "", grant)
+		err = s.mayReadAnothers(ctx, r, c.Tenant, agent, owner, "", grant)
 	} else {
 		err = s.mayRead(ctx, c.Tenant, agent, owner)
 	}
@@ -797,14 +797,20 @@ func readGrantHeader(r *http.Request) string {
 }
 
 // mayReadAnothers is run.ErrNoOversight unless the account resolves grant
-// to a read of owner's work with the agent: their list when session is
-// empty, else that one session, which owner must hold. The account checks
-// the reader oversees the agent and recorded the read before granting it.
-// It reads only: nothing with a read grant writes into a session.
-func (s *Server) mayReadAnothers(ctx context.Context, tenant, agent, owner, session, grant string) error {
+// to a read of owner's work with the agent, by the member the "reader"
+// parameter names: their list when session is empty, else that one
+// session, which owner must hold. The account checks the reader may read
+// that work and recorded the read before granting it. It reads only:
+// nothing with a read grant writes into a session. A read served is
+// logged with its purpose, so it can be matched to the account's record.
+func (s *Server) mayReadAnothers(ctx context.Context, r *http.Request, tenant, agent, owner, session, grant string) error {
 	kind, id, _ := strings.Cut(owner, ":")
 	if run.RequesterKind(kind) != run.ByMember {
 		return bad("a read grant reads a member's sessions: owner is member:<subject>")
+	}
+	rkind, reader, _ := strings.Cut(r.URL.Query().Get("reader"), ":")
+	if q := (run.Requester{Kind: run.RequesterKind(rkind), ID: reader}); q.Kind != run.ByMember || !q.Valid() {
+		return bad("a read grant needs its reader: reader is member:<subject>")
 	}
 	if s.ResolveReadGrant == nil {
 		return fmt.Errorf("%w: read grants aren't taken here", run.ErrNoOversight)
@@ -815,6 +821,12 @@ func (s *Server) mayReadAnothers(ctx context.Context, tenant, agent, owner, sess
 	}
 	if g.Owner != id || g.Session != session {
 		return fmt.Errorf("%w: the grant is for another read", run.ErrNoOversight)
+	}
+	if g.Reader != reader {
+		return fmt.Errorf("%w: the grant is another person's", run.ErrNoOversight)
+	}
+	if s.Log != nil {
+		s.Log.InfoContext(ctx, "read served", "agent", agent, "reader", g.Reader, "owner", g.Owner, "session", g.Session, "purpose", g.Purpose)
 	}
 	return nil
 }
@@ -844,7 +856,7 @@ func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int
 		err = session.ErrNotFound // another person's thread (#219)
 	}
 	if grant := readGrantHeader(r); err == nil && grant != "" {
-		err = s.mayReadAnothers(ctx, c.Tenant, sess.Agent, owner, sess.ID, grant)
+		err = s.mayReadAnothers(ctx, r, c.Tenant, sess.Agent, owner, sess.ID, grant)
 	} else if err == nil {
 		err = s.mayRead(ctx, c.Tenant, sess.Agent, owner)
 	}
