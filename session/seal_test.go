@@ -111,7 +111,13 @@ func TestARecordingSealsWhatItKeepsUntilIdleInAChatOnly(t *testing.T) {
 		t.Fatalf("a chat kept %d events after its run ended, want its read", len(events))
 	}
 	e := events[0]
-	if strings.Contains(string(e.Body), "EUR") || strings.Contains(string(e.Body), "ch_1") {
+	// Stored sealed: one "sealed" field and nothing in clear. The check reads
+	// the JSON, not its text: base64 can spell "EUR" by chance.
+	var stored map[string]json.RawMessage
+	if err := json.Unmarshal(e.Body, &stored); err != nil || len(stored) != 1 || stored["sealed"] == nil {
+		t.Fatalf("stored in clear: %s", e.Body)
+	}
+	if strings.Contains(string(e.Body), `"result"`) || strings.Contains(string(e.Body), `"charge"`) {
 		t.Fatalf("stored in clear: %s", e.Body)
 	}
 	plain, err := session.OpenEvent(ctx, sealer, "t1", e)
