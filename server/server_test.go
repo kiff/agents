@@ -55,6 +55,8 @@ type fixture struct {
 	logs     *bytes.Buffer
 	// erased are the tenants Erase was asked for.
 	erased []string
+	// header goes on each request do sends.
+	header http.Header
 }
 
 // newFixture serves the API over memory stores. A request's tenant is its
@@ -116,6 +118,9 @@ func (f *fixture) do(tenant, method, path string, body any) (int, map[string]any
 	}
 	if tenant != "" {
 		req.Header.Set("X-Test-Tenant", tenant)
+	}
+	for k, v := range f.header {
+		req.Header[k] = v
 	}
 	resp, err := f.srv.Client().Do(req)
 	if err != nil {

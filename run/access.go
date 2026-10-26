@@ -19,3 +19,21 @@ type AccessFunc func(ctx context.Context, tenant, agent, subject string) (Access
 
 // ErrNoAccess is a member's run, or read, of an agent they may not use.
 var ErrNoAccess = errors.New("run: this person may not use this agent")
+
+// ReadGrant is one read of another person's work the account allowed and
+// recorded first: who reads (Reader) whose sessions (Owner) with the agent,
+// one session or, with none, the list of them, and why.
+type ReadGrant struct {
+	Reader  string
+	Owner   string
+	Session string
+	Purpose string
+}
+
+// ReadGrantFunc asks the account what a read grant for the agent allows.
+// An error is no read.
+type ReadGrantFunc func(ctx context.Context, tenant, agent, grant string) (ReadGrant, error)
+
+// ErrNoOversight is a read of another person's work the account didn't
+// allow: no read grant, or one for something else.
+var ErrNoOversight = errors.New("run: this read of another person's work isn't allowed")
