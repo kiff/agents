@@ -61,7 +61,7 @@ func TestAMemberNeedsAccessToReadAndWrite(t *testing.T) {
 	}
 }
 
-// Step 6: another person's sessions are served only with a read grant the
+// Another person's sessions are served only with a read grant the
 // account resolves for exactly that read: their list (titles and times),
 // or one session they hold. Without one, a caller reads only its own, and
 // a grant for anything else is refused as no oversight.

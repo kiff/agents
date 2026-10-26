@@ -267,7 +267,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		f.api.RequireGrant = v == "require"
 	}
 	// Another person's sessions are served only with a read grant KIFF
-	// recorded and resolves (step 6): with none, a caller reads its own.
+	// recorded and resolves: with none, a caller reads its own.
 	f.api.ResolveReadGrant = kiff.ReadGrantResolver(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	// Deleting an account erases its sealing key and its drafts' records
 	// too (kiff/tafs#185). The tafs' keys and its alert secret are tafs
