@@ -84,7 +84,7 @@ func TestATrialIsOneChatWithAVersion(t *testing.T) {
 	// Go back: the chat is deleted, version 2 keeps a line with KIFF's counts.
 	code, body = f.do("t1", "DELETE", "/agents/payouts/trial", map[string]any{"why": "back", "calls": 3, "held": 1, "refused": 0})
 	f.want(200, code, body, "end trial")
-	if code, _ := f.do("t1", "GET", "/sessions/"+sess, nil); code != 404 {
+	if code, _ := f.do("t1", "GET", "/sessions/"+sess+"?as=service", nil); code != 404 {
 		t.Fatalf("the trial's chat after its end = %d, want 404", code)
 	}
 	if code, _ := f.do("t1", "GET", "/agents/payouts/trial", nil); code != 404 {

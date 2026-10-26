@@ -49,7 +49,7 @@ func TestAMemberNeedsAccessToReadAndWrite(t *testing.T) {
 	// A door's sender, and no one, read as before.
 	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&owner=door:d1", nil)
 	f.want(200, code, body, "a door sender's sessions")
-	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts", nil)
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&as=service", nil)
 	f.want(200, code, body, "every session")
 
 	// The runner's refusal reaches the caller as the same answer.
