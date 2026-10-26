@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/kiff/agents/run"
@@ -129,4 +130,64 @@ func TestAReadNamesThePersonOrTheService(t *testing.T) {
 	if n := count("requester=member:ana"); n != 1 {
 		t.Errorf("ana lists %d runs, want her one", n)
 	}
+}
+
+// A shared note of unknown origin is quarantined: no run reads it, a
+// person's list doesn't show it, and the service's list marks it. Someone
+// who manages the agent shares it on purpose (by) or forgets it.
+func TestANoteOfUnknownOriginIsQuarantined(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	for _, n := range []session.Note{
+		{Tenant: "t1", Agent: "payouts", Name: "legacy", Text: "old rule", Updated: now},
+		{Tenant: "t1", Agent: "payouts", Name: "job", Text: "a job's", Updated: now, Run: "r1"},
+	} {
+		if err := f.store.PutNote(ctx, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func(q string) []string {
+		code, got := f.do("t1", "GET", "/agents/payouts/memories?"+q, nil)
+		f.want(200, code, got, q)
+		var out []string
+		for _, m := range got["memories"].([]any) {
+			n := m.(map[string]any)
+			out = append(out, fmt.Sprint(n["name"], " ", n["quarantined"] == true))
+		}
+		return out
+	}
+	if got := names("owner=member:ana"); fmt.Sprint(got) != "[job false]" {
+		t.Fatalf("ana sees %v, want only the job's note", got)
+	}
+	if got := names("as=service"); fmt.Sprint(got) != "[job false legacy true]" {
+		t.Fatalf("the service sees %v, want legacy marked", got)
+	}
+	all, _ := f.store.ListNotes(ctx, "t1", "payouts")
+	if got := session.NotesFor(all, "member:ana"); len(got) != 1 || got[0].Name != "job" {
+		t.Fatalf("a run reads %+v", got)
+	}
+
+	for name, q := range map[string]string{"no one": "", "a door": "?by=door:x", "a bad key": "?by=ana"} {
+		code, got := f.do("t1", "POST", "/agents/payouts/memories/legacy/share"+q, nil)
+		f.want(400, code, got, "releasing by "+name)
+	}
+	code, got := f.do("t1", "POST", "/agents/payouts/memories/job/share?by=member:ana", nil)
+	f.want(409, code, got, "releasing a note shared already")
+	code, got = f.do("t1", "POST", "/agents/payouts/memories/legacy/share?by=member:ana", nil)
+	f.want(200, code, got, "ana shares it on purpose")
+	if got := names("owner=member:luis"); fmt.Sprint(got) != "[job false legacy false]" {
+		t.Fatalf("after release luis sees %v", got)
+	}
+}
+
+// A write that names a person never also says it acts as the service.
+func TestAWriteNamesThePersonOrTheServiceNotBoth(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	ana := map[string]any{"kind": "member", "id": "ana"}
+	r := f.stored(run.Running)
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/messages?as=service", map[string]any{"text": "x", "requester": ana})
+	f.want(400, code, body, "a steer naming ana and the service")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs?as=service", map[string]any{"input": "x", "background": true, "requester": ana})
+	f.want(400, code, body, "a start naming ana and the service")
 }

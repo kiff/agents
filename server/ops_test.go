@@ -3,8 +3,10 @@ package server_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,7 +97,7 @@ func TestOperatorsReadRunsAcrossTenants(t *testing.T) {
 		operator bool
 		tenant   string
 	}{"no one": {false, ""}, "a tenant's caller": {false, "t1"}} {
-		for _, path := range []string{"/ops/runs", "/ops/runs/paused", "/ops/tenants/t1/runs/" + held.ID, "/ops/tenants/t1/runs/" + held.ID + "/events"} {
+		for _, path := range []string{"/ops/runs", "/ops/runs/paused", "/ops/tenants/t1/runs/" + held.ID} {
 			if code, _ := f.ops(path, c.operator, c.tenant); code != 401 {
 				t.Errorf("%s, %s: %d, want 401", name, path, code)
 			}
@@ -103,24 +105,36 @@ func TestOperatorsReadRunsAcrossTenants(t *testing.T) {
 	}
 }
 
-// An operator reads one run of a tenant, and what it recorded as kept; never
-// its paused turn or its claim.
+// An operator reads one run of a tenant: its state, what it cost and which
+// tools are held, never what anyone wrote or what it said, and never what
+// its session recorded.
 func TestOperatorsReadARun(t *testing.T) {
 	f := opsFixture(t)
 	r := f.heldOn("exc_1")
 	f.record(r, 1, 2)
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if _, err := run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
+		n.Output, n.Error = "Refunded Ana's order 4471", "card declined for ana@example.com"
+		n.Steering = []run.Steering{{Text: "only the €20 one"}}
+		n.Requester = run.Requester{Kind: run.ByMember, ID: "ana"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	code, body := f.ops("/ops/tenants/t1/runs/"+r.ID, true, "")
-	if code != 200 || body["tenant"] != "t1" || body["status"] != string(run.Paused) || len(body["requirements"].([]any)) != 1 {
+	if code != 200 || body["tenant"] != "t1" || body["status"] != string(run.Paused) || fmt.Sprint(body["held"]) != "[stripe_refund]" {
 		t.Fatalf("run: %d %v", code, body)
 	}
-	for _, k := range []string{"paused", "claim", "lease", "version"} {
+	for _, k := range []string{"paused", "claim", "lease", "version", "input", "output", "error", "stop", "refusal", "steering", "requester", "requirements", "session"} {
 		if _, ok := body[k]; ok {
 			t.Errorf("shows %q", k)
 		}
 	}
-	code, body = f.ops("/ops/tenants/t1/runs/"+r.ID+"/events", true, "")
-	if code != 200 || len(body["events"].([]any)) != 2 || body["run"].(map[string]any)["id"] != r.ID {
-		t.Fatalf("events: %d %v", code, body)
+	if raw, _ := json.Marshal(body); strings.Contains(string(raw), "ana") || strings.Contains(string(raw), "€20") {
+		t.Errorf("an operator reads content: %s", raw)
+	}
+	if code, _ := f.ops("/ops/tenants/t1/runs/"+r.ID+"/events", true, ""); code != 404 {
+		t.Fatalf("a run's events: %d, want 404: no operator route reads them", code)
 	}
 	if code, _ := f.ops("/ops/tenants/t2/runs/"+r.ID, true, ""); code != 404 {
 		t.Fatalf("the run under another tenant: %d, want 404", code)

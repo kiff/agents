@@ -169,7 +169,7 @@ verified; the phone never calls it directly.
 | `POST /kiff/alerts` | KIFF's signed hold-answered alert: resolve the requirement, continue the run in the background. Answers 200 once the answer is recorded, whatever the run's state (a repeat, a cancelled run), so KIFF stops redelivering |
 | `GET /evals`, `GET /evals/{id}` | Eval runs and their cases, each linked to the run it produced |
 | `GET /usage?agent_id=&from=&to=` | Runs, tokens and cost per agent and per day: what a price is set from |
-| `GET /ops/runs`, `GET /ops/runs/paused`, `GET /ops/tenants/{tenant}/runs/{id}`, `GET /ops/tenants/{tenant}/runs/{id}/events` (SSE while it runs), `GET /ops/sessions/{id}`, `GET /ops/agents`, `GET /ops/agents/{id}/memories`, `GET /ops/schedules`, `GET /ops/evals`, `GET /ops/usage` | Operators only, read-only, across tenants: what the console reads |
+| `GET /ops/runs`, `GET /ops/runs/paused`, `GET /ops/tenants/{tenant}/runs/{id}` | Operators only, read-only, across tenants: a run's state, cost and held tools, never its content (no input, output, steering, requester or session events) |
 | `GET /health` | Liveness |
 
 Errors say what to do: 404 for anything outside the caller's tenant, 409 for a

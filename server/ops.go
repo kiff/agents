@@ -2,27 +2,46 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/kiff/agents/run"
-	"github.com/kiff/agents/session"
 )
 
 // The operators' routes: read-only, across tenants, for the people building
 // and running the agents (the console reads them). They never take a
 // tenant's caller: Server.Operator verifies an operator, and every other
-// route keeps its tenant rule unchanged. They change nothing.
+// route keeps its tenant rule unchanged. They change nothing, and they show
+// a run's state, never its content: no route reads a session's events.
 
-// opsRunView is a run as operators see it: a run's view, with its tenant.
+// opsRunView is a run as operators see it: what state it is in and what it
+// cost, never what anyone wrote or what it said. No input, output, error,
+// steering, requester or held call's input: a person's content isn't an
+// operator's to read.
 type opsRunView struct {
-	Tenant string `json:"tenant"`
-	runView
+	Tenant       string      `json:"tenant"`
+	ID           string      `json:"id"`
+	Agent        string      `json:"agent"`
+	Trigger      run.Trigger `json:"trigger"`
+	Status       run.Status  `json:"status"`
+	Cost         int64       `json:"cost_micro_usd"`
+	Turns        int         `json:"turns"`
+	Held         []string    `json:"held,omitempty"` // the held calls' tools, by name
+	AgentVersion int         `json:"agent_version,omitempty"`
+	Created      time.Time   `json:"created"`
+	Updated      time.Time   `json:"updated"`
 }
 
-func viewOpsRun(r run.Run) opsRunView { return opsRunView{Tenant: r.Tenant, runView: viewRun(r)} }
+func viewOpsRun(r run.Run) opsRunView {
+	v := opsRunView{Tenant: r.Tenant, ID: r.ID, Agent: r.Agent, Trigger: r.Trigger, Status: r.Status,
+		Cost: r.Cost, Turns: r.Turns, AgentVersion: r.AgentVersion, Created: r.Created, Updated: r.Updated}
+	for _, q := range r.Requirements {
+		v.Held = append(v.Held, q.Tool)
+	}
+	return v
+}
 
 // opsRoutes adds the operators' routes to mux, when an Operator check is set.
 func (s *Server) opsRoutes(mux *http.ServeMux) {
@@ -46,7 +65,6 @@ func (s *Server) opsRoutes(mux *http.ServeMux) {
 	op("GET /ops/runs", s.opsRuns(s.Runs.ListAll))
 	op("GET /ops/runs/paused", s.opsRuns(s.Runs.ListPaused))
 	op("GET /ops/tenants/{tenant}/runs/{run_id}", s.opsRun)
-	op("GET /ops/tenants/{tenant}/runs/{run_id}/events", s.opsRunEvents)
 }
 
 // opsRuns lists runs across tenants, newest first, at most limit.
@@ -79,23 +97,4 @@ func (s *Server) opsRun(ctx context.Context, r *http.Request) (int, any, error) 
 		return 0, nil, err
 	}
 	return http.StatusOK, viewOpsRun(rn), nil
-}
-
-// opsRunEvents is what a run of a tenant recorded, as kept: what the keep
-// rules dropped is gone, and isn't shown.
-func (s *Server) opsRunEvents(ctx context.Context, r *http.Request) (int, any, error) {
-	tenant := r.PathValue("tenant")
-	rn, err := s.Runs.Get(ctx, tenant, r.PathValue("run_id"))
-	if err != nil {
-		return 0, nil, err
-	}
-	_, events, err := s.Sessions.ReadRun(ctx, tenant, rn.Session, rn.ID)
-	events = session.Shown(events)
-	if err != nil && !errors.Is(err, session.ErrNotFound) {
-		return 0, nil, err
-	}
-	if events == nil {
-		events = []session.Event{}
-	}
-	return http.StatusOK, map[string]any{"run": viewOpsRun(rn), "events": events}, nil
 }

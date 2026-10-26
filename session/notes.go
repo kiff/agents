@@ -10,7 +10,10 @@ import (
 //
 // A note is shared, read by every run of the agent, or one requester's
 // (#219): what a person's conversation taught the agent, read only in that
-// person's runs. Notes from before scopes are shared.
+// person's runs. A shared note whose origin isn't known (no run wrote it, no
+// person's note became it, and no one shared it on purpose: notes from before
+// scopes and provenance) is quarantined: no run reads it until someone who
+// manages the agent shares it on purpose (SharedBy) or forgets it.
 type Note struct {
 	Tenant string `json:"tenant"`
 	Agent  string `json:"agent"`
@@ -27,6 +30,15 @@ type Note struct {
 	Session   string `json:"session,omitempty"`
 	Run       string `json:"run,omitempty"`
 	Requester string `json:"requester,omitempty"`
+	// SharedBy is who made the note shared on purpose: the requester's key
+	// of the person who shared it, or "owner" for one the owner wrote.
+	SharedBy string `json:"shared_by,omitempty"`
+}
+
+// Quarantined reports whether n is a shared note of unknown origin, which no
+// run reads.
+func (n Note) Quarantined() bool {
+	return n.Scope == Shared && n.Run == "" && n.Requester == "" && n.SharedBy == ""
 }
 
 // Shared is the scope of a note every run of the agent reads.
@@ -34,11 +46,11 @@ const Shared = ""
 
 // NotesFor is the notes a run for owner reads (#219): the shared ones and
 // owner's own, never another requester's. An empty owner reads the shared
-// ones only.
+// ones only. A quarantined note is read by no one.
 func NotesFor(notes []Note, owner string) []Note {
 	var out []Note
 	for _, n := range notes {
-		if n.Scope == Shared || (owner != "" && n.Scope == owner) {
+		if (n.Scope == Shared && !n.Quarantined()) || (owner != "" && n.Scope == owner) {
 			out = append(out, n)
 		}
 	}
