@@ -96,36 +96,43 @@ func TestAnothersSessionsNeedAReadGrant(t *testing.T) {
 		return f.do("t1", "GET", path, nil)
 	}
 	// The list grant lists Ana's sessions, and opens none of them.
-	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana")
+	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana&reader=member:ada")
 	f.want(200, code, body, "Ana's list, read by Ada")
 	if list, _ := body["sessions"].([]any); len(list) != 1 {
 		t.Errorf("Ana's list = %v", body)
 	}
-	code, body = read("list", "/sessions/"+sess+"?owner=member:ana")
+	code, body = read("list", "/sessions/"+sess+"?owner=member:ana&reader=member:ada")
 	f.want(403, code, body, "a chat opened with the list's grant")
 	if body["need"] != "oversee" {
 		t.Errorf("the refusal = %v", body)
 	}
 	// The chat's grant opens that chat, and lists nothing.
-	code, body = read("chat", "/sessions/"+sess+"?owner=member:ana")
+	code, body = read("chat", "/sessions/"+sess+"?owner=member:ana&reader=member:ada")
 	f.want(200, code, body, "Ana's chat, read by Ada")
-	code, body = read("chat", "/sessions?agent_id=payouts&owner=member:ana")
+	code, body = read("chat", "/sessions?agent_id=payouts&owner=member:ana&reader=member:ada")
 	f.want(403, code, body, "the list read with a chat's grant")
 	// A grant for Bo's work reads nothing of Ana's, one KIFF doesn't vouch
 	// for reads nothing, and the owner must hold the session.
-	code, body = read("bos", "/sessions?agent_id=payouts&owner=member:ana")
+	code, body = read("bos", "/sessions?agent_id=payouts&owner=member:ana&reader=member:ada")
 	f.want(403, code, body, "Ana's list with a grant for Bo's")
-	code, body = read("forged", "/sessions?agent_id=payouts&owner=member:ana")
+	code, body = read("forged", "/sessions?agent_id=payouts&owner=member:ana&reader=member:ada")
 	f.want(403, code, body, "a grant KIFF refuses")
-	code, body = read("bos", "/sessions/"+sess+"?owner=member:bo")
+	code, body = read("bos", "/sessions/"+sess+"?owner=member:bo&reader=member:ada")
 	f.want(404, code, body, "Ana's chat as Bo's")
 	// A read grant reads a member's sessions only.
-	code, body = read("list", "/sessions?agent_id=payouts")
+	code, body = read("list", "/sessions?agent_id=payouts&reader=member:ada")
 	f.want(400, code, body, "a read grant with no owner")
+
+	// The grant reads for the person KIFF granted it to, named by reader:
+	// copied into another person's request, it reads nothing.
+	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana&reader=member:max")
+	f.want(403, code, body, "Ada's grant used by Max")
+	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana")
+	f.want(400, code, body, "a read grant with no reader")
 
 	// Where read grants aren't taken, one is refused, not ignored.
 	f.server.ResolveReadGrant = nil
 	f.restart()
-	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana")
+	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana&reader=member:ada")
 	f.want(403, code, body, "a read grant where none is taken")
 }
