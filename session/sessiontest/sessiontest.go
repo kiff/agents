@@ -651,6 +651,8 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	}
 	legacy := begin(t, c, r, "refunds", session.KindChat)
 	c.add(time.Minute)
+	job := begin(t, c, r, "refunds", session.KindRun)
+	c.add(time.Minute)
 	ana := openOwned("member:ana")
 	c.add(time.Minute)
 	luis := openOwned("member:luis")
@@ -669,8 +671,9 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	}
 	got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 0)
 	check(t, err)
-	// A session with no owner is no member's: it isn't listed to ana.
-	want := []string{ana.Session().ID, anaAgain.Session().ID}
+	// A chat with no owner is no member's: it isn't listed to ana. A job's
+	// session is the taf's, listed as before.
+	want := []string{ana.Session().ID, anaAgain.Session().ID, job.Session().ID}
 	if !slices.Equal(ids(got), want) {
 		t.Fatalf("ana's = %v, want %v (not %s, which has no owner)", ids(got), want, legacy.Session().ID)
 	}
@@ -682,13 +685,13 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	}
 	got, err = b.ListOwned(ctx, "t1", "refunds", "member:luis", 0)
 	check(t, err)
-	if want := []string{luis.Session().ID}; !slices.Equal(ids(got), want) {
+	if want := []string{luis.Session().ID, job.Session().ID}; !slices.Equal(ids(got), want) {
 		t.Fatalf("luis's = %v, want %v", ids(got), want)
 	}
 	if s, _ := read(t, b, luis); s.Owner != "member:luis" {
 		t.Fatalf("read back, owner = %q", s.Owner)
 	}
-	if all := list(t, b, "t1", 0); len(all) != 4 {
+	if all := list(t, b, "t1", 0); len(all) != 5 {
 		t.Fatalf("List still lists every session: %d", len(all))
 	}
 }

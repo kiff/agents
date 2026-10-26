@@ -712,7 +712,7 @@ func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit in
 		ConsistentRead:            aws.Bool(true),
 	}
 	if owner != "" {
-		in.FilterExpression = aws.String("#owner = :owner")
+		in.FilterExpression = aws.String("attribute_not_exists(#owner) OR #owner = :owner")
 		in.ExpressionAttributeNames = map[string]string{"#owner": "owner"}
 		in.ExpressionAttributeValues[":owner"] = s(owner)
 	}
