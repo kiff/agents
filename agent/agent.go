@@ -474,8 +474,63 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
+		msgs = clearRead(msgs, ClearAfter)
 	}
 }
+
+// ClearAfter is how many bytes of tool results the model has already read
+// a run carries before they're cleared, all at once: a cleared result's
+// place changes what the model was sent, so each clearing breaks the
+// prompt cache once, never on every turn.
+const ClearAfter = 48 << 10
+
+// clearRead is msgs with every tool result the model has already read (all
+// but the last message's) replaced by a one-line note, once those pass
+// after bytes. The last message's results are new: the next turn reads
+// them whole.
+func clearRead(msgs []model.Message, after int) []model.Message {
+	if len(msgs) < 2 {
+		return msgs
+	}
+	read := msgs[:len(msgs)-1]
+	size := 0
+	for _, m := range read {
+		for _, b := range m.Blocks {
+			if b.Kind == model.ToolResult && !cleared(b.Result) {
+				size += len(b.Result)
+			}
+		}
+	}
+	if size <= after {
+		return msgs
+	}
+	tools := map[string]string{} // call id → tool
+	for _, m := range read {
+		for _, b := range m.Blocks {
+			if b.Kind == model.ToolUse {
+				tools[b.CallID] = b.Tool
+			}
+		}
+	}
+	out := slices.Clone(msgs)
+	for i := range out[:len(out)-1] {
+		blocks := slices.Clone(out[i].Blocks)
+		for j, b := range blocks {
+			if b.Kind == model.ToolResult && !cleared(b.Result) {
+				blocks[j].Result = fmt.Sprintf(ClearedNote, tools[b.CallID], (len(b.Result)+1023)>>10)
+			}
+		}
+		out[i].Blocks = blocks
+	}
+	return out
+}
+
+// ClearedNote stands for a tool result the model has read, once cleared:
+// the tool and its size in KB.
+const ClearedNote = "[cleared: the %s result (%d KB) you read earlier in this task. What you need from it is in what you wrote since; call the tool again if you need more.]"
+
+// cleared reports whether a result is already the note.
+func cleared(result string) bool { return strings.HasPrefix(result, "[cleared: ") }
 
 // More carries on a run the agent has answered, out, with what the owner wrote
 // while it answered: the messages Steer takes now, each given a turn, as at a
@@ -764,11 +819,6 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				return nil, err
 			}
 		}
-		if !r.IsError && (r.State == "" || r.State == "forwarded") && r.Trial == nil && tool.Reads(byName[r.Tool], calls[i].Input) {
-			if err := rec.Record(session.KeptRead, session.KeptReadBody{CallID: r.CallID, Tool: r.Tool, Input: calls[i].Input, Result: clip(r.Text, MaxKeptRead)}); err != nil {
-				return nil, err
-			}
-		}
 		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
 		if len(r.Component) > 0 && !r.IsError && shows(byName[r.Tool]) {
 			if err := rec.Record(session.Component, r.Component); err != nil {
@@ -778,22 +828,6 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}
 	}
 	return results, nil
-}
-
-// MaxKeptRead bounds what one kept read keeps of its result, in bytes: a
-// chat's next runs get what it said, not a whole export.
-const MaxKeptRead = 16 << 10
-
-// clip is text cut to at most n bytes, on a rune, saying so.
-func clip(text string, n int) string {
-	if len(text) <= n {
-		return text
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + " …(shortened)"
 }
 
 // shows reports whether t may put a component in the owner's chat.
@@ -817,9 +851,9 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 }
 
 // MaxToolResult bounds what one tool result puts in the model's context, in
-// bytes: a whole export (a 250 KB list) is written to the cache each turn
-// it is carried, and spends a run's cost cap in a few turns.
-const MaxToolResult = 32 << 10
+// bytes: a ceiling for a runaway export only. A result is read whole, then
+// cleared (clearRead), so it isn't carried turn after turn.
+const MaxToolResult = 128 << 10
 
 // capResult is text cut to at most n bytes, on a rune, telling the model
 // how much it got and to ask again for less.
