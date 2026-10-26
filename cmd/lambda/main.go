@@ -262,12 +262,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// A member's run grant, the person KIFF signed it for: taken
 	// once KIFF mints them, AGENTS_RUN_GRANTS=take; required of every
 	// member's run, =require. Unset: grants aren't taken, as before.
-	switch os.Getenv("AGENTS_RUN_GRANTS") {
-	case "take":
+	if v := os.Getenv("AGENTS_RUN_GRANTS"); v == "take" || v == "require" {
 		f.api.ResolveGrant = kiff.GrantResolver(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
-	case "require":
-		f.api.ResolveGrant = kiff.GrantResolver(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
-		f.api.RequireGrant = true
+		f.api.RequireGrant = v == "require"
 	}
 	// Deleting an account erases its sealing key and its drafts' records
 	// too (kiff/tafs#185). The tafs' keys and its alert secret are tafs
