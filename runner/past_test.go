@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -95,116 +96,55 @@ func (f *fixture) execute(r run.Run) run.Run {
 	return got
 }
 
-func TestAChatsNextRunGetsWhatItReadSealed(t *testing.T) {
-	f, _ := keeping(t, use("c1", "get_charge", `{"charge":"ch_1"}`), say("It's 50 €."), say("Refunding it."))
+// A chat's next message reads what was said, never what a tool returned:
+// nothing of a read is kept, and each chat run is told to name what a
+// follow-up acts on.
+func TestAChatsNextRunReadsWhatWasSaidNotWhatToolsReturned(t *testing.T) {
+	f, _ := keeping(t, use("c1", "get_charge", `{"charge":"ch_1"}`), say("It's 50 € (charge ch_1)."), say("Refunding ch_1."))
 	r1 := f.execute(f.start(server.Start{Input: "how much was ch_1?"}))
 	f.clock.add(10 * time.Minute)
 	f.execute(f.start(server.Start{Session: r1.Session, Input: "refund it"}))
 
 	reqs := f.model.requests()
-	ask := lastAsk(reqs[2])
-	for _, want := range []string{runner.ReadsNote, `get_charge {"charge":"ch_1"} (read 10 minutes ago)`, "charge ch_1: 50.00 EUR, refunded 0", "refund it"} {
-		if !strings.Contains(ask, want) {
-			t.Fatalf("the second run's message is %q, want it to hold %q", ask, want)
+	if !strings.HasSuffix(reqs[0].System, runner.NamesNote) {
+		t.Fatalf("a chat run isn't told to name what a follow-up acts on: %q", reqs[0].System)
+	}
+	second := reqs[2]
+	for _, m := range second.Messages {
+		for _, b := range m.Blocks {
+			if strings.Contains(b.Text+b.Result, "refunded 0") {
+				t.Fatalf("the next message carries a tool's result: %+v", b)
+			}
 		}
 	}
-	if !strings.HasSuffix(ask, "refund it") {
+	if !strings.Contains(fmt.Sprint(second.Messages), "It's 50 € (charge ch_1).") {
+		t.Fatal("the next message doesn't read what was said")
+	}
+	if ask := lastAsk(second); !strings.HasSuffix(ask, "refund it") {
 		t.Fatalf("the input comes last: %q", ask)
 	}
-
-	// Stored sealed: neither the call nor what it read is in the store in
-	// clear, and no view of the session shows it.
+	if slices.Contains(f.events(r1), session.KeptRead) {
+		t.Fatal("a read was kept")
+	}
+	// What the owner sees of the run is unchanged: their message, not the preface.
 	_, events, err := f.store.Read(ctx, "t1", r1.Session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var kept int
-	for _, e := range events {
-		if e.Kind != session.KeptRead {
-			continue
-		}
-		kept++
-		if strings.Contains(string(e.Body), "ch_1") || strings.Contains(string(e.Body), "EUR") {
-			t.Fatalf("a kept read is stored in clear: %s", e.Body)
-		}
-		if e.Expires.Sub(e.Time) != 4*time.Hour || e.UntilEnd {
-			t.Fatalf("a kept read expires %v after it was read (until its run ends: %v), want 4h", e.Expires.Sub(e.Time), e.UntilEnd)
-		}
-	}
-	if kept != 1 {
-		t.Fatalf("kept %d reads, want 1", kept)
-	}
-	if shown := session.Shown(events); slices.ContainsFunc(shown, func(e session.Event) bool { return e.Kind == session.KeptRead }) {
-		t.Fatal("the session's view shows a kept read")
-	}
-	// What the owner sees of the run is unchanged: their message, not the preface.
 	for _, e := range events {
 		var b agent.TextBody
-		if e.Kind == session.OwnerMessage && json.Unmarshal(e.Body, &b) == nil && strings.Contains(b.Text, runner.ReadsNote) {
-			t.Fatalf("the preface was recorded as the owner's message: %q", b.Text)
+		if e.Kind == session.OwnerMessage && json.Unmarshal(e.Body, &b) == nil && b.Text != "how much was ch_1?" && b.Text != "refund it" {
+			t.Fatalf("the owner's message was recorded as %q", b.Text)
 		}
 	}
 }
 
-func TestKeptReadsEndWhenTheChatGoesIdle(t *testing.T) {
-	f, _ := keeping(t, use("c1", "get_charge", `{"charge":"ch_1"}`), say("It's 50 €."), say("Hello again."))
-	r1 := f.execute(f.start(server.Start{Input: "how much was ch_1?"}))
-	f.clock.add(61 * time.Minute)
-	f.execute(f.start(server.Start{Session: r1.Session, Input: "and now?"}))
-	if ask := lastAsk(f.model.requests()[2]); strings.Contains(ask, runner.ReadsNote) {
-		t.Fatalf("after an hour idle, the run still got the reads: %q", ask)
+func TestAJobsRunIsNotToldAboutFollowUps(t *testing.T) {
+	f, _ := keeping(t, say("done"))
+	f.execute(f.start(server.Start{Tenant: "t1", Agent: "rae", Trigger: run.BySchedule, Input: "reconcile"}))
+	if s := f.model.requests()[0].System; strings.Contains(s, runner.NamesNote) {
+		t.Fatalf("a job's run was told about follow-ups: %q", s)
 	}
-}
-
-func TestKeptReadsEndFourHoursAfterTheReadHoweverBusyTheChat(t *testing.T) {
-	replies := []model.Reply{use("c1", "get_charge", `{"charge":"ch_1"}`), say("It's 50 €.")}
-	for range 6 {
-		replies = append(replies, say("ok"))
-	}
-	f, _ := keeping(t, replies...)
-	r := f.execute(f.start(server.Start{Input: "how much was ch_1?"}))
-	for i := range 6 {
-		f.clock.add(50 * time.Minute)
-		f.execute(f.start(server.Start{Session: r.Session, Input: "next"}))
-		ask := lastAsk(f.model.requests()[2+i])
-		if got, want := strings.Contains(ask, runner.ReadsNote), (i+1)*50 < 240; got != want {
-			t.Fatalf("%d minutes after the read, the run got it: %v, want %v", (i+1)*50, got, want)
-		}
-	}
-}
-
-func TestOnlyChatsKeepReadsAndOnlyReads(t *testing.T) {
-	t.Run("a job's run keeps none", func(t *testing.T) {
-		f, _ := keeping(t, use("c1", "get_charge", `{"charge":"ch_1"}`), say("done"))
-		r := f.execute(f.start(server.Start{Tenant: "t1", Agent: "rae", Trigger: run.BySchedule, Input: "reconcile"}))
-		if slices.Contains(f.events(r), session.KeptRead) {
-			t.Fatal("a scheduled run kept what it read")
-		}
-	})
-	t.Run("a write's result is never kept", func(t *testing.T) {
-		f, _ := keeping(t, use("c1", "stripe_refund", `{"charge":"ch_1"}`), say("done"))
-		r := f.execute(f.start(server.Start{Input: "refund ch_1"}))
-		if slices.Contains(f.events(r), session.KeptRead) {
-			t.Fatal("a write's result was kept")
-		}
-	})
-	t.Run("nothing is kept without a sealer", func(t *testing.T) {
-		f, _ := keeping(t, use("c1", "get_charge", `{"charge":"ch_1"}`), say("done"))
-		f.r.Sealer = nil
-		r := f.execute(f.start(server.Start{Input: "how much was ch_1?"}))
-		if slices.Contains(f.events(r), session.KeptRead) {
-			t.Fatal("a read was kept with nothing to seal it")
-		}
-	})
-	t.Run("a disconnected tool's reads aren't used", func(t *testing.T) {
-		f, _ := keeping(t, use("c1", "get_charge", `{"charge":"ch_1"}`), say("It's 50 €."), say("ok"))
-		r := f.execute(f.start(server.Start{Input: "how much was ch_1?"}))
-		f.extra = nil // the vendor's tools are gone from the gateway
-		f.execute(f.start(server.Start{Session: r.Session, Input: "and now?"}))
-		if ask := lastAsk(f.model.requests()[2]); strings.Contains(ask, "ch_1: 50.00") {
-			t.Fatalf("a read of a tool the agent no longer has reached the model: %q", ask)
-		}
-	})
 }
 
 func TestARunIsToldWhereWhatItsChatShowedStandsNow(t *testing.T) {

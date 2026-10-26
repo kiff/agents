@@ -359,6 +359,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
 	}
+	if sess.Kind == session.KindChat {
+		a.System += "\n\n" + NamesNote // the same for each of the agent's chats, so it caches
+	}
 	p, err := rn.past(ctx, sess, events, r, d, a.Tools)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its history: %w", err))

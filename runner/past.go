@@ -22,9 +22,6 @@ import (
 // history, newest first, past the latest summary.
 const MaxScan = 2 * MaxHistory
 
-// MaxReads bounds how many kept reads a run gets: the latest.
-const MaxReads = 20
-
 // tokens estimates what text takes in the model's context: about four bytes
 // a token, which overestimates most text slightly.
 func tokens(msgs []model.Message) int {
@@ -60,15 +57,6 @@ type past struct {
 	opening string
 	// shown is the session's components, oldest first, for the Staters.
 	shown []json.RawMessage
-	// reads is the kept reads of earlier runs still in their windows, oldest
-	// first, opened.
-	reads []kept
-}
-
-// kept is one kept read, opened, and when it was read.
-type kept struct {
-	session.KeptReadBody
-	at time.Time
 }
 
 // past reads what current gets of its session: its finished runs before it
@@ -182,12 +170,6 @@ func (rn *Runner) past(ctx context.Context, sess session.Session, events []sessi
 	if p.opening == "" && p.summary != nil {
 		p.opening = p.summary.Opening // the first run's own events are gone
 	}
-
-	reads, err := rn.reads(ctx, sess, events, current, d, tools)
-	if err != nil {
-		return past{}, err
-	}
-	p.reads = reads
 	return p, nil
 }
 
@@ -198,51 +180,6 @@ func flatten(runs []earlier) []model.Message {
 		msgs = append(msgs, e.msgs...)
 	}
 	return msgs
-}
-
-// reads is the kept reads of the session's runs before current that are
-// still in their windows: the chat has been idle less than the rule's
-// Retention, each read was made less than its Max ago, and its tool is still
-// one of the agent's (a disconnected tool's reads aren't used). The latest
-// MaxReads, oldest first, opened.
-func (rn *Runner) reads(ctx context.Context, sess session.Session, events []session.Event, current run.Run, d registry.Definition, tools []tool.Tool) ([]kept, error) {
-	rule := d.Keep.Rule(session.KeptRead)
-	if rule.Keep != session.UntilIdle || rn.Sealer == nil || sess.Kind != session.KindChat {
-		return nil, nil
-	}
-	now := rn.now()
-	var last time.Time // when the chat was last active, before this run
-	for _, e := range events {
-		if e.Run != current.ID && e.Time.After(last) {
-			last = e.Time
-		}
-	}
-	if last.IsZero() || now.Sub(last) > rule.Retention {
-		return nil, nil
-	}
-	has := map[string]bool{}
-	for _, t := range tools {
-		has[t.Spec().Name] = true
-	}
-	var out []kept
-	for _, e := range events {
-		if e.Kind != session.KeptRead || e.Run == current.ID || now.Sub(e.Time) > rule.Max {
-			continue
-		}
-		plain, err := session.OpenEvent(ctx, rn.Sealer, sess.Tenant, e)
-		if err != nil {
-			continue // one that doesn't open is left out, never shown sealed
-		}
-		var body session.KeptReadBody
-		if json.Unmarshal(plain, &body) != nil || !has[body.Tool] {
-			continue
-		}
-		out = append(out, kept{KeptReadBody: body, at: e.Time})
-	}
-	if len(out) > MaxReads {
-		out = out[len(out)-MaxReads:]
-	}
-	return out, nil
 }
 
 // SummaryNote opens the summary of a chat's earlier part, as the model
@@ -261,9 +198,10 @@ const OpeningNote = "The owner opened this conversation with:\n\n"
 // StateNote opens what the agent's tools say of where things stand now.
 const StateNote = "Where things stand now, as their own sources say (this is current; the conversation may be older):"
 
-// ReadsNote opens the kept reads. They are as they were when read: what
-// depends on them now is read again.
-const ReadsNote = "What you read earlier in this chat, kept for its next messages. Each is as it was when read, not now: read it again before a write that depends on it, such as an amount or a status."
+// NamesNote ends a chat run's instructions: its tools' results aren't kept for the
+// chat's next messages, only what it writes, so it writes what a follow-up
+// ("refund it") needs to act on.
+const NamesNote = "What your tools return isn't kept for this chat's next messages: only what you write is. When you answer, name what the owner may act on next, with its id and amount (for example the charge id), so a follow-up such as \"refund it\" can act on it without looking it up again."
 
 // lead is what comes before the conversation the run reads: the summary, or
 // a note that earlier messages are missing, and the opening message.
@@ -299,19 +237,6 @@ func (p past) history() (msgs []model.Message, preface []model.Block) {
 		msgs = append([]model.Message{{Role: model.User, Blocks: lead}}, msgs...)
 	}
 	return msgs, nil
-}
-
-// readsText is the kept reads, as the model reads them, each with its age.
-func (p past) readsText(now time.Time) string {
-	if len(p.reads) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(ReadsNote)
-	for _, r := range p.reads {
-		fmt.Fprintf(&b, "\n\n- %s %s (read %s ago):\n%s", r.Tool, r.Input, age(now.Sub(r.at)), r.Result)
-	}
-	return b.String()
 }
 
 // age is how long ago, in the coarsest unit that says it.
@@ -361,9 +286,6 @@ func (p past) preface(ctx context.Context, tools []tool.Tool, now time.Time) []m
 	_, out := p.history()
 	if s := state(ctx, tools, p.shown); s != "" {
 		out = append(out, model.Block{Kind: model.Text, Text: s})
-	}
-	if r := p.readsText(now); r != "" {
-		out = append(out, model.Block{Kind: model.Text, Text: r})
 	}
 	return out
 }

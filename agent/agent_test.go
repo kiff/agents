@@ -350,8 +350,9 @@ func TestWhatAPausedRunKeepsIsBounded(t *testing.T) {
 	if len(before) != agent.BeforeMax || before[0].Blocks[0].CallID != fmt.Sprintf("l%d", agent.BeforeMax/2) {
 		t.Fatalf("kept %d turns, from %+v", len(before), before[0])
 	}
-	if res := before[1].Blocks[0].Result; len(res) > agent.BeforeResultMax+64 || !strings.HasPrefix(res, "xxx") {
-		t.Fatalf("kept a result of %d bytes", len(res))
+	// Read and cleared once past ClearAfter, or else cut.
+	if res := before[1].Blocks[0].Result; len(res) > agent.BeforeResultMax+64 || !(strings.HasPrefix(res, "xxx") || strings.HasPrefix(res, "[cleared: ")) {
+		t.Fatalf("kept a result of %d bytes: %.80q", len(res), res)
 	}
 }
 
