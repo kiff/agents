@@ -617,10 +617,18 @@ func (s *Server) listMemories(ctx context.Context, c Caller, r *http.Request) (i
 	if owner != "" {
 		notes = session.NotesFor(notes, owner)
 	}
-	if notes == nil {
-		notes = []session.Note{}
+	out := make([]noteView, len(notes))
+	for i, n := range notes {
+		out[i] = noteView{Note: n, Quarantined: n.Quarantined()}
 	}
-	return http.StatusOK, map[string]any{"memories": notes}, nil
+	return http.StatusOK, map[string]any{"memories": out}, nil
+}
+
+// noteView is a note as listed: quarantined when its origin isn't known, so
+// someone who manages the agent can share it on purpose or forget it.
+type noteView struct {
+	session.Note
+	Quarantined bool `json:"quarantined,omitempty"`
 }
 
 func (s *Server) forget(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
@@ -661,12 +669,12 @@ func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (in
 	if err != nil {
 		return 0, nil, err
 	}
-	if scope == session.Shared {
-		return 0, nil, bad("scope names whose note to share, as in member:<subject>")
-	}
 	notes, err := s.Notes.ListNotes(ctx, c.Tenant, id)
 	if err != nil {
 		return 0, nil, err
+	}
+	if scope == session.Shared {
+		return s.releaseNote(ctx, r, notes, name)
 	}
 	var own, shared *session.Note
 	for i, n := range notes {
@@ -689,6 +697,7 @@ func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (in
 	if n.Requester == "" {
 		n.Requester = scope
 	}
+	n.SharedBy = scope
 	// Shared first: a failure between the two leaves the note in both
 	// places, never in neither, and sharing again finishes it.
 	if err := s.Notes.PutNote(ctx, n); err != nil {
@@ -756,6 +765,31 @@ func noteName(r *http.Request) (string, error) {
 	return name, nil
 }
 
+// releaseNote shares a quarantined note on purpose: the person named by
+// "by" (member:<subject>), who manages the agent, says every run may read it.
+// Only a quarantined note is released; a note shared already is a conflict.
+func (s *Server) releaseNote(ctx context.Context, r *http.Request, notes []session.Note, name string) (int, any, error) {
+	by := r.URL.Query().Get("by")
+	kind, sub, _ := strings.Cut(by, ":")
+	if q := (run.Requester{Kind: run.RequesterKind(kind), ID: sub}); q.Kind != run.ByMember || !q.Valid() {
+		return 0, nil, bad("scope names whose note to share, as in member:<subject>, or by names who shares a quarantined one")
+	}
+	for _, n := range notes {
+		if n.Scope != session.Shared || n.Name != name {
+			continue
+		}
+		if !n.Quarantined() {
+			return 0, nil, conflict("that note is shared already")
+		}
+		n.SharedBy = by
+		if err := s.Notes.PutNote(ctx, n); err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, n, nil
+	}
+	return 0, nil, session.ErrNotFound
+}
+
 // scopeParam is the "scope" query parameter, a requester's key, checked as
 // owner is; empty is the shared scope.
 func scopeParam(r *http.Request) (string, error) {
@@ -799,6 +833,15 @@ const AsService = "service"
 func asService(r *http.Request) error {
 	if r.URL.Query().Get("as") != AsService {
 		return bad("name the person (owner=member:<subject>) or read as the service (as=service)")
+	}
+	return nil
+}
+
+// notBoth is a bad request when a call that names a person also says it
+// acts as the service: one or the other, never both, on writes as on reads.
+func notBoth(r *http.Request) error {
+	if r.URL.Query().Has("as") {
+		return bad("name the person (requester) or as=service, not both")
 	}
 	return nil
 }

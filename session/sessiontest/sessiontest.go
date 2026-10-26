@@ -803,7 +803,7 @@ func concurrentRunsInOneSession(t *testing.T, b Backend, c *clock) {
 
 func notes(t *testing.T, b Backend, c *clock) {
 	put := func(name, text string) {
-		check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: name, Text: text}))
+		check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: name, Text: text, Run: "r0"}))
 	}
 	put("b", "1")
 	put("a", "2")
@@ -828,7 +828,7 @@ func notes(t *testing.T, b Backend, c *clock) {
 		Session: "s1", Run: "r1", Requester: ana}))
 	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Scope: luis, Name: "b", Text: "luis's"}))
 	// A name that looks like a scoped key stays a shared note of its own.
-	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: "member:ana|b", Text: "shared"}))
+	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: "member:ana|b", Text: "shared", SharedBy: "member:ana"}))
 	n = listNotes(t, b, "t1", "refunds")
 	if len(n) != 4 || n[0].Scope != session.Shared || n[0].Name != "b" || n[0].Text != "3" ||
 		n[1].Name != "member:ana|b" || n[2].Scope != ana || n[2].Text != "ana's" || n[3].Scope != luis || n[3].Text != "luis's" {

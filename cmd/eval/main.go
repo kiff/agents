@@ -251,7 +251,7 @@ func (rt *runtime) note(ctx context.Context, name string) error {
 		return nil
 	}
 	return rt.sessions.PutNote(ctx, session.Note{Tenant: evalTenant, Agent: name, Name: "owner",
-		Text: strings.TrimSpace(text), Updated: time.Now().UTC()})
+		Text: strings.TrimSpace(text), Updated: time.Now().UTC(), SharedBy: "owner"})
 }
 
 // definition is the agent a case runs as. From -definitions, it is the

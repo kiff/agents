@@ -367,7 +367,7 @@ func TestEachPersonsMemories(t *testing.T) {
 	f := newFixture(t)
 	f.putAgent("t1", "payouts")
 	put := func(scope, name, text string) {
-		_ = f.store.PutNote(ctx, session.Note{Tenant: "t1", Agent: "payouts", Scope: scope, Name: name, Text: text, Updated: now, Session: "s1"})
+		_ = f.store.PutNote(ctx, session.Note{Tenant: "t1", Agent: "payouts", Scope: scope, Name: name, Text: text, Updated: now, Session: "s1", Run: "r0"})
 	}
 	put(session.Shared, "vendors", "x")
 	put("member:ana", "tone", "short")

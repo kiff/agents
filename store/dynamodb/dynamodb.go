@@ -1067,7 +1067,7 @@ func (st *Store) ListNotes(ctx context.Context, tenant, agent string) ([]session
 			name = getS(item, "sk")
 		}
 		out[i] = session.Note{Tenant: tenant, Agent: agent, Scope: getS(item, "scope"), Name: name, Text: getS(item, "text"),
-			Updated: getTime(item, "updated"), Session: getS(item, "session"), Run: getS(item, "run"), Requester: getS(item, "requester")}
+			Updated: getTime(item, "updated"), Session: getS(item, "session"), Run: getS(item, "run"), Requester: getS(item, "requester"), SharedBy: getS(item, "shared_by")}
 	}
 	slices.SortFunc(out, func(a, b session.Note) int { return cmp.Or(cmp.Compare(a.Scope, b.Scope), cmp.Compare(a.Name, b.Name)) })
 	return out, nil
@@ -1099,6 +1099,9 @@ func (st *Store) PutNote(ctx context.Context, note session.Note) error {
 	}
 	if note.Requester != "" {
 		item["requester"] = s(note.Requester)
+	}
+	if note.SharedBy != "" {
+		item["shared_by"] = s(note.SharedBy)
 	}
 	_, err := st.db.PutItem(ctx, &ddb.PutItemInput{TableName: &st.table, Item: item})
 	return err

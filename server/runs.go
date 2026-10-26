@@ -369,6 +369,8 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 		if err := asService(r); err != nil {
 			return 0, nil, err
 		}
+	} else if err := notBoth(r); err != nil {
+		return 0, nil, err
 	}
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
@@ -712,6 +714,12 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	if body.SessionID != "" && q.Key() == "" {
 		// Going on in a session with no person: only as the service, by name.
 		if err := asService(r); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
+	if q.Key() != "" {
+		if err := notBoth(r); err != nil {
 			s.fail(w, r, err)
 			return
 		}

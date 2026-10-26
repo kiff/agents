@@ -109,6 +109,8 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		n := session.Note{Tenant: t.tenant, Agent: t.agent, Scope: scope, Name: name, Text: in.Text, Updated: t.now().UTC()}
 		if ref, ok := run.RefFrom(ctx); ok {
 			n.Session, n.Run = ref.Session, ref.Run
+		} else if scope == session.Shared {
+			n.SharedBy = "owner" // outside any run: the owner's own chat (cmd/chat)
 		}
 		n.Requester = scope
 		if err := t.notes.PutNote(ctx, n); err != nil {
