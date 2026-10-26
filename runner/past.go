@@ -199,9 +199,9 @@ const OpeningNote = "The owner opened this conversation with:\n\n"
 const StateNote = "Where things stand now, as their own sources say (this is current; the conversation may be older):"
 
 // NamesNote ends a chat run's instructions: its tools' results aren't kept for the
-// chat's next messages, only what it writes, so it writes what a follow-up
-// ("refund it") needs to act on.
-const NamesNote = "What your tools return isn't kept for this chat's next messages: only what you write is. When you answer, name what the owner may act on next, with its id and amount (for example the charge id), so a follow-up such as \"refund it\" can act on it without looking it up again."
+// chat's next messages, only what it writes, so it names what a follow-up
+// ("do it", "that one") acts on.
+const NamesNote = "What your tools return isn't kept for this chat's next messages: only what you write is. When you answer, name what the owner may act on next by its id (an order, a record, a payment), so a follow-up such as \"do it\" or \"that one\" can act on it without looking it up again."
 
 // lead is what comes before the conversation the run reads: the summary, or
 // a note that earlier messages are missing, and the opening message.
