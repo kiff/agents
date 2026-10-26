@@ -1085,8 +1085,8 @@ func TestTheServerShowsNoPrivateCause(t *testing.T) {
 	f.connectErr = nil
 	stream := post("/agents/rae/runs", `{"input":"go"}`)
 	id := runID(stream)
-	replay := post("/agents/rae/runs/"+id+"/resume", "")
-	resp, err := http.Get(srv.URL + "/agents/rae/runs/" + id)
+	replay := post("/agents/rae/runs/"+id+"/resume?as=service", "")
+	resp, err := http.Get(srv.URL + "/agents/rae/runs/" + id + "?as=service")
 	if err != nil {
 		t.Fatal(err)
 	}

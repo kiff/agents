@@ -337,7 +337,7 @@ func TestStartThenResumeFromTheLastCursor(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+runID+"/resume?after="+cursor, "")
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+runID+"/resume?as=service&after="+cursor, "")
 	_, ids := kinds(t, events)
 	if code != 200 || strings.Join(ids, ",") != "2" || events[len(events)-1].name != "end" {
 		t.Fatalf("resumed after %s: %d %s, ids %v; want only 2, then end", cursor, code, names(events), ids)
@@ -361,13 +361,13 @@ func TestStartRefusesAnotherAgentsSession(t *testing.T) {
 	f.putAgent("t1", "payouts")
 	f.putAgent("t1", "refunds")
 	f.session("t1", "refunds-thread", "refunds")
-	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "session_id": "refunds-thread", "background": true})
+	code, body := f.do("t1", "POST", "/agents/payouts/runs?as=service", map[string]any{"input": "x", "session_id": "refunds-thread", "background": true})
 	f.want(404, code, body, "a payouts run in the refunds thread")
 	if len(f.runner.starts) != 0 {
 		t.Fatal("the Runner was asked to start it")
 	}
 	// The same session for its own agent is fine.
-	code, body = f.do("t1", "POST", "/agents/refunds/runs", map[string]any{"input": "x", "session_id": "refunds-thread", "background": true})
+	code, body = f.do("t1", "POST", "/agents/refunds/runs?as=service", map[string]any{"input": "x", "session_id": "refunds-thread", "background": true})
 	f.want(202, code, body, "a refunds run in the refunds thread")
 }
 
@@ -420,7 +420,7 @@ func TestStartRefuses(t *testing.T) {
 		"an unknown field":         {"t1", "/agents/payouts/runs", `{"input":"x","tenant":"t2"}`, 400},
 		"an agent it doesn't have": {"t1", "/agents/refunds/runs", `{"input":"x"}`, 404},
 		"another tenant's agent":   {"t2", "/agents/payouts/runs", `{"input":"x"}`, 404},
-		"another tenant's session": {"t1", "/agents/payouts/runs", `{"input":"x","session_id":"theirs"}`, 404},
+		"another tenant's session": {"t1", "/agents/payouts/runs?as=service", `{"input":"x","session_id":"theirs"}`, 404},
 		"no caller":                {"", "/agents/payouts/runs", `{"input":"x"}`, 401},
 	} {
 		code, body := f.do(c.tenant, "POST", c.path, c.body)
@@ -475,7 +475,7 @@ func TestGetRun(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
 	r := f.stored(run.Paused)
-	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID, nil)
+	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
 	f.want(200, code, body, "get")
 	if body["status"] != string(run.Paused) || len(body["requirements"].([]any)) != 1 {
 		t.Fatalf("got %v", body)
@@ -487,16 +487,16 @@ func TestGetRun(t *testing.T) {
 	}
 	// A running run has a claim and a lease; neither is shown.
 	running := f.stored(run.Running)
-	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+running.ID, nil)
+	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+running.ID+"?as=service", nil)
 	f.want(200, code, body, "get a running run")
 	for _, k := range []string{"claim", "lease", "version"} {
 		if _, ok := body[k]; ok {
 			t.Errorf("a running run shows %q", k)
 		}
 	}
-	code, body = f.do("t2", "GET", "/agents/payouts/runs/"+r.ID, nil)
+	code, body = f.do("t2", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
 	f.want(404, code, body, "another tenant's run")
-	code, body = f.do("t1", "GET", "/agents/refunds/runs/"+r.ID, nil)
+	code, body = f.do("t1", "GET", "/agents/refunds/runs/"+r.ID+"?as=service", nil)
 	f.want(404, code, body, "the run under another agent")
 }
 
@@ -549,10 +549,10 @@ func TestSteerRun(t *testing.T) {
 	}
 	for _, c := range cases {
 		r := f.stored(c.status)
-		path := "/agents/payouts/runs/" + r.ID + "/messages"
+		path := "/agents/payouts/runs/" + r.ID + "/messages?as=service"
 		code, body := f.do("t2", "POST", path, map[string]any{"text": "only the €20 one"})
 		f.want(404, code, body, "another tenant's run")
-		code, body = f.do("t1", "POST", "/agents/other/runs/"+r.ID+"/messages", map[string]any{"text": "only the €20 one"})
+		code, body = f.do("t1", "POST", "/agents/other/runs/"+r.ID+"/messages?as=service", map[string]any{"text": "only the €20 one"})
 		f.want(404, code, body, "another agent's run")
 		code, body = f.do("t1", "POST", path, map[string]any{"text": "only the €20 one"})
 		f.want(c.code, code, body, "steer "+string(c.status))
@@ -571,7 +571,7 @@ func TestSteerRun(t *testing.T) {
 	}
 
 	r := f.stored(run.Running)
-	path := "/agents/payouts/runs/" + r.ID + "/messages"
+	path := "/agents/payouts/runs/" + r.ID + "/messages?as=service"
 	for _, text := range []string{"", "   "} {
 		code, body := f.do("t1", "POST", path, map[string]any{"text": text})
 		f.want(400, code, body, "an empty message")
@@ -588,7 +588,7 @@ func TestSteerRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+full.ID+"/messages", map[string]any{"text": "one too many"})
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+full.ID+"/messages?as=service", map[string]any{"text": "one too many"})
 	f.want(409, code, body, "a run full of messages")
 }
 
@@ -966,7 +966,7 @@ func TestResumeReplaysThenFollows(t *testing.T) {
 		got, _ := f.runs.Get(ctx, "t1", r.ID)
 		_, _ = run.Change(ctx, f.runs, got, now, func(n *run.Run) error { n.Status, n.Stop = run.Completed, "answered"; return nil })
 	}()
-	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume?after=1", "")
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume?as=service&after=1", "")
 	if code != 200 || names(events) != "event,event,event,end" {
 		t.Fatalf("got %d %s", code, names(events))
 	}
@@ -978,9 +978,9 @@ func TestResumeReplaysThenFollows(t *testing.T) {
 		t.Fatalf("ids %v, end %v", ids, events[3].data)
 	}
 
-	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume?after=-1", nil)
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume?as=service&after=-1", nil)
 	f.want(400, code, body, "a negative index")
-	code, body = f.do("t2", "POST", "/agents/payouts/runs/"+r.ID+"/resume", nil)
+	code, body = f.do("t2", "POST", "/agents/payouts/runs/"+r.ID+"/resume?as=service", nil)
 	f.want(404, code, body, "resuming another tenant's run")
 }
 
@@ -988,7 +988,7 @@ func TestResumeOfAStoppedRunEnds(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
 	r := f.stored(run.Paused)
-	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume", "")
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume?as=service", "")
 	if code != 200 || names(events) != "end" || events[0].data["status"] != string(run.Paused) {
 		t.Fatalf("got %d %s", code, names(events))
 	}
@@ -1512,7 +1512,7 @@ func TestARefusedRunShowsWhy(t *testing.T) {
 	if err := f.runs.Create(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID, nil)
+	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
 	f.want(200, code, body, "get")
 	if body["stop"] != "refused" || body["refusal"] != "cyber" {
 		t.Fatalf("got %v", body)
@@ -1609,12 +1609,12 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 		}
 		return out
 	}
-	code, body := f.do("t1", "GET", "/agents/payouts/runs", nil)
+	code, body := f.do("t1", "GET", "/agents/payouts/runs?as=service", nil)
 	f.want(200, code, body, "list")
 	if got := ids(body); len(got) != 3 || !got[done.ID] {
 		t.Fatalf("listed %v", got)
 	}
-	code, body = f.do("t1", "GET", "/agents/payouts/runs?active=true", nil)
+	code, body = f.do("t1", "GET", "/agents/payouts/runs?active=true&as=service", nil)
 	f.want(200, code, body, "active")
 	if got := ids(body); len(got) != 2 || !got[paused.ID] || !got[running.ID] {
 		t.Fatalf("active %v", got)
@@ -1775,7 +1775,7 @@ func TestSteeringIsEachRequesters(t *testing.T) {
 		if by != nil {
 			b["requester"] = by
 		}
-		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages", b)
+		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages"+service(by), b)
 	}
 
 	code, body = steer(who("luis"))
@@ -1887,4 +1887,12 @@ func TestARunGrantNamesWhoAsked(t *testing.T) {
 	f.want(403, code, body, "a member without a grant")
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "door", "id": "d1-sender"}})
 	f.want(202, code, body, "a door's sender")
+}
+
+// service is the query for a write that names no one: the service, by name.
+func service(by map[string]any) string {
+	if by == nil {
+		return "?as=service"
+	}
+	return ""
 }

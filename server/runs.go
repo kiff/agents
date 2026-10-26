@@ -172,6 +172,10 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 		}
 		limit = n
 	}
+	q, err := readerOf(r)
+	if err != nil {
+		return 0, nil, err
+	}
 	active := r.URL.Query().Get("active") == "true"
 	scan := limit
 	if active {
@@ -183,7 +187,7 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	out := []runView{}
 	for _, rn := range runs {
-		if active && (rn.Status.Final()) {
+		if active && (rn.Status.Final()) || !readBy(rn, q) {
 			continue
 		}
 		if out = append(out, viewRun(rn)); len(out) == limit {
@@ -194,11 +198,44 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 }
 
 func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	q, err := readerOf(r)
+	if err != nil {
+		return 0, nil, err
+	}
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
 		return 0, nil, err
 	}
+	if !readBy(rn, q) {
+		return 0, nil, run.ErrNotFound // another person's run
+	}
 	return http.StatusOK, viewRun(rn), nil
+}
+
+// readerOf is who reads a run: the person the requester parameter names
+// (member:<subject>), or no one when the caller reads as the service
+// (as=service). Neither is a bad request: a missing person never means
+// everyone.
+func readerOf(r *http.Request) (run.Requester, error) {
+	v := r.URL.Query().Get("requester")
+	if v == "" {
+		return run.Requester{}, asService(r)
+	}
+	if r.URL.Query().Get("as") != "" {
+		return run.Requester{}, bad("name the person (requester) or as=service, not both")
+	}
+	kind, id, _ := strings.Cut(v, ":")
+	q := run.Requester{Kind: run.RequesterKind(kind), ID: id}
+	if !q.Valid() {
+		return run.Requester{}, bad("requester is a requester's kind and id, as in member:<subject>")
+	}
+	return q, nil
+}
+
+// readBy reports whether q reads rn: the service (no one) reads any run, a
+// person only their own.
+func readBy(rn run.Run, q run.Requester) bool {
+	return q.Key() == "" || rn.Requester == q
 }
 
 // cancelRun asks a run to stop. A PENDING run is cancelled now; a RUNNING
@@ -326,6 +363,12 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	q, err := requesterOf(body.Requester)
 	if err != nil {
 		return 0, nil, err
+	}
+	if q.Key() == "" {
+		// Writing into a run with no person: only as the service, by name.
+		if err := asService(r); err != nil {
+			return 0, nil, err
+		}
 	}
 	rn, err := s.agentRun(ctx, c, r)
 	if err != nil {
@@ -666,6 +709,13 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	if body.SessionID != "" && q.Key() == "" {
+		// Going on in a session with no person: only as the service, by name.
+		if err := asService(r); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if body.SessionID != "" {
 		// A session is one agent's thread, and an owned one its owner's:
 		// another agent's, or another person's, is not found.
@@ -882,7 +932,15 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 		}
 		after = n
 	}
+	q, err := readerOf(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	rn, err := s.agentRun(ctx, c, r)
+	if err == nil && !readBy(rn, q) {
+		err = run.ErrNotFound // another person's run
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return

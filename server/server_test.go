@@ -170,7 +170,7 @@ func TestEveryRouteNeedsAVerifiedCaller(t *testing.T) {
 	for _, r := range [][2]string{
 		{"GET", "/agents"}, {"GET", "/agents/payouts"}, {"PUT", "/agents/payouts"}, {"DELETE", "/agents/payouts"},
 		{"GET", "/agents/payouts/memories"}, {"DELETE", "/agents/payouts/memories/x"},
-		{"GET", "/sessions?agent_id=payouts"}, {"GET", "/sessions/s1"}, {"DELETE", "/sessions/s1"},
+		{"GET", "/sessions?agent_id=payouts&as=service"}, {"GET", "/sessions/s1"}, {"DELETE", "/sessions/s1"},
 		{"POST", "/schedules"}, {"GET", "/schedules"}, {"GET", "/schedules/m"}, {"PUT", "/schedules/m"},
 		{"DELETE", "/schedules/m"}, {"POST", "/schedules/m/enable"}, {"POST", "/schedules/m/disable"},
 	} {
@@ -345,7 +345,7 @@ func TestMemories(t *testing.T) {
 	for _, name := range []string{"vendors", "rules"} {
 		_ = f.store.PutNote(ctx, session.Note{Tenant: "t1", Agent: "payouts", Name: name, Text: "x", Updated: now})
 	}
-	code, body := f.do("t1", "GET", "/agents/payouts/memories", nil)
+	code, body := f.do("t1", "GET", "/agents/payouts/memories?as=service", nil)
 	f.want(200, code, body, "list")
 	if list := body["memories"].([]any); len(list) != 2 {
 		t.Fatalf("listed %v", list)
@@ -387,7 +387,7 @@ func TestEachPersonsMemories(t *testing.T) {
 	if got := names(body); !slices.Equal(got, []string{"/vendors", "member:ana/tone", "member:ana/vendors"}) {
 		t.Fatalf("ana sees %v", got)
 	}
-	code, body = f.do("t1", "GET", "/agents/payouts/memories", nil)
+	code, body = f.do("t1", "GET", "/agents/payouts/memories?as=service", nil)
 	f.want(200, code, body, "every note")
 	if got := names(body); len(got) != 4 {
 		t.Fatalf("all: %v", got)
@@ -442,33 +442,33 @@ func TestSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body := f.do("t1", "GET", "/sessions", nil)
+	code, body := f.do("t1", "GET", "/sessions?as=service", nil)
 	f.want(400, code, body, "list without agent_id")
 	for _, l := range []string{"0", "101", "x"} {
-		code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&limit="+l, nil)
+		code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&as=service&limit="+l, nil)
 		f.want(400, code, body, "limit "+l)
 	}
-	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts", nil)
+	code, body = f.do("t1", "GET", "/sessions?agent_id=payouts&as=service", nil)
 	f.want(200, code, body, "list")
 	if list := body["sessions"].([]any); len(list) != 1 || list[0].(map[string]any)["id"] != "s1" {
 		t.Fatalf("listed %v", list)
 	}
-	code, body = f.do("t2", "GET", "/sessions?agent_id=payouts", nil)
+	code, body = f.do("t2", "GET", "/sessions?agent_id=payouts&as=service", nil)
 	f.want(200, code, body, "another tenant's list")
 	if list := body["sessions"].([]any); len(list) != 0 {
 		t.Fatalf("t2 lists %v", list)
 	}
 
-	code, body = f.do("t1", "GET", "/sessions/s1", nil)
+	code, body = f.do("t1", "GET", "/sessions/s1?as=service", nil)
 	f.want(200, code, body, "get")
 	if events := body["events"].([]any); len(events) != 1 || body["session"].(map[string]any)["id"] != "s1" {
 		t.Fatalf("got %v", body)
 	}
-	code, body = f.do("t2", "GET", "/sessions/s1", nil)
+	code, body = f.do("t2", "GET", "/sessions/s1?as=service", nil)
 	f.want(404, code, body, "another tenant's session")
-	code, body = f.do("t2", "DELETE", "/sessions/s1", nil)
+	code, body = f.do("t2", "DELETE", "/sessions/s1?as=service", nil)
 	f.want(404, code, body, "deleting another tenant's session")
-	code, body = f.do("t1", "DELETE", "/sessions/s1", nil)
+	code, body = f.do("t1", "DELETE", "/sessions/s1?as=service", nil)
 	f.want(204, code, body, "delete")
 	if _, _, err := f.store.Read(ctx, "t1", "s1"); !errors.Is(err, session.ErrNotFound) {
 		t.Fatal("still stored")
@@ -635,7 +635,7 @@ func TestDeleteSessionFinishesACutShortDelete(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	del := func(tenant string) int {
-		req, _ := http.NewRequest("DELETE", srv.URL+"/sessions/s1", nil)
+		req, _ := http.NewRequest("DELETE", srv.URL+"/sessions/s1?as=service", nil)
 		req.Header.Set("X-Test-Tenant", tenant)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

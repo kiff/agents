@@ -788,6 +788,21 @@ func (s *Server) mayRead(ctx context.Context, tenant, agent, owner string) error
 	return nil
 }
 
+// AsService is the as parameter's one value: the caller reads or writes as
+// the service itself, not as a person, so nothing is filtered to anyone's
+// own. Only the service's own callers send it, for what no person asked.
+const AsService = "service"
+
+// asService is a bad request unless r says, by name, that it acts as the
+// service: a person's content is read with their owner, or as the service,
+// never by leaving the person out.
+func asService(r *http.Request) error {
+	if r.URL.Query().Get("as") != AsService {
+		return bad("name the person (owner=member:<subject>) or read as the service (as=service)")
+	}
+	return nil
+}
+
 // ReadGrantHeader carries a read grant: the account's word that the
 // caller's person may read another person's sessions with the agent. A
 // header, so the grant stays out of logged URLs.
@@ -833,11 +848,15 @@ func (s *Server) mayReadAnothers(ctx context.Context, r *http.Request, tenant, a
 }
 
 // ownerParam is the "owner" query parameter, a requester's key
-// ("member:<subject>"), checked; empty when there is none.
+// ("member:<subject>"), checked. Without one, the caller must say it reads
+// as the service itself (as=service): a missing owner never means everyone.
 func ownerParam(r *http.Request) (string, error) {
 	v := r.URL.Query().Get("owner")
 	if v == "" {
-		return "", nil
+		return "", asService(r)
+	}
+	if r.URL.Query().Get("as") != "" {
+		return "", bad("name the person (owner) or as=service, not both")
 	}
 	kind, id, _ := strings.Cut(v, ":")
 	if q := (run.Requester{Kind: run.RequesterKind(kind), ID: id}); !q.Valid() {
