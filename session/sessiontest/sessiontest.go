@@ -669,19 +669,20 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	}
 	got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 0)
 	check(t, err)
-	want := []string{ana.Session().ID, anaAgain.Session().ID, legacy.Session().ID}
+	// A session with no owner is no member's: it isn't listed to ana.
+	want := []string{ana.Session().ID, anaAgain.Session().ID}
 	if !slices.Equal(ids(got), want) {
-		t.Fatalf("ana's = %v, want %v", ids(got), want)
+		t.Fatalf("ana's = %v, want %v (not %s, which has no owner)", ids(got), want, legacy.Session().ID)
 	}
-	if got[0].Owner != "member:ana" || got[2].Owner != "" {
-		t.Fatalf("owners = %q, %q", got[0].Owner, got[2].Owner)
+	if got[0].Owner != "member:ana" {
+		t.Fatalf("owner = %q", got[0].Owner)
 	}
 	if got, err := b.ListOwned(ctx, "t1", "refunds", "member:ana", 1); err != nil || !slices.Equal(ids(got), want[:1]) {
 		t.Fatalf("ana's, limit 1 = %v, %v", ids(got), err)
 	}
 	got, err = b.ListOwned(ctx, "t1", "refunds", "member:luis", 0)
 	check(t, err)
-	if want := []string{luis.Session().ID, legacy.Session().ID}; !slices.Equal(ids(got), want) {
+	if want := []string{luis.Session().ID}; !slices.Equal(ids(got), want) {
 		t.Fatalf("luis's = %v, want %v", ids(got), want)
 	}
 	if s, _ := read(t, b, luis); s.Owner != "member:luis" {

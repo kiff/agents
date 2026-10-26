@@ -177,7 +177,7 @@ func (m *Store) List(_ context.Context, tenant, agent string, limit int) ([]sess
 }
 
 func (m *Store) ListOwned(_ context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
-	return m.list(tenant, agent, func(s session.Session) bool { return s.Owner == "" || s.Owner == owner }, limit)
+	return m.list(tenant, agent, func(s session.Session) bool { return s.OwnedBy(owner) }, limit)
 }
 
 func (m *Store) list(tenant, agent string, keep func(session.Session) bool, limit int) ([]session.Session, error) {
