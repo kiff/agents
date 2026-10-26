@@ -84,6 +84,11 @@ type Server struct {
 	// this agent: the person's KIFF subject. A grant KIFF doesn't vouch
 	// for is an error. Nil: grants aren't taken.
 	ResolveGrant func(ctx context.Context, tenant, agent, grant string) (string, error)
+	// ResolveReadGrant asks the account what a read grant for this agent
+	// allows: the one way to read another person's sessions, which the
+	// account records before it grants. Nil: no read grant is taken, and
+	// a request with one is refused.
+	ResolveReadGrant run.ReadGrantFunc
 	// RequireGrant refuses a member's run without a grant: once the
 	// account mints them, a member is who KIFF says, not who the caller
 	// asserts.
@@ -340,6 +345,14 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var fl floodError
 	var tooBig *http.MaxBytesError
 	status, msg := http.StatusInternalServerError, "internal error"
+	if errors.Is(err, run.ErrNoOversight) {
+		// A read of another person's work the account didn't allow.
+		if s.Log != nil {
+			s.Log.InfoContext(r.Context(), "no read grant", "method", r.Method, "path", r.URL.Path, "err", err)
+		}
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no_access", "need": "oversee"})
+		return
+	}
 	if errors.Is(err, run.ErrNoAccess) {
 		// The account says this person may not use the agent (#221), or
 		// couldn't say: the app says so, and nothing more.
@@ -708,7 +721,14 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := s.mayRead(ctx, c.Tenant, agent, owner); err != nil {
+	if grant := readGrantHeader(r); grant != "" {
+		// Another person's sessions, listed: their titles and times, never
+		// what's in them. Each one read needs its own grant.
+		err = s.mayReadAnothers(ctx, c.Tenant, agent, owner, "", grant)
+	} else {
+		err = s.mayRead(ctx, c.Tenant, agent, owner)
+	}
+	if err != nil {
 		return 0, nil, err
 	}
 	var list []session.Session
@@ -767,6 +787,38 @@ func (s *Server) mayRead(ctx context.Context, tenant, agent, owner string) error
 	return nil
 }
 
+// ReadGrantHeader carries a read grant: the account's word that the
+// caller's person may read another person's sessions with the agent. A
+// header, so the grant stays out of logged URLs.
+const ReadGrantHeader = "Kiff-Read-Grant"
+
+func readGrantHeader(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get(ReadGrantHeader))
+}
+
+// mayReadAnothers is run.ErrNoOversight unless the account resolves grant
+// to a read of owner's work with the agent: their list when session is
+// empty, else that one session, which owner must hold. The account checks
+// the reader oversees the agent and recorded the read before granting it.
+// It reads only: nothing with a read grant writes into a session.
+func (s *Server) mayReadAnothers(ctx context.Context, tenant, agent, owner, session, grant string) error {
+	kind, id, _ := strings.Cut(owner, ":")
+	if run.RequesterKind(kind) != run.ByMember {
+		return bad("a read grant reads a member's sessions: owner is member:<subject>")
+	}
+	if s.ResolveReadGrant == nil {
+		return fmt.Errorf("%w: read grants aren't taken here", run.ErrNoOversight)
+	}
+	g, err := s.ResolveReadGrant(ctx, tenant, agent, grant)
+	if err != nil {
+		return fmt.Errorf("%w: %v", run.ErrNoOversight, err)
+	}
+	if g.Owner != id || g.Session != session {
+		return fmt.Errorf("%w: the grant is for another read", run.ErrNoOversight)
+	}
+	return nil
+}
+
 // ownerParam is the "owner" query parameter, a requester's key
 // ("member:<subject>"), checked; empty when there is none.
 func ownerParam(r *http.Request) (string, error) {
@@ -791,7 +843,9 @@ func (s *Server) getSession(ctx context.Context, c Caller, r *http.Request) (int
 	if err == nil && owner != "" && !sess.OwnedBy(owner) {
 		err = session.ErrNotFound // another person's thread (#219)
 	}
-	if err == nil {
+	if grant := readGrantHeader(r); err == nil && grant != "" {
+		err = s.mayReadAnothers(ctx, c.Tenant, sess.Agent, owner, sess.ID, grant)
+	} else if err == nil {
 		err = s.mayRead(ctx, c.Tenant, sess.Agent, owner)
 	}
 	if err != nil {
