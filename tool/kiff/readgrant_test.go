@@ -27,13 +27,13 @@ func TestAReadGrantIsResolvedWithTheAgentsKey(t *testing.T) {
 			http.Error(w, `{"error":"read_grant"}`, http.StatusForbidden)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"reader": "ada", "owner": "ana", "session": "s1", "purpose": "fix"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"read": "rd_1", "reader": "ada", "owner": "ana", "session": "s1", "purpose": "fix"})
 	}))
 	t.Cleanup(srv.Close)
 	resolve := kiff.ReadGrantResolver(oneAgent{}, keys{}, srv.Client(), srv.URL)
 	ctx := context.Background()
 	g, err := resolve(ctx, "t1", "rae", "krd_ada")
-	if err != nil || g != (run.ReadGrant{Reader: "ada", Owner: "ana", Session: "s1", Purpose: "fix"}) {
+	if err != nil || g != (run.ReadGrant{Read: "rd_1", Reader: "ada", Owner: "ana", Session: "s1", Purpose: "fix"}) {
 		t.Fatalf("ada's read: %+v, %v", g, err)
 	}
 	_, err = resolve(ctx, "t1", "rae", "krd_forged")

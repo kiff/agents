@@ -826,7 +826,7 @@ func (s *Server) mayReadAnothers(ctx context.Context, r *http.Request, tenant, a
 		return fmt.Errorf("%w: the grant is another person's", run.ErrNoOversight)
 	}
 	if s.Log != nil {
-		s.Log.InfoContext(ctx, "read served", "agent", agent, "reader", g.Reader, "owner", g.Owner, "session", g.Session, "purpose", g.Purpose)
+		s.Log.InfoContext(ctx, "read served", "read", g.Read, "agent", agent, "reader", g.Reader, "owner", g.Owner, "session", g.Session, "purpose", g.Purpose)
 	}
 	return nil
 }

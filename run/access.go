@@ -24,6 +24,9 @@ var ErrNoAccess = errors.New("run: this person may not use this agent")
 // recorded first: who reads (Reader) whose sessions (Owner) with the agent,
 // one session or, with none, the list of them, and why.
 type ReadGrant struct {
+	// Read is the account's record of this read, so a read served can be
+	// matched to it.
+	Read    string
 	Reader  string
 	Owner   string
 	Session string

@@ -44,6 +44,7 @@ func ResolveReadGrant(ctx context.Context, hc *http.Client, apiURL, key, grant s
 		return run.ReadGrant{}, fmt.Errorf("kiff: read grant: KIFF answered %d", resp.StatusCode)
 	}
 	var g struct {
+		Read    string `json:"read"`
 		Reader  string `json:"reader"`
 		Owner   string `json:"owner"`
 		Session string `json:"session"`
@@ -55,7 +56,7 @@ func ResolveReadGrant(ctx context.Context, hc *http.Client, apiURL, key, grant s
 	if g.Reader == "" || g.Owner == "" {
 		return run.ReadGrant{}, fmt.Errorf("kiff: read grant: KIFF named no reader or owner")
 	}
-	return run.ReadGrant{Reader: g.Reader, Owner: g.Owner, Session: g.Session, Purpose: g.Purpose}, nil
+	return run.ReadGrant{Read: g.Read, Reader: g.Reader, Owner: g.Owner, Session: g.Session, Purpose: g.Purpose}, nil
 }
 
 // ReadGrantResolver is the server's ResolveReadGrant: it asks KIFF with the
