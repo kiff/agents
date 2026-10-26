@@ -11,8 +11,8 @@ import (
 )
 
 // #221: a member reads their sessions with an agent, and writes into
-// their runs, only when the account says they may use or oversee it; no
-// answer is no. A run the runner refuses for it says so, and nothing more.
+// their runs, only when the account says they may use it; overseeing it
+// reads and writes nothing. No answer is no. A run the runner refuses for it says so, and nothing more.
 func TestAMemberNeedsAccessToReadAndWrite(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
@@ -31,7 +31,7 @@ func TestAMemberNeedsAccessToReadAndWrite(t *testing.T) {
 	sess, _ := body["session"].(string)
 	runID, _ := body["id"].(string)
 
-	for who, want := range map[string]int{"ana": 200, "maria": 200, "bo": 403, "cy": 403} {
+	for who, want := range map[string]int{"ana": 200, "maria": 403, "bo": 403, "cy": 403} {
 		code, body := f.do("t1", "GET", "/sessions?agent_id=payouts&owner=member:"+who, nil)
 		f.want(want, code, body, who+"'s sessions")
 		if want == 403 && (body["error"] != "no_access" || body["need"] != "use") {

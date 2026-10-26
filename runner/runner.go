@@ -164,7 +164,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 			return run.Run{}, err
 		}
 		// Another agent's session, or another person's, is not found.
-		if sess.Agent != s.Agent || !sess.OwnedBy(s.Requester.Key()) {
+		if sess.Agent != s.Agent || !sess.ContinuedBy(s.Requester.Key()) {
 			return run.Run{}, session.ErrNotFound
 		}
 	}

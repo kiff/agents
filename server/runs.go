@@ -246,10 +246,17 @@ func requesterOf(q *run.Requester) (run.Requester, error) {
 	return *q, nil
 }
 
-// theirs reports whether q may act on rn (#219): a caller naming no one, a
+// theirs reports whether q may stop rn (#219): a caller naming no one, a
 // run no one asked for, or q's own.
 func theirs(rn run.Run, q run.Requester) bool {
 	return q.Key() == "" || rn.Requester.Key() == "" || rn.Requester == q
+}
+
+// own reports whether q may write into rn: a caller naming no one, or q's
+// own run, exactly. A person never writes into a run someone else, or no
+// one, asked for.
+func own(rn run.Run, q run.Requester) bool {
+	return q.Key() == "" || rn.Requester == q
 }
 
 // cancel is cancelRun for rn, as read: a run saved meanwhile is read again,
@@ -324,7 +331,7 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	if err != nil {
 		return 0, nil, err
 	}
-	if !theirs(rn, q) {
+	if !own(rn, q) {
 		return 0, nil, run.ErrNotFound // another person's run
 	}
 	if q.Kind == run.ByMember {
@@ -663,7 +670,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		// A session is one agent's thread, and an owned one its owner's:
 		// another agent's, or another person's, is not found.
 		sess, _, err := s.Sessions.Read(ctx, c.Tenant, body.SessionID)
-		if err == nil && (sess.Agent != id || !sess.OwnedBy(q.Key())) {
+		if err == nil && (sess.Agent != id || !sess.ContinuedBy(q.Key())) {
 			err = session.ErrNotFound
 		}
 		if err != nil {
