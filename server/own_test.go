@@ -231,4 +231,14 @@ func TestDeletingForgettingAndSharingNameWhoActs(t *testing.T) {
 	f.want(204, code, got, "the service forgetting the shared note")
 	code, got = f.do("t1", "DELETE", "/sessions/"+anas.ID+"?owner=member:ana", nil)
 	f.want(204, code, got, "ana deleting her own thread")
+
+	// A job's thread, with no owner, is shared history: only the service deletes it.
+	job, err := rec.Open(ctx, "t1", "payouts", session.KindRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, got = f.do("t1", "DELETE", "/sessions/"+job.ID+"?owner=member:ana", nil)
+	f.want(404, code, got, "ana deleting a job's thread")
+	code, got = f.do("t1", "DELETE", "/sessions/"+job.ID+"?as=service", nil)
+	f.want(204, code, got, "the service deleting a job's thread")
 }

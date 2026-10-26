@@ -985,8 +985,10 @@ func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (
 	}
 	if owner != "" {
 		sess, _, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
-		if err == nil && !sess.OwnedBy(owner) {
-			err = session.ErrNotFound // another person's thread
+		// Exactly theirs: a job's thread with no owner is shared history,
+		// deleted only as the service.
+		if err == nil && !sess.ContinuedBy(owner) {
+			err = session.ErrNotFound // another person's thread, or a job's
 		}
 		if err != nil {
 			return 0, nil, err
