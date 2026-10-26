@@ -422,6 +422,13 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 			}
 		}
 	}
+	// A call the owner didn't approve is theirs to ask for again, never the
+	// run's: the identical call isn't sent again in this run.
+	// Kept on the run across its pauses, so a later pause doesn't forget it.
+	if !x.halted && !x.noAccess {
+		x.notAgain = unapproved(r.NotAgain, r.Requirements, held)
+		a.Tools = notAgain(a.Tools, x.notAgain)
+	}
 	history, _ := p.history()
 	a.Preface = p.preface(loop, a.Tools, rn.now())
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
@@ -463,9 +470,9 @@ func HeldOutcome(q run.Requirement, res tool.Result) tool.Result {
 	}
 	switch q.Answer {
 	case "refused", "rejected":
-		return notSent("KIFF held this call for the owner, who refused it. It was not sent.")
+		return notSent("KIFF held this call for the owner, who refused it. It was not sent. " + AskTheOwner)
 	case "expired":
-		return notSent("KIFF held this call for the owner, and the hold expired without an answer. It was not sent.")
+		return notSent("KIFF held this call for the owner, and the hold expired without an answer. It was not sent. " + AskTheOwner)
 	case "invalidated", "withdrawn":
 		return notSent("KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.")
 	}
@@ -479,7 +486,7 @@ func HeldOutcome(q run.Requirement, res tool.Result) tool.Result {
 		if approved {
 			return notSent(held + ", but KIFF refused it when it came to send it (its Card may have changed). It was not sent.")
 		}
-		return notSent(held + ", and it was not approved (refused, or the hold expired). It was not sent.")
+		return notSent(held + ", and it was not approved (refused, or the hold expired). It was not sent. " + AskTheOwner)
 	case "failed":
 		return notSent(held + ". KIFF could not send it, so it was not sent.")
 	case "unknown":
@@ -582,6 +589,9 @@ type execution struct {
 	// turn has read yet. A run that fails before one does gives them back
 	// (stop), so the caller sends them on.
 	unread []int
+	// notAgain are the run's calls the owner didn't approve, this pause's
+	// included: stored on the run when it stops, so they hold for all of it.
+	notAgain []run.Call
 	// halted: the agent was halted when this paused run was claimed, so its
 	// held calls aren't collected, and it ends
 	// CANCELLED saying so.
@@ -768,6 +778,9 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
+			if x.notAgain != nil {
+				n.NotAgain = x.notAgain
+			}
 			return nil
 		})
 		if err == nil {
@@ -782,6 +795,9 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 	r, err := x.saveStop(ctx, func(n *run.Run) error {
 		before = n.Cost
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
+		if x.notAgain != nil {
+			n.NotAgain = x.notAgain
+		}
 		switch {
 		case runErr != nil:
 			n.Status, n.Stop, n.Error = run.Error, "", failed(runErr)

@@ -260,6 +260,11 @@ func HoldsOf(runs ...Run) []string {
 func (r Run) clone() Run {
 	c := r
 	c.Holds = slices.Clone(r.Holds)
+	c.NotAgain = nil
+	for _, k := range r.NotAgain {
+		k.Input = bytes.Clone(k.Input)
+		c.NotAgain = append(c.NotAgain, k)
+	}
 	c.Steering = slices.Clone(r.Steering)
 	c.Requirements = nil
 	for _, q := range r.Requirements {
