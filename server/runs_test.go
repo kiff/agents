@@ -63,7 +63,7 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		return run.Run{}, session.ErrNotFound // the contract: another tenant's, agent's or person's session isn't found
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
-	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession = s.Source, s.Version, s.Draft, s.Requester, opened
+	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession, r.Grant = s.Source, s.Version, s.Draft, s.Requester, opened, s.Grant
 	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
 		r.ID = s.ID
 		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {
@@ -1848,4 +1848,43 @@ func TestAnAgentsChatIsNoPersons(t *testing.T) {
 	f.want(404, code, body, "ana reading coach's chat")
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "x", "background": true, "session_id": own, "requester": map[string]any{"kind": "member", "id": "ana"}})
 	f.want(404, code, body, "ana writing into coach's chat")
+}
+
+// A member's run grant names who asked: the run is the person KIFF signed it
+// for, a requester that says otherwise is refused, and a grant KIFF doesn't
+// vouch for is no access. Required, a member's run without one is refused;
+// a door's sender carries none. The grant is kept with the run, never shown.
+func TestARunGrantNamesWhoAsked(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	// Before grants are taken, one sent is ignored: the run is as asserted.
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_ana", "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "a grant before grants are taken")
+	f.server.ResolveGrant = func(_ context.Context, tenant, agent, grant string) (string, error) {
+		if tenant == "t1" && agent == "payouts" && grant == "krg_ana" {
+			return "ana", nil
+		}
+		return "", errors.New("KIFF answered 403")
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_ana"})
+	f.want(202, code, body, "ana's grant")
+	if q, _ := body["requester"].(map[string]any); q["kind"] != "member" || q["id"] != "ana" {
+		t.Fatalf("requester = %v, want member ana", body["requester"])
+	}
+	if _, shown := body["run_grant"]; shown {
+		t.Fatal("the run shows its grant")
+	}
+	stored, err := f.runs.Get(context.Background(), "t1", body["id"].(string))
+	if err != nil || stored.Grant != "krg_ana" {
+		t.Fatalf("stored grant = %q, %v", stored.Grant, err)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_ana", "requester": map[string]any{"kind": "member", "id": "luis"}})
+	f.want(400, code, body, "luis with ana's grant")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "run_grant": "krg_forged"})
+	f.want(403, code, body, "a forged grant")
+	f.server.RequireGrant = true
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(403, code, body, "a member without a grant")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": map[string]any{"kind": "door", "id": "d1-sender"}})
+	f.want(202, code, body, "a door's sender")
 }

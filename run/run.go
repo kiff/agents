@@ -74,6 +74,21 @@ func RequesterFrom(ctx context.Context) (Requester, bool) {
 	return q, ok
 }
 
+// grantKey keys a run's grant on a context.
+type grantKey struct{}
+
+// WithGrant marks ctx with the run's grant: set by the runner from the
+// stored run, so each gateway call carries who asked.
+func WithGrant(ctx context.Context, grant string) context.Context {
+	return context.WithValue(ctx, grantKey{}, grant)
+}
+
+// GrantFrom is the grant ctx is marked with, or "".
+func GrantFrom(ctx context.Context) string {
+	g, _ := ctx.Value(grantKey{}).(string)
+	return g
+}
+
 // Ref names the run a tool is called in: its session and its ID. Set by the
 // runner, never by the model.
 type Ref struct{ Session, Run string }
@@ -141,6 +156,10 @@ type Run struct {
 	// Requester is who asked for the run (#219); zero for a run no one
 	// asked for (a schedule's, an event's) or from before requesters.
 	Requester Requester `json:"requester,omitzero"`
+	// Grant is the account's run grant for a member's run: who asked, as
+	// KIFF signed it, sent on each of the run's gateway calls so KIFF
+	// records them as that person's. Kept with the run, never shown.
+	Grant string `json:"run_grant,omitempty"`
 	// NewSession is whether the run opened its session: with a live chat,
 	// the server picks the session, and the caller learns from this whether
 	// the message began a new one (#219).

@@ -171,6 +171,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
 	r.Source = s.Source
 	r.Requester = s.Requester
+	r.Grant = s.Grant
 	r.NewSession = opened
 	r.Meter = s.Meter
 	r.Notify = s.Notify
@@ -343,6 +344,10 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if r.Requester.Key() != "" {
 		ctx = run.WithRequester(ctx, r.Requester)
 		loop = run.WithRequester(loop, r.Requester)
+	}
+	if r.Grant != "" {
+		ctx = run.WithGrant(ctx, r.Grant)
+		loop = run.WithGrant(loop, r.Grant)
 	}
 	a, d, err := rn.Builder.BuildVersion(ctx, tenant, r.Agent, r.ID, version)
 	if err != nil {
