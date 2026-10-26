@@ -352,9 +352,9 @@ func TestMemories(t *testing.T) {
 	}
 	code, body = f.do("t2", "GET", "/agents/payouts/memories", nil)
 	f.want(404, code, body, "another tenant's agent's memories")
-	code, body = f.do("t2", "DELETE", "/agents/payouts/memories/rules", nil)
+	code, body = f.do("t2", "DELETE", "/agents/payouts/memories/rules?as=service", nil)
 	f.want(404, code, body, "forgetting another tenant's note")
-	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/rules", nil)
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/rules?as=service", nil)
 	f.want(204, code, body, "forget")
 	if notes, _ := f.store.ListNotes(ctx, "t1", "payouts"); len(notes) != 1 || notes[0].Name != "vendors" {
 		t.Fatalf("left %v", notes)
@@ -399,13 +399,13 @@ func TestEachPersonsMemories(t *testing.T) {
 
 	code, body = f.do("t1", "POST", "/agents/payouts/memories/tone/share", nil)
 	f.want(400, code, body, "sharing without a scope")
-	code, body = f.do("t1", "POST", "/agents/payouts/memories/missing/share?scope=member:ana", nil)
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/missing/share?scope=member:ana&as=service", nil)
 	f.want(404, code, body, "sharing a missing note")
-	code, body = f.do("t2", "POST", "/agents/payouts/memories/tone/share?scope=member:ana", nil)
+	code, body = f.do("t2", "POST", "/agents/payouts/memories/tone/share?scope=member:ana&as=service", nil)
 	f.want(404, code, body, "sharing another tenant's note")
-	code, body = f.do("t1", "POST", "/agents/payouts/memories/vendors/share?scope=member:ana", nil)
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/vendors/share?scope=member:ana&as=service", nil)
 	f.want(409, code, body, "sharing over a shared note that says otherwise")
-	code, body = f.do("t1", "POST", "/agents/payouts/memories/tone/share?scope=member:ana", nil)
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/tone/share?scope=member:ana&as=service", nil)
 	f.want(200, code, body, "share")
 	if body["scope"] != nil || body["requester"] != "member:ana" || body["session"] != "s1" || body["text"] != "short" {
 		t.Fatalf("shared %v", body)
@@ -417,14 +417,14 @@ func TestEachPersonsMemories(t *testing.T) {
 		t.Fatalf("luis sees %v", got)
 	}
 
-	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=member:luis", nil)
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=member:luis&as=service", nil)
 	f.want(204, code, body, "luis forgets his")
-	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=luis", nil)
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/tone?scope=luis&as=service", nil)
 	f.want(400, code, body, "a bad scope")
 	// A name can't reach a person's note through the shared scope.
-	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/@member:ana%7Cvendors", nil)
+	code, body = f.do("t1", "DELETE", "/agents/payouts/memories/@member:ana%7Cvendors?as=service", nil)
 	f.want(400, code, body, "forgetting a name starting with @")
-	code, body = f.do("t1", "POST", "/agents/payouts/memories/@member:ana%7Cvendors/share?scope=member:ana", nil)
+	code, body = f.do("t1", "POST", "/agents/payouts/memories/@member:ana%7Cvendors/share?scope=member:ana&as=service", nil)
 	f.want(400, code, body, "sharing a name starting with @")
 	notes, _ := f.store.ListNotes(ctx, "t1", "payouts")
 	if len(notes) != 3 || notes[0].Name != "tone" || notes[0].Scope != session.Shared || notes[2].Scope != "member:ana" {

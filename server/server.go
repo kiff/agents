@@ -646,6 +646,14 @@ func (s *Server) forget(ctx context.Context, c Caller, r *http.Request) (int, an
 	if err != nil {
 		return 0, nil, err
 	}
+	// Forgotten as the person, only their own note, or as the service.
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if owner != "" && scope != owner {
+		return 0, nil, session.ErrNotFound
+	}
 	if err := s.Notes.DeleteNote(ctx, c.Tenant, id, scope, name); err != nil {
 		return 0, nil, err
 	}
@@ -668,6 +676,15 @@ func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (in
 	scope, err := scopeParam(r)
 	if err != nil {
 		return 0, nil, err
+	}
+	// Shared as the note's own person, or as the service; a quarantined
+	// note is released only by the service, naming who decided (by).
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if owner != "" && owner != scope {
+		return 0, nil, session.ErrNotFound
 	}
 	notes, err := s.Notes.ListNotes(ctx, c.Tenant, id)
 	if err != nil {
@@ -961,6 +978,22 @@ func (s *Server) archiveSession(archived bool) func(context.Context, Caller, *ht
 // finishes a session whose deletion was cut short; a Read first would hide
 // that one, and it could never be finished.
 func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	// Deleted as the person, only their own thread, or as the service.
+	owner, err := ownerParam(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if owner != "" {
+		sess, _, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
+		// Exactly theirs: a job's thread with no owner is shared history,
+		// deleted only as the service.
+		if err == nil && !sess.ContinuedBy(owner) {
+			err = session.ErrNotFound // another person's thread, or a job's
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+	}
 	if err := s.Sessions.Delete(ctx, c.Tenant, r.PathValue("id")); err != nil {
 		return 0, nil, err
 	}
