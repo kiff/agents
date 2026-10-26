@@ -422,6 +422,11 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 			}
 		}
 	}
+	// A call the owner didn't approve is theirs to ask for again, never the
+	// run's: the identical call isn't sent again in this run.
+	if !x.halted && !x.noAccess {
+		a.Tools = notAgain(a.Tools, unapproved(r.Requirements, held))
+	}
 	history, _ := p.history()
 	a.Preface = p.preface(loop, a.Tools, rn.now())
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
@@ -463,9 +468,9 @@ func HeldOutcome(q run.Requirement, res tool.Result) tool.Result {
 	}
 	switch q.Answer {
 	case "refused", "rejected":
-		return notSent("KIFF held this call for the owner, who refused it. It was not sent.")
+		return notSent("KIFF held this call for the owner, who refused it. It was not sent. " + AskTheOwner)
 	case "expired":
-		return notSent("KIFF held this call for the owner, and the hold expired without an answer. It was not sent.")
+		return notSent("KIFF held this call for the owner, and the hold expired without an answer. It was not sent. " + AskTheOwner)
 	case "invalidated", "withdrawn":
 		return notSent("KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.")
 	}
@@ -479,7 +484,7 @@ func HeldOutcome(q run.Requirement, res tool.Result) tool.Result {
 		if approved {
 			return notSent(held + ", but KIFF refused it when it came to send it (its Card may have changed). It was not sent.")
 		}
-		return notSent(held + ", and it was not approved (refused, or the hold expired). It was not sent.")
+		return notSent(held + ", and it was not approved (refused, or the hold expired). It was not sent. " + AskTheOwner)
 	case "failed":
 		return notSent(held + ". KIFF could not send it, so it was not sent.")
 	case "unknown":

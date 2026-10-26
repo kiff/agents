@@ -1348,9 +1348,9 @@ func TestHeldOutcome(t *testing.T) {
 		"approved":                         {"approved", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
 		"approved, no alert came":          {"", sent, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
 		"approved, the tool failed":        {"approved", tool.Result{Text: "card declined", IsError: true}, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\ncard declined", true},
-		"refused":                          {"refused", refused, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
-		"expired":                          {"expired", refused, "KIFF held this call for the owner, and the hold expired without an answer. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
-		"refused, the result unmarked":     {"refused", tool.Result{Text: "Not sent."}, "KIFF held this call for the owner, who refused it. It was not sent.\n\nKIFF said: Not sent.", true},
+		"refused":                          {"refused", refused, "KIFF held this call for the owner, who refused it. It was not sent. Don't make this call again on your own. Tell the owner it wasn't sent and why, and wait: they can ask again if they still want it.\n\nKIFF said: Refused by KIFF.", true},
+		"expired":                          {"expired", refused, "KIFF held this call for the owner, and the hold expired without an answer. It was not sent. Don't make this call again on your own. Tell the owner it wasn't sent and why, and wait: they can ask again if they still want it.\n\nKIFF said: Refused by KIFF.", true},
+		"refused, the result unmarked":     {"refused", tool.Result{Text: "Not sent."}, "KIFF held this call for the owner, who refused it. It was not sent. Don't make this call again on your own. Tell the owner it wasn't sent and why, and wait: they can ask again if they still want it.\n\nKIFF said: Not sent.", true},
 		"withdrawn":                        {"invalidated", refused, "KIFF held this call for the owner, and it was withdrawn because the run was asked to stop. It was not sent.\n\nKIFF said: Refused by KIFF.", true},
 		"approved, refused when sent":      {"approved", refused, "KIFF held this call for the owner, who approved it, but KIFF refused it when it came to send it (its Card may have changed). It was not sent.\n\nKIFF said: Refused by KIFF.", true},
 		"approved, KIFF could not send it": {"approved", tool.Result{Text: "The tool could not be reached.", IsError: true, State: "failed"}, "KIFF held this call for the owner, who approved it. KIFF could not send it, so it was not sent.\n\nKIFF said: The tool could not be reached.", true},
@@ -1359,7 +1359,7 @@ func TestHeldOutcome(t *testing.T) {
 		"the response was lost, unmarked":  {"approved", tool.Result{Text: "Sent.", State: "unknown"}, "KIFF held this call for the owner, who approved it. KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.\n\nKIFF said: Sent.", true},
 		"no alert, the response was lost":  {"", tool.Result{Text: "Sent, response lost.", IsError: true, State: "unknown"}, "KIFF held this call for the owner. KIFF sent it, but the tool's response was lost: whether it took effect is unknown. Don't repeat it; check first.\n\nKIFF said: Sent, response lost.", true},
 		"approved, forwarded":              {"approved", tool.Result{Text: "refunded re_1", State: "forwarded"}, "KIFF held this call for the owner, who approved it. KIFF then sent it, once. The tool answered:\n\nrefunded re_1", false},
-		"not approved, no alert came":      {"", refused, "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent.\n\nKIFF said: Refused by KIFF.", true},
+		"not approved, no alert came":      {"", refused, "KIFF held this call for the owner, and it was not approved (refused, or the hold expired). It was not sent. Don't make this call again on your own. Tell the owner it wasn't sent and why, and wait: they can ask again if they still want it.\n\nKIFF said: Refused by KIFF.", true},
 	} {
 		got := runner.HeldOutcome(run.Requirement{CallID: "c1", Answer: c.answer}, c.res)
 		if got.Text != c.want || got.IsError != c.isErr {
@@ -1538,5 +1538,56 @@ func TestACancelDuringTheAnswerTakesNoMessage(t *testing.T) {
 	}
 	if got.Output != "Done." || got.Turns != 1 || !slices.Equal(got.Untaken(), []string{"and the other one"}) {
 		t.Fatalf("ended %+v", got)
+	}
+}
+
+// A held call the owner didn't approve (here its hold expired) is theirs to
+// ask for again, never the run's: the identical call made again in the same
+// run isn't sent and KIFF isn't asked, so one request never becomes a chain
+// of holds. Another call goes as before.
+func TestAnUnapprovedHoldIsntAskedAgain(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42,"amount":60}`), say("Waiting for the owner."))
+	r := f.start(server.Start{Input: "refund order 42"})
+	f.pause(r)
+	if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error {
+		n.Requirements[0].Answered, n.Requirements[0].Answer = f.clock.now(), "expired"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "Refused by KIFF.", IsError: true, State: tool.StateRefused}}}, nil
+	}
+	// The model asks again, the same call written differently, then another order.
+	f.model.add(use("c2", "stripe_refund", `{ "amount": 60, "order": 42 }`), use("c3", "stripe_refund", `{"order":43,"amount":60}`), say("Order 43 is refunded; order 42 needs you."))
+	before := len(f.refund.trials)
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == run.Paused {
+		t.Fatalf("the run paused again: %+v", got.Requirements)
+	}
+	if calls := len(f.refund.trials) - before; calls != 1 {
+		t.Fatalf("the refund tool was called %d times after the expiry, want 1 (order 43 only)", calls)
+	}
+	results := map[string]string{}
+	for _, req := range f.model.reqs {
+		for _, m := range req.Messages {
+			for _, b := range m.Blocks {
+				if b.Kind == model.ToolResult {
+					results[b.CallID] = b.Result
+				}
+			}
+		}
+	}
+	if !strings.Contains(results["c1"], runner.AskTheOwner) {
+		t.Errorf("the expired hold's result: %q", results["c1"])
+	}
+	if results["c2"] != runner.NotAgain {
+		t.Errorf("the same call again: %q, want NotAgain", results["c2"])
+	}
+	if results["c3"] != "refunded" {
+		t.Errorf("another order: %q", results["c3"])
 	}
 }
