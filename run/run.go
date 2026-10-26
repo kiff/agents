@@ -254,16 +254,16 @@ type Run struct {
 	Version int64 `json:"version"`
 }
 
-// Requirement is one call KIFF holds for the owner: the call itself, KIFF's
-// operation ID for it, and when the hold expires. KIFF resolves it, only
-// KIFF: an answer is recorded from KIFF's signed alert or by asking KIFF,
-// never from a request that claims it.
 // Call is a tool call as the model made it: the tool, and its input.
 type Call struct {
 	Tool  string          `json:"tool"`
 	Input json.RawMessage `json:"input"`
 }
 
+// Requirement is one call KIFF holds for the owner: the call itself, KIFF's
+// operation ID for it, and when the hold expires. KIFF resolves it, only
+// KIFF: an answer is recorded from KIFF's signed alert or by asking KIFF,
+// never from a request that claims it.
 type Requirement struct {
 	// CallID is the model's tool-use ID for the call, Tool and Input the call
 	// as the model made it.
