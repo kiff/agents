@@ -539,9 +539,10 @@ func TestTheCostCapStopsTheRun(t *testing.T) {
 	if out.Stop != agent.CostCap || out.Cost != 2000 || len(m.reqs) != 2 {
 		t.Fatalf("outcome %+v after %d turns", out, len(m.reqs))
 	}
-	// It says why, never ending in silence.
-	if !strings.HasSuffix(out.Text, agent.CostCapNote) {
-		t.Fatalf("text %q, want it to end with the cost cap note", out.Text)
+	// No words of its own: the run's stop says why, and the app words it in
+	// the owner's language.
+	if out.Text != "" {
+		t.Fatalf("text %q, want none: the stop says why", out.Text)
 	}
 }
 
