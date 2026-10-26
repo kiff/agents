@@ -31,6 +31,8 @@ type openTrialBody struct {
 	// Draft is the KIFF draft confirmed as the trial's Card: its calls go
 	// under it (KIFF-Trial).
 	Draft string `json:"draft"`
+	// Requester is the person who opens it: its chat is theirs alone.
+	Requester *run.Requester `json:"requester,omitempty"`
 }
 
 // endTrialBody is what DELETE /agents/{id}/trial takes: why it ended, and
@@ -53,6 +55,10 @@ func (s *Server) openTrial(ctx context.Context, c Caller, r *http.Request) (int,
 	if body.N < 1 || body.Draft == "" {
 		return 0, nil, bad("a trial needs its version (n) and its trial Card's draft")
 	}
+	q, err := requesterOf(body.Requester)
+	if err != nil {
+		return 0, nil, err
+	}
 	id := r.PathValue("id")
 	vs, err := s.Agents.Versions(ctx, c.Tenant, id)
 	if err != nil {
@@ -74,7 +80,7 @@ func (s *Server) openTrial(ctx context.Context, c Caller, r *http.Request) (int,
 	if err != nil {
 		return 0, nil, err
 	}
-	sess, err := rec.Open(ctx, c.Tenant, id, session.KindTrial)
+	sess, err := rec.OpenOwned(ctx, c.Tenant, id, session.KindTrial, q.Key())
 	if err != nil {
 		return 0, nil, err
 	}
@@ -139,6 +145,11 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("the input is 1 to %d bytes", MaxInput))
 		return
 	}
+	q, err := requesterOf(body.Requester)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
 	if s.Background == nil {
 		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
 		return
@@ -167,7 +178,7 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 	t.Used = now
 	// In the trial's own chat, chosen when it opened: if the trial ends now,
 	// its chat is gone and the run can't start in it.
-	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: t.Session, Trigger: run.ByTrial, Input: body.Input, Version: t.N, Draft: t.Draft})
+	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: id, Session: t.Session, Trigger: run.ByTrial, Input: body.Input, Requester: q, Version: t.N, Draft: t.Draft})
 	if err != nil {
 		s.fail(w, r, err)
 		return

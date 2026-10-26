@@ -63,6 +63,14 @@ func (s Session) OwnedBy(owner string) bool {
 	return s.Owner == owner || (s.Owner == "" && (s.Kind == KindRun || s.Kind == KindTrial))
 }
 
+// ContinuedBy reports whether owner (a requester's Key, or empty for none)
+// may go on in the session: only its own owner, exactly. A job's or a
+// trial's session with no owner is read as the taf's (OwnedBy), but a
+// person never writes into it: what they write stays in their own.
+func (s Session) ContinuedBy(owner string) bool {
+	return s.Owner == owner
+}
+
 // Expired reports whether the session is gone as of now: its Expires has
 // passed and no run in it is held.
 func (s Session) Expired(now time.Time) bool {

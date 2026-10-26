@@ -770,8 +770,9 @@ func scopeParam(r *http.Request) (string, error) {
 	return v, nil
 }
 
-// mayRead is run.ErrNoAccess unless owner, when a member, may use or
-// oversee the agent (#221); any other owner, or none, reads as before.
+// mayRead is run.ErrNoAccess unless owner, when a member, may use the agent
+// (#221): their own sessions, which overseeing it never adds to. Any other
+// owner, or none, reads as before.
 func (s *Server) mayRead(ctx context.Context, tenant, agent, owner string) error {
 	kind, id, _ := strings.Cut(owner, ":")
 	if s.Access == nil || run.RequesterKind(kind) != run.ByMember {
@@ -781,7 +782,7 @@ func (s *Server) mayRead(ctx context.Context, tenant, agent, owner string) error
 	if err != nil {
 		return fmt.Errorf("%w: the account couldn't say: %v", run.ErrNoAccess, err)
 	}
-	if !a.Use && !a.Oversee {
+	if !a.Use {
 		return run.ErrNoAccess
 	}
 	return nil

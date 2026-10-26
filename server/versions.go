@@ -295,6 +295,9 @@ func versionNumber(r *http.Request) (int, error) {
 // trialBody is what POST /agents/{id}/versions/{n}/trial takes.
 type trialBody struct {
 	Input string `json:"input"`
+	// Requester is who writes: a trial's chat opened by a person is theirs
+	// alone, so only they write into it.
+	Requester *run.Requester `json:"requester,omitempty"`
 	// Notify announces the trial when it ends, as for a run (kiff/tafs#206).
 	Notify *run.Notify `json:"notify,omitempty"`
 }
