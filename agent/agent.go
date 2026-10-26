@@ -416,7 +416,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
 				out.Stop = stop
-				return out, msgs, a.sayCapped(rec, &out, emit)
+				return out, msgs, nil
 			}
 			if a.Cancel != nil {
 				stop, err := a.Cancel(ctx)
@@ -725,27 +725,6 @@ func (a Agent) say(rec *session.Recording, text string, last bool) error {
 		kind = session.Report
 	}
 	return rec.Record(kind, TextBody{Text: text})
-}
-
-// CostCapNote and TurnCapNote are what the chat is told when a run stops
-// at a cap, so it never ends in silence.
-const (
-	CostCapNote = "I stopped: this answer would cost more than this taf's limit for one task. Ask again for something narrower, or raise the limit."
-	TurnCapNote = "I stopped: this answer took more steps than this taf's limit for one task. Ask again for something narrower."
-)
-
-// sayCapped tells the chat why the run stopped at out's cap.
-func (a Agent) sayCapped(rec *session.Recording, out *Outcome, emit func(Event)) error {
-	note := CostCapNote
-	if out.Stop == TurnCap {
-		note = TurnCapNote
-	}
-	if out.Text != "" {
-		note = "\n\n" + note
-	}
-	emit(Event{Kind: TextDelta, Text: note})
-	out.Text += note
-	return a.say(rec, note, true)
 }
 
 // callTools records the calls in order, runs them in parallel, and records
