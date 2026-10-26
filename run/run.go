@@ -214,6 +214,10 @@ type Run struct {
 	// all its pauses: what Runs.ByHold finds it by, for as long as the run
 	// exists. Change keeps it; it only grows.
 	Holds []string `json:"holds,omitempty"`
+	// NotAgain are the held calls the owner didn't approve in the run, over
+	// all its pauses (refused, or the hold expired): the run never makes one
+	// of them again. Only the owner asks for it again, in a new run.
+	NotAgain []Call `json:"not_again,omitempty"`
 
 	// Cancel records that the run was asked to stop: a running run stops at
 	// its next checkpoint (before a model turn, after a tool batch).
@@ -254,6 +258,12 @@ type Run struct {
 // operation ID for it, and when the hold expires. KIFF resolves it, only
 // KIFF: an answer is recorded from KIFF's signed alert or by asking KIFF,
 // never from a request that claims it.
+// Call is a tool call as the model made it: the tool, and its input.
+type Call struct {
+	Tool  string          `json:"tool"`
+	Input json.RawMessage `json:"input"`
+}
+
 type Requirement struct {
 	// CallID is the model's tool-use ID for the call, Tool and Input the call
 	// as the model made it.

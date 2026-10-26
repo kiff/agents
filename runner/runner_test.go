@@ -1591,3 +1591,64 @@ func TestAnUnapprovedHoldIsntAskedAgain(t *testing.T) {
 		t.Errorf("another order: %q", results["c3"])
 	}
 }
+
+// What the owner didn't approve holds for the whole run, not just the next
+// pause: after another hold in between, approved, the first call made again
+// still isn't sent.
+func TestAnUnapprovedHoldIsntAskedAgainAfterAnotherPause(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Waiting for the owner."))
+	r := f.start(server.Start{Input: "refund orders 42 and 50"})
+	f.pause(r)
+	answer := func(a string) {
+		t.Helper()
+		if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error {
+			for i := range n.Requirements {
+				n.Requirements[i].Answered, n.Requirements[i].Answer = f.clock.now(), a
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Hold 1 expires; the run asks for order 50, which is held too.
+	answer("expired")
+	f.r.Collect = func(_ context.Context, _ agent.Agent, reqs []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: reqs[0].CallID, Tool: "stripe_refund", Result: tool.Result{Text: "Refused by KIFF.", IsError: true, State: tool.StateRefused}}}, nil
+	}
+	f.model.add(use("c2", "stripe_refund", `{"order":50}`), say("Order 50 waits for you too."))
+	f.refund.result = tool.Result{Text: "KIFF holds this call for the owner", State: tool.StateHeld}
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil || got.Status != run.Paused || got.Requirements[0].CallID != "c2" {
+		t.Fatalf("the second pause: %v %+v", err, got)
+	}
+	if len(got.NotAgain) != 1 || got.NotAgain[0].Tool != "stripe_refund" || string(got.NotAgain[0].Input) != `{"order":42}` {
+		t.Fatalf("kept on the run: %+v", got.NotAgain)
+	}
+	// Hold 2 is approved; the run then sends order 42 again.
+	answer("approved")
+	f.r.Collect = func(_ context.Context, _ agent.Agent, reqs []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: reqs[0].CallID, Tool: "stripe_refund", Result: tool.Result{Text: "refunded", State: "forwarded"}}}, nil
+	}
+	f.refund.result = tool.Result{Text: "refunded"}
+	f.model.add(use("c3", "stripe_refund", `{"order":42}`), say("Done."))
+	before := len(f.refund.trials)
+	if got, err = f.r.Execute(ctx, "t1", r.ID, nil); err != nil || got.Status == run.Paused {
+		t.Fatalf("the third turn: %v %+v", err, got)
+	}
+	if calls := len(f.refund.trials) - before; calls != 0 {
+		t.Fatalf("order 42 reached the tool %d times after its hold expired", calls)
+	}
+	var c3 string
+	for _, req := range f.model.reqs {
+		for _, m := range req.Messages {
+			for _, b := range m.Blocks {
+				if b.Kind == model.ToolResult && b.CallID == "c3" {
+					c3 = b.Result
+				}
+			}
+		}
+	}
+	if c3 != runner.NotAgain {
+		t.Errorf("order 42 again after another pause: %q, want NotAgain", c3)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/run"
@@ -19,10 +20,11 @@ const AskTheOwner = "Don't make this call again on your own. Tell the owner it w
 // asked again, so a run never turns one request into a chain of holds.
 const NotAgain = "Not sent: this same call was held for the owner earlier in this run and wasn't approved (refused, or the hold expired). Only the owner can ask for it again. Tell them, and wait."
 
-// unapproved is each held call of r that the owner didn't approve, by tool
-// and input, from what KIFF answered and what collecting it returned.
-func unapproved(reqs []run.Requirement, held []agent.ToolResultBody) map[string][]json.RawMessage {
-	out := map[string][]json.RawMessage{}
+// unapproved is the run's calls the owner didn't approve: those of its
+// earlier pauses (before), then each held call of this one they didn't,
+// from what KIFF answered and what collecting it returned.
+func unapproved(before []run.Call, reqs []run.Requirement, held []agent.ToolResultBody) []run.Call {
+	out := slices.Clone(before)
 	for _, q := range reqs {
 		no := q.Answer == "refused" || q.Answer == "rejected" || q.Answer == "expired"
 		if !no && q.Answer == "" {
@@ -31,7 +33,7 @@ func unapproved(reqs []run.Requirement, held []agent.ToolResultBody) map[string]
 			}
 		}
 		if no {
-			out[q.Tool] = append(out[q.Tool], q.Input)
+			out = append(out, run.Call{Tool: q.Tool, Input: q.Input})
 		}
 	}
 	return out
@@ -40,9 +42,13 @@ func unapproved(reqs []run.Requirement, held []agent.ToolResultBody) map[string]
 // notAgain wraps the run's tools so a call the owner didn't approve isn't
 // made again in the same run: the identical call answers NotAgain without
 // reaching KIFF. Any other call goes as before.
-func notAgain(tools []tool.Tool, refused map[string][]json.RawMessage) []tool.Tool {
-	if len(refused) == 0 {
+func notAgain(tools []tool.Tool, calls []run.Call) []tool.Tool {
+	if len(calls) == 0 {
 		return tools
+	}
+	refused := map[string][]json.RawMessage{}
+	for _, c := range calls {
+		refused[c.Tool] = append(refused[c.Tool], c.Input)
 	}
 	out := make([]tool.Tool, len(tools))
 	for i, t := range tools {
