@@ -54,11 +54,13 @@ type Session struct {
 }
 
 // OwnedBy reports whether owner (a requester's Key, or empty for none) may
-// read or go on in the session (#219): one with no owner (a job's, or one
-// from before owners) is anyone's, as before; an owned one is only its
-// owner's.
+// read or go on in the session (#219): only its own owner may. A job's or a
+// trial's session with no owner is the taf's, as before. Any other session
+// with no owner (a chat from before owners, or one whose kind isn't known) is
+// no member's, so it is never listed to a member of a shared taf; a run with
+// no requester may go on in it.
 func (s Session) OwnedBy(owner string) bool {
-	return s.Owner == "" || s.Owner == owner
+	return s.Owner == owner || (s.Owner == "" && (s.Kind == KindRun || s.Kind == KindTrial))
 }
 
 // Expired reports whether the session is gone as of now: its Expires has

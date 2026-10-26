@@ -715,7 +715,7 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 		}
 		limit = n
 	}
-	// owner: one requester's sessions and those with no owner (#219);
+	// owner: one requester's own sessions only (#219);
 	// without it, every session of the agent, as before.
 	owner, err := ownerParam(r)
 	if err != nil {

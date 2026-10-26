@@ -275,8 +275,11 @@ func TestARequestersSessionIsTheirs(t *testing.T) {
 		t.Fatalf("no requester going on in ana's session: %v, want not found", err)
 	}
 	old := f.start(server.Start{Input: "hello"}) // no requester: a session with no owner
-	if next := f.start(server.Start{Session: old.Session, Input: "and again", Requester: luis}); next.Session != old.Session {
-		t.Fatalf("a session with no owner refused luis")
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: old.Session, Input: "x", Requester: luis}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("luis going on in a session with no owner: %v, want not found", err)
+	}
+	if next := f.start(server.Start{Session: old.Session, Input: "and again"}); next.Session != old.Session {
+		t.Fatalf("no requester going on in a session with no owner is in %s, want %s", next.Session, old.Session)
 	}
 }
 
