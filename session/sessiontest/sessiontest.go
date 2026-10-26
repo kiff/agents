@@ -653,6 +653,8 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	c.add(time.Minute)
 	job := begin(t, c, r, "refunds", session.KindRun)
 	c.add(time.Minute)
+	unknown := begin(t, c, r, "refunds", "") // no kind recorded: no member's
+	c.add(time.Minute)
 	ana := openOwned("member:ana")
 	c.add(time.Minute)
 	luis := openOwned("member:luis")
@@ -675,7 +677,7 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	// session is the taf's, listed as before.
 	want := []string{ana.Session().ID, anaAgain.Session().ID, job.Session().ID}
 	if !slices.Equal(ids(got), want) {
-		t.Fatalf("ana's = %v, want %v (not %s, which has no owner)", ids(got), want, legacy.Session().ID)
+		t.Fatalf("ana's = %v, want %v (not %s or %s, which have no owner)", ids(got), want, legacy.Session().ID, unknown.Session().ID)
 	}
 	if got[0].Owner != "member:ana" {
 		t.Fatalf("owner = %q", got[0].Owner)
@@ -691,7 +693,7 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	if s, _ := read(t, b, luis); s.Owner != "member:luis" {
 		t.Fatalf("read back, owner = %q", s.Owner)
 	}
-	if all := list(t, b, "t1", 0); len(all) != 5 {
+	if all := list(t, b, "t1", 0); len(all) != 6 {
 		t.Fatalf("List still lists every session: %d", len(all))
 	}
 }
