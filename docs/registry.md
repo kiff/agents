@@ -53,6 +53,11 @@ of its eight kinds):
   speed. A fast turn that the provider turns away for its fast limits or its
   load runs at once at standard speed, and the conversation stays at
   standard. Each turn's `usage` event records its `speed`.
+- `thinking` (optional): `"summarized"` asks the model for a summary of its
+  thinking as it writes it, streamed to whoever follows the run as `thinking`
+  events, so someone waiting sees what it considers. Nothing records them.
+  Empty keeps the thinking hidden, the provider's default. The thinking is
+  billed the same either way.
 - `defer_vendor_tools` (optional): every gateway tool that isn't KIFF's own
   (`kiff_*`) goes to the model deferred, whatever its name. A Card that
   covers a vendor's tools mid-conversation (Setup's reads) then leaves the

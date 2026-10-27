@@ -40,6 +40,7 @@ func TestCheckRefuses(t *testing.T) {
 		"an unknown effort":       func(d *registry.Definition) { d.Effort = "extreme" },
 		"an effort's case":        func(d *registry.Definition) { d.Effort = "High" },
 		"an unknown speed":        func(d *registry.Definition) { d.Speed = "turbo" },
+		"an unknown thinking":     func(d *registry.Definition) { d.Thinking = "full" },
 		"fast with no fast price": func(d *registry.Definition) { d.Speed = "fast" },
 		"a fast price without the cache": func(d *registry.Definition) {
 			d.Speed, d.PriceFast = "fast", model.Price{Input: 2 * d.Price.Input, Output: 2 * d.Price.Output}
@@ -65,6 +66,11 @@ func TestCheckRefuses(t *testing.T) {
 		if err := d.Check(); err != nil {
 			t.Errorf("effort %q refused: %v", e, err)
 		}
+	}
+	shows := registrytest.Definition("t1", "payouts")
+	shows.Thinking = model.ThinkingSummarized
+	if err := shows.Check(); err != nil {
+		t.Errorf("summarized thinking refused: %v", err)
 	}
 	fast := registrytest.Definition("t1", "payouts")
 	fast.Speed, fast.PriceFast = "fast", model.Price{Input: 2 * fast.Price.Input, Output: 2 * fast.Price.Output,

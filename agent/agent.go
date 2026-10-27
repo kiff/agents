@@ -38,6 +38,9 @@ type Agent struct {
 	// Effort is how hard the model works on each turn; empty is the
 	// provider's default.
 	Effort string
+	// Thinking model.ThinkingSummarized streams a summary of the model's
+	// thinking as Thinking events; empty keeps it hidden.
+	Thinking string
 	// Fast runs the turns at the provider's fast speed, at PriceFast, for a
 	// run someone waits on. A turn that couldn't run fast runs at standard,
 	// and the rest of the run stays there: the cache is per speed.
@@ -198,6 +201,9 @@ const (
 	CallResult EventKind = "tool_result"   // a tool answered
 	Shown      EventKind = "component"     // the agent showed the owner a component
 	Steered    EventKind = "owner_message" // the run took a message the owner wrote while it went
+	// Thought is more of the summary of the model's thinking (Agent.Thinking),
+	// for showing while the run goes. It isn't recorded.
+	Thought EventKind = "thinking"
 )
 
 // Event is streamed to the caller as the run goes.
@@ -698,7 +704,7 @@ func (a Agent) capped(out Outcome) Stop {
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, waited []session.ToolTiming, out *Outcome, emit func(Event)) (model.Reply, error) {
 	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history,
-		Fast: a.Fast && !out.standard}
+		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) }}
 	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	took := time.Since(began)

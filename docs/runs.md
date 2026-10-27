@@ -96,8 +96,8 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
 
 - No `Session`: `Start` opens one (a chat for `ByOwner`, a job session
   otherwise). With one, the run joins that conversation.
-- `emit` gets `agent.Event`s as the run goes (`text`, `tool_call`,
-  `tool_result`); `nil` in the background.
+- `emit` gets `agent.Event`s as the run goes (`text`, `thinking` when the
+  definition shows it, `tool_call`, `tool_result`); `nil` in the background.
 - `Execute` leases the run until the caller's deadline plus a minute
   (`runner.MaxRun`, 15 min, if the caller has none). The loop stops 10 s
   before the caller's deadline (`StopTimeout`), to store where the run

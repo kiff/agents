@@ -86,6 +86,15 @@ type Request struct {
 	// Effort is how hard the model works on the turn ("low" to "max"), for
 	// providers that take it; empty is the provider's default.
 	Effort string
+	// Thinking ThinkingSummarized asks the provider for a summary of the
+	// model's thinking as it is written, passed to OnThinking, so someone
+	// waiting sees what the model considers. Empty leaves the thinking hidden,
+	// the provider's default. It changes what is shown, not what is billed.
+	Thinking string
+	// OnThinking, with Thinking set, receives the thinking summary as it is
+	// written. It is for showing only: the Reply's blocks keep the thinking
+	// as the provider returned it, which the next turn sends back unchanged.
+	OnThinking func(string) `json:"-"`
 	// Fast asks for the provider's fast output, at its higher price, for a
 	// turn someone waits on. A provider that can't serve it fast right now
 	// (its own, lower limits) runs the turn at standard speed: Reply.Fast
@@ -108,6 +117,10 @@ type Request struct {
 	// calls and results.
 	HistoryEnd int
 }
+
+// ThinkingSummarized is the Thinking that shows a summary of the model's
+// thinking as it goes.
+const ThinkingSummarized = "summarized"
 
 // Efforts are the effort levels a Request may name, lowest first.
 var Efforts = []string{"low", "medium", "high", "xhigh", "max"}

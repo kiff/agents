@@ -652,7 +652,8 @@ const MaxPeriod = 64
 //	event: event  one recorded session event of the run, its id the event's
 //	              Seq: the cursor resume?after= takes
 //	event: delta  what the agent does as it does it (an agent.Event): text as
-//	              it is written, tool calls as they are made, an owner's
+//	              it is written, a summary of its thinking when its definition
+//	              shows it, tool calls as they are made, an owner's
 //	              message as the run takes it (POST …/messages). No id: it is for
 //	              showing, and the recorded events carry what is kept. Start
 //	              and continue only, in the foreground
