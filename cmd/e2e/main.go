@@ -26,6 +26,13 @@
 //	E2E_STRIPE_KEY      on demand: a Stripe test-mode key. The vendor is then
 //	                    Stripe's MCP server, a person signs in at Stripe
 //	                    (-stripe-signin), and Stripe's API says what was refunded
+//
+// Step 9's people (RFC 050 decision 12), for -people: each signs in on a new
+// phone key with -people-signin, which infra/e2e-people-signin.sh runs and
+// puts in the repository's secrets, never on a screen:
+//
+//	E2E_MARIA_PHONE_KEY E2E_MARIA_SESSION   Maria, an editor who manages Support
+//	E2E_LUIS_PHONE_KEY  E2E_LUIS_SESSION    Luis, a viewer in Support
 package main
 
 import (
@@ -149,8 +156,19 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"for the private reports bucket, never the public log")
 	signin := fs.String("signin", "", "once, before the test runs: sign the phone in to KIFF (a person approves in a browser), make the setup agent, "+
 		"and write the session's token and the setup agent's key to this file (0600)")
+	peopleSignin := fs.String("people-signin", "", "once per person, before -people runs (step 9): sign -person in to KIFF on a new phone key "+
+		"(they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
+	person := fs.String("person", "", "-people-signin: maria (an editor) or luis (a viewer)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *peopleSignin != "" {
+		f, err := os.OpenFile(*peopleSignin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return peopleSignIn(ctx, kiff.APIURL, *person, &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	cfg.maxCost = int64(*maxCost * 1e6)
 	if *transcript != "" {

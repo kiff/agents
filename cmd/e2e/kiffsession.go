@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -68,37 +70,9 @@ func query(req *http.Request) string {
 // it. It writes the session's token and the setup agent's key to out (two
 // lines, 0600) for the test's secrets, and prints neither.
 func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setupAgent string, hc *http.Client, out io.Writer, say io.Writer) error {
-	ph := &phone{key: key}
-	anon := &client{base: strings.TrimRight(apiBase, "/"), http: hc}
-	a, err := anon.do(ctx, http.MethodPost, "/v1/auth/device/start", map[string]string{"public_key": ph.publicKey(), "device_name": "kiff/agents e2e (#91)"})
-	if err != nil || a.err() != nil {
-		return fmt.Errorf("starting the device sign-in: %v %v", err, a.err())
-	}
-	deviceCode, _ := a.Body["device_code"].(string)
-	link, _ := a.Body["verification_uri_complete"].(string)
-	fmt.Fprintf(say, "Approve this sign-in as someone on the KIFF test account, within 10 minutes:\n  %s\n", link)
-	var token, tenant string
-	for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
-		a, err := anon.do(ctx, http.MethodPost, "/v1/auth/device/token", map[string]string{"device_code": deviceCode})
-		if err != nil {
-			return err
-		}
-		if a.Status == http.StatusOK {
-			token, _ = a.Body["access_token"].(string)
-			tenant, _ = a.Body["tenant"].(string)
-			break
-		}
-		if e, _ := a.Body["error"].(string); e != "authorization_pending" && e != "slow_down" {
-			return fmt.Errorf("the device sign-in: %w", a.err())
-		}
-	}
-	if token == "" {
-		return errors.New("nobody approved the sign-in in time")
+	token, tenant, err := deviceSignIn(ctx, apiBase, key, "kiff/agents e2e (#91)", hc, say)
+	if err != nil {
+		return err
 	}
 	fmt.Fprintln(say, "signed in to KIFF; the session is bound to the test phone's key")
 
@@ -124,5 +98,87 @@ func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setu
 	}
 	fmt.Fprintf(say, "the setup agent %s has its key, with no tools\n", setupAgent)
 	_, err = fmt.Fprintf(out, "%s\n%s\n", token, setupKey)
+	return err
+}
+
+// devicePoll is how often deviceSignIn asks whether the person approved.
+var devicePoll = 5 * time.Second
+
+// deviceSignIn is KIFF's device sign-in with key, approved by a person in
+// their browser within 10 minutes: the session's token and the account it is
+// on. It prints the link to approve, never the token.
+func deviceSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, deviceName string, hc *http.Client, say io.Writer) (token, tenant string, err error) {
+	ph := &phone{key: key}
+	anon := &client{base: strings.TrimRight(apiBase, "/"), http: hc}
+	a, err := anon.do(ctx, http.MethodPost, "/v1/auth/device/start", map[string]string{"public_key": ph.publicKey(), "device_name": deviceName})
+	if err != nil || a.err() != nil {
+		return "", "", fmt.Errorf("starting the device sign-in: %v %v", err, a.err())
+	}
+	deviceCode, _ := a.Body["device_code"].(string)
+	link, _ := a.Body["verification_uri_complete"].(string)
+	fmt.Fprintf(say, "Approve this sign-in as the person, on the KIFF account it's for, within 10 minutes:\n  %s\n", link)
+	for deadline := time.Now().Add(10 * time.Minute); time.Now().Before(deadline); {
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(devicePoll):
+		}
+		a, err := anon.do(ctx, http.MethodPost, "/v1/auth/device/token", map[string]string{"device_code": deviceCode})
+		if err != nil {
+			return "", "", err
+		}
+		if a.Status == http.StatusOK {
+			token, _ = a.Body["access_token"].(string)
+			tenant, _ = a.Body["tenant"].(string)
+			return token, tenant, nil
+		}
+		if e, _ := a.Body["error"].(string); e != "authorization_pending" && e != "slow_down" {
+			return "", "", fmt.Errorf("the device sign-in: %w", a.err())
+		}
+	}
+	return "", "", errors.New("nobody approved the sign-in in time")
+}
+
+// stepNine is each of step 9's people and the role they hold on the shared
+// account (RFC 050 decision 12): Maria an editor who manages Support, Luis a
+// viewer in it.
+var stepNine = map[string]string{"maria": "editor", "luis": "viewer"}
+
+// peopleSignIn signs one of step 9's people in, as their own phone would
+// (kiff/tafs#294, RFC 050 decision 12): a new phone key and KIFF's device
+// sign-in, which that person approves on the shared account. It makes no
+// agent: the person only uses what is shared with them. It writes the phone
+// key (base64 PKCS#8) and the session's token to out (two lines, 0600), for
+// a script that puts them in the repository's secrets, and prints neither:
+// only the account and the role KIFF gives the session, to check by eye.
+func peopleSignIn(ctx context.Context, apiBase, person string, hc *http.Client, out io.Writer, say io.Writer) error {
+	want, ok := stepNine[person]
+	if !ok {
+		return fmt.Errorf("-person %q: maria or luis", person)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	token, tenant, err := deviceSignIn(ctx, apiBase, key, "kiff/agents e2e, "+person, hc, say)
+	if err != nil {
+		return err
+	}
+	me, err := kiffSession(apiBase, token, tenant, key, hc).do(ctx, http.MethodGet, "/v1/me", nil)
+	if err != nil || me.err() != nil {
+		return fmt.Errorf("KIFF didn't take %s's new session: %v %v", person, err, me.err())
+	}
+	name, _ := me.Body["tenant_display_name"].(string)
+	role, _ := me.Body["member_role"].(string)
+	if role != want {
+		// Approved on another account (the person's own, say): nothing is written.
+		return fmt.Errorf("%s signed in to %q as %q, not as %s: approve on the shared account", person, name, role, want)
+	}
+	fmt.Fprintf(say, "%s is signed in to %q as %s; the session is bound to a new phone key\n", person, name, role)
+	_, err = fmt.Fprintf(out, "%s\n%s\n", base64.StdEncoding.EncodeToString(der), token)
 	return err
 }
