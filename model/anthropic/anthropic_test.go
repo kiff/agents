@@ -366,8 +366,10 @@ func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
 }
 
 // An agent whose price counts an hour's writes keeps the shared prefix (its
-// tools and system prompt) an hour, and the conversation five minutes: an
-// owner's next message often comes after a pause (kiff/tafs#138, item 58).
+// tools and system prompt) and the history's end an hour, and the rest of the
+// conversation five minutes: an owner's next message often comes after a
+// pause (kiff/tafs#138, item 58), and the next run reads the history back
+// (kiff/agents#242). The hour's breakpoints come before the five minutes'.
 func TestCacheLongKeepsThePrefixAnHour(t *testing.T) {
 	ttl := func(v any) any {
 		m, _ := v.(map[string]any)
@@ -384,6 +386,26 @@ func TestCacheLongKeepsThePrefixAnHour(t *testing.T) {
 	short := sent(t, model.Request{Model: "m", MaxTokens: 1, System: "s", Messages: msgs, Cache: true})
 	if sys := asList(short["system"]); ttl(sys[len(sys)-1]) != nil {
 		t.Fatalf("five minutes: system ttl %v", ttl(sys[len(sys)-1]))
+	}
+
+	// With history: its end an hour, the run's last message five minutes.
+	chat := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "earlier"}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "earlier answer"}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "now"}}},
+	}
+	for _, long := range []bool{true, false} {
+		body := sent(t, model.Request{Model: "m", MaxTokens: 1, System: "s", Messages: chat, Cache: true, CacheLong: long, HistoryEnd: 2})
+		m := asList(body["messages"])
+		end := asList(m[1].(map[string]any)["content"])[0]
+		last := asList(m[2].(map[string]any)["content"])[0]
+		want := any(nil)
+		if long {
+			want = "1h"
+		}
+		if ttl(end) != want || ttl(last) != nil {
+			t.Fatalf("long %v: history end ttl %v, last ttl %v", long, ttl(end), ttl(last))
+		}
 	}
 }
 
