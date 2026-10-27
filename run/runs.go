@@ -265,6 +265,11 @@ func (r Run) clone() Run {
 		k.Input = bytes.Clone(k.Input)
 		c.NotAgain = append(c.NotAgain, k)
 	}
+	c.Done = nil
+	for _, d := range r.Done {
+		d.Input = bytes.Clone(d.Input)
+		c.Done = append(c.Done, d)
+	}
 	c.Steering = slices.Clone(r.Steering)
 	c.Requirements = nil
 	for _, q := range r.Requirements {

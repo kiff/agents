@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -637,6 +638,32 @@ func TestAPausedRunContinues(t *testing.T) {
 	}
 }
 
+// What a run did is kept across its pause (#249): the act made before the
+// hold is stored when it pauses, and the held call is added once the owner
+// approved it and the run went on.
+func TestARunKeepsWhatItDidAcrossAPause(t *testing.T) {
+	f := newFixture(t, use("c0", "stripe_cancel", `{"order":41}`), use("c1", "stripe_refund", `{"order":42}`), say("Waiting for approval."))
+	f.extra = []tool.Tool{&gatewayTool{name: "stripe_cancel", result: tool.Result{Text: "cancelled"}}}
+	r := f.start(server.Start{Input: "cancel 41, refund 42"})
+	cancelled := run.Done{CallID: "c0", Tool: "stripe_cancel", Input: json.RawMessage(`{"order":41}`)}
+	if paused := f.pause(r); paused.Status != run.Paused || !reflect.DeepEqual(paused.Done, []run.Done{cancelled}) {
+		t.Fatalf("paused with done %+v", paused.Done)
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded", State: "allowed"}}}, nil
+	}
+	f.model.add(say("Cancelled 41 and refunded 42."))
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []run.Done{cancelled, {CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"order":42}`)}}
+	if got.Status != run.Completed || !reflect.DeepEqual(got.Done, want) {
+		t.Fatalf("ended %s with done %+v, want %+v", got.Status, got.Done, want)
+	}
+}
+
 // While a run is paused, a new message in its session starts a new run, and
 // its history leaves the paused run out.
 func TestANewMessageWhilePaused(t *testing.T) {
@@ -813,6 +840,24 @@ func TestAFailedModelIsAnError(t *testing.T) {
 	}
 	if !f.state(r).Ended || !slices.Contains(f.events(r), session.Error) {
 		t.Fatalf("recording %+v with %v, want ended with the error", f.state(r), f.events(r))
+	}
+}
+
+// A run that fails after a call went through keeps it on the run (#249), so
+// whoever shows the failure can say what was done.
+func TestAFailedRunKeepsWhatItDid(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"charge":"ch_1"}`)) // then no replies: the next turn fails
+	r := f.start(server.Start{Input: "refund ch_1"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil {
+		t.Fatal("want the model's failure")
+	}
+	want := []run.Done{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`)}}
+	if got.Status != run.Error || !reflect.DeepEqual(got.Done, want) {
+		t.Fatalf("failed to %+v, want done %+v", got, want)
+	}
+	if stored := f.get(r.ID); !reflect.DeepEqual(stored.Done, want) {
+		t.Fatalf("stored done %+v", stored.Done)
 	}
 }
 

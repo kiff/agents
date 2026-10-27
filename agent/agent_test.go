@@ -536,6 +536,59 @@ func TestTheFirstTurnAfterContinueIsMarkedResumed(t *testing.T) {
 	}
 }
 
+// A run keeps the calls that acted and went through, from their results
+// (#249): a run whose next turn fails still says the refund was made. Reads,
+// a write that failed and an act refused unmade aren't kept.
+func TestARunKeepsTheActsThatWentThrough(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1", Invocation: "tc-1"}}
+	note := &fakeTool{name: "stripe_note", access: tool.Write, gateway: true, result: tool.Result{Text: "no such charge", IsError: true}}
+	m := &script{replies: []model.Reply{
+		{Blocks: []model.Block{{Kind: model.ToolUse, CallID: "l1", Tool: "stripe_get", Input: json.RawMessage(`{"charge":"ch_1"}`)}}, Stop: model.CallTools},
+		{Blocks: []model.Block{
+			{Kind: model.ToolUse, CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`)},
+			{Kind: model.ToolUse, CallID: "c2", Tool: "stripe_note", Input: json.RawMessage(`{"charge":"ch_9"}`)},
+		}, Stop: model.CallTools},
+		both(), // the refund beside a read is refused unmade
+		// no more replies: the next turn fails
+	}}
+	_, r := start(t, session.KindRun)
+	get := &fakeTool{name: "stripe_get", access: tool.Read, gateway: true, result: tool.Result{Text: `{"amount":500}`}}
+	out, _, err := agent.Run(context.Background(), newAgent(m, get, refund, note), r, nil, "Refund ch_1.", nil)
+	if err == nil {
+		t.Fatal("want the failed turn's error")
+	}
+	want := []run.Done{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`), Invocation: "tc-1"}}
+	if !reflect.DeepEqual(out.Done, want) {
+		t.Fatalf("done %+v, want %+v", out.Done, want)
+	}
+}
+
+// A held call the owner approved, once KIFF made it, is kept as done when the
+// run continues; the calls the paused turn made beside it were kept when it
+// paused, not again.
+func TestAnApprovedHeldCallIsKeptAsDone(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("Refunded ch_big.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	r, err := rec.Resume(context.Background(), s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, approved(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []run.Done{{CallID: "c2", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_big"}`)}}
+	if !reflect.DeepEqual(out.Done, want) {
+		t.Fatalf("done %+v, want %+v", out.Done, want)
+	}
+}
+
 // Continue takes one outcome per requirement and nothing else: a missing
 // one, an extra one, one KIFF still holds, or a run with no paused turn is
 // refused before anything is recorded or the model is called.
