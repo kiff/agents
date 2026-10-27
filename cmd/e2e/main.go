@@ -1404,6 +1404,9 @@ func (t *test) followUp(ctx context.Context, tafID string, g grant) error {
 	}
 	_, refunds := chargeTools(g)
 	lists := listTools(g)
+	if len(lists) == 0 {
+		return errors.New("the grant has no listing read (a tool with no resource argument): the follow-up can't check it listed nothing")
+	}
 	for _, tool := range made[0] {
 		if isTool(tool, refunds) {
 			return fmt.Errorf("asked to wait, the taf called %s: its calls %v", tool, made[0])
@@ -1451,17 +1454,22 @@ func (t *test) toolsCalled(ctx context.Context, sessionID, runID string) ([]stri
 	return tools, nil
 }
 
-// listTools are the names the grant gave the tool that lists charges.
+// listTools are the names the grant gave its listing reads: a tool with no
+// resource argument, so one that acts on no single thing, other than the
+// refund, the charge read or Setup's own reads. Found from the grant, not
+// by a vendor's tool name, nor by Setup marking it read-only.
 func listTools(g grant) []string {
+	reads, refunds := chargeTools(g)
 	var names []string
 	for _, t := range g.Request.Tools {
-		if t.Tool == "list_charges" {
-			name := t.Name
-			if name == "" {
-				name = t.Tool
-			}
-			names = append(names, name)
+		name := t.Name
+		if name == "" {
+			name = t.Tool
 		}
+		if t.ResourceArg != "" || t.SetupReads || slices.Contains(reads, name) || slices.Contains(refunds, name) {
+			continue
+		}
+		names = append(names, name)
 	}
 	return names
 }
