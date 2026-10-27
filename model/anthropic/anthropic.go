@@ -262,7 +262,10 @@ func markCache(p *sdk.MessageNewParams, long bool, historyEnd int) {
 		return
 	}
 	if historyEnd > 0 && historyEnd < len(p.Messages) {
-		markLast(p.Messages[historyEnd-1].Content, cc)
+		// The history's end keeps as long as the shared part: the next run of
+		// the chat reads it back, and a person's next message often comes
+		// after a pause longer than five minutes (kiff/agents#242).
+		markLast(p.Messages[historyEnd-1].Content, shared)
 	}
 	markLast(p.Messages[len(p.Messages)-1].Content, cc)
 }

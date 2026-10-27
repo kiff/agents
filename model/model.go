@@ -105,9 +105,9 @@ type Request struct {
 	// next turn reads them from the cache. Writing the cache costs more than
 	// plain input, so set it only when the turn's Price counts it.
 	Cache bool
-	// CacheLong keeps the cached shared part (tools and system prompt) an
-	// hour instead of five minutes. Set it only when the turn's Price counts
-	// an hour's writes (Price.CachesAnHour).
+	// CacheLong keeps the cached shared part (tools and system prompt) and
+	// the history's end (HistoryEnd) an hour instead of five minutes. Set it
+	// only when the turn's Price counts an hour's writes (Price.CachesAnHour).
 	CacheLong bool
 	// HistoryEnd is how many of Messages, from the first, are the run's
 	// history: earlier runs as the session keeps them. With Cache, the last of
