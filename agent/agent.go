@@ -836,12 +836,25 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		emit(Event{Kind: CallStart, CallID: c.CallID, Tool: c.Tool, Input: c.Input})
 	}
 	results := make([]ToolResultBody, len(calls))
+	// Calls that reach outside the agent, reads and acts: an act goes only
+	// beside the agent's own (its notes, the chat's components).
+	outside := 0
+	for _, c := range calls {
+		if t := byName[c.Tool]; t == nil || t.Access() != tool.Own {
+			outside++
+		}
+	}
 	var wg sync.WaitGroup
 	for i, c := range calls {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			began := time.Now()
+			if outside > 1 && acts(byName[c.Tool], c.Input) {
+				results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: tool.Result{Text: OneAtATime, IsError: true}}
+				results[i].batch = len(calls)
+				return
+			}
 			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c)}
 			results[i].took, results[i].batch = time.Since(began), len(calls)
 		}()
@@ -868,6 +881,19 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}
 	}
 	return results, nil
+}
+
+// OneAtATime is what a call that acts gets back, unmade, when the model sent
+// it in a turn with other calls: a refund asked for beside the look-up meant
+// to check it went before the look-up's result was read (kiff/tafs, the 859
+// device test). The reads in that turn are made.
+const OneAtATime = "One at a time: this call acts, so it goes in a turn of its own, and it was not made. Read the other calls' results first, then make it alone if it's still right."
+
+// acts reports whether a call of t with input changes something outside the
+// agent: a Write tool's call that doesn't only read (tool.Reads), the kind
+// the Card and Setup use. Its own notes and the chat's components don't count.
+func acts(t tool.Tool, input json.RawMessage) bool {
+	return t != nil && t.Access() == tool.Write && !tool.Reads(t, input)
 }
 
 // shows reports whether t may put a component in the owner's chat.
