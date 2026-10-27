@@ -214,6 +214,8 @@ type ToolTiming struct {
 	ResultBytes int    `json:"result_bytes,omitempty"`
 	Batch       int    `json:"batch,omitempty"`
 	IsError     bool   `json:"is_error,omitempty"`
+	// NotMade: the call was refused back unmade (agent.OneAtATime), not failed.
+	NotMade bool `json:"not_made,omitempty"`
 }
 
 // UsageBody is the body of a Usage event: what one model call used and cost.

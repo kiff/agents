@@ -163,6 +163,10 @@ type ToolResultBody struct {
 	CallID string `json:"call_id"`
 	Tool   string `json:"tool"`
 	tool.Result
+	// NotMade: the call was refused back to the model unmade, an act sent
+	// beside a read (OneAtATime). Nothing reached KIFF or the vendor, so
+	// the app shows it as not made, not as a failed call.
+	NotMade bool `json:"not_made,omitempty"`
 	// took is how long the call took, and batch how many calls ran beside
 	// it in the same turn, itself included: recorded on the next turn's
 	// Usage (session.ToolTiming), not with the result, which a run drops.
@@ -224,6 +228,9 @@ type Event struct {
 	Tool   string          `json:"tool,omitempty"`
 	Input  json.RawMessage `json:"input,omitempty"`
 	Result *tool.Result    `json:"result,omitempty"`
+	// NotMade: a CallResult for a call refused back unmade (OneAtATime), so the
+	// app's work block shows it as not made while the run goes on.
+	NotMade bool `json:"not_made,omitempty"`
 	// Component is what Shown shows: the component as the show tool checked it.
 	Component json.RawMessage `json:"component,omitempty"`
 }
@@ -508,7 +515,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		for i, r := range results {
 			blocks[i] = resultBlock(r)
 			held = held || r.Held()
-			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError}
+			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade}
 		}
 		if held {
 			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
@@ -836,12 +843,27 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		emit(Event{Kind: CallStart, CallID: c.CallID, Tool: c.Tool, Input: c.Input})
 	}
 	results := make([]ToolResultBody, len(calls))
+	// An act goes in no turn with a read: what it acts on was read in an
+	// earlier turn, not beside it. Acts side by side go together, and the
+	// agent's own calls (its notes, the chat's components) don't count.
+	reads := false
+	for _, c := range calls {
+		t := byName[c.Tool]
+		if t == nil || (t.Access() != tool.Own && !acts(t, c.Input)) {
+			reads = true
+		}
+	}
 	var wg sync.WaitGroup
 	for i, c := range calls {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			began := time.Now()
+			if reads && acts(byName[c.Tool], c.Input) {
+				results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: tool.Result{Text: OneAtATime, IsError: true}, NotMade: true}
+				results[i].batch = len(calls)
+				return
+			}
 			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c)}
 			results[i].took, results[i].batch = time.Since(began), len(calls)
 		}()
@@ -859,7 +881,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				return nil, err
 			}
 		}
-		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
+		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result, NotMade: r.NotMade})
 		if len(r.Component) > 0 && !r.IsError && shows(byName[r.Tool]) {
 			if err := rec.Record(session.Component, r.Component); err != nil {
 				return nil, err
@@ -868,6 +890,19 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}
 	}
 	return results, nil
+}
+
+// OneAtATime is what a call that acts gets back, unmade, when the model sent
+// it in a turn with a read: a refund asked for beside the look-up meant
+// to check it went before the look-up's result was read (kiff/tafs, the 859
+// device test). The reads in that turn are made.
+const OneAtATime = "Read first: this call acts, so it doesn't go beside a read, and it was not made. Read the other calls' results first, then make it if it's still right."
+
+// acts reports whether a call of t with input changes something outside the
+// agent: a Write tool's call that doesn't only read (tool.Reads), the kind
+// the Card and Setup use. Its own notes and the chat's components don't count.
+func acts(t tool.Tool, input json.RawMessage) bool {
+	return t != nil && t.Access() == tool.Write && !tool.Reads(t, input)
 }
 
 // shows reports whether t may put a component in the owner's chat.

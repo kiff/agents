@@ -209,7 +209,9 @@ func TestThinkingIsStreamedNotRecorded(t *testing.T) {
 	}
 }
 
-// both is one turn calling a lookup and a refund.
+// both is one turn calling a lookup and a refund. The lookup is its own
+// (lookupTool): a call that acts goes beside only calls that don't, so a held
+// refund keeps the results of the calls beside it (TestACallThatActsGoesInATurnOfItsOwn).
 func both() model.Reply {
 	return model.Reply{Blocks: []model.Block{
 		{Kind: model.Text, Text: "Checking, then refunding."},
@@ -228,7 +230,7 @@ func heldRefund() *fakeTool {
 }
 
 func lookupTool() *fakeTool {
-	return &fakeTool{name: "stripe_get", access: tool.Read, gateway: true, result: tool.Result{Text: `{"amount":90000}`}}
+	return &fakeTool{name: "stripe_get", access: tool.Own, result: tool.Result{Text: `{"amount":90000}`}}
 }
 
 // When KIFF holds a call, the run pauses: one requirement per held call, and
