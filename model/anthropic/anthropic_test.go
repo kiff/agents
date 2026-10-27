@@ -628,7 +628,8 @@ func answering(t *testing.T, answers ...call) (*anthropic.Model, *[]asked) {
 		_ = json.Unmarshal(body, &b)
 		n := len(*got)
 		th, _ := b["thinking"].(map[string]any)
-		*got = append(*got, asked{beta: r.Header.Get("anthropic-beta"), speed: b["speed"], thinking: th})
+		// Every line of the header, so a beta sent as a second line shows.
+		*got = append(*got, asked{beta: strings.Join(r.Header.Values("anthropic-beta"), "\n"), speed: b["speed"], thinking: th})
 		if n >= len(answers) {
 			t.Errorf("request %d: no answer left", n+1)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -673,11 +674,12 @@ func TestAReplayedThinkingBlockIsDroppedIfItsConversationChanged(t *testing.T) {
 		}},
 		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "toolu_1", Result: "[cleared: ...]"}}},
 	}
-	m, got := answering(t, call{http.StatusOK, stream}, call{http.StatusOK, stream}, call{http.StatusOK, stream})
+	m, got := answering(t, call{http.StatusOK, stream}, call{http.StatusOK, stream}, call{http.StatusOK, stream}, call{http.StatusOK, fastStream})
 	for _, req := range []model.Request{
 		{Model: "m", MaxTokens: 8, Messages: replay},
 		{Model: "m", MaxTokens: 8, Messages: replay, Thinking: model.ThinkingSummarized},
 		{Model: "m", MaxTokens: 8, Messages: goTurn},
+		{Model: "m", MaxTokens: 8, Messages: replay, Fast: true},
 	} {
 		if _, err := m.Turn(context.Background(), req, nil); err != nil {
 			t.Fatal(err)
@@ -694,6 +696,13 @@ func TestAReplayedThinkingBlockIsDroppedIfItsConversationChanged(t *testing.T) {
 	}
 	if a := (*got)[2]; a.beta != "" || a.thinking != nil {
 		t.Fatalf("a turn with no thinking to send back asked %+v", a)
+	}
+	// A fast turn that replays thinking (a chat after its first call) sends both
+	// betas in one header value, comma-separated, and both fields.
+	a := (*got)[3]
+	bind, _ := a.thinking["block_binding"].(map[string]any)
+	if a.beta != anthropic.BindingBeta+","+anthropic.FastBeta || a.speed != "fast" || bind["prefix_mismatch_behavior"] != "drop_block" {
+		t.Fatalf("a fast replay asked %+v", a)
 	}
 }
 

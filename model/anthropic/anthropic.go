@@ -72,18 +72,24 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 		return model.Reply{}, false, err
 	}
 	var opts []option.RequestOption
+	// The turn's betas go in one anthropic-beta header, comma-separated, as
+	// the API reads them: two lines of it may be read as one.
+	var betas []string
 	if replaysThinking(req) {
 		if params.Thinking.OfAdaptive == nil && params.Thinking.OfEnabled == nil {
 			// block_binding needs a thinking type: a model that left a thinking
 			// block thinks unasked, so adaptive is what it runs anyway.
 			params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
 		}
-		opts = append(opts, option.WithHeaderAdd("anthropic-beta", BindingBeta),
-			option.WithJSONSet("thinking.block_binding.prefix_mismatch_behavior", "drop_block"))
+		betas = append(betas, BindingBeta)
+		opts = append(opts, option.WithJSONSet("thinking.block_binding.prefix_mismatch_behavior", "drop_block"))
 	}
 	if req.Fast {
-		opts = append(opts, option.WithHeaderAdd("anthropic-beta", FastBeta), option.WithJSONSet("speed", "fast"),
-			option.WithMaxRetries(0))
+		betas = append(betas, FastBeta)
+		opts = append(opts, option.WithJSONSet("speed", "fast"), option.WithMaxRetries(0))
+	}
+	if len(betas) > 0 {
+		opts = append(opts, option.WithHeader("anthropic-beta", strings.Join(betas, ",")))
 	}
 	start := time.Now()
 	stream := m.client.Messages.NewStreaming(ctx, params, opts...)
