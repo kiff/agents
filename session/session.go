@@ -204,6 +204,10 @@ type TurnTiming struct {
 	// Waited is the tool calls of the turn before, whose results this turn
 	// read: each call's time and result size.
 	Waited []ToolTiming `json:"waited,omitempty"`
+	// Resumed marks the first turn after a paused run was picked up once its
+	// held calls were answered (Continue); steering and More don't set it.
+	// The turns after a hold begin there, so a reader can tell where.
+	Resumed bool `json:"resumed,omitempty"`
 }
 
 // ToolTiming is one tool call's time, its result's size, and how many calls

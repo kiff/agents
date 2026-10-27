@@ -102,6 +102,9 @@ type Agent struct {
 	// history is how many of a run's messages are its history (Run, Continue):
 	// the prefix the next run renders the same way, cached apart.
 	history int
+	// resumed says the next turn is the first after Continue: its timing
+	// says so (Resumed).
+	resumed bool
 }
 
 // KIFFToolPrefix starts the name of every tool KIFF's gateway serves itself
@@ -372,6 +375,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if err := a.load(ctx, msgs); err != nil {
 		return Outcome{}, msgs, err
 	}
+	a.resumed = true
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns}, emit)
 }
 
@@ -480,6 +484,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			}
 		}
 		reply, err := a.turn(ctx, rec, msgs, specs, false, waited, &out, emit)
+		a.resumed = false
 		if err != nil {
 			return out, msgs, err
 		}
@@ -787,9 +792,10 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 // turnTiming is one model turn's timing: how long it took and streamed
 // before its first content, and the sizes of what it wrote, never the
 // words, with the tool calls whose results it read; on the run's first
-// turn, how long the run took to get to it.
+// turn, how long the run took to get to it; on the first after Continue,
+// that it was.
 func (a Agent) turnTiming(reply model.Reply, took time.Duration, first bool, waited []session.ToolTiming) *session.TurnTiming {
-	t := &session.TurnTiming{MS: took.Milliseconds(), FirstMS: reply.FirstToken.Milliseconds(), ThinkingBytes: reply.ThinkingBytes, Waited: waited}
+	t := &session.TurnTiming{MS: took.Milliseconds(), FirstMS: reply.FirstToken.Milliseconds(), ThinkingBytes: reply.ThinkingBytes, Waited: waited, Resumed: a.resumed}
 	if first {
 		t.StartMS = a.Started.Milliseconds()
 	}
