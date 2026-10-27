@@ -349,7 +349,8 @@ echo "deploy role: set it as the secret AWS_DEPLOY_ROLE: aws iam get-role --role
 
 # The nightly eval's log is public, so its full report (each run's checks and
 # why, with the run's ids) goes to this bucket instead: private, encrypted,
-# kept 90 days. Its role may only write reports, from main's workflow runs.
+# kept 90 days. Its role may only write reports, from main's workflow runs;
+# a branch's runs have their own, below.
 REPORTS=${AGENTS_EVAL_BUCKET:-kiff-agents-eval-reports}
 EVAL_ROLE=agents-github-eval
 if ! aws s3api head-bucket --bucket "$REPORTS" >/dev/null 2>&1; then
@@ -371,6 +372,23 @@ EOF
 aws iam put-role-policy --role-name "$EVAL_ROLE" --policy-name eval-reports --policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::'"$REPORTS"'/reports/*"}]}'
 echo "eval role: set it as the secret AWS_EVAL_ROLE: aws iam get-role --role-name $EVAL_ROLE --query Role.Arn --output text | gh secret set AWS_EVAL_ROLE --repo kiff/agents" >&2
+
+# A branch's eval (an eval/tafs-<sha> measure, a PR's branch) keeps its full
+# report too, so a check that fails there can be read: under
+# reports/branches/, never over main's, with PutObject alone (no Get, List or
+# Delete). Its role is trusted from pushed branches only (refs/heads/*); a
+# pull request's run (refs/pull/*), a fork's included, doesn't match. Only
+# people who may push to kiff/agents push its branches. The reports hold the
+# eval account's test data only.
+EVAL_BRANCH_ROLE=agents-github-eval-branches
+role "$EVAL_BRANCH_ROLE" "$(cat <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"$OIDC"},"Action":"sts:AssumeRoleWithWebIdentity",
+ "Condition":{"StringEquals":{"token.actions.githubusercontent.com:aud":"sts.amazonaws.com"},"StringLike":{"token.actions.githubusercontent.com:sub":"$SUB:ref:refs/heads/*"}}}]}
+EOF
+)"
+aws iam put-role-policy --role-name "$EVAL_BRANCH_ROLE" --policy-name eval-branch-reports --policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::'"$REPORTS"'/reports/branches/*"}]}'
+echo "eval branch role: set it as the secret AWS_EVAL_BRANCH_ROLE: aws iam get-role --role-name $EVAL_BRANCH_ROLE --query Role.Arn --output text | gh secret set AWS_EVAL_BRANCH_ROLE --repo kiff/agents" >&2
 
 # --- It checks itself ------------------------------------------------------
 # A setting that's empty or wrong fails here, not on a person's device:
