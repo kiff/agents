@@ -372,5 +372,25 @@ aws iam put-role-policy --role-name "$EVAL_ROLE" --policy-name eval-reports --po
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::'"$REPORTS"'/reports/*"}]}'
 echo "eval role: set it as the secret AWS_EVAL_ROLE: aws iam get-role --role-name $EVAL_ROLE --query Role.Arn --output text | gh secret set AWS_EVAL_ROLE --repo kiff/agents" >&2
 
+# --- It checks itself ------------------------------------------------------
+# A setting that's empty or wrong fails here, not on a person's device:
+# tafs cloud's runs-ended URL among the notify URLs (else every run Coach hands
+# a taf is refused), the attachments bucket, and run grants. Expected values can
+# be changed with AGENTS_EXPECT_NOTIFY_URL and AGENTS_EXPECT_RUN_GRANTS.
+expect_notify=${AGENTS_EXPECT_NOTIFY_URL:-https://cloud.tafs.kiff.dev/v1/runs/ended}
+expect_grants=${AGENTS_EXPECT_RUN_GRANTS-require}
+setting() { aws lambda get-function-configuration --function-name "$FN" --query "Environment.Variables.$1"; }
+failed=0
+case ",$(setting AGENTS_NOTIFY_URLS)," in
+  *",$expect_notify,"*) ;;
+  *) echo "check: AGENTS_NOTIFY_URLS doesn't include $expect_notify" >&2; failed=1 ;;
+esac
+[ "$(setting AGENTS_ATTACHMENTS_BUCKET)" = "$ATTACHMENTS" ] || { echo "check: AGENTS_ATTACHMENTS_BUCKET isn't $ATTACHMENTS" >&2; failed=1; }
+if [ -n "$expect_grants" ] && [ "$(setting AGENTS_RUN_GRANTS)" != "$expect_grants" ]; then
+  echo "check: AGENTS_RUN_GRANTS isn't $expect_grants" >&2; failed=1
+fi
+[ "$failed" = 0 ] || { echo "check: the function's settings are wrong; see above" >&2; exit 1; }
+say "checked: notify URL, attachments bucket and run grants are as expected"
+
 echo "api:    $(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl)"
 echo "alerts: $(aws lambda get-function-url-config --function-name "$ALERTS_FN" --query FunctionUrl)kiff/alerts"
