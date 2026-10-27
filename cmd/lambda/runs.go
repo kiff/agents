@@ -156,6 +156,17 @@ func (f *function) sweep(ctx context.Context) error {
 	if n > 0 {
 		f.log.InfoContext(ctx, "sweep", "ended", n)
 	}
+	// Attached files go when due: an upload no message named within an
+	// hour, and a file whose message has gone (kiff/tafs#209). What's left
+	// is removed by the next sweep.
+	if f.files != nil {
+		n, err := f.files.Sweep(ctx, sweepLimit)
+		if err != nil {
+			f.log.ErrorContext(ctx, "sweeping attachments", "removed", n, "err", err)
+		} else if n > 0 {
+			f.log.InfoContext(ctx, "sweeping attachments", "removed", n)
+		}
+	}
 	// Trials idle for a week end too (kiff/tafs#173). One KIFF can't end now
 	// is tried again on the next sweep, so its error doesn't fail this one.
 	if f.api == nil {

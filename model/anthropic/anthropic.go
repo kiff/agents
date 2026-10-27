@@ -4,6 +4,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -171,6 +172,12 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 				blocks = append(blocks, sdk.NewThinkingBlock(b.Signature, b.Text))
 			case model.RedactedThinking:
 				blocks = append(blocks, sdk.NewRedactedThinkingBlock(b.Data))
+			case model.File:
+				fb, err := fileBlock(b)
+				if err != nil {
+					return p, err
+				}
+				blocks = append(blocks, fb)
 			case model.Server: // back exactly as it came, like thinking
 				var u sdk.ContentBlockParamUnion
 				if err := json.Unmarshal([]byte(b.Data), &u); err != nil {
@@ -281,6 +288,10 @@ func markLast(blocks []sdk.ContentBlockParamUnion, cc sdk.CacheControlEphemeralP
 			b.OfToolUse.CacheControl = cc
 		case b.OfToolResult != nil:
 			b.OfToolResult.CacheControl = cc
+		case b.OfImage != nil:
+			b.OfImage.CacheControl = cc
+		case b.OfDocument != nil:
+			b.OfDocument.CacheControl = cc
 		default:
 			continue
 		}
@@ -327,4 +338,27 @@ func fromMessage(msg sdk.Message) model.Reply {
 		r.Stop = model.Other
 	}
 	return r
+}
+
+// fileBlock is a file the owner attached, as the model reads it: a photo as
+// an image, a PDF as a document, text as a plain-text document, each titled
+// with the owner's name for it. A file whose bytes this turn doesn't carry
+// is a line saying so, so the conversation still reads in order.
+func fileBlock(b model.Block) (sdk.ContentBlockParamUnion, error) {
+	if len(b.Bytes) == 0 {
+		return sdk.NewTextBlock(fmt.Sprintf("[%s: attached earlier, no longer in view; the owner can send it again]", b.Name)), nil
+	}
+	switch b.MediaType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return sdk.NewImageBlockBase64(b.MediaType, base64.StdEncoding.EncodeToString(b.Bytes)), nil
+	case "application/pdf":
+		d := sdk.NewDocumentBlock(sdk.Base64PDFSourceParam{Data: base64.StdEncoding.EncodeToString(b.Bytes)})
+		d.OfDocument.Title = sdk.String(b.Name)
+		return d, nil
+	case model.FileText:
+		d := sdk.NewDocumentBlock(sdk.PlainTextSourceParam{Data: string(b.Bytes)})
+		d.OfDocument.Title = sdk.String(b.Name)
+		return d, nil
+	}
+	return sdk.ContentBlockParamUnion{}, fmt.Errorf("anthropic: a file of type %q", b.MediaType)
 }

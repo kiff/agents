@@ -35,7 +35,17 @@ const (
 	// finding a deferred tool (ToolSpec.Defer): Data, in the provider's own
 	// encoding. Like thinking, it goes back exactly as it came, in place.
 	Server BlockKind = "server"
+	// File is a file the owner attached (kiff/tafs#209): Ref names it in the
+	// account's own store, with its MediaType and the owner's Name for it.
+	// Bytes are loaded for a turn and never kept: a message that names a
+	// file stays small wherever it's stored. A File without Bytes reaches
+	// the model as a line saying the file is no longer in view.
+	File BlockKind = "file"
 )
+
+// FileText is the media type of a file read as plain text: text, CSV,
+// Markdown, and what Word and Excel files hold, extracted when attached.
+const FileText = "text/plain"
 
 // Block is one part of a message.
 type Block struct {
@@ -50,6 +60,11 @@ type Block struct {
 	// Data to a Server block too.
 	Signature string `json:"signature,omitempty"`
 	Data      string `json:"data,omitempty"`
+	// Ref, MediaType and Name belong to a File block; Bytes too, for a turn.
+	Ref       string `json:"ref,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Bytes     []byte `json:"-"`
 }
 
 // Message is one turn of the conversation.

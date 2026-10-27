@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
@@ -76,6 +77,13 @@ type Agent struct {
 	// what it read earlier (the runner makes it, kiff/tafs#138). It is
 	// never recorded, so each run, and each continuation, reads its own.
 	Preface []model.Block
+	// Attachments are the files the person sent with the run's input
+	// (kiff/tafs#209): they follow it, fenced (attach.FileNote).
+	Attachments []attach.Ref
+	// Load fills the File blocks of what a run sends with their bytes, once
+	// at its start: the newest within the turn budget, the rest out of view.
+	// Nil: none are loaded, so every file reads as out of view.
+	Load func(context.Context, []model.Message) error
 	// Started is how long the run took from its creation to its first model
 	// turn, recorded on that turn's Usage; 0 when unknown.
 	Started time.Duration
@@ -128,8 +136,10 @@ func (a Agent) Check() error {
 }
 
 // TextBody is the body of OwnerMessage, AgentMessage and Report events.
+// An owner's message names the files sent with it, never their bytes.
 type TextBody struct {
-	Text string `json:"text"`
+	Text        string       `json:"text"`
+	Attachments []attach.Ref `json:"attachments,omitempty"`
 }
 
 // ToolCallBody is the body of a ToolCall event. The input is recorded as the
@@ -280,13 +290,34 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 	if err := a.Check(); err != nil {
 		return Outcome{}, history, err
 	}
-	asked := append(slices.Clone(a.Preface), model.Block{Kind: model.Text, Text: input})
+	asked := append(a.asked(input), attach.Blocks(a.Attachments)...)
 	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
 	a.history = len(history)
-	if err := rec.Record(session.OwnerMessage, TextBody{Text: input}); err != nil {
+	if err := rec.Record(session.OwnerMessage, TextBody{Text: input, Attachments: a.Attachments}); err != nil {
+		return Outcome{}, msgs, err
+	}
+	if err := a.load(ctx, msgs); err != nil {
 		return Outcome{}, msgs, err
 	}
 	return a.loop(ctx, rec, msgs, Outcome{Cost: a.Spent}, emit)
+}
+
+// asked is what the run's input message opens with: the preface, then the
+// input, if there is any (a message may be files alone).
+func (a Agent) asked(input string) []model.Block {
+	asked := slices.Clone(a.Preface)
+	if input != "" {
+		asked = append(asked, model.Block{Kind: model.Text, Text: input})
+	}
+	return asked
+}
+
+// load fills msgs' files with their bytes, when the agent loads any.
+func (a Agent) load(ctx context.Context, msgs []model.Message) error {
+	if a.Load == nil {
+		return nil
+	}
+	return a.Load(ctx, msgs)
 }
 
 // Continue carries on a paused run, r, as stored, from the turn it paused
@@ -323,7 +354,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	}
 	// What the owner wrote while the run went, before it paused, follows its
 	// input: the continued run doesn't see the turns between them.
-	asked := append(slices.Clone(a.Preface), model.Block{Kind: model.Text, Text: r.Input})
+	asked := append(a.asked(r.Input), attach.Blocks(r.Attachments)...)
 	for _, text := range r.Taken() {
 		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + text})
 	}
@@ -331,6 +362,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	msgs = append(msgs, r.Paused.Before...)
 	msgs = append(msgs, withoutThinking(r.Paused.Reply), model.Message{Role: model.User, Blocks: results})
 	a.history = len(history)
+	if err := a.load(ctx, msgs); err != nil {
+		return Outcome{}, msgs, err
+	}
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns}, emit)
 }
 

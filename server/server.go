@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/drafts"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
@@ -76,6 +77,10 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// Files are the files people attach to their chat messages
+	// (kiff/tafs#209). Nil: the attachment routes answer 503, and removing a
+	// session, an agent or a tenant has no files to remove.
+	Files *attach.Service
 	// Access answers whether a member may use or oversee an agent (#221): a
 	// member reads their sessions with it, and writes into their runs, only
 	// if they may. Nil: nothing is checked. The runner checks runs.
@@ -183,6 +188,8 @@ func (s *Server) Handler() http.Handler {
 	route("GET /sessions", s.listSessions)
 	route("GET /sessions/{id}", s.getSession)
 	route("DELETE /sessions/{id}", s.deleteSession)
+	route("POST /agents/{id}/attachments", s.createAttachment)
+	route("GET /agents/{id}/attachments/{att}", s.readAttachment)
 	route("POST /sessions/{id}/archive", s.archiveSession(true))
 	route("POST /sessions/{id}/unarchive", s.archiveSession(false))
 
@@ -398,6 +405,12 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, msg = http.StatusBadRequest, br.Error()
 	case errors.Is(err, schedule.ErrNoAgent):
 		status, msg = http.StatusBadRequest, "the tenant has no such agent"
+	case errors.Is(err, attach.ErrNotFound):
+		status, msg = http.StatusNotFound, "not found"
+	case errors.Is(err, attach.ErrBound):
+		status, msg = http.StatusConflict, "a file was already sent with another message: attach it again"
+	case errors.Is(err, attach.ErrInvalid):
+		status, msg = http.StatusBadRequest, strings.TrimPrefix(err.Error(), attach.ErrInvalid.Error()+": ")
 	}
 	if status >= 500 || status == http.StatusUnauthorized {
 		if s.Log != nil {
@@ -526,6 +539,11 @@ func (s *Server) removeAgent(ctx context.Context, tenant, id string) error {
 	if err := s.Runs.DeleteAgent(ctx, tenant, id); err != nil {
 		return err
 	}
+	if s.Files != nil {
+		if err := s.Files.RemoveAgent(ctx, tenant, id); err != nil {
+			return err
+		}
+	}
 	if err := session.Remove(ctx, s.Sessions, s.Notes, tenant, id); err != nil {
 		return err
 	}
@@ -559,6 +577,11 @@ func (s *Server) eraseTenant(ctx context.Context, c Caller, _ *http.Request) (in
 			if err := e.EraseTenant(ctx, c.Tenant); err != nil {
 				return 0, nil, err
 			}
+		}
+	}
+	if s.Files != nil {
+		if err := s.Files.EraseTenant(ctx, c.Tenant); err != nil {
+			return 0, nil, err
 		}
 	}
 	if s.Erase != nil {
@@ -991,6 +1014,12 @@ func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (
 			err = session.ErrNotFound // another person's thread, or a job's
 		}
 		if err != nil {
+			return 0, nil, err
+		}
+	}
+	if s.Files != nil {
+		// Its files first: a deletion cut short is finished by repeating it.
+		if err := s.Files.RemoveSession(ctx, c.Tenant, r.PathValue("id")); err != nil {
 			return 0, nil, err
 		}
 	}

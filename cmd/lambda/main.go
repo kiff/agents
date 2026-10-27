@@ -20,6 +20,8 @@
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
 //	AGENTS_DRAFTS_PREFIX     the name prefix of taf drafts' claim secrets (#91); not under AGENTS_SECRETS_PREFIX.
 //	                         Unset: no agent gets the draft tool, and POST /drafts/{id}/claim isn't served
+//	AGENTS_ATTACHMENTS_BUCKET the private S3 bucket of the files people attach to chat messages
+//	                         (kiff/tafs#209). Unset: no file is attached, and a message naming one is refused
 //
 // An EventBridge Scheduler schedule sends {"sweep":{}} every minute, through
 // SCHEDULE_ROLE: the sweep ends the runs nobody else is left to end, and
@@ -71,9 +73,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	sch "github.com/aws/aws-sdk-go-v2/service/scheduler"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
+	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/drafts"
 	draftsapi "github.com/kiff/agents/drafts/kiffapi"
 	"github.com/kiff/agents/model"
@@ -88,6 +92,7 @@ import (
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/dynamodb"
+	blobs3 "github.com/kiff/agents/store/s3"
 	"github.com/kiff/agents/tool"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
 	"github.com/kiff/agents/tool/kiff"
@@ -113,6 +118,8 @@ type function struct {
 	schedules *schedule.Service
 	runner    server.Runner
 	sweeper   func(ctx context.Context, now time.Time) (int, error)
+	// files are the attached files the sweep removes when due; nil: none.
+	files *attach.Service
 	// cont is how the sweep continues a resolved paused run; setup keeps it
 	// so its wiring can be read.
 	cont func(ctx context.Context, tenant, id string) error
@@ -278,6 +285,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// The sweep ends a trial idle for a week in KIFF first, with the agent's
 	// own key, which may end only its own trials (kiff/tafs#173).
 	f.api.EndKIFFTrial = kiff.TrialEnder(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
+	// The files people attach to their chat messages (kiff/tafs#209): their
+	// records in the table, their bytes in a private bucket.
+	if bucket := strings.TrimSpace(os.Getenv("AGENTS_ATTACHMENTS_BUCKET")); bucket != "" {
+		files := &attach.Service{Store: dynamodb.NewAttachments(db, table), Blobs: blobs3.New(s3.NewFromConfig(cfg), bucket)}
+		f.api.Files, rn.Files, f.files = files, files, files
+	}
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.

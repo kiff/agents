@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/model"
 )
 
@@ -173,6 +174,9 @@ type Run struct {
 	// Input is what the run was asked: the owner's message, or the job's
 	// instruction. A PENDING run is started from it.
 	Input string `json:"input"`
+	// Attachments are the files the person sent with Input (kiff/tafs#209),
+	// as the message records them: never their bytes.
+	Attachments []attach.Ref `json:"attachments,omitempty"`
 
 	// Stop is why a COMPLETED run stopped: the agent answered, a cap (cost,
 	// turns, output length) stopped it, or the model's turn was refused.

@@ -72,6 +72,10 @@ type Start struct {
 	// Grant is the account's run grant the requester came from (run.Run.Grant).
 	Grant string
 	Input string
+	// Attachments are the files a person sends with Input, by id
+	// (kiff/tafs#209): their own, not yet sent. Only a person's chat
+	// message carries any.
+	Attachments []string
 	// Version is the agent's version a trial runs (kiff/tafs#107); 0 runs
 	// the live one. Draft is the KIFF draft its writes are decided against.
 	// Only a trial (Trigger run.ByTrial) has either.
@@ -510,9 +514,13 @@ func (s *Server) endedExpires(ctx context.Context, r run.Run) (time.Time, error)
 
 // startBody is what POST /agents/{id}/runs takes.
 type startBody struct {
-	Input      string `json:"input"`
-	SessionID  string `json:"session_id,omitempty"`
-	Background bool   `json:"background,omitempty"`
+	Input string `json:"input"`
+	// Attachments are files the requester attached for this message, by
+	// id (kiff/tafs#209): theirs, uploaded, not sent before. With any, the
+	// input may be empty.
+	Attachments []string `json:"attachments,omitempty"`
+	SessionID   string   `json:"session_id,omitempty"`
+	Background  bool     `json:"background,omitempty"`
 	// AI counts the run's cost toward its account's AI fair use, and refuses
 	// to start it past the bound (kiff/tafs#193). Nil: not counted.
 	AI *aiBody `json:"ai,omitempty"`
@@ -676,8 +684,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	if body.Input == "" || len(body.Input) > MaxInput {
-		s.fail(w, r, bad("the input is 1 to %d bytes", MaxInput))
+	if (body.Input == "" && len(body.Attachments) == 0) || len(body.Input) > MaxInput {
+		s.fail(w, r, bad("the input is 1 to %d bytes, or empty with attachments", MaxInput))
 		return
 	}
 	if body.Background && s.Background == nil {
@@ -751,7 +759,12 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 		body.SessionID = live
 	}
-	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant}
+	if len(body.Attachments) > 0 && q.Kind != run.ByMember {
+		s.fail(w, r, bad("only a person's own chat message carries attachments: a door's never does"))
+		return
+	}
+	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
+		Attachments: body.Attachments}
 	if body.AI != nil {
 		if err := s.fairUse(ctx, c.Tenant, *body.AI); err != nil {
 			s.fail(w, r, err)

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 
 	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
@@ -61,19 +62,31 @@ func Conversation(events []session.Event) []model.Message {
 		default:
 			continue
 		}
+		var blocks []model.Block
 		if text == "" {
 			var body agent.TextBody
-			if json.Unmarshal(e.Body, &body) != nil || body.Text == "" {
+			if json.Unmarshal(e.Body, &body) != nil || (body.Text == "" && len(body.Attachments) == 0) {
 				continue
 			}
-			text = body.Text
+			if body.Text != "" {
+				blocks = append(blocks, model.Block{Kind: model.Text, Text: body.Text})
+			}
+			// The files sent with an owner's message, by reference: the
+			// runner loads their bytes for a turn (attach.Service.Load).
+			if role == model.User {
+				blocks = append(blocks, attach.Blocks(body.Attachments)...)
+			}
+		} else {
+			blocks = []model.Block{{Kind: model.Text, Text: text}}
 		}
-		block := model.Block{Kind: model.Text, Text: text}
-		if n := len(msgs); n > 0 && msgs[n-1].Role == role {
-			msgs[n-1].Blocks = append(msgs[n-1].Blocks, block)
+		if len(blocks) == 0 {
 			continue
 		}
-		msgs = append(msgs, model.Message{Role: role, Blocks: []model.Block{block}})
+		if n := len(msgs); n > 0 && msgs[n-1].Role == role {
+			msgs[n-1].Blocks = append(msgs[n-1].Blocks, blocks...)
+			continue
+		}
+		msgs = append(msgs, model.Message{Role: role, Blocks: blocks})
 	}
 	// A conversation the model carries on ends with its own answer.
 	if n := len(msgs); n > 0 && msgs[n-1].Role == model.User {

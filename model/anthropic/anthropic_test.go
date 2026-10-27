@@ -713,3 +713,29 @@ func TestAFastTurnsOtherFailureIsNotRetried(t *testing.T) {
 		t.Fatalf("asked %d times", len(*got))
 	}
 }
+
+// A file the person attached goes inline: a photo as an image, a PDF as a
+// document, text as a plain-text document, each with its name; one whose
+// bytes this turn doesn't carry is a line saying it's out of view.
+func TestAttachedFilesGoInline(t *testing.T) {
+	m, sent := serve(t, thinkingStream)
+	_, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Messages: []model.Message{{Role: model.User, Blocks: []model.Block{
+		{Kind: model.Text, Text: "Is this refundable?"},
+		{Kind: model.File, Ref: "att_1", MediaType: "image/png", Name: "receipt.png", Bytes: []byte("png")},
+		{Kind: model.File, Ref: "att_2", MediaType: "application/pdf", Name: "policy.pdf", Bytes: []byte("%PDF-")},
+		{Kind: model.File, Ref: "att_3", MediaType: model.FileText, Name: "orders.xlsx", Bytes: []byte("Order,Total")},
+		{Kind: model.File, Ref: "att_4", MediaType: "image/png", Name: "old.png"},
+	}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal((*sent)["messages"].([]any)[0].(map[string]any)["content"])
+	want := `[{"text":"Is this refundable?","type":"text"},` +
+		`{"source":{"data":"cG5n","media_type":"image/png","type":"base64"},"type":"image"},` +
+		`{"source":{"data":"JVBERi0=","media_type":"application/pdf","type":"base64"},"title":"policy.pdf","type":"document"},` +
+		`{"source":{"data":"Order,Total","media_type":"text/plain","type":"text"},"title":"orders.xlsx","type":"document"},` +
+		`{"text":"[old.png: attached earlier, no longer in view; the owner can send it again]","type":"text"}]`
+	if got := string(b); got != want {
+		t.Fatalf("sent %s\nwant %s", got, want)
+	}
+}
