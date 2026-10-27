@@ -77,18 +77,23 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 10 -owner-turns 14 -transcript setup.md
-      # The role assumes only from main (infra/aws.sh), so a measure on a branch
-      # (eval/tafs-<sha>) keeps no full report: its log's scores are the result,
-      # and a red run means a check failed, not the upload.
+      # Main's role writes under reports/; a branch's (an eval/tafs-<sha>
+      # measure, a PR's branch) only under reports/branches/<branch>/, so a
+      # check that fails there can be read too (infra/aws.sh). Only a pushed
+      # branch's run assumes either: never a pull request's. A red run means a
+      # check failed, not the upload.
       - uses: aws-actions/configure-aws-credentials@v4
-        if: always() && github.ref == 'refs/heads/main'
+        if: always() && startsWith(github.ref, 'refs/heads/')
         with:
-          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.AWS_EVAL_ROLE || secrets.AWS_EVAL_BRANCH_ROLE }}
           aws-region: eu-west-1
       - name: The full report, to the private bucket
-        if: always() && github.ref == 'refs/heads/main'
+        if: always() && startsWith(github.ref, 'refs/heads/')
         run: |
           key="reports/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            key="reports/branches/${GITHUB_REF_NAME}/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+          fi
           for f in report.md results.json setup.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
