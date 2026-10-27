@@ -34,6 +34,14 @@ func New(opts ...option.RequestOption) *Model {
 // FastBeta is the beta that turns on fast output (Request.Fast).
 const FastBeta = "fast-mode-2026-02-01"
 
+// BindingBeta lets a request say what happens to a thinking block whose
+// conversation changed since it was made: a run clears tool results it has
+// read (agent.ClearAfter), and every thinking block after a cleared result is
+// then bound to a conversation the request no longer sends. Dropped, the run
+// goes on without that reasoning; otherwise the API refuses the turn, after
+// the run's calls have already gone (kiff/tafs, the 859 device test).
+const BindingBeta = "thinking-binding-controls-2026-08-01"
+
 // Turn streams one turn and returns it whole. A fast turn the API turns
 // away for its fast limits (a 429, or overloaded) before anything streamed
 // runs again at once at standard speed, so someone waiting gets an answer,
@@ -64,6 +72,15 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 		return model.Reply{}, false, err
 	}
 	var opts []option.RequestOption
+	if replaysThinking(req) {
+		if params.Thinking.OfAdaptive == nil && params.Thinking.OfEnabled == nil {
+			// block_binding needs a thinking type: a model that left a thinking
+			// block thinks unasked, so adaptive is what it runs anyway.
+			params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
+		}
+		opts = append(opts, option.WithHeaderAdd("anthropic-beta", BindingBeta),
+			option.WithJSONSet("thinking.block_binding.prefix_mismatch_behavior", "drop_block"))
+	}
 	if req.Fast {
 		opts = append(opts, option.WithHeaderAdd("anthropic-beta", FastBeta), option.WithJSONSet("speed", "fast"),
 			option.WithMaxRetries(0))
@@ -144,6 +161,18 @@ var windowWait = 5 * time.Second
 type window struct {
 	tokens int64
 	err    error
+}
+
+// replaysThinking reports whether req sends back a thinking block.
+func replaysThinking(req model.Request) bool {
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			if b.Kind == model.Thinking || b.Kind == model.RedactedThinking {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func toParams(req model.Request) (sdk.MessageNewParams, error) {

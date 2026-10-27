@@ -611,8 +611,9 @@ type call struct {
 }
 
 type asked struct {
-	beta  string
-	speed any
+	beta     string
+	speed    any
+	thinking map[string]any
 }
 
 func answering(t *testing.T, answers ...call) (*anthropic.Model, *[]asked) {
@@ -626,7 +627,8 @@ func answering(t *testing.T, answers ...call) (*anthropic.Model, *[]asked) {
 		var b map[string]any
 		_ = json.Unmarshal(body, &b)
 		n := len(*got)
-		*got = append(*got, asked{beta: r.Header.Get("anthropic-beta"), speed: b["speed"]})
+		th, _ := b["thinking"].(map[string]any)
+		*got = append(*got, asked{beta: r.Header.Get("anthropic-beta"), speed: b["speed"], thinking: th})
 		if n >= len(answers) {
 			t.Errorf("request %d: no answer left", n+1)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -655,6 +657,45 @@ func answering(t *testing.T, answers ...call) (*anthropic.Model, *[]asked) {
 }
 
 var goTurn = []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "go"}}}}
+
+// A turn that sends back a thinking block asks the API to drop it, and the
+// ones after it, if the conversation before it changed: a run clears tool
+// results it has read, so a later turn's earlier thinking no longer matches
+// what's sent, and the API refused the whole turn after the refund had gone
+// (kiff/tafs, the 859 device test). It names a thinking type, as block_binding
+// needs one: adaptive when the turn asks for none, as a thinking model runs.
+func TestAReplayedThinkingBlockIsDroppedIfItsConversationChanged(t *testing.T) {
+	replay := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Refund T-5001."}}},
+		{Role: model.Assistant, Blocks: []model.Block{
+			{Kind: model.Thinking, Text: "List first.", Signature: "sig-1"},
+			{Kind: model.ToolUse, CallID: "toolu_1", Tool: "list_charges", Input: json.RawMessage(`{}`)},
+		}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "toolu_1", Result: "[cleared: ...]"}}},
+	}
+	m, got := answering(t, call{http.StatusOK, stream}, call{http.StatusOK, stream}, call{http.StatusOK, stream})
+	for _, req := range []model.Request{
+		{Model: "m", MaxTokens: 8, Messages: replay},
+		{Model: "m", MaxTokens: 8, Messages: replay, Thinking: model.ThinkingSummarized},
+		{Model: "m", MaxTokens: 8, Messages: goTurn},
+	} {
+		if _, err := m.Turn(context.Background(), req, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, a := range (*got)[:2] {
+		bind, _ := a.thinking["block_binding"].(map[string]any)
+		if !strings.Contains(a.beta, anthropic.BindingBeta) || bind["prefix_mismatch_behavior"] != "drop_block" || a.thinking["type"] != "adaptive" {
+			t.Fatalf("turn %d asked %+v", i+1, a)
+		}
+	}
+	if (*got)[1].thinking["display"] != "summarized" {
+		t.Fatalf("a summarized turn keeps its display: %+v", (*got)[1].thinking)
+	}
+	if a := (*got)[2]; a.beta != "" || a.thinking != nil {
+		t.Fatalf("a turn with no thinking to send back asked %+v", a)
+	}
+}
 
 // A fast turn asks for fast output with its beta, and says it ran fast.
 func TestAFastTurnAsksForFastOutput(t *testing.T) {
