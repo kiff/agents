@@ -297,6 +297,17 @@ func Digest(d Definition) (string, error) {
 // ErrNoVersion is a version the agent doesn't have.
 var ErrNoVersion = errors.New("registry: no such version")
 
+// ThinkingModels are the model ids, by prefix, that run adaptive thinking
+// whether a request asks for it or not. Only on them does showing the
+// thinking change what is shown and nothing else: elsewhere asking for it
+// would turn thinking on, at its cost (Claude Opus 4.7 and 4.8), or be
+// refused (Claude Haiku 4.5).
+var ThinkingModels = []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5", "claude-mythos-5"}
+
+func thinksAnyway(id string) bool {
+	return slices.ContainsFunc(ThinkingModels, func(p string) bool { return strings.HasPrefix(id, p) })
+}
+
 // Check refuses a definition that can't be stored or run safely.
 func (d Definition) Check() error {
 	switch {
@@ -314,6 +325,8 @@ func (d Definition) Check() error {
 		return fmt.Errorf("registry: effort is empty or one of %s", strings.Join(model.Efforts, ", "))
 	case d.Thinking != "" && d.Thinking != model.ThinkingSummarized:
 		return fmt.Errorf("registry: thinking is empty or %q", model.ThinkingSummarized)
+	case d.Thinking != "" && !thinksAnyway(d.Model):
+		return fmt.Errorf("registry: thinking is shown only for a model that thinks whether asked or not (%s)", strings.Join(ThinkingModels, ", "))
 	case d.Speed != "" && d.Speed != SpeedStandard && d.Speed != SpeedFast:
 		return errors.New(`registry: speed is empty, "standard" or "fast"`)
 	case d.Speed == SpeedFast && (d.PriceFast.Input <= 0 || d.PriceFast.Output <= 0 || d.PriceFast.CacheRead < 0 || d.PriceFast.CacheWrite < 0 || d.PriceFast.CacheWrite1h < 0):

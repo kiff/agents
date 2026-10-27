@@ -32,15 +32,18 @@ func TestCheckRefuses(t *testing.T) {
 		"long instructions":  func(d *registry.Definition) { d.Instructions = strings.Repeat("x", registry.MaxSize) },
 		"a long tenant":      func(d *registry.Definition) { d.Tenant = strings.Repeat("t", 257) },
 		// 60,000 bytes of text, but 360,000 once encoded.
-		"escapes past the limit":  func(d *registry.Definition) { d.Instructions = strings.Repeat("\x01", 60_000) },
-		"no model":                func(d *registry.Definition) { d.Model = "" },
-		"no output price":         func(d *registry.Definition) { d.Price.Output = 0 },
-		"a negative cache":        func(d *registry.Definition) { d.Price.CacheRead = -1 },
-		"no max tokens":           func(d *registry.Definition) { d.MaxTokens = 0 },
-		"an unknown effort":       func(d *registry.Definition) { d.Effort = "extreme" },
-		"an effort's case":        func(d *registry.Definition) { d.Effort = "High" },
-		"an unknown speed":        func(d *registry.Definition) { d.Speed = "turbo" },
-		"an unknown thinking":     func(d *registry.Definition) { d.Thinking = "full" },
+		"escapes past the limit": func(d *registry.Definition) { d.Instructions = strings.Repeat("\x01", 60_000) },
+		"no model":               func(d *registry.Definition) { d.Model = "" },
+		"no output price":        func(d *registry.Definition) { d.Price.Output = 0 },
+		"a negative cache":       func(d *registry.Definition) { d.Price.CacheRead = -1 },
+		"no max tokens":          func(d *registry.Definition) { d.MaxTokens = 0 },
+		"an unknown effort":      func(d *registry.Definition) { d.Effort = "extreme" },
+		"an effort's case":       func(d *registry.Definition) { d.Effort = "High" },
+		"an unknown speed":       func(d *registry.Definition) { d.Speed = "turbo" },
+		"an unknown thinking":    func(d *registry.Definition) { d.Thinking = "full" },
+		"thinking on a model that doesn't always think": func(d *registry.Definition) {
+			d.Model, d.Thinking = "claude-haiku-4-5", model.ThinkingSummarized
+		},
 		"fast with no fast price": func(d *registry.Definition) { d.Speed = "fast" },
 		"a fast price without the cache": func(d *registry.Definition) {
 			d.Speed, d.PriceFast = "fast", model.Price{Input: 2 * d.Price.Input, Output: 2 * d.Price.Output}
@@ -67,10 +70,12 @@ func TestCheckRefuses(t *testing.T) {
 			t.Errorf("effort %q refused: %v", e, err)
 		}
 	}
-	shows := registrytest.Definition("t1", "payouts")
-	shows.Thinking = model.ThinkingSummarized
-	if err := shows.Check(); err != nil {
-		t.Errorf("summarized thinking refused: %v", err)
+	for _, id := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"} {
+		shows := registrytest.Definition("t1", "payouts")
+		shows.Model, shows.Thinking = id, model.ThinkingSummarized
+		if err := shows.Check(); err != nil {
+			t.Errorf("summarized thinking on %s refused: %v", id, err)
+		}
 	}
 	fast := registrytest.Definition("t1", "payouts")
 	fast.Speed, fast.PriceFast = "fast", model.Price{Input: 2 * fast.Price.Input, Output: 2 * fast.Price.Output,
