@@ -163,6 +163,10 @@ type ToolResultBody struct {
 	CallID string `json:"call_id"`
 	Tool   string `json:"tool"`
 	tool.Result
+	// NotMade: the call was refused back to the model unmade, an act sent
+	// beside another call (OneAtATime). Nothing reached KIFF or the vendor, so
+	// the app shows it as not made, not as a failed call.
+	NotMade bool `json:"not_made,omitempty"`
 	// took is how long the call took, and batch how many calls ran beside
 	// it in the same turn, itself included: recorded on the next turn's
 	// Usage (session.ToolTiming), not with the result, which a run drops.
@@ -508,7 +512,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		for i, r := range results {
 			blocks[i] = resultBlock(r)
 			held = held || r.Held()
-			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError}
+			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade}
 		}
 		if held {
 			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
@@ -851,7 +855,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			defer wg.Done()
 			began := time.Now()
 			if outside > 1 && acts(byName[c.Tool], c.Input) {
-				results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: tool.Result{Text: OneAtATime, IsError: true}}
+				results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: tool.Result{Text: OneAtATime, IsError: true}, NotMade: true}
 				results[i].batch = len(calls)
 				return
 			}

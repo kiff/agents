@@ -7,6 +7,7 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
 )
 
@@ -32,7 +33,7 @@ func TestACallThatActsGoesInATurnOfItsOwn(t *testing.T) {
 		use("c4", "create_refund", `{}`),
 		say("Refunded."),
 	}}
-	_, rec := start(t, "chat")
+	store, rec := start(t, session.KindRun) // a run keeps its tool results; a chat keeps only the timing
 	if _, _, err := agent.Run(context.Background(), newAgent(m, lookup, refund, notes), rec, nil, "Refund T-5005.", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -53,5 +54,40 @@ func TestACallThatActsGoesInATurnOfItsOwn(t *testing.T) {
 	}
 	if r := byCall["c3"]; r.IsError {
 		t.Fatalf("its own notes aren't an act: %+v", r)
+	}
+
+	// Recorded as not made, not as failed, in its result and the next turn's timing,
+	// so the app shows it as not made rather than as a failed refund.
+	if err := rec.Flush(context.Background()); err != nil { // Record queues; the writer stores
+		t.Fatal(err)
+	}
+	_, events, err := store.ReadRun(context.Background(), "t1", rec.Session().ID, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resultNotMade, timingNotMade bool
+	for _, e := range events {
+		switch e.Kind {
+		case session.ToolResult:
+			var b struct {
+				CallID  string `json:"call_id"`
+				NotMade bool   `json:"not_made"`
+			}
+			if json.Unmarshal(e.Body, &b) == nil && b.NotMade {
+				resultNotMade = b.CallID == "c2"
+			}
+		case session.Usage:
+			var u session.UsageBody
+			if json.Unmarshal(e.Body, &u) == nil && u.Timing != nil {
+				for _, w := range u.Timing.Waited {
+					if w.NotMade {
+						timingNotMade = w.Tool == "create_refund"
+					}
+				}
+			}
+		}
+	}
+	if !resultNotMade || !timingNotMade {
+		t.Fatalf("not made: in its result %v, in the next turn's timing %v", resultNotMade, timingNotMade)
 	}
 }
