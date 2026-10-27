@@ -486,6 +486,54 @@ func TestAPausedRunContinues(t *testing.T) {
 	}
 }
 
+// The first turn after Continue says on its timing that it resumed a paused
+// run, and only that turn: tafs cloud splits a run's work at it. The turns
+// before the pause, the turn that said what it waits for, and the turns
+// after the first don't.
+func TestTheFirstTurnAfterContinueIsMarkedResumed(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := model.Reply{Blocks: []model.Block{
+		{Kind: model.ToolUse, CallID: "c3", Tool: "stripe_get", Input: json.RawMessage(`{"charge":"ch_big"}`)},
+	}, Stop: model.CallTools, Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you."), again, say("Refunded ch_big.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.Continue(ctx, a, r, nil, stored, approved(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.ReadRun(ctx, "t1", s.ID, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resumed []bool
+	for _, e := range events {
+		if e.Kind != session.Usage {
+			continue
+		}
+		var u session.UsageBody
+		if err := json.Unmarshal(e.Body, &u); err != nil || u.Timing == nil {
+			t.Fatalf("usage %s: %v", e.Body, err)
+		}
+		resumed = append(resumed, u.Timing.Resumed)
+	}
+	if !reflect.DeepEqual(resumed, []bool{false, false, true, false}) {
+		t.Fatalf("resumed on each turn: %v", resumed)
+	}
+}
+
 // Continue takes one outcome per requirement and nothing else: a missing
 // one, an extra one, one KIFF still holds, or a run with no paused turn is
 // refused before anything is recorded or the model is called.
