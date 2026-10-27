@@ -26,9 +26,9 @@ and streams it, and that can't write anything except through KIFF.
 
 A run goes model → tool calls (run in parallel) → model, until the agent
 answers or something stops it. A call that acts (`tool.Write`, and not
-`tool.Reads`) goes in a turn of its own: sent beside another call outside the
-agent, it's refused back unmade with `agent.OneAtATime` (recorded `not_made`),
-and the reads in that turn still run. Every event is recorded to the session as it
+`tool.Reads`) never goes in a turn with a read: sent beside one, it's refused
+back unmade with `agent.OneAtATime` (recorded `not_made`), and the reads in that
+turn still run. Acts side by side go together. Every event is recorded to the session as it
 happens and streamed to the caller.
 
 `agent.Run` returns an `Outcome` whose `Stop` says why it stopped:

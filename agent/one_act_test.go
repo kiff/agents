@@ -20,11 +20,11 @@ func toolUse(id, name string) model.Block {
 	return model.Block{Kind: model.ToolUse, CallID: id, Tool: name, Input: json.RawMessage(`{}`)}
 }
 
-// A call that acts goes in a turn of its own: sent beside the look-up meant to
-// check it, it is refused back unmade while the look-up is made, and made alone
+// A call that acts never goes beside a read: sent beside the look-up meant to
+// check it, it is refused back unmade while the look-up is made, and made
 // on the next turn (kiff/tafs, the 859 device test: a refund asked for one
 // second after the look-up, before its result was read).
-func TestACallThatActsGoesInATurnOfItsOwn(t *testing.T) {
+func TestACallThatActsNeverGoesBesideARead(t *testing.T) {
 	lookup := &fakeTool{name: "get_charge", access: tool.Read, gateway: true, result: tool.Result{Text: `{"amount":12000}`}}
 	refund := &fakeTool{name: "create_refund", access: tool.Write, gateway: true, result: tool.Result{Text: `{"status":"succeeded"}`}}
 	notes := &fakeTool{name: "memory", access: tool.Own, result: tool.Result{Text: "kept"}}
@@ -104,5 +104,28 @@ func TestACallThatActsGoesInATurnOfItsOwn(t *testing.T) {
 	}
 	if !resultNotMade || !timingNotMade {
 		t.Fatalf("not made: in its result %v, in the next turn's timing %v", resultNotMade, timingNotMade)
+	}
+}
+
+// Acts side by side go together: what each acts on was read in an earlier
+// turn, so answering three checked orders stays one turn.
+func TestActsSideBySideGoTogether(t *testing.T) {
+	refund := &fakeTool{name: "create_refund", access: tool.Write, gateway: true, result: tool.Result{Text: `{"status":"succeeded"}`}}
+	notes := &fakeTool{name: "memory", access: tool.Own, result: tool.Result{Text: "kept"}}
+	m := &script{replies: []model.Reply{
+		sideBySide(toolUse("c1", "create_refund"), toolUse("c2", "create_refund"), toolUse("c3", "memory")),
+		say("Refunded both."),
+	}}
+	_, rec := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund, notes), rec, nil, "Refund T-5001 and T-5002.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if refund.calls != 2 || notes.calls != 1 {
+		t.Fatalf("calls: refunds %d, notes %d", refund.calls, notes.calls)
+	}
+	for _, b := range m.reqs[1].Messages[len(m.reqs[1].Messages)-1].Blocks {
+		if b.IsError {
+			t.Fatalf("an act beside another act was refused: %+v", b)
+		}
 	}
 }

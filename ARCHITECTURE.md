@@ -54,11 +54,11 @@ server gets it from the verified caller, and every store call is scoped by it.
 
 COMPLETED, ERROR and CANCELLED are final.
 
-- **One act per turn.** A call that acts (a `tool.Write` tool's call that
-  doesn't only read, `tool.Reads`) goes in a turn of its own. Sent beside
-  another call that reaches outside the agent, it's refused back to the model
-  unmade (`agent.OneAtATime`, recorded `not_made`), and the reads in that turn
-  still run. The agent's own tools (its notes, the chat's components) don't count.
+- **Read first.** A call that acts (a `tool.Write` tool's call that doesn't
+  only read, `tool.Reads`) never goes in a turn with a read. Sent beside one,
+  it's refused back to the model unmade (`agent.OneAtATime`, recorded and
+  streamed `not_made`), and the reads in that turn still run. Acts side by side
+  go together. The agent's own tools (its notes, the chat's components) don't count.
 - **Completed** means the agent answered, or a cap stopped it (cost, turns,
   output length); the stop reason says which. **Error** means it failed.
 - **Paused** means KIFF holds at least one of its calls. The run records one
