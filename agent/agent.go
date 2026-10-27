@@ -228,6 +228,9 @@ type Event struct {
 	Tool   string          `json:"tool,omitempty"`
 	Input  json.RawMessage `json:"input,omitempty"`
 	Result *tool.Result    `json:"result,omitempty"`
+	// NotMade: a CallResult for a call refused back unmade (OneAtATime), so the
+	// app's work block shows it as not made while the run goes on.
+	NotMade bool `json:"not_made,omitempty"`
 	// Component is what Shown shows: the component as the show tool checked it.
 	Component json.RawMessage `json:"component,omitempty"`
 }
@@ -876,7 +879,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				return nil, err
 			}
 		}
-		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result})
+		emit(Event{Kind: CallResult, CallID: r.CallID, Tool: r.Tool, Result: &r.Result, NotMade: r.NotMade})
 		if len(r.Component) > 0 && !r.IsError && shows(byName[r.Tool]) {
 			if err := rec.Record(session.Component, r.Component); err != nil {
 				return nil, err

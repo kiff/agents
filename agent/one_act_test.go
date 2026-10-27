@@ -34,7 +34,13 @@ func TestACallThatActsGoesInATurnOfItsOwn(t *testing.T) {
 		say("Refunded."),
 	}}
 	store, rec := start(t, session.KindRun) // a run keeps its tool results; a chat keeps only the timing
-	if _, _, err := agent.Run(context.Background(), newAgent(m, lookup, refund, notes), rec, nil, "Refund T-5005.", nil); err != nil {
+	var streamed []agent.Event
+	emit := func(e agent.Event) {
+		if e.Kind == agent.CallResult {
+			streamed = append(streamed, e)
+		}
+	}
+	if _, _, err := agent.Run(context.Background(), newAgent(m, lookup, refund, notes), rec, nil, "Refund T-5005.", emit); err != nil {
 		t.Fatal(err)
 	}
 	if lookup.calls != 1 || notes.calls != 1 || refund.calls != 1 {
@@ -86,6 +92,15 @@ func TestACallThatActsGoesInATurnOfItsOwn(t *testing.T) {
 				}
 			}
 		}
+	}
+	// And on the stream, as the app's work block reads it while the run goes on.
+	for _, e := range streamed {
+		if e.NotMade != (e.CallID == "c2") {
+			t.Fatalf("streamed result %s not made %v", e.CallID, e.NotMade)
+		}
+	}
+	if len(streamed) != 4 {
+		t.Fatalf("streamed %d results", len(streamed))
 	}
 	if !resultNotMade || !timingNotMade {
 		t.Fatalf("not made: in its result %v, in the next turn's timing %v", resultNotMade, timingNotMade)
