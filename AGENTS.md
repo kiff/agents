@@ -32,7 +32,9 @@ session/sessiontest the checks every Store must pass
 run/                runs: statuses, the transition table, the lease, the sweep; port Runs
 run/runtest         the checks every Runs must pass
 store/memory        adapter: in memory, for tests and local runs
-store/<name>        one package per store (sqlite, dynamodb)
+store/<name>        one package per store (sqlite, dynamodb, s3)
+attach/             files a person attaches to a chat message: limits, checks, Word and Excel as text; ports Store, Blobs
+attach/attachtest   the checks every attach.Store must pass
 model/              the model port: one streamed turn, Price
 model/anthropic     adapter: Claude API, through the official Go SDK
 tool/               the tool port; Check refuses a write tool outside KIFF's gateway

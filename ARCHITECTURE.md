@@ -134,7 +134,8 @@ needs and the logic; adapters import the core; wiring is in `cmd/`.
 | `server`, `server/lambdaurl` | The HTTP API below, SSE streaming, auth hand-off from tafs cloud; the `Runner` port | Built (#13): agents, memory, sessions, schedules and run routes; the IAM function URL adapter, streaming. `continue` and the `/kiff/alerts` handler (step 4, #15). The `/ops` run routes (#14). A tenant's active runs are capped (429). Still to come: `/evals`, `/usage`, the rest of `/ops` (step 3) |
 | `eval` | Suites of cases: judge, expected tool calls, scorers in code; CI exit codes and a JSON report | Built (#3): the harness, Refunds and Chargebacks, the Managed Agents baseline reader; `Policy` and `Load` grade runs of this runtime (#12). Still to come: `cmd/eval` starting cases as runs, stored eval runs (step 3) |
 | `console` | The operators' web UI over the API: runs, one run's timeline, evals, sessions and memory, agents and schedules, cost. Go, templ, htmx and plain CSS, like kiff.dev: no Node | To build |
-| `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents and schedules; grow with each port |
+| `attach`, `store/s3` | Files a person attaches to a chat message (kiff/tafs#209): what can be attached and how much, the upload URL for exactly the declared file, its bytes read back and held to their real type, Word and Excel turned into text, binding to its message, loading for a turn within a budget, and removal with the message, the chat, the agent or the tenant; ports `Store`, `Blobs` (S3, `store/s3`) | Built (kiff/tafs#209). See [docs/issues/209-attachments.md](docs/issues/209-attachments.md) |
+| `store/memory`, `store/dynamodb` | Adapters for every store port | Built for sessions, runs, agents, schedules and attachments; grow with each port |
 | `cmd/chat`, `cmd/eval` | Terminal chat, eval runner | Built |
 | `cmd/lambda` | The server on Lambda | Built (#13): one function behind an `AWS_IAM` function URL in `RESPONSE_STREAM` mode; the runner, with agents' keys and the model key from Secrets Manager; background runs as asynchronous invocations of the same function; the sweep every minute, which also continues resolved paused runs; schedule firings, each starting one run and executing it in its own invocation. Still to come: the deploy |
 | `cmd/kiffalerts` | KIFF's alerts on Lambda | Built (#13): its own function behind a URL with no IAM auth, serving only `POST /kiff/alerts`; KIFF accounts from Secrets Manager; it records answers only, and `cmd/lambda`'s sweep continues the resolved runs. The answer to the alert that leaves a run ready names it (`{"run":{"id","agent"}}`), so tafs cloud continues it at once through `…/continue` (kiff/tafs#138). Still to come: the deploy |
@@ -162,6 +163,7 @@ verified; the phone never calls it directly.
 | `POST /agents/{id}/runs/{run_id}/cancel` | Cancel. With `requester` in the body (#219), a run another requester asked for is 404; without one, the caller cancels for itself |
 | `POST /agents/{id}/runs/{run_id}/messages` | Steer: a message the owner wrote while the run goes, taken at its next checkpoint (202). 409 for a run that ended or was asked to stop: send it as a new run. With `requester` (#219), the message counts toward their flood guard, and a run another requester asked for is 404; without one, the caller steers for itself, unchecked and not counted |
 | `POST /agents/{id}/runs/{run_id}/continue`, `POST /agents/{id}/holds/{exception}/continue` | Continue a paused run whose requirements KIFF has resolved, named by its ID or by one of its held calls. Holds no alert has resolved yet are asked of KIFF first; one KIFF still holds is 409, and KIFF not answering is 503 |
+| `POST /agents/{id}/attachments?owner=member:<id>`, `GET /agents/{id}/attachments/{att}?owner=member:<id>` | A file the person will attach to a message in their chat (kiff/tafs#209): `{media_type, name, size, sha256}` answers 201 with the attachment and an `upload` (a PUT to a URL with headers to send as given, for 5 minutes) for exactly that file; a type that can't be attached, or a file over its limit, is 400 saying which. The run's start names it in `attachments: [id]` (a person's own chat message only, never a door's); the input may then be empty. Reading answers a download `url` for a minute, to the person who attached it only: not the service, an admin or the account's owner |
 | `GET /sessions?agent_id=&owner=`, `GET /sessions/{id}?owner=`, `DELETE /sessions/{id}`, `POST /sessions/{id}/archive?owner=`, `POST /sessions/{id}/unarchive?owner=` | Threads and their runs. With `owner` (a requester, `member:<id>`), only that person's threads and those from before owners: another person's is 404 (#219). Archiving puts a chat away: it says `archived`, and a live message no longer goes on in it. With `owner=member:<id>`, the account must say they may use or oversee the agent (#221), else 403 `no_access` |
 | `GET /agents/{id}/memories?owner=`, `DELETE /agents/{id}/memories/{name}?scope=`, `POST /agents/{id}/memories/{name}/share?scope=` | Read and forget notes. Each note has a `scope`: none for a shared note, or a requester's key (`member:<id>`) for a person's own (#219). With `owner`, the shared notes and that person's own; without it, every note. Forgetting names the note's scope (none: the shared one). Sharing makes a person's note shared, keeping where it came from: 404 if they have none of that name, 409 if a shared one of that name says something else |
 | `/schedules` (create, list, get, update, delete, enable, disable, trigger, runs) | Schedules and the runs they started |
@@ -240,7 +242,14 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   shared ones. Each note keeps the session, run and requester it came from.
   Notes from before scopes are shared. A person's note becomes shared only
   through the share route.
-- **Removing an agent** withdraws its paused runs' held calls in KIFF, then deletes its sessions, runs, events, notes and schedules.
+- **Attached files** (kiff/tafs#209) are their message's: an owner's message
+  records each by reference (never its bytes), the runner loads their bytes
+  for a run's turns (the newest within 20 MB and about 100,000 tokens; an
+  older one reads as out of view), and each goes when its message does, by the definition's retention
+  for owner messages, or with its chat when deleted, its agent or its tenant.
+  An upload no message named is removed after an hour. The function's sweep
+  removes what is due; the bucket's lifecycle rule, anything left 38 days on.
+- **Removing an agent** withdraws its paused runs' held calls in KIFF, then deletes its attached files, sessions, runs, events, notes and schedules.
 
 ## Running it
 

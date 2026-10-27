@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
@@ -76,6 +77,9 @@ type Runner struct {
 	// Usage adds a counted run's cost to its period each time the run pauses
 	// or ends (kiff/tafs#193). Nil: nothing is counted.
 	Usage usage.Store
+	// Files are the files people attach to their chat messages
+	// (kiff/tafs#209). Nil: a message with files is refused.
+	Files *attach.Service
 	// Access answers whether a member may use the agent (#221). A member's
 	// run starts only if they may, and stops at its next checkpoint once they
 	// may not; no answer is no. Runs no member asked for aren't checked. Nil:
@@ -100,7 +104,7 @@ func (rn *Runner) now() time.Time {
 // the others. A run named by s.ID that exists already is returned as stored,
 // with run.ErrExists, and nothing new is stored.
 func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
-	if s.Tenant == "" || s.Agent == "" || s.Input == "" || s.Trigger == "" {
+	if s.Tenant == "" || s.Agent == "" || (s.Input == "" && len(s.Attachments) == 0) || s.Trigger == "" {
 		return run.Run{}, errors.New("runner: a run needs a tenant, an agent, a trigger and an input")
 	}
 	if s.ID != "" { // named: started already, by an earlier delivery?
@@ -126,6 +130,18 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	if !trial {
 		// Nothing of an agent that is switching versions runs (kiff/tafs#107).
 		if err := rn.notSwitching(ctx, s.Tenant, s.Agent); err != nil {
+			return run.Run{}, err
+		}
+	}
+	// A person's files, theirs and unsent, read back and checked before
+	// anything is stored: a file that isn't what was declared stops here.
+	var files []attach.Attachment
+	if len(s.Attachments) > 0 {
+		if s.Trigger != run.ByOwner || s.Requester.Kind != run.ByMember || rn.Files == nil {
+			return run.Run{}, fmt.Errorf("%w: only a person's own chat message carries files", attach.ErrInvalid)
+		}
+		var err error
+		if files, err = rn.Files.Take(ctx, s.Tenant, s.Agent, s.Requester.Key(), s.Attachments); err != nil {
 			return run.Run{}, err
 		}
 	}
@@ -169,6 +185,9 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		}
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
+	for _, f := range files {
+		r.Attachments = append(r.Attachments, f.Ref())
+	}
 	r.Source = s.Source
 	r.Requester = s.Requester
 	r.Grant = s.Grant
@@ -194,6 +213,23 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 			}
 		}
 		return run.Run{}, err
+	}
+	if len(files) > 0 {
+		// The files go when the message does: its keep rule's retention, or
+		// with its session.
+		var expires time.Time
+		if rule := d.Keep.Rule(session.OwnerMessage); rule.Keep == session.Kept && rule.Retention > 0 {
+			expires = rn.now().Add(rule.Retention)
+		}
+		if err := rn.Files.Bind(ctx, files, s.Session, r.ID, expires); err != nil {
+			// Sent meanwhile by another message: this one isn't stored.
+			cleanup := context.WithoutCancel(ctx)
+			err = errors.Join(err, rn.Runs.Delete(cleanup, s.Tenant, r.ID))
+			if opened {
+				err = errors.Join(err, rn.Sessions.Delete(cleanup, s.Tenant, s.Session))
+			}
+			return run.Run{}, err
+		}
 	}
 	return r, nil
 }
@@ -355,6 +391,10 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
+	a.Attachments = r.Attachments
+	if rn.Files != nil {
+		a.Load = func(ctx context.Context, msgs []model.Message) error { return rn.Files.Load(ctx, tenant, msgs) }
+	}
 	sess, events, err := rn.Sessions.Read(ctx, tenant, r.Session)
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))

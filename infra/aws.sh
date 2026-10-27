@@ -15,6 +15,11 @@
 #   agents-scheduler     the role EventBridge Scheduler invokes the API function with.
 #   agents               the schedule group: the agents' schedules (s-<hash>) and
 #                        agents-sweep, every minute.
+#   kiff-agents-attachments  S3: the files people attach to chat messages
+#                        (kiff/tafs#209), private, encrypted, TLS only. The sweep
+#                        removes each when its message goes; a lifecycle rule
+#                        removes anything left 38 days on (30 days' retention and
+#                        the week a record outlives it).
 #
 # Secrets (made by a person or by tafs cloud, never by this script, except the
 # model key below):
@@ -77,6 +82,7 @@ PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
 NOTIFY_URLS=${AGENTS_NOTIFY_URLS:-}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
 RUN_GRANTS=${AGENTS_RUN_GRANTS:-}
+ATTACHMENTS=${AGENTS_ATTACHMENTS_BUCKET:-kiff-agents-attachments}
 
 aws() { command aws --region "$REGION" --output text "$@"; }
 say() { echo "• $*" >&2; }
@@ -113,6 +119,28 @@ if [ "$(aws dynamodb describe-time-to-live --table-name "$TABLE" --query TimeToL
   aws dynamodb update-time-to-live --table-name "$TABLE" --time-to-live-specification Enabled=true,AttributeName=ttl >/dev/null
   say "turned on TTL for $TABLE"
 fi
+
+# --- Attached files (kiff/tafs#209) ------------------------------------------
+
+# The app uploads and downloads through presigned URLs only: nothing in the
+# bucket is public, and S3 refuses any request not over TLS.
+if ! aws s3api head-bucket --bucket "$ATTACHMENTS" >/dev/null 2>&1; then
+  aws s3api create-bucket --bucket "$ATTACHMENTS" --create-bucket-configuration LocationConstraint="$REGION" >/dev/null
+  say "created bucket $ATTACHMENTS"
+fi
+# People's files stay in the region (eu-west-1 unless AGENTS_REGION says): a
+# bucket of that name anywhere else stops here.
+where=$(aws s3api get-bucket-location --bucket "$ATTACHMENTS" --query LocationConstraint)
+[ "$where" = "$REGION" ] || { echo "bucket $ATTACHMENTS is in $where, not $REGION" >&2; exit 1; }
+aws s3api put-public-access-block --bucket "$ATTACHMENTS" --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3api put-bucket-ownership-controls --bucket "$ATTACHMENTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
+aws s3api put-bucket-encryption --bucket "$ATTACHMENTS" --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+aws s3api put-bucket-lifecycle-configuration --bucket "$ATTACHMENTS" --lifecycle-configuration \
+  '{"Rules":[{"ID":"leftovers-38-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":38},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+aws s3api put-bucket-policy --bucket "$ATTACHMENTS" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"tls-only","Effect":"Deny","Principal":"*","Action":"s3:*",
+ "Resource":["arn:aws:s3:::'"$ATTACHMENTS"'","arn:aws:s3:::'"$ATTACHMENTS"'/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
 
 # --- The model key ---------------------------------------------------------
 
@@ -159,6 +187,8 @@ ITEMS='"dynamodb:GetItem","dynamodb:BatchGetItem","dynamodb:Query","dynamodb:Put
 # (#91) it also creates an agent's key when it claims one, never over an
 # existing secret, and keeps the drafts' claim secrets under their own prefix.
 # It makes and reads each tenant's sealing key (#172), never replacing one.
+# It reads, writes and deletes attached files, and lists them to remove an
+# agent's or a tenant's (kiff/tafs#209).
 aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-document "$(cat <<EOF
 {"Version":"2012-10-17","Statement":[
  $LOGS,
@@ -169,6 +199,8 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
  {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:ListSecrets","Resource":"*"},
  {"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"$ARN_FN"},
+ {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::$ATTACHMENTS/*"},
+ {"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::$ATTACHMENTS"},
  {"Effect":"Allow","Action":["scheduler:CreateSchedule","scheduler:UpdateSchedule","scheduler:DeleteSchedule","scheduler:GetSchedule"],
   "Resource":"arn:aws:scheduler:$REGION:$ACCOUNT:schedule/$GROUP/*"},
  {"Effect":"Allow","Action":"iam:PassRole","Resource":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
@@ -213,7 +245,7 @@ ENV_FN=$(cat <<EOF
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
  "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
- "AGENTS_RUN_GRANTS":"$RUN_GRANTS"}}
+ "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"}}
 EOF
 )
 ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'
