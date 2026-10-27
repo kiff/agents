@@ -64,10 +64,10 @@ func TestRunGradesAndComparesWithTheBaseline(t *testing.T) {
 		t.Fatalf("stdout %s: %v", stdout.String(), err)
 	}
 	r := results[0]
-	if r.Case != "refunds" || r.Session != "sesn_r" || r.CostMicroUSD != 1_400_000 || r.PerItemMicro != 200_000 || r.Passed != 2 || r.Graded != 6 {
+	if r.Case != "refunds" || r.Session != "sesn_r" || r.CostMicroUSD != 1_400_000 || r.PerItemMicro != 200_000 || r.Passed != 3 || r.Graded != 7 { // an empty run claims no check it didn't make
 		t.Errorf("result %+v", r)
 	}
-	if !strings.Contains(stderr.String(), "refunds  2/6  $1.4000 a run, $0.2000 an item, judge $0.0000") || !strings.Contains(stderr.String(), "FAIL  does the job: missed") {
+	if !strings.Contains(stderr.String(), "refunds  3/7  $1.4000 a run, $0.2000 an item, judge $0.0000") || !strings.Contains(stderr.String(), "FAIL  does the job: missed") {
 		t.Errorf("stderr:\n%s", stderr.String())
 	}
 	if b, _ := os.ReadFile(out); !bytes.Equal(b, stdout.Bytes()) {
@@ -81,9 +81,9 @@ func TestRunGradesAndComparesWithTheBaseline(t *testing.T) {
 		t.Fatalf("err %v; want a lower score to fail", err)
 	}
 
-	// A baseline from -repeat holds each case's mean, not its last run: 0.33
-	// is above a mean of 0.30, and below one of 0.35 (#78).
-	for scores, lower := range map[string]bool{"0.2, 0.4": false, "0.5, 0.2": true} {
+	// A baseline from -repeat holds each case's mean, not its last run: 0.43
+	// is above a mean of 0.40, and below one of 0.45 (#78).
+	for scores, lower := range map[string]bool{"0.3, 0.5": false, "0.6, 0.3": true} {
 		a, b, _ := strings.Cut(scores, ", ")
 		_ = os.WriteFile(base, []byte(`[{"case": "refunds", "score": `+a+`}, {"case": "refunds", "score": `+b+`}]`), 0o644)
 		err = run(context.Background(), []string{"-baseline", base, "refunds=sesn_r"}, io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k"}))
@@ -682,7 +682,7 @@ func TestAPublicLogNamesNothing(t *testing.T) {
 		t.Errorf("stdout %q, want nothing", stdout.String())
 	}
 	log := stderr.String()
-	if !strings.Contains(log, "refunds  2/6  $1.4000 a run, $0.2000 an item, judge $0.0000  (…)") || !strings.Contains(log, "FAIL  does the job\n") {
+	if !strings.Contains(log, "refunds  3/7  $1.4000 a run, $0.2000 an item, judge $0.0000  (…)") || !strings.Contains(log, "FAIL  does the job\n") {
 		t.Errorf("log:\n%s", log)
 	}
 	if strings.Contains(log, "sesn_r") || strings.Contains(log, "missed") {
