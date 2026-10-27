@@ -117,6 +117,7 @@ func TestOperatorsReadARun(t *testing.T) {
 		n.Output, n.Error = "Refunded Ana's order 4471", "card declined for ana@example.com"
 		n.Steering = []run.Steering{{Text: "only the €20 one"}}
 		n.Requester = run.Requester{Kind: run.ByMember, ID: "ana"}
+		n.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"customer":"ana@example.com"}`)}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -125,7 +126,7 @@ func TestOperatorsReadARun(t *testing.T) {
 	if code != 200 || body["tenant"] != "t1" || body["status"] != string(run.Paused) || fmt.Sprint(body["held"]) != "[stripe_refund]" {
 		t.Fatalf("run: %d %v", code, body)
 	}
-	for _, k := range []string{"paused", "claim", "lease", "version", "input", "output", "error", "stop", "refusal", "steering", "requester", "requirements", "session"} {
+	for _, k := range []string{"paused", "claim", "lease", "version", "input", "output", "error", "stop", "refusal", "steering", "requester", "requirements", "session", "done"} {
 		if _, ok := body[k]; ok {
 			t.Errorf("shows %q", k)
 		}

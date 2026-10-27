@@ -271,6 +271,9 @@ type Outcome struct {
 	// Turn is the turn a paused run paused in, to continue from: the model's
 	// message, and the results of the calls KIFF didn't hold.
 	Turn *run.Turn `json:"turn,omitempty"`
+	// Done are the calls that acted and went through in this part of the
+	// run (#249), in order: the caller adds them to the run's.
+	Done []run.Done `json:"done,omitempty"`
 
 	// standard: a fast agent's turn ran at standard speed, so the rest of
 	// the run does too.
@@ -353,9 +356,13 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if emit == nil {
 		emit = func(Event) {}
 	}
+	var done []run.Done
 	for _, h := range held {
 		if err := rec.Record(session.ToolResult, h); err != nil {
 			return Outcome{}, history, err
+		}
+		if wentThrough(h) {
+			done = append(done, doneOf(h, requirementInput(r, h.CallID)))
 		}
 		if err := recordRef(rec, h.Result); err != nil {
 			return Outcome{}, history, err
@@ -376,7 +383,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		return Outcome{}, msgs, err
 	}
 	a.resumed = true
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Done: done}, emit)
 }
 
 // withoutThinking is a paused turn's reply as a continued run sends it: its
@@ -436,6 +443,28 @@ func merge(r run.Run, held []ToolResultBody) ([]model.Block, error) {
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// wentThrough reports whether a call's result says it was made: not refused
+// back unmade, not held, not refused by KIFF, and not failed.
+func wentThrough(r ToolResultBody) bool {
+	return !r.NotMade && !r.IsError && r.State != tool.StateHeld && r.State != tool.StateRefused && r.Trial == nil
+}
+
+// doneOf is r, a call that acted and went through, with its input, as the run
+// keeps it.
+func doneOf(r ToolResultBody, input json.RawMessage) run.Done {
+	return run.Done{CallID: r.CallID, Tool: r.Tool, Input: input, Resource: r.Resource, Invocation: r.Invocation}
+}
+
+// requirementInput is the input of the call r waits for with id.
+func requirementInput(r run.Run, id string) json.RawMessage {
+	for _, q := range r.Requirements {
+		if q.CallID == id {
+			return q.Input
+		}
+	}
+	return nil
 }
 
 func resultBlock(r ToolResultBody) model.Block {
@@ -520,6 +549,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		for i, r := range results {
 			blocks[i] = resultBlock(r)
 			held = held || r.Held()
+			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
+				out.Done = append(out.Done, doneOf(r, calls[i].Input))
+			}
 			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade}
 		}
 		if held {

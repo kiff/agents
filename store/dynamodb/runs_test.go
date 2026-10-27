@@ -2,7 +2,9 @@ package dynamodb_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -451,5 +453,46 @@ func TestARunFullOfMessagesStillSaves(t *testing.T) {
 	}
 	if len(got.Steering) != 2 || len(got.Steering[0].Text) != run.MaxSteeringBytes/2 || got.Status != run.Completed {
 		t.Fatalf("read back %d messages, status %s", len(got.Steering), got.Status)
+	}
+}
+
+// A run that did more than its bound keeps (run.MaxDoneBytes), with its
+// messages, the longest input and a long answer, still saves its end, and
+// every call it made comes back (#249).
+func TestARunThatDidMuchStillSaves(t *testing.T) {
+	db := local(t)
+	at := now()
+	rs := dynamodb.NewRunsAt(db, table(t, db), func() time.Time { return at })
+	r := run.New("t1", "refunds", "s1", run.ByOwner, strings.Repeat("i", 32_000), at)
+	if err := rs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Claim(ctx, rs, "t1", r.ID, "i1", at.Add(time.Minute), at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if r, err = run.Steer(ctx, rs, "t1", r.ID, strings.Repeat("m", run.MaxSteeringBytes/2), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var did []run.Done
+	for i := range 50 {
+		did = append(did, run.Done{CallID: fmt.Sprintf("c%d", i), Tool: "send_email", Input: json.RawMessage(`"` + strings.Repeat("x", 20_000) + `"`)})
+	}
+	ended, err := run.Save(ctx, rs, r, at, func(n *run.Run) error {
+		n.Status, n.Stop, n.Output = run.Completed, "answered", strings.Repeat("o", 128_000)
+		n.Done = run.AddDone(n.Done, did...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("storing the end of a run that did much: %v", err)
+	}
+	got, err := rs.Get(ctx, "t1", ended.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Done) != 50 || got.Done[49].CallID != "c49" || len(got.Done[0].Input) == 0 || got.Status != run.Completed {
+		t.Fatalf("read back %d calls, status %s", len(got.Done), got.Status)
 	}
 }

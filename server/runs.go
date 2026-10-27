@@ -106,16 +106,19 @@ type runView struct {
 	Requester run.Requester `json:"requester,omitzero"`
 	// NewSession is whether the run opened its session (#219); always
 	// present, so a client can rely on it.
-	NewSession      bool              `json:"new_session"`
-	Status          run.Status        `json:"status"`
-	Stop            string            `json:"stop,omitempty"`
-	Refusal         string            `json:"refusal,omitempty"`
-	Output          string            `json:"output,omitempty"`
-	Error           string            `json:"error,omitempty"`
-	Cost            int64             `json:"cost_micro_usd"`
-	Turns           int               `json:"turns"`
-	Requirements    []run.Requirement `json:"requirements,omitempty"`
-	CancelRequested bool              `json:"cancel_requested,omitempty"`
+	NewSession   bool              `json:"new_session"`
+	Status       run.Status        `json:"status"`
+	Stop         string            `json:"stop,omitempty"`
+	Refusal      string            `json:"refusal,omitempty"`
+	Output       string            `json:"output,omitempty"`
+	Error        string            `json:"error,omitempty"`
+	Cost         int64             `json:"cost_micro_usd"`
+	Turns        int               `json:"turns"`
+	Requirements []run.Requirement `json:"requirements,omitempty"`
+	// Done are the calls that acted and went through in the run (#249): a
+	// run that failed after one says what it did from these.
+	Done            []run.Done `json:"done,omitempty"`
+	CancelRequested bool       `json:"cancel_requested,omitempty"`
 	// Steering is what the owner wrote to the run while it went, each marked
 	// once the run took it. One not taken when the run has ended is the
 	// caller's to send as the next message.
@@ -130,7 +133,7 @@ type runView struct {
 
 func viewRun(r run.Run) runView {
 	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
-		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements,
+		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
 }

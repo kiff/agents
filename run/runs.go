@@ -265,6 +265,11 @@ func (r Run) clone() Run {
 		k.Input = bytes.Clone(k.Input)
 		c.NotAgain = append(c.NotAgain, k)
 	}
+	c.Done = nil
+	for _, d := range r.Done {
+		d.Input = bytes.Clone(d.Input)
+		c.Done = append(c.Done, d)
+	}
 	c.Steering = slices.Clone(r.Steering)
 	c.Requirements = nil
 	for _, q := range r.Requirements {
@@ -396,6 +401,29 @@ func SteerBy(ctx context.Context, runs Runs, tenant, id, text string, q Requeste
 		}
 		return next, err
 	}
+}
+
+// MaxDoneBytes bounds the inputs a run keeps with what it did (Done), all
+// together, as MaxSteeringBytes bounds its messages: inside a store's item
+// with the rest of the run. Past it, a call is still listed, without its
+// input, so the list of what went through stays whole.
+const MaxDoneBytes = 64_000
+
+// AddDone is have with more after it, each keeping its input while the
+// inputs together stay within MaxDoneBytes; past that, without it.
+func AddDone(have []Done, more ...Done) []Done {
+	n := 0
+	for _, d := range have {
+		n += len(d.Input)
+	}
+	for _, d := range more {
+		if n+len(d.Input) > MaxDoneBytes {
+			d.Input = nil
+		}
+		n += len(d.Input)
+		have = append(have, d)
+	}
+	return have
 }
 
 func steeringBytes(s []Steering) int {

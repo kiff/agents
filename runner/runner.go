@@ -821,6 +821,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
+			n.Done = run.AddDone(n.Done, out.Done...)
 			if x.notAgain != nil {
 				n.NotAgain = x.notAgain
 			}
@@ -838,6 +839,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 	r, err := x.saveStop(ctx, func(n *run.Run) error {
 		before = n.Cost
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
+		n.Done = run.AddDone(n.Done, out.Done...)
 		if x.notAgain != nil {
 			n.NotAgain = x.notAgain
 		}

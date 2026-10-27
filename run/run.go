@@ -222,6 +222,11 @@ type Run struct {
 	// all its pauses (refused, or the hold expired): the run never makes one
 	// of them again. Only the owner asks for it again, in a new run.
 	NotAgain []Call `json:"not_again,omitempty"`
+	// Done are the calls that acted and went through in the run, over all
+	// its parts, in order (#249): what changed outside the agent, as the
+	// calls' own results said, never the model. A run that fails after one
+	// says what it did from these.
+	Done []Done `json:"done,omitempty"`
 
 	// Cancel records that the run was asked to stop: a running run stops at
 	// its next checkpoint (before a model turn, after a tool batch).
@@ -262,6 +267,19 @@ type Run struct {
 type Call struct {
 	Tool  string          `json:"tool"`
 	Input json.RawMessage `json:"input"`
+}
+
+// Done is one call that acted and went through: a Write call that doesn't
+// only read, which KIFF allowed and the vendor didn't fail.
+type Done struct {
+	CallID string `json:"call_id"`
+	Tool   string `json:"tool"`
+	// Input is the call's input, left out past MaxDoneBytes.
+	Input json.RawMessage `json:"input,omitempty"`
+	// Resource is what the call acted on, when KIFF named it (a payment's
+	// id), and Invocation KIFF's key for the call in its Record.
+	Resource   string `json:"resource,omitempty"`
+	Invocation string `json:"invocation,omitempty"`
 }
 
 // Requirement is one call KIFF holds for the owner: the call itself, KIFF's

@@ -63,6 +63,16 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
     expired, invalidated), from its `hold_answered` alert (`run.Answer`).
 - `paused`: the turn the run paused in (the model's message, and the results of
   the calls KIFF didn't hold). The API never shows it; it exists to continue.
+- `done` (#249): the calls that acted and went through, over all the run's
+  parts, in order: each one's `call_id`, `tool` and `input`, with `resource` and
+  `invocation` when KIFF named them. Only a Write call that doesn't only read
+  counts, and only once KIFF allowed it and the vendor didn't fail. A call
+  refused unmade, held, refused or made in a trial doesn't. It comes from the
+  calls' results, never the model's words. A run that fails after a refund went
+  through still lists the refund, so whoever shows the failure can say what was
+  done. Stored at each pause and at the end, and shown by the API. The inputs
+  together stay within `MaxDoneBytes` (64 KB), so the run fits its store item.
+  Past that, a call is still listed, without its `input`.
 - `source`: set when a schedule or an event started the run (the schedule's ID).
 - `version`: every change is a compare-and-set on it.
 
