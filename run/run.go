@@ -272,9 +272,10 @@ type Call struct {
 // Done is one call that acted and went through: a Write call that doesn't
 // only read, which KIFF allowed and the vendor didn't fail.
 type Done struct {
-	CallID string          `json:"call_id"`
-	Tool   string          `json:"tool"`
-	Input  json.RawMessage `json:"input"`
+	CallID string `json:"call_id"`
+	Tool   string `json:"tool"`
+	// Input is the call's input, left out past MaxDoneBytes.
+	Input json.RawMessage `json:"input,omitempty"`
 	// Resource is what the call acted on, when KIFF named it (a payment's
 	// id), and Invocation KIFF's key for the call in its Record.
 	Resource   string `json:"resource,omitempty"`

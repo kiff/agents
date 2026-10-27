@@ -403,6 +403,29 @@ func SteerBy(ctx context.Context, runs Runs, tenant, id, text string, q Requeste
 	}
 }
 
+// MaxDoneBytes bounds the inputs a run keeps with what it did (Done), all
+// together, as MaxSteeringBytes bounds its messages: inside a store's item
+// with the rest of the run. Past it, a call is still listed, without its
+// input, so the list of what went through stays whole.
+const MaxDoneBytes = 64_000
+
+// AddDone is have with more after it, each keeping its input while the
+// inputs together stay within MaxDoneBytes; past that, without it.
+func AddDone(have []Done, more ...Done) []Done {
+	n := 0
+	for _, d := range have {
+		n += len(d.Input)
+	}
+	for _, d := range more {
+		if n+len(d.Input) > MaxDoneBytes {
+			d.Input = nil
+		}
+		n += len(d.Input)
+		have = append(have, d)
+	}
+	return have
+}
+
 func steeringBytes(s []Steering) int {
 	n := 0
 	for _, m := range s {

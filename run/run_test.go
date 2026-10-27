@@ -274,3 +274,24 @@ func TestSteerKeepsMessagesForARunThatGoes(t *testing.T) {
 		t.Fatalf("no such run: %v", err)
 	}
 }
+
+// What a run did keeps each call's input while the inputs together stay
+// within MaxDoneBytes; past it, each call is still listed, without its input
+// (#249).
+func TestDoneKeepsEveryCallWithinItsBytes(t *testing.T) {
+	big := json.RawMessage(`"` + strings.Repeat("x", run.MaxDoneBytes/2) + `"`)
+	var done []run.Done
+	for i, id := range []string{"c1", "c2", "c3"} {
+		done = run.AddDone(done, run.Done{CallID: id, Tool: "send_email", Input: big, Resource: "r" + id})
+		if len(done) != i+1 {
+			t.Fatalf("after %s: %d calls", id, len(done))
+		}
+	}
+	if len(done[0].Input) == 0 || done[1].Input != nil || done[2].Input != nil {
+		t.Fatalf("inputs kept: %d, %d, %d bytes", len(done[0].Input), len(done[1].Input), len(done[2].Input))
+	}
+	small := run.Done{CallID: "c4", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`)}
+	if done = run.AddDone(done, small); string(done[3].Input) != `{"charge":"ch_1"}` || done[2].CallID != "c3" || done[2].Resource != "rc3" {
+		t.Fatalf("a small input after the bound: %+v", done[3])
+	}
+}
