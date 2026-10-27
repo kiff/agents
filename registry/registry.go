@@ -63,6 +63,10 @@ type Definition struct {
 	// Effort is how hard the model works ("low", "medium", "high", "xhigh",
 	// "max"); empty is the provider's default (medium on Opus 5.5).
 	Effort string `json:"effort,omitempty"`
+	// Thinking "summarized" streams a summary of the model's thinking to
+	// whoever follows a run, as it goes; empty keeps it hidden. Either way
+	// the thinking is billed the same.
+	Thinking string `json:"thinking,omitempty"`
 	// Speed "fast" runs its turns at the provider's fast speed, at PriceFast,
 	// when someone waits on the run: an owner's message, a trial or an eval,
 	// never a schedule or an event. Empty or "standard": standard speed.
@@ -308,6 +312,8 @@ func (d Definition) Check() error {
 		return errors.New("registry: max tokens must be positive")
 	case d.Effort != "" && !slices.Contains(model.Efforts, d.Effort):
 		return fmt.Errorf("registry: effort is empty or one of %s", strings.Join(model.Efforts, ", "))
+	case d.Thinking != "" && d.Thinking != model.ThinkingSummarized:
+		return fmt.Errorf("registry: thinking is empty or %q", model.ThinkingSummarized)
 	case d.Speed != "" && d.Speed != SpeedStandard && d.Speed != SpeedFast:
 		return errors.New(`registry: speed is empty, "standard" or "fast"`)
 	case d.Speed == SpeedFast && (d.PriceFast.Input <= 0 || d.PriceFast.Output <= 0 || d.PriceFast.CacheRead < 0 || d.PriceFast.CacheWrite < 0 || d.PriceFast.CacheWrite1h < 0):
@@ -624,7 +630,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, skill.NewTool(ps))
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast,
-		MaxTokens: d.MaxTokens, Effort: d.Effort, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
+		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
 		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err

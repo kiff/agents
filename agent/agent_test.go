@@ -38,6 +38,9 @@ func (s *script) Turn(_ context.Context, req model.Request, onText func(string))
 	}
 	r := s.replies[len(s.reqs)-1]
 	for _, b := range r.Blocks {
+		if b.Kind == model.Thinking && req.Thinking != "" && req.OnThinking != nil {
+			req.OnThinking(b.Text)
+		}
 		if b.Kind == model.Text && onText != nil {
 			onText(b.Text)
 		}
@@ -161,6 +164,48 @@ func TestAFullTurnIsRecordedAndStreamed(t *testing.T) {
 	}
 	if len(m.reqs[0].Tools) != 1 || m.reqs[0].System != "You refund orders." || m.reqs[0].Model != "test-model" {
 		t.Fatalf("first request = %+v", m.reqs[0])
+	}
+}
+
+// An agent that shows its thinking streams the summary as it is written,
+// before the answer, and records none of it; one that doesn't asks for none.
+func TestThinkingIsStreamedNotRecorded(t *testing.T) {
+	thought := model.Reply{Blocks: []model.Block{{Kind: model.Thinking, Text: "The order is paid; a refund fits.", Signature: "s1"},
+		{Kind: model.Text, Text: "Refunded."}}, Stop: model.EndTurn, Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}}
+	for _, shows := range []bool{true, false} {
+		m := &script{replies: []model.Reply{thought}}
+		a := newAgent(m)
+		if shows {
+			a.Thinking = model.ThinkingSummarized
+		}
+		store, r := start(t, session.KindChat)
+		var streamed []agent.Event
+		if _, _, err := agent.Run(context.Background(), a, r, nil, "Refund ord_1.", func(e agent.Event) { streamed = append(streamed, e) }); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.End(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range streamed {
+			got = append(got, string(e.Kind)+":"+e.Text)
+		}
+		want := "[text:Refunded.]"
+		if shows {
+			want = "[thinking:The order is paid; a refund fits. text:Refunded.]"
+		}
+		if fmt.Sprint(got) != want || m.reqs[0].Thinking != a.Thinking {
+			t.Fatalf("shows %v: streamed %v, asked thinking %q", shows, got, m.reqs[0].Thinking)
+		}
+		_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			if strings.Contains(string(e.Body), "The order is paid") {
+				t.Fatalf("shows %v: the thinking was recorded in %s", shows, e.Kind)
+			}
+		}
 	}
 }
 

@@ -88,6 +88,9 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 		switch t := d.Delta.AsAny().(type) {
 		case sdk.ThinkingDelta:
 			thinking += len(t.Thinking)
+			if req.Thinking != "" && req.OnThinking != nil && t.Thinking != "" {
+				req.OnThinking(t.Thinking)
+			}
 		case sdk.TextDelta:
 			if onText != nil {
 				onText(t.Text)
@@ -146,6 +149,10 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	p := sdk.MessageNewParams{Model: sdk.Model(req.Model), MaxTokens: req.MaxTokens}
 	if req.Effort != "" {
 		p.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffort(req.Effort)}
+	}
+	if req.Thinking == model.ThinkingSummarized {
+		// Adaptive, as the model runs with no thinking set, with its summary shown.
+		p.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{Display: sdk.ThinkingConfigAdaptiveDisplaySummarized}}
 	}
 	if req.System != "" {
 		p.System = []sdk.TextBlockParam{{Text: req.System}}

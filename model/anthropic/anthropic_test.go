@@ -253,6 +253,38 @@ func TestEffortIsSent(t *testing.T) {
 	}
 }
 
+// Thinking "summarized" asks for adaptive thinking with its summary shown,
+// and passes the summary on as it is written; the blocks keep it as before.
+// None asks for nothing, and passes nothing on.
+func TestASummarizedTurnShowsItsThinking(t *testing.T) {
+	m, sent := serve(t, thinkingStream)
+	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Refund ch_1."}}}}
+	var shown []string
+	reply, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Messages: msgs,
+		Thinking: model.ThinkingSummarized, OnThinking: func(s string) { shown = append(shown, s) }}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th, _ := (*sent)["thinking"].(map[string]any); th["type"] != "adaptive" || th["display"] != "summarized" {
+		t.Fatalf("thinking sent %v", (*sent)["thinking"])
+	}
+	if fmt.Sprint(shown) != "[The refund is under the Card.]" {
+		t.Fatalf("shown %q", shown)
+	}
+	if reply.Blocks[0].Text != "The refund is under the Card." || reply.Blocks[0].Signature != "sig-abc" {
+		t.Fatalf("blocks %+v", reply.Blocks)
+	}
+
+	shown = nil
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Messages: msgs,
+		OnThinking: func(s string) { shown = append(shown, s) }}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := (*sent)["thinking"]; ok || shown != nil {
+		t.Fatalf("no Thinking sent %v and showed %q", (*sent)["thinking"], shown)
+	}
+}
+
 // A refused turn is its own stop, with the category the API gives (#68).
 func TestARefusalIsItsOwnStop(t *testing.T) {
 	m, _ := serve(t, []string{
