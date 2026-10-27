@@ -57,7 +57,9 @@ of its eight kinds):
   thinking as it writes it, streamed to whoever follows the run as `thinking`
   events, so someone waiting sees what it considers. Nothing records them.
   Empty keeps the thinking hidden, the provider's default. The thinking is
-  billed the same either way.
+  billed the same either way: it's taken only for a model that thinks whether
+  asked or not (`registry.ThinkingModels`: Claude Opus 5.5, Sonnet 5.5, Fable 5
+  and Mythos 5), since on another it would turn thinking on or be refused.
 - `defer_vendor_tools` (optional): every gateway tool that isn't KIFF's own
   (`kiff_*`) goes to the model deferred, whatever its name. A Card that
   covers a vendor's tools mid-conversation (Setup's reads) then leaves the
