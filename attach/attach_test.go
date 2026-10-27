@@ -344,7 +344,8 @@ func TestLoadKeepsToTheBudget(t *testing.T) {
 }
 
 // A long PDF fills the context long before 20 MB: the newest that fit the
-// token budget are read, the rest are out of view.
+// token budget are read, the rest are out of view. A file from an earlier
+// message gets a smaller share than the one being answered.
 func TestLoadKeepsToTheTokenBudget(t *testing.T) {
 	s, blobs, _ := service()
 	ctx := context.Background()
@@ -363,5 +364,31 @@ func TestLoadKeepsToTheTokenBudget(t *testing.T) {
 	}
 	if len(msgs[0].Blocks[1].Bytes) != 0 || len(msgs[1].Blocks[1].Bytes) == 0 {
 		t.Fatal("two 40-page PDFs: only the newest should be in view")
+	}
+}
+
+func TestEarlierFilesTakeASmallerShare(t *testing.T) {
+	s, blobs, _ := service()
+	ctx := context.Background()
+	pdf := []byte("%PDF-1.7\n" + strings.Repeat("<< /Type /Page >>\n", 20)) // ~40,000 tokens
+	var msgs []model.Message
+	for i := range 2 {
+		a := upload(t, s, blobs, "member:ana", "application/pdf", "doc.pdf", append(pdf, byte('0'+i)))
+		as, err := s.Take(ctx, "t1", "a1", "member:ana", []string{a.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		msgs = append(msgs, model.Message{Role: model.User, Blocks: attach.Blocks([]attach.Ref{as[0].Ref()})},
+			model.Message{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "read it"}}})
+	}
+	msgs = msgs[:3] // the second PDF is the message being answered
+	if err := s.Load(ctx, "t1", msgs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs[2].Blocks[1].Bytes) == 0 {
+		t.Fatal("the file being answered should be in view")
+	}
+	if len(msgs[0].Blocks[1].Bytes) != 0 {
+		t.Fatal("an earlier 20-page PDF is over the earlier messages' share: it should be out of view")
 	}
 }

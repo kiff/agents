@@ -82,6 +82,10 @@ const MaxText = 2 * mb
 const (
 	TurnBudget = 20 * mb
 	TurnTokens = 100_000
+	// EarlierTokens is the share of TurnTokens for files sent with the
+	// chat's earlier messages: each run of the chat sends them again, so a
+	// long PDF from an hour ago doesn't cost its full size on every message.
+	EarlierTokens = 30_000
 )
 
 // Tokens estimates what a file's bytes take of the model's context: a photo

@@ -57,8 +57,10 @@ and the file's size.
    (`attach.Ref`), never its bytes. At the run's start the runner loads the
    bytes of the files its messages name, newest first, up to 20 MB and about
    100,000 tokens in all (a photo about 1,600, a PDF about 2,000 a page,
-   text about one per four bytes). An older one past either reaches the model
-   as a line saying it's out of view and can be sent again.
+   text about one per four bytes). Files from the chat's earlier messages take
+   at most 30,000 tokens of that: each run sends them again, so an old long
+   PDF doesn't cost its full size on every message. A file past these reaches
+   the model as a line saying it's out of view and can be sent again.
 
 Word and Excel files are zips from someone else's computer. They're opened
 with limits before anything is read: at most 1,000 parts, 16 MB each and
@@ -108,7 +110,7 @@ a week past its due time. The bucket's lifecycle rule removes anything left
 | `attach.TestOfficeFilesAreOpenedSafely` | a zip bomb, an external entity, macros, too many parts |
 | `attach.TestCreateRefusesBeforeUpload` | types, limits and the message that names them |
 | `attach.TestTakeBindLoad` | only the person's own, once; fenced; loaded; read only by them; gone with the message |
-| `attach.TestTakeDeletesAMismatch`, `TestAnUnsentUploadGoesAfterAnHour`, `TestLoadKeepsToTheBudget`, `TestLoadKeepsToTheTokenBudget` | a bad upload removed; abandoned uploads; the turn's byte and token budgets |
+| `attach.TestTakeDeletesAMismatch`, `TestAnUnsentUploadGoesAfterAnHour`, `TestLoadKeepsToTheBudget`, `TestLoadKeepsToTheTokenBudget` | a bad upload removed; abandoned uploads; the turn's byte and token budgets; `TestEarlierFilesTakeASmallerShare`, earlier messages' share |
 | `attachtest` (memory, DynamoDB) | tenant isolation, binding once, listing, the due queue |
 | `store/s3.TestAnUploadIsPinned`, `TestADownloadIsNamed` | the signed size, type and checksum; the download's name |
 | `runner.TestAFileReachesTheModelWithItsMessage` | the model gets it fenced with its bytes; events hold only references; the next message sees it |
