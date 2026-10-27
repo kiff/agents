@@ -128,6 +128,10 @@ if ! aws s3api head-bucket --bucket "$ATTACHMENTS" >/dev/null 2>&1; then
   aws s3api create-bucket --bucket "$ATTACHMENTS" --create-bucket-configuration LocationConstraint="$REGION" >/dev/null
   say "created bucket $ATTACHMENTS"
 fi
+# People's files stay in the region (eu-west-1 unless AGENTS_REGION says): a
+# bucket of that name anywhere else stops here.
+where=$(aws s3api get-bucket-location --bucket "$ATTACHMENTS" --query LocationConstraint)
+[ "$where" = "$REGION" ] || { echo "bucket $ATTACHMENTS is in $where, not $REGION" >&2; exit 1; }
 aws s3api put-public-access-block --bucket "$ATTACHMENTS" --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 aws s3api put-bucket-ownership-controls --bucket "$ATTACHMENTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
