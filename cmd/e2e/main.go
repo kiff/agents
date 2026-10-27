@@ -1051,6 +1051,11 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 			}
 		}
 	}
+	if t.stripe == nil {
+		if err := t.followUp(ctx, tafID, *connected); err != nil {
+			return err
+		}
+	}
 	if t.stripe != nil {
 		// Stripe's own account of it: one refund, of 3.00.
 		got, err := t.stripe.refunds(ctx, t.intent)
@@ -1369,4 +1374,102 @@ func oneLine(s string) string {
 		s = string(r[:240]) + "…"
 	}
 	return s
+}
+
+// followUp is one chat of two messages: the owner asks the taf to check a
+// charge and wait, then says "Do it." The first run refunds nothing. The
+// second refunds that charge, by the amount asked, once, and lists no
+// charges: what the first found is in the chat's history.
+func (t *test) followUp(ctx context.Context, tafID string, g grant) error {
+	charge := "ch_e2e_follow_" + t.run
+	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: tafID}
+	asks := []string{"Check charge " + charge + ": can 400 cents of it be refunded? Don't refund it yet.", "Do it."}
+	var made [][]string
+	for _, ask := range asks {
+		r, err := ch.Send(ctx, ask, nil)
+		if err != nil {
+			return fmt.Errorf("the follow-up's run: %w", err)
+		}
+		_, text, _ := t.latest(ctx, ch.Session, r.ID)
+		t.logf("owner: %s → taf: %s", ask, oneLine(text))
+		t.tafSaid = append(t.tafSaid, text)
+		if r.Status != "COMPLETED" {
+			return fmt.Errorf("%q: the run ended %s", ask, r.Status)
+		}
+		tools, err := t.toolsCalled(ctx, ch.Session, r.ID)
+		if err != nil {
+			return err
+		}
+		made = append(made, tools)
+	}
+	_, refunds := chargeTools(g)
+	lists := listTools(g)
+	if len(lists) == 0 {
+		return errors.New("the grant has no listing read (a tool with no resource argument): the follow-up can't check it listed nothing")
+	}
+	for _, tool := range made[0] {
+		if isTool(tool, refunds) {
+			return fmt.Errorf("asked to wait, the taf called %s: its calls %v", tool, made[0])
+		}
+	}
+	for _, tool := range made[1] {
+		if isTool(tool, lists) {
+			return fmt.Errorf("on \"Do it.\" the taf listed again (%s): its calls %v", tool, made[1])
+		}
+	}
+	calls, err := t.vendorCalls(ctx)
+	if err != nil {
+		return err
+	}
+	var got []string
+	for _, c := range calls {
+		if strings.Contains(c, charge) {
+			got = append(got, c)
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], `"charge":"`+charge+`"`) || !strings.Contains(got[0], `"amount":400`) {
+		return fmt.Errorf("after \"Do it.\" the vendor received %v; want exactly the refund of %s for 400", got, charge)
+	}
+	t.logf("on \"Do it.\" the taf refunded the charge it had checked, without listing again: %v", made[1])
+	return nil
+}
+
+// toolsCalled is the tools a run called, in order.
+func (t *test) toolsCalled(ctx context.Context, sessionID, runID string) ([]string, error) {
+	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the run's events: %w", err)
+	}
+	var tools []string
+	for _, e := range events {
+		if e.Run != runID || e.Kind != session.ToolCall {
+			continue
+		}
+		var b agent.ToolCallBody
+		if err := json.Unmarshal(e.Body, &b); err != nil {
+			return nil, err
+		}
+		tools = append(tools, b.Tool)
+	}
+	return tools, nil
+}
+
+// listTools are the names the grant gave its listing reads: a tool with no
+// resource argument, so one that acts on no single thing, other than the
+// refund, the charge read or Setup's own reads. Found from the grant, not
+// by a vendor's tool name, nor by Setup marking it read-only.
+func listTools(g grant) []string {
+	reads, refunds := chargeTools(g)
+	var names []string
+	for _, t := range g.Request.Tools {
+		name := t.Name
+		if name == "" {
+			name = t.Tool
+		}
+		if t.ResourceArg != "" || t.SetupReads || slices.Contains(reads, name) || slices.Contains(refunds, name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }

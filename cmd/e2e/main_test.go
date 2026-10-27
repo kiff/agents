@@ -219,6 +219,23 @@ func TestChargeTools(t *testing.T) {
 	}
 }
 
+// A listing read is found from the grant: no resource argument, and not the
+// refund, the charge read or one of Setup's own reads, read-only or not.
+func TestListTools(t *testing.T) {
+	var g grant
+	g.Request.Tools = []grantTool{
+		{Tool: "list_charges", Name: "find_charges", ReadOnly: true},
+		{Tool: "stripe_api_read", Name: "get_charge", ReadOnly: true, Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}},
+		{Tool: "retrieve_dispute", ReadOnly: true, ResourceArg: "dispute"},
+		{Tool: "stripe_api_details", ReadOnly: true, SetupReads: true},
+		{Tool: "search_payments"},
+		{Tool: "create_refund"},
+	}
+	if got := listTools(g); !slices.Equal(got, []string{"find_charges", "search_payments"}) {
+		t.Fatalf("listTools = %v", got)
+	}
+}
+
 // The phone signs planque's requests as a KIFF device (d=), as the tafs app
 // does, so planque can drop the key-enrolled path (kiff/planque#12).
 func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
