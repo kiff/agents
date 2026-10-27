@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// fakeDeviceKIFF is KIFF's device sign-in, approved on the second ask, and
-// /v1/me answering role for the session it gave.
-func fakeDeviceKIFF(t *testing.T, role string) *httptest.Server {
+// fakeDeviceKIFF is KIFF's device sign-in, approved on the second ask on
+// account, and /v1/me answering role there for the session it gave.
+func fakeDeviceKIFF(t *testing.T, account, role string) *httptest.Server {
 	t.Helper()
 	asks := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,13 +36,13 @@ func fakeDeviceKIFF(t *testing.T, role string) *httptest.Server {
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending"})
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "sess-luis", "tenant": "t-eval"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "sess-luis", "tenant": account})
 		case "/v1/me":
 			if r.Header.Get("Authorization") != "Bearer sess-luis" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"tenant_display_name": "KIFF Eval", "member_role": role})
+			_ = json.NewEncoder(w).Encode(map[string]string{"tenant_id": account, "tenant_display_name": "KIFF Eval", "member_role": role})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -55,9 +55,9 @@ func fakeDeviceKIFF(t *testing.T, role string) *httptest.Server {
 // the key and the session, the screen neither (step 9).
 func TestAPersonSignsInOnANewPhoneKey(t *testing.T) {
 	devicePoll = time.Millisecond
-	srv := fakeDeviceKIFF(t, "viewer")
+	srv := fakeDeviceKIFF(t, "t-eval", "viewer")
 	var out, say bytes.Buffer
-	if err := peopleSignIn(context.Background(), srv.URL, "luis", srv.Client(), &out, &say); err != nil {
+	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
@@ -75,13 +75,22 @@ func TestAPersonSignsInOnANewPhoneKey(t *testing.T) {
 // Approved on another account, or with another role, nothing is written.
 func TestAPersonOnTheWrongAccountWritesNothing(t *testing.T) {
 	devicePoll = time.Millisecond
-	srv := fakeDeviceKIFF(t, "admin")
 	var out, say bytes.Buffer
-	err := peopleSignIn(context.Background(), srv.URL, "luis", srv.Client(), &out, &say)
+	srv := fakeDeviceKIFF(t, "t-eval", "admin")
+	err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say)
 	if err == nil || !strings.Contains(err.Error(), "not as viewer") || out.Len() != 0 {
-		t.Fatalf("err %v, wrote %q", err, out.String())
+		t.Fatalf("another role: err %v, wrote %q", err, out.String())
 	}
-	if err := peopleSignIn(context.Background(), srv.URL, "ana", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
+	// The right role, on the person's own team's account.
+	srv = fakeDeviceKIFF(t, "t-own", "viewer")
+	err = peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say)
+	if err == nil || !strings.Contains(err.Error(), "not to the shared account") || out.Len() != 0 {
+		t.Fatalf("another account: err %v, wrote %q", err, out.String())
+	}
+	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "ana", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
 		t.Fatalf("an unknown person: err %v, wrote %q", err, out.String())
+	}
+	if err := peopleSignIn(context.Background(), srv.URL, "", "luis", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
+		t.Fatalf("no account: err %v, wrote %q", err, out.String())
 	}
 }

@@ -140,21 +140,24 @@ func deviceSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, de
 }
 
 // stepNine is each of step 9's people and the role they hold on the shared
-// account (RFC 050 decision 12): Maria an editor who manages Support, Luis a
+// account: Maria an editor who manages Support, Luis a
 // viewer in it.
 var stepNine = map[string]string{"maria": "editor", "luis": "viewer"}
 
 // peopleSignIn signs one of step 9's people in, as their own phone would
-// (kiff/tafs#294, RFC 050 decision 12): a new phone key and KIFF's device
-// sign-in, which that person approves on the shared account. It makes no
+// (kiff/tafs#294): a new phone key and KIFF's device sign-in, which that
+// person approves on the shared account, whose id is account. It makes no
 // agent: the person only uses what is shared with them. It writes the phone
 // key (base64 PKCS#8) and the session's token to out (two lines, 0600), for
 // a script that puts them in the repository's secrets, and prints neither:
 // only the account and the role KIFF gives the session, to check by eye.
-func peopleSignIn(ctx context.Context, apiBase, person string, hc *http.Client, out io.Writer, say io.Writer) error {
+func peopleSignIn(ctx context.Context, apiBase, account, person string, hc *http.Client, out io.Writer, say io.Writer) error {
 	want, ok := stepNine[person]
 	if !ok {
 		return fmt.Errorf("-person %q: maria or luis", person)
+	}
+	if account == "" {
+		return errors.New("-account: the shared account's id")
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -174,9 +177,14 @@ func peopleSignIn(ctx context.Context, apiBase, person string, hc *http.Client, 
 	}
 	name, _ := me.Body["tenant_display_name"].(string)
 	role, _ := me.Body["member_role"].(string)
+	id, _ := me.Body["tenant_id"].(string)
+	if tenant != account || id != account {
+		// Approved on another account (the person's own, say), with whatever
+		// role: nothing is written.
+		return fmt.Errorf("%s signed in to %q, not to the shared account: approve on that one", person, name)
+	}
 	if role != want {
-		// Approved on another account (the person's own, say): nothing is written.
-		return fmt.Errorf("%s signed in to %q as %q, not as %s: approve on the shared account", person, name, role, want)
+		return fmt.Errorf("%s signed in to %q as %q, not as %s", person, name, role, want)
 	}
 	fmt.Fprintf(say, "%s is signed in to %q as %s; the session is bound to a new phone key\n", person, name, role)
 	_, err = fmt.Fprintf(out, "%s\n%s\n", base64.StdEncoding.EncodeToString(der), token)

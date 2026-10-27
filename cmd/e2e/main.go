@@ -27,7 +27,7 @@
 //	                    Stripe's MCP server, a person signs in at Stripe
 //	                    (-stripe-signin), and Stripe's API says what was refunded
 //
-// Step 9's people (RFC 050 decision 12), for -people: each signs in on a new
+// Step 9's people, for -people: each signs in on a new
 // phone key with -people-signin, which infra/e2e-people-signin.sh runs and
 // puts in the repository's secrets, never on a screen:
 //
@@ -159,6 +159,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	peopleSignin := fs.String("people-signin", "", "once per person, before -people runs (step 9): sign -person in to KIFF on a new phone key "+
 		"(they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
 	person := fs.String("person", "", "-people-signin: maria (an editor) or luis (a viewer)")
+	account := fs.String("account", "", "-people-signin: the shared account's id; a sign-in approved on another account writes nothing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -168,7 +169,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 			return err
 		}
 		defer f.Close()
-		return peopleSignIn(ctx, kiff.APIURL, *person, &http.Client{Timeout: 30 * time.Second}, f, stdout)
+		return peopleSignIn(ctx, kiff.APIURL, *account, *person, &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	cfg.maxCost = int64(*maxCost * 1e6)
 	if *transcript != "" {
