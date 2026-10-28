@@ -20,6 +20,10 @@ on:
         description: Also the improve case (kiff/tafs#107, #173) - a new version, tried beside the live one under its own Card, then installed
         type: boolean
         default: false
+      people:
+        description: Also step 9 (kiff/tafs#294) - a taf shared with Support, used by Maria and Luis, each seeing only their own use of it
+        type: boolean
+        default: true
 permissions:
   contents: read
   id-token: write
@@ -32,9 +36,11 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       REPORTS: kiff-agents-eval-reports
+      # Whether step 9's people are signed in: a step's if can't read secrets.
+      HAS_PEOPLE: ${{ secrets.E2E_MARIA_SESSION != '' && secrets.E2E_LUIS_SESSION != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -62,6 +68,23 @@ jobs:
         # chat's transcript (setup.md) goes only to the private bucket, so a
         # failed chat can be read afterwards.
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript setup.md $IMPROVE
+      # Step 9's people, on a taf of the run's own on tafs cloud, shared with
+      # Support (cmd/e2e/people.go). Nightly, and by hand unless turned off;
+      # skipped while the people's sessions aren't set (infra/e2e-people-signin.sh).
+      - name: Step 9's people
+        if: always() && (github.event_name == 'schedule' || inputs.people) && env.HAS_PEOPLE == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+          E2E_MARIA_SESSION: ${{ secrets.E2E_MARIA_SESSION }}
+          E2E_MARIA_PHONE_KEY: ${{ secrets.E2E_MARIA_PHONE_KEY }}
+          E2E_LUIS_SESSION: ${{ secrets.E2E_LUIS_SESSION }}
+          E2E_LUIS_PHONE_KEY: ${{ secrets.E2E_LUIS_PHONE_KEY }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript people.md -people
       # The role assumes only from main (infra/aws.sh).
       - uses: aws-actions/configure-aws-credentials@v4
         if: always() && github.ref == 'refs/heads/main'
@@ -73,5 +96,6 @@ jobs:
         run: |
           key="reports/e2e-$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
           [ -f setup.md ] && aws s3 cp --only-show-errors setup.md "s3://$REPORTS/$key/setup.md"
+          [ -f people.md ] && aws s3 cp --only-show-errors people.md "s3://$REPORTS/$key/people.md"
           echo "transcript: s3://$REPORTS/$key/"
 
