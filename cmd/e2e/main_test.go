@@ -375,3 +375,63 @@ func TestPhoneReadsALongGrantsList(t *testing.T) {
 		t.Fatal("a list cut short read as a list")
 	}
 }
+
+// fakeShared is planque and KIFF on an account the test shares with its
+// owner: the owner's Refunds grant (grt_owner) and Card (m_owner), and an
+// earlier run's grant (grt_old), asked for by the test's setup agent. It
+// records each call that changes something.
+func fakeShared(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	var changed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/t1/asked-grants":
+			if r.Header.Get("Authorization") != "Bearer setup-key" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"grants":[{"id":"grt_old","status":"connected","tools":[{"name":"create_refund"}]}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/t1/grants":
+			// The account's whole list, the owner's included.
+			_, _ = w.Write([]byte(`{"grants":[{"id":"grt_owner","status":"connected"},{"id":"grt_old","status":"connected"}]}`))
+		case r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			changed = append(changed, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &changed
+}
+
+// A run touches only what it made: at its start it disconnects only the
+// grants its own setup agent asked for, and its cleanup only what it
+// recorded. The owner's connected grant and Card on the same account are
+// left alone.
+func TestARunLeavesWhatItDidntMake(t *testing.T) {
+	srv, changed := fakeShared(t)
+	var log bytes.Buffer
+	tt := &test{cfg: config{planque: srv.URL, setupKey: "setup-key", log: &log}, out: &redacting{w: &log}, hc: srv.Client(),
+		phone: &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1"},
+		kiff:  &client{base: srv.URL, http: srv.Client()}}
+	if err := tt.clearEarlierRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"DELETE /v1/accounts/t1/grants/grt_old"}; !slices.Equal(*changed, want) {
+		t.Fatalf("at the start: %v, want %v", *changed, want)
+	}
+	*changed = nil
+	tt.grants, tt.cardIDs, tt.tafAgents = []string{"grt_new"}, []string{"m_new"}, []string{"taf-new"}
+	tt.cleanup()
+	want := []string{"DELETE /v1/accounts/t1/grants/grt_new", "POST /v1/me/mandates/m_new/revoke", "POST /v1/me/agents/taf-new/archive"}
+	if !slices.Equal(*changed, want) {
+		t.Fatalf("at cleanup: %v, want %v", *changed, want)
+	}
+	for _, c := range *changed {
+		if strings.Contains(c, "owner") {
+			t.Fatalf("touched the owner's %s", c)
+		}
+	}
+}
