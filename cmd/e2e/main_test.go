@@ -97,20 +97,30 @@ func TestCoversTheJob(t *testing.T) {
 				continue
 			case "read anything":
 				name = "stripe_api_read"
+			case "refunds":
+				out.Request.Tools = append(out.Request.Tools, grantTool{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetRefunds"}})
+				continue
+			case "one day's refunds":
+				out.Request.Tools = append(out.Request.Tools, grantTool{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetRefunds",
+					"parameters": map[string]any{"created": map[string]any{"gte": 1}}}})
+				continue
 			}
 			out.Request.Tools = append(out.Request.Tools, grantTool{Tool: name})
 		}
 		return out
 	}
-	if err := coversTheJob(g("list_charges", "read", "create_refund")); err != nil {
+	if err := coversTheJob(g("list_charges", "read", "create_refund", "refunds")); err != nil {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]grant{
 		"only acts":              g("create_refund"),
-		"can't check one":        g("list_charges", "create_refund"),
-		"reads any operation":    g("list_charges", "read anything", "create_refund"),
-		"pays out as well":       g("list_charges", "read", "create_refund", "payout_balance"),
-		"the old dedicated read": g("list_charges", "retrieve_charge", "create_refund"),
+		"can't check one":        g("list_charges", "create_refund", "refunds"),
+		"reads any operation":    g("list_charges", "read anything", "create_refund", "refunds"),
+		"pays out as well":       g("list_charges", "read", "create_refund", "refunds", "payout_balance"),
+		"the old dedicated read": g("list_charges", "retrieve_charge", "create_refund", "refunds"),
+		// It can't say what it refunded on a day (kiff/tafs#304).
+		"can't list its refunds":  g("list_charges", "read", "create_refund"),
+		"its dates pinned for it": g("list_charges", "read", "create_refund", "one day's refunds"),
 	} {
 		if coversTheJob(c) == nil {
 			t.Errorf("%s: passed", name)
@@ -175,12 +185,13 @@ func TestAllToolsCoverTheJobAcrossGrants(t *testing.T) {
 	var details, job grant
 	details.Request.Tools = []grantTool{{Tool: "stripe_api_details", ReadOnly: true}}
 	job.Request.Tools = []grantTool{{Tool: "list_charges"},
-		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}}, {Tool: "create_refund"}}
+		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}}, {Tool: "create_refund"},
+		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetRefunds"}}}
 	if coversTheJob(details) == nil {
 		t.Fatal("the field-listing grant alone covered the job")
 	}
 	all := allTools([]grant{details, job})
-	if err := coversTheJob(*all); err != nil || len(all.Request.Tools) != 4 {
+	if err := coversTheJob(*all); err != nil || len(all.Request.Tools) != 5 {
 		t.Fatalf("both grants: %v, %d tools", err, len(all.Request.Tools))
 	}
 }

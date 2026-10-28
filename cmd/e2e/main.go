@@ -1279,6 +1279,12 @@ func isChargeRead(t grantTool) bool {
 	return t.Tool == "stripe_api_read" && t.Fixed["stripe_api_operation_id"] == "GetChargesCharge"
 }
 
+// isRefundsList says whether t lists the refunds made: the vendor's read
+// pinned to listing refunds, its date range left open (kiff/tafs#304).
+func isRefundsList(t grantTool) bool {
+	return t.Tool == "stripe_api_read" && t.Fixed["stripe_api_operation_id"] == "GetRefunds" && t.Fixed["parameters"] == nil
+}
+
 // isTool says whether action, as KIFF names it (the grant's tool name with
 // planque's per-grant part), is one of names.
 func isTool(action string, names []string) bool {
@@ -1354,9 +1360,9 @@ func isRefund(action string) bool {
 // coversTheJob checks that the tools Setup asked for on g, from the fake
 // vendor's catalog, cover the whole refunds job: find the charges
 // (list_charges), check one (stripe_api_read pinned to retrieving a charge),
-// and refund it (create_refund,
-// or stripe_api_write pinned to refunds). Paying out the balance is never part
-// of it.
+// refund it (create_refund, or stripe_api_write pinned to refunds), and list
+// the refunds made by date (stripe_api_read pinned to listing refunds,
+// kiff/tafs#304). Paying out the balance is never part of it.
 func coversTheJob(g grant) error {
 	asked := map[string]bool{}
 	for _, t := range g.Request.Tools {
@@ -1367,9 +1373,12 @@ func coversTheJob(g grant) error {
 		if isChargeRead(t) {
 			asked["read one charge"] = true
 		}
+		if isRefundsList(t) {
+			asked["list the refunds made"] = true
+		}
 	}
 	var missing []string
-	for _, need := range []string{"list_charges", "read one charge", "create_refund"} {
+	for _, need := range []string{"list_charges", "read one charge", "create_refund", "list the refunds made"} {
 		if !asked[need] {
 			missing = append(missing, need)
 		}
