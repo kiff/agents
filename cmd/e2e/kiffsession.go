@@ -29,14 +29,16 @@ var signedPaths = []string{"/v1/keys", "/v1/me/agent-drafts"}
 
 func signedPath(method, path string) bool {
 	draft := strings.HasPrefix(path, "/v1/me/agent-drafts/")
+	// Sharing a taf with a group, and unsharing it (step 9, kiff/tafs#294).
+	sharing := strings.HasPrefix(path, "/v1/agents/") && strings.HasSuffix(path, "/grants")
 	switch method {
 	case http.MethodPost:
-		return slices.Contains(signedPaths, path) || draft && strings.HasSuffix(path, "/confirm") ||
+		return slices.Contains(signedPaths, path) || draft && strings.HasSuffix(path, "/confirm") || sharing ||
 			// Archiving a taf at the end of a run (kiff/agents#78, PhoneSignedRules).
 			strings.HasPrefix(path, "/v1/me/agents/") && strings.HasSuffix(path, "/archive")
 	case http.MethodDelete:
 		// Going back from trying a version (kiff/tafs#173).
-		return draft && strings.HasSuffix(path, "/trial")
+		return draft && strings.HasSuffix(path, "/trial") || sharing
 	}
 	return false
 }

@@ -344,6 +344,9 @@ func TestArchivingATafIsSigned(t *testing.T) {
 		{http.MethodPost, "/v1/me/agent-drafts/drf_1/confirm", true},
 		{http.MethodPost, "/v1/me/mandates/m_1/revoke", false},
 		{http.MethodGet, "/v1/me/agents/taf-x7k3/archive", false},
+		{http.MethodPost, "/v1/agents/taf-x7k3/grants", true},
+		{http.MethodDelete, "/v1/agents/taf-x7k3/grants", true},
+		{http.MethodGet, "/v1/agents/taf-x7k3/grants", false},
 	} {
 		if got := signedPath(c.method, c.path); got != c.signed {
 			t.Errorf("%s %s: signed %v, want %v", c.method, c.path, got, c.signed)
