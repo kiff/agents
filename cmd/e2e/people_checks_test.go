@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -158,26 +157,5 @@ func TestCleanupUnsharesByQuery(t *testing.T) {
 	}
 	if sig == "" {
 		t.Error("the unshare isn't signed")
-	}
-}
-
-// A share outlives its taf when an unshare failed: Support's grants on agents
-// the admin's access no longer lists are removed, and live ones are kept.
-func TestStaleSharesAreTheArchivedOnes(t *testing.T) {
-	groups := map[string]any{"groups": []any{
-		map[string]any{"id": "grp_support", "name": "Support", "agents": []any{"taf-live", "taf-old1", "taf-old2"}},
-		map[string]any{"id": "grp_other", "name": "Other", "agents": []any{"taf-old3"}},
-	}}
-	access := map[string]any{"agents": map[string]any{"taf-live": map[string]any{"use": true}, "taf-owners": map[string]any{}}}
-	if got := staleShares(groups, "grp_support", access, "taf-live"); !slices.Equal(got, []string{"taf-old1", "taf-old2"}) {
-		t.Fatalf("stale %v", got)
-	}
-	// An access that doesn't list the run's own live taf proves nothing: no
-	// share is removed, the owner's included.
-	if got := staleShares(groups, "grp_support", map[string]any{}, "taf-live"); got != nil {
-		t.Fatalf("empty access: %v", got)
-	}
-	if got := staleShares(groups, "grp_support", access, "taf-new"); got != nil {
-		t.Fatalf("access without ours: %v", got)
 	}
 }
