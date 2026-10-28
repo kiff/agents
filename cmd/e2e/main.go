@@ -473,10 +473,13 @@ func (k keyring) Key(ctx context.Context, tenant, ref string) (string, error) {
 	return key, err
 }
 
-// clearEarlierRuns disconnects what an earlier run left connected: tool
-// names are the account's, so a stale grant would block this one's.
+// clearEarlierRuns disconnects what an earlier run left connected, and only
+// that: the grants the test's own setup agent asked for (planque's
+// asked-grants, with its key). The account is shared with people who use
+// it, so a grant someone else's Coach asked for is theirs, never the test's
+// to disconnect, connected or not.
 func (t *test) clearEarlierRuns(ctx context.Context) error {
-	gs, err := t.phone.grants(ctx)
+	gs, err := t.askedGrants(ctx)
 	if err != nil {
 		return err
 	}
@@ -490,6 +493,33 @@ func (t *test) clearEarlierRuns(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// askedGrant is a grant as planque lists it to the agent that asked for it.
+type askedGrant struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// askedGrants is every grant the test's setup agent asked for, on any taf.
+func (t *test) askedGrants(ctx context.Context) ([]askedGrant, error) {
+	c := &client{base: strings.TrimRight(t.cfg.planque, "/"), http: t.hc, auth: func(req *http.Request, _ []byte) {
+		req.Header.Set("Authorization", "Bearer "+t.cfg.setupKey)
+	}}
+	a, err := c.do(ctx, http.MethodGet, t.phone.accountPath()+"/asked-grants", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.err(); err != nil {
+		return nil, fmt.Errorf("planque asked-grants: %w", err)
+	}
+	var out struct {
+		Grants []askedGrant `json:"grants"`
+	}
+	if err := json.Unmarshal([]byte(a.Raw), &out); err != nil {
+		return nil, fmt.Errorf("planque asked-grants: %w", err)
+	}
+	return out.Grants, nil
 }
 
 // setupDefinition is the setup agent: from kiff/tafs' setupdef.ts when
@@ -1373,7 +1403,8 @@ func (t *test) checkRecords(ctx context.Context) error {
 
 // cleanup disconnects the grant, revokes the taf's Cards and archives the
 // taf's KIFF agent, unless -keep: the taf's key then reaches nothing, and
-// the account's tafs don't grow with each run.
+// the account's tafs don't grow with each run. It touches only what this
+// run recorded making: the account's other grants, Cards and tafs are left.
 func (t *test) cleanup() {
 	if t.cfg.keep || t.kiff == nil {
 		return
