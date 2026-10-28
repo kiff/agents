@@ -23,8 +23,11 @@ on:
 permissions:
   contents: read
   id-token: write
+# One group with the Eval: both run on the test's account with the same setup agent,
+# and a run starts by disconnecting the grants that agent asked for, so two at
+# once take each other's tools away. They queue instead.
 concurrency:
-  group: e2e
+  group: test-account
   cancel-in-progress: false
 jobs:
   e2e:

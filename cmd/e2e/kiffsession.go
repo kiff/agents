@@ -64,15 +64,33 @@ func query(req *http.Request) string {
 	return "?" + req.URL.RawQuery
 }
 
-// kiffSignIn is the one-time setup: KIFF's device sign-in with the phone's key,
-// approved by a person in their browser, then the setup agent, made through
-// a draft with no tools that the owner's own phone confirms by submitting
-// it. It writes the session's token and the setup agent's key to out (two
-// lines, 0600) for the test's secrets, and prints neither.
-func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setupAgent string, hc *http.Client, out io.Writer, say io.Writer) error {
+// kiffSignIn is the one-time setup of the test's own account: a new phone
+// key, KIFF's device sign-in with it, approved by a person in their browser on
+// that account (whose id is account), then the setup agent, made through a
+// draft with no tools that the phone confirms by submitting it. The test's
+// account is its own: people use none of what it does, so neither its holds'
+// alerts nor its grants reach anyone. It writes the session's token, the setup
+// agent's key and the phone key (base64 PKCS#8) to out (three lines, 0600) for
+// the test's secrets, and prints none of them. Approved on any other account,
+// it writes nothing.
+func kiffSignIn(ctx context.Context, apiBase, account, setupAgent string, hc *http.Client, out io.Writer, say io.Writer) error {
+	if account == "" {
+		return errors.New("-account: the test's own account's id")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
 	token, tenant, err := deviceSignIn(ctx, apiBase, key, "kiff/agents e2e (#91)", hc, say)
 	if err != nil {
 		return err
+	}
+	if tenant != account {
+		return errors.New("the sign-in was approved on another account, not the test's own: approve on that one")
 	}
 	fmt.Fprintln(say, "signed in to KIFF; the session is bound to the test phone's key")
 
@@ -97,7 +115,7 @@ func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setu
 		return fmt.Errorf("the setup agent's key holds roles %v; it should hold none", roles)
 	}
 	fmt.Fprintf(say, "the setup agent %s has its key, with no tools\n", setupAgent)
-	_, err = fmt.Fprintf(out, "%s\n%s\n", token, setupKey)
+	_, err = fmt.Fprintf(out, "%s\n%s\n%s\n", token, setupKey, base64.StdEncoding.EncodeToString(der))
 	return err
 }
 
