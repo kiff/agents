@@ -971,8 +971,14 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}
+	return t.reportSetup(checks)
+}
+
+// reportSetup writes each graded check to the log, and a failed one's
+// reason to the private transcript, then fails for any check that did.
+func (t *test) reportSetup(checks []eval.CheckResult) error {
 	var failed []string
-	passed := 0
+	passed, judgedTexts := 0, false
 	for _, c := range checks {
 		mark := "pass"
 		if !c.Pass {
@@ -990,6 +996,15 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)
+		// The private transcript keeps the judges' reason in CI too, and every text in
+		// full: a judged fail is read from there.
+		if !c.Pass && c.Why != "" && t.cfg.transcript != nil {
+			fmt.Fprintf(t.cfg.transcript, "FAIL %s: %s\n", c.Name, c.Why)
+			if !judgedTexts {
+				judgedTexts = true
+				fmt.Fprintf(t.cfg.transcript, "the texts the judges read:\n%s\n", numbered(t.said.texts()))
+			}
+		}
 		// What Setup asked the owner to tap is Setup's own text in this test's
 		// chat, no account's data: shown so a miss can be read from CI.
 		if !c.Pass && c.Name == "asks its questions together" {

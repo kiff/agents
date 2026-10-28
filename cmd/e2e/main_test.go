@@ -435,3 +435,26 @@ func TestARunLeavesWhatItDidntMake(t *testing.T) {
 		}
 	}
 }
+
+// In CI, a judged fail's reason stays out of the public log, and the
+// private transcript has it, with every text the judges read in full.
+func TestAJudgedFailsReasonIsInTheTranscript(t *testing.T) {
+	long := "Pásale cada reembolso con " + strings.Repeat("el cobro ", 40) + "y su id ch_…"
+	var log, transcript bytes.Buffer
+	tt := &test{out: &redacting{w: &log, ci: true}, said: said{messages: []string{"Hola.", long}},
+		cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{}}}
+	err := tt.reportSetup([]eval.CheckResult{
+		{Name: "concise", Grade: eval.Grade{Pass: true}},
+		{Name: "asks for no id", Grade: eval.Grade{Why: "message 2 asks the owner for a charge id"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "asks for no id") {
+		t.Fatalf("err %v", err)
+	}
+	if strings.Contains(log.String(), "charge id") || strings.Contains(log.String(), "Pásale") {
+		t.Fatalf("the public log has the chat: %q", log.String())
+	}
+	got := transcript.String()
+	if !strings.Contains(got, "FAIL asks for no id: message 2 asks the owner for a charge id") || !strings.Contains(got, long) {
+		t.Fatalf("the transcript: %q", got)
+	}
+}
