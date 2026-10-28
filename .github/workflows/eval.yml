@@ -23,6 +23,9 @@ permissions:
 # One group with the E2E: both run on the test's account with the same setup agent,
 # and a run starts by disconnecting the grants that agent asked for, so two at
 # once take each other's tools away. They queue instead.
+# GitHub keeps one pending run per group: a scheduled E2E queued behind a
+# running Eval replaces a dispatched Eval waiting there, so whoever dispatches
+# an Eval checks the queue afterwards.
 concurrency:
   group: test-account
   cancel-in-progress: false

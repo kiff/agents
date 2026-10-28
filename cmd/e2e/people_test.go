@@ -11,11 +11,15 @@ import (
 	"time"
 )
 
+// signedOut is each session fakeDeviceKIFF was asked to sign out.
+var signedOut []string
+
 // fakeDeviceKIFF is KIFF's device sign-in, approved on the second ask on
 // account, and /v1/me answering role there for the session it gave.
 func fakeDeviceKIFF(t *testing.T, account, role string) *httptest.Server {
 	t.Helper()
 	asks := 0
+	signedOut = nil
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -37,6 +41,9 @@ func fakeDeviceKIFF(t *testing.T, account, role string) *httptest.Server {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "sess-luis", "tenant": account})
+		case "/v1/auth/device/logout":
+			signedOut = append(signedOut, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusNoContent)
 		case "/v1/me":
 			if r.Header.Get("Authorization") != "Bearer sess-luis" {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -67,6 +74,9 @@ func TestAPersonSignsInOnANewPhoneKey(t *testing.T) {
 	if _, err := parsePhone(lines[0]); err != nil {
 		t.Fatalf("the phone key doesn't parse: %v", err)
 	}
+	if len(signedOut) != 0 {
+		t.Fatalf("signed out the session it keeps: %v", signedOut)
+	}
 	if s := say.String(); strings.Contains(s, "sess-luis") || strings.Contains(s, lines[0]) || !strings.Contains(s, `"KIFF Eval" as viewer`) {
 		t.Fatalf("printed %q", s)
 	}
@@ -81,11 +91,17 @@ func TestAPersonOnTheWrongAccountWritesNothing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not as viewer") || out.Len() != 0 {
 		t.Fatalf("another role: err %v, wrote %q", err, out.String())
 	}
+	if len(signedOut) != 1 {
+		t.Fatalf("another role: signed out %v", signedOut)
+	}
 	// The right role, on the person's own team's account.
 	srv = fakeDeviceKIFF(t, "t-own", "viewer")
 	err = peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say)
 	if err == nil || !strings.Contains(err.Error(), "not to the shared account") || out.Len() != 0 {
 		t.Fatalf("another account: err %v, wrote %q", err, out.String())
+	}
+	if len(signedOut) != 1 {
+		t.Fatalf("another account: signed out %v", signedOut)
 	}
 	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "ana", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
 		t.Fatalf("an unknown person: err %v, wrote %q", err, out.String())

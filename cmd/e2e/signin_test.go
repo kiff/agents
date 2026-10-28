@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +14,10 @@ import (
 
 // fakeSignInKIFF is KIFF's device sign-in, approved at once on account, the
 // setup agent's draft confirmed on submit, and its key claimed with no roles.
-func fakeSignInKIFF(t *testing.T, account string) (*httptest.Server, *int) {
+func fakeSignInKIFF(t *testing.T, account string) (*httptest.Server, *int, *[]string) {
 	t.Helper()
 	drafts := 0
+	var signedOut []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -26,6 +28,9 @@ func fakeSignInKIFF(t *testing.T, account string) (*httptest.Server, *int) {
 		case "/v1/me/agent-drafts":
 			drafts++
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "drf_1", "claim_secret": "cs", "status": "confirmed"})
+		case "/v1/auth/device/logout":
+			signedOut = append(signedOut, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusNoContent)
 		case "/v1/agent-drafts/drf_1/claim":
 			_ = json.NewEncoder(w).Encode(map[string]any{"plaintext": "setup-key", "roles": []any{}})
 		default:
@@ -33,14 +38,14 @@ func fakeSignInKIFF(t *testing.T, account string) (*httptest.Server, *int) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &drafts
+	return srv, &drafts, &signedOut
 }
 
 // The test signs in on its own account with a new phone key: the file gets
 // the session, the setup agent's key and the phone key, the screen none.
 func TestTheTestSignsInOnItsOwnAccount(t *testing.T) {
 	devicePoll = time.Millisecond
-	srv, _ := fakeSignInKIFF(t, "t-test")
+	srv, _, signedOut := fakeSignInKIFF(t, "t-test")
 	var out, say bytes.Buffer
 	if err := kiffSignIn(context.Background(), srv.URL, "t-test", "e2e-setup", srv.Client(), &out, &say); err != nil {
 		t.Fatal(err)
@@ -52,6 +57,9 @@ func TestTheTestSignsInOnItsOwnAccount(t *testing.T) {
 	if _, err := parsePhone(lines[2]); err != nil {
 		t.Fatalf("the phone key doesn't parse: %v", err)
 	}
+	if len(*signedOut) != 0 {
+		t.Fatalf("signed out the session it keeps: %v", *signedOut)
+	}
 	for _, secret := range lines {
 		if strings.Contains(say.String(), secret) {
 			t.Fatalf("printed a secret: %q", say.String())
@@ -60,14 +68,18 @@ func TestTheTestSignsInOnItsOwnAccount(t *testing.T) {
 }
 
 // Approved on an account people use, or with no account named, nothing is
-// written and no setup agent is made there.
+// written, no setup agent is made there, and the session KIFF gave is signed
+// out, so it isn't left live on that account.
 func TestTheTestsSignInOnAnotherAccountWritesNothing(t *testing.T) {
 	devicePoll = time.Millisecond
-	srv, drafts := fakeSignInKIFF(t, "t-people")
+	srv, drafts, signedOut := fakeSignInKIFF(t, "t-people")
 	var out, say bytes.Buffer
 	err := kiffSignIn(context.Background(), srv.URL, "t-test", "e2e-setup", srv.Client(), &out, &say)
 	if err == nil || !strings.Contains(err.Error(), "another account") || out.Len() != 0 || *drafts != 0 {
 		t.Fatalf("err %v, wrote %q, drafts %d", err, out.String(), *drafts)
+	}
+	if want := []string{"Bearer sess-e2e"}; !slices.Equal(*signedOut, want) {
+		t.Fatalf("signed out %v, want %v", *signedOut, want)
 	}
 	if err := kiffSignIn(context.Background(), srv.URL, "", "e2e-setup", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
 		t.Fatalf("no account: err %v, wrote %q", err, out.String())
