@@ -1444,9 +1444,6 @@ func (t *test) checkRecords(ctx context.Context) error {
 	return nil
 }
 
-// cleanup disconnects the grant, revokes the taf's Cards and archives the
-// taf's KIFF agent, unless -keep: the taf's key then reaches nothing, and
-// the account's tafs don't grow with each run. It touches only what this
 // unshare removes a taf's share with a group. KIFF reads which grant from
 // the query (?group=), as the app sends it, not from a body.
 func unshare(ctx context.Context, k *client, agent, group string) error {
@@ -1457,6 +1454,9 @@ func unshare(ctx context.Context, k *client, agent, group string) error {
 	return a.err()
 }
 
+// cleanup disconnects the grant, revokes the taf's Cards and archives the
+// taf's KIFF agent, unless -keep: the taf's key then reaches nothing, and
+// the account's tafs don't grow with each run. It touches only what this
 // run recorded making: the account's other grants, Cards and tafs are left.
 func (t *test) cleanup() {
 	if t.cfg.keep || t.kiff == nil {
