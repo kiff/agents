@@ -32,6 +32,9 @@ type someone struct {
 	// What they ask the taf for, by charge: a refund inside the Card, and one
 	// over its limit for one call, which KIFF holds.
 	inside, held string
+	// answers is KIFF's word on whether they may answer another's held call:
+	// holds.answer in their /v1/me capabilities.
+	answers bool
 }
 
 // peopleFrom reads step 9's people from the environment; none when neither's
@@ -73,15 +76,6 @@ func bearerAuth(token string) func(*http.Request, []byte) {
 func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error {
 	admin := &client{base: strings.TrimRight(t.cfg.cloud, "/"), http: t.hc, auth: bearerAuth(t.cfg.session)}
 
-	// Who answers a hold follows the account's separation of duties: off, every
-	// role holding holds.answer does (admin, editor, approver); on, approvers only.
-	g, err := t.kiff.do(ctx, http.MethodGet, "/v1/tenant/governance", nil)
-	if err != nil || g.err() != nil {
-		return fmt.Errorf("reading the account's separation of duties: %v %v", err, g.err())
-	}
-	separated, _ := g.Body["separation_of_duties"].(bool)
-	t.logf("separation of duties: %v", separated)
-
 	for _, p := range t.people {
 		me, err := p.kiff.do(ctx, http.MethodGet, "/v1/me", nil)
 		if err != nil || me.err() != nil {
@@ -92,6 +86,15 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 		if tenant != t.tenant || role != p.role {
 			return fmt.Errorf("%s is signed in as %q on another account or role; want %s on the test's", p.name, role, p.role)
 		}
+		// Who answers a hold follows the account's separation of duties: off, every
+		// role holding holds.answer does (admin, editor, approver); on, approvers
+		// only. KIFF tells each person on /v1/me, the same rule its hold gate uses.
+		separated, _ := me.Body["separation_of_duties"].(bool)
+		p.answers = hasCapability(me.Body, "holds.answer")
+		if want := mayAnswer(p.role, separated); p.answers != want {
+			return fmt.Errorf("KIFF says %s (%s, separation of duties %v) may answer holds: %v; want %v", p.name, p.role, separated, p.answers, want)
+		}
+		t.logf("%s, separation of duties %v, answers holds: %v", p.name, separated, p.answers)
 		p.kiff = kiffSession(kiff.APIURL, p.session, tenant, p.key, t.hc)
 		p.inside, p.held = "ch_e2e_"+p.name+"_"+t.run, "ch_e2e_"+p.name+"held_"+t.run
 		t.out.hide(p.inside, "<"+p.name+"'s charge>")
@@ -164,7 +167,7 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 		if err != nil {
 			return fmt.Errorf("Needs you as %s: %w", r.name, err)
 		}
-		want := wantedHolds(r, t.people, separated)
+		want := wantedHolds(r, t.people)
 		if !sameSet(seen, want) {
 			failures = append(failures, fmt.Sprintf("Needs you as %s shows the holds of %v; want %v", r.name, ownersOf(seen, t.people), ownersOf(want, t.people)))
 		}
@@ -187,7 +190,7 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 	}{
 		{luis, luis.held, false},
 		{maria, maria.held, false},
-		{maria, luis.held, !separated},
+		{maria, luis.held, maria.answers},
 	} {
 		status, err := t.answerAs(ctx, c.who.kiff, c.who.key, byCharge[c.charge], "reject")
 		if err != nil {
@@ -334,17 +337,38 @@ func refundCount(ctx context.Context, reader *client, agent string) (int, error)
 }
 
 // wantedHolds is the holds r should see in Needs you: everyone's for the
-// admin; a person's own, and others' they may answer (an editor, with
-// separation of duties off); a viewer only their own.
-func wantedHolds(r *someone, people []*someone, separated bool) []string {
+// admin; a person's own, and others' if they may answer them.
+func wantedHolds(r *someone, people []*someone) []string {
 	var out []string
 	for _, p := range people {
-		mayAnswer := r.role == "" || (r.role == "editor" && !separated)
-		if p == r || mayAnswer {
+		if p == r || r.role == "" || r.answers {
 			out = append(out, p.held)
 		}
 	}
 	return out
+}
+
+// mayAnswer is who may answer another's held call: with separation of duties
+// off, the roles holding holds.answer (admin, editor, approver); on, approvers.
+func mayAnswer(role string, separated bool) bool {
+	switch role {
+	case "approver":
+		return true
+	case "admin", "editor":
+		return !separated
+	}
+	return false
+}
+
+// hasCapability reads a capability off a /v1/me body.
+func hasCapability(me map[string]any, name string) bool {
+	cs, _ := me["capabilities"].([]any)
+	for _, c := range cs {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ownRefunds is how many sent refunds r should see: everyone's for the

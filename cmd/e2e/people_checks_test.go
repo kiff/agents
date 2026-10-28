@@ -20,29 +20,51 @@ func stepNinePeople() (admin, maria, luis *someone, people []*someone) {
 	return &someone{name: "the admin"}, maria, luis, []*someone{maria, luis}
 }
 
-// Who sees which held call in Needs you: the admin all; an editor their own
-// and the ones they may answer, which separation of duties takes away; a
-// viewer only their own.
+// Who sees which held call in Needs you: the admin all; a person their own,
+// and others' when KIFF says they may answer them.
 func TestWhoSeesWhichHold(t *testing.T) {
 	admin, maria, luis, people := stepNinePeople()
-	for _, c := range []struct {
-		r         *someone
-		separated bool
-		want      []string
-	}{
-		{admin, false, []string{maria.held, luis.held}},
-		{admin, true, []string{maria.held, luis.held}},
-		{maria, false, []string{maria.held, luis.held}},
-		{maria, true, []string{maria.held}},
-		{luis, false, []string{luis.held}},
-		{luis, true, []string{luis.held}},
-	} {
-		if got := wantedHolds(c.r, people, c.separated); !sameSet(got, c.want) {
-			t.Errorf("%s, separated %v: %v; want %v", c.r.name, c.separated, got, c.want)
+	for _, answers := range []bool{true, false} {
+		maria.answers = answers
+		want := []string{maria.held}
+		if answers {
+			want = append(want, luis.held)
 		}
+		if got := wantedHolds(maria, people); !sameSet(got, want) {
+			t.Errorf("maria, answers %v: %v; want %v", answers, got, want)
+		}
+	}
+	if got := wantedHolds(admin, people); !sameSet(got, []string{maria.held, luis.held}) {
+		t.Errorf("the admin: %v", got)
+	}
+	if got := wantedHolds(luis, people); !sameSet(got, []string{luis.held}) {
+		t.Errorf("luis: %v", got)
 	}
 	if ownRefunds(admin, people) != 2 || ownRefunds(maria, people) != 1 || ownRefunds(luis, people) != 1 {
 		t.Error("the admin sees both sent refunds, each person their own")
+	}
+}
+
+// Who may answer another's hold, by role and separation of duties, matches
+// KIFF's rule; the capability is read off /v1/me.
+func TestWhoMayAnswer(t *testing.T) {
+	for _, c := range []struct {
+		role      string
+		separated bool
+		want      bool
+	}{
+		{"admin", false, true}, {"admin", true, false},
+		{"editor", false, true}, {"editor", true, false},
+		{"approver", false, true}, {"approver", true, true},
+		{"viewer", false, false}, {"viewer", true, false},
+	} {
+		if got := mayAnswer(c.role, c.separated); got != c.want {
+			t.Errorf("%s, separated %v: %v", c.role, c.separated, got)
+		}
+	}
+	if !hasCapability(map[string]any{"capabilities": []any{"cards.read", "holds.answer"}}, "holds.answer") ||
+		hasCapability(map[string]any{"capabilities": []any{"cards.read"}}, "holds.answer") || hasCapability(map[string]any{}, "holds.answer") {
+		t.Error("holds.answer read off /v1/me")
 	}
 }
 
