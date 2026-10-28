@@ -230,6 +230,11 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	}
 	t := &test{cfg: cfg, out: stdout, hc: &http.Client{Timeout: 60 * time.Second}, run: time.Now().UTC().Format("0102-1504")}
 	if cfg.people {
+		// Its refunds go to the fake vendor, on charges named for the run: never
+		// to a Stripe account, where they could reach someone's real charges.
+		if cfg.stripeKey != "" {
+			return errors.New("-people runs against the fake vendor; unset E2E_STRIPE_KEY")
+		}
 		ps, err := peopleFrom(env, kiff.APIURL, cfg.cloud, t.hc)
 		if err != nil {
 			return err
