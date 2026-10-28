@@ -93,6 +93,7 @@ var opusPrice = model.Price{Input: 4_000_000, Output: 20_000_000, CacheRead: 200
 
 type config struct {
 	session, setupKey, vendor, vendorToken, planque string
+	cloud                                           string // tafs cloud, for -people
 	stripeKey, signInFile                           string
 	phone                                           string
 	setupDef                                        string
@@ -104,6 +105,7 @@ type config struct {
 	maxCost                                         int64
 	keep                                            bool
 	improve                                         bool // the improve case, after the taf
+	people                                          bool // step 9's people on a shared taf, instead of the taf's own checks
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
 }
@@ -150,6 +152,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
 	maxCost := fs.Float64("max-cost", 3, "the most the whole test may spend on the model, in US dollars")
+	fs.BoolVar(&cfg.people, "people", false, "step 9 (kiff/tafs#294) instead of the taf's own checks: tafs cloud starts Setup's taf, it is shared with Support, "+
+		"and Maria and Luis (E2E_MARIA_*, E2E_LUIS_*) each see only their own use of it")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
@@ -215,6 +219,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	if cfg.planque == "" {
 		cfg.planque = "https://planque.kiff.dev"
 	}
+	if cfg.cloud = env("E2E_TAFS_CLOUD"); cfg.cloud == "" {
+		cfg.cloud = "https://cloud.tafs.kiff.dev"
+	}
 	for name, v := range map[string]string{"ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY"), "E2E_KIFF_SESSION": cfg.session,
 		"E2E_SETUP_KEY": cfg.setupKey, "E2E_PHONE_KEY": cfg.phone, "E2E_VENDOR": cfg.vendor} {
 		if v == "" {
@@ -222,6 +229,16 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		}
 	}
 	t := &test{cfg: cfg, out: stdout, hc: &http.Client{Timeout: 60 * time.Second}, run: time.Now().UTC().Format("0102-1504")}
+	if cfg.people {
+		ps, err := peopleFrom(env, kiff.APIURL, cfg.cloud, t.hc)
+		if err != nil {
+			return err
+		}
+		if len(ps) == 0 {
+			return errors.New("-people needs E2E_MARIA_* and E2E_LUIS_*; run infra/e2e-people-signin.sh")
+		}
+		t.people = ps
+	}
 	defer t.cleanup()
 	return t.scenario(ctx, anthropic.New())
 }
@@ -257,6 +274,11 @@ type test struct {
 	// end so a run leaves no taf behind.
 	tafAgents []string
 	draftIDs  []string
+	// people are step 9's people (-people); cloudTafs the tafs this run started on
+	// tafs cloud, and shared each taf agent and the group it was shared with.
+	people    []*someone
+	cloudTafs []string
+	shared    [][2]string
 	taf       string   // the taf's agent id, once handed over
 	said      said     // what Setup wrote, for -grade
 	tafSaid   []string // the taf's answers in the chat, checked with -taf
@@ -361,6 +383,10 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		return err
 	}
 
+	if t.cfg.people {
+		fmt.Fprintln(t.cfg.log, "== step 9's people")
+		return t.peopleChecks(ctx, tafID, draftID)
+	}
 	fmt.Fprintln(t.cfg.log, "== the taf")
 	if err := t.useTaf(ctx, tafID, draftID); err != nil {
 		return err
@@ -1423,6 +1449,18 @@ func (t *test) cleanup() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// Step 9's shared taf: its share and its taf on tafs cloud, the run's own.
+	for _, s := range t.shared {
+		if a, err := t.kiff.do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(s[0])+"/grants", map[string]string{"group": s[1]}); err != nil || a.err() != nil {
+			t.logf("cleanup: unsharing the taf: %v %v", err, a.err())
+		}
+	}
+	cloud := &client{base: strings.TrimRight(t.cfg.cloud, "/"), http: t.hc, auth: bearerAuth(t.cfg.session)}
+	for _, id := range t.cloudTafs {
+		if a, err := cloud.do(ctx, http.MethodDelete, "/v1/tafs/"+url.PathEscape(id), nil); err != nil || a.err() != nil {
+			t.logf("cleanup: removing the shared taf from tafs cloud: %v %v", err, a.err())
+		}
+	}
 	for _, g := range t.grants {
 		if err := t.phone.disconnect(ctx, g); err != nil {
 			t.logf("cleanup: disconnecting %s: %v", g, err)
