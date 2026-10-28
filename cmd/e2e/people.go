@@ -180,16 +180,18 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 		}
 	}
 
-	// Answers: no one answers their own hold; who may answer another's follows
-	// separation of duties; a viewer answers none.
+	// Refusals, as KIFF's hold gate takes them: refusing grants nothing, so the
+	// person whose run asked may refuse their own, and on another's hold too
+	// only if their role answers holds under separation of duties (/v1/me's
+	// holds.answer); a viewer refuses none. Approving isn't tried: it would send.
 	maria, luis := t.people[0], t.people[1]
 	for _, c := range []struct {
 		who    *someone
 		charge string
 		may    bool
 	}{
-		{luis, luis.held, false},
-		{maria, maria.held, false},
+		{luis, luis.held, luis.answers},
+		{maria, maria.held, maria.answers},
 		{maria, luis.held, maria.answers},
 	} {
 		status, err := t.answerAs(ctx, c.who.kiff, c.who.key, byCharge[c.charge], "reject")
