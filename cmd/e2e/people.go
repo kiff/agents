@@ -211,13 +211,19 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 		}
 	}
 
-	// A person who only uses the taf sees no Doors and no share list.
+	// A person who only uses the taf reads its Doors without who wrote and
+	// what (tafs cloud keeps the knocks for those who manage it), and not who
+	// it's shared with.
 	for _, p := range t.people {
 		if p.role != "viewer" {
 			continue
 		}
-		if d, _ := p.cloud.do(ctx, http.MethodGet, "/v1/tafs/"+url.PathEscape(cloudID)+"/doors", nil); d.Status/100 == 2 {
-			failures = append(failures, p.name+" reads the shared taf's Doors")
+		d, err := p.cloud.do(ctx, http.MethodGet, "/v1/tafs/"+url.PathEscape(cloudID)+"/doors", nil)
+		if err != nil || d.err() != nil {
+			return fmt.Errorf("the shared taf's Doors as %s: %v %v", p.name, err, d.err())
+		}
+		if knocks, _ := d.Body["knocks"].([]any); len(knocks) > 0 {
+			failures = append(failures, fmt.Sprintf("%s reads %d of the shared taf's knocks", p.name, len(knocks)))
 		}
 		if s, _ := p.kiff.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(tafAgent)+"/grants", nil); s.Status/100 == 2 {
 			failures = append(failures, p.name+" reads who the taf is shared with")
