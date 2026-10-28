@@ -64,15 +64,34 @@ func query(req *http.Request) string {
 	return "?" + req.URL.RawQuery
 }
 
-// kiffSignIn is the one-time setup: KIFF's device sign-in with the phone's key,
-// approved by a person in their browser, then the setup agent, made through
-// a draft with no tools that the owner's own phone confirms by submitting
-// it. It writes the session's token and the setup agent's key to out (two
-// lines, 0600) for the test's secrets, and prints neither.
-func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setupAgent string, hc *http.Client, out io.Writer, say io.Writer) error {
+// kiffSignIn is the one-time setup of the test's own account: a new phone
+// key, KIFF's device sign-in with it, approved by a person in their browser on
+// that account (whose id is account), then the setup agent, made through a
+// draft with no tools that the phone confirms by submitting it. The test's
+// account is its own: people use none of what it does, so neither its holds'
+// alerts nor its grants reach anyone. It writes the session's token, the setup
+// agent's key and the phone key (base64 PKCS#8) to out (three lines, 0600) for
+// the test's secrets, and prints none of them. Approved on any other account,
+// it writes nothing.
+func kiffSignIn(ctx context.Context, apiBase, account, setupAgent string, hc *http.Client, out io.Writer, say io.Writer) error {
+	if account == "" {
+		return errors.New("-account: the test's own account's id")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
 	token, tenant, err := deviceSignIn(ctx, apiBase, key, "kiff/agents e2e (#91)", hc, say)
 	if err != nil {
 		return err
+	}
+	if tenant != account {
+		signOut(ctx, apiBase, token, hc, say)
+		return errors.New("the sign-in was approved on another account, not the test's own: approve on that one")
 	}
 	fmt.Fprintln(say, "signed in to KIFF; the session is bound to the test phone's key")
 
@@ -97,8 +116,21 @@ func kiffSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, setu
 		return fmt.Errorf("the setup agent's key holds roles %v; it should hold none", roles)
 	}
 	fmt.Fprintf(say, "the setup agent %s has its key, with no tools\n", setupAgent)
-	_, err = fmt.Fprintf(out, "%s\n%s\n", token, setupKey)
+	_, err = fmt.Fprintf(out, "%s\n%s\n%s\n", token, setupKey, base64.StdEncoding.EncodeToString(der))
 	return err
+}
+
+// signOut ends a session the test won't keep, as the app's sign out does: one
+// approved on the wrong account, or with the wrong role, would otherwise stay
+// live there for its 90 days, listed as a device.
+func signOut(ctx context.Context, apiBase, token string, hc *http.Client, say io.Writer) {
+	c := &client{base: strings.TrimRight(apiBase, "/"), http: hc,
+		auth: func(req *http.Request, _ []byte) { req.Header.Set("Authorization", "Bearer "+token) }}
+	if a, err := c.do(ctx, http.MethodPost, "/v1/auth/device/logout", nil); err != nil || a.err() != nil {
+		fmt.Fprintf(say, "the session couldn't be signed out (%v %v): remove the device in KIFF\n", err, a.err())
+		return
+	}
+	fmt.Fprintln(say, "the session is signed out")
 }
 
 // devicePoll is how often deviceSignIn asks whether the person approved.
@@ -180,10 +212,12 @@ func peopleSignIn(ctx context.Context, apiBase, account, person string, hc *http
 	id, _ := me.Body["tenant_id"].(string)
 	if tenant != account || id != account {
 		// Approved on another account (the person's own, say), with whatever
-		// role: nothing is written.
+		// role: nothing is written, and the session is signed out.
+		signOut(ctx, apiBase, token, hc, say)
 		return fmt.Errorf("%s signed in to %q, not to the shared account: approve on that one", person, name)
 	}
 	if role != want {
+		signOut(ctx, apiBase, token, hc, say)
 		return fmt.Errorf("%s signed in to %q as %q, not as %s", person, name, role, want)
 	}
 	fmt.Fprintf(say, "%s is signed in to %q as %s; the session is bound to a new phone key\n", person, name, role)

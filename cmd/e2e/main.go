@@ -17,8 +17,9 @@
 // Environment:
 //
 //	ANTHROPIC_API_KEY   the model's key
-//	E2E_PHONE_KEY       base64 PKCS#8 P-256: the owner's phone, toward KIFF and planque
-//	E2E_KIFF_SESSION    the phone's KIFF session on the test account (from -signin; 90 days)
+//	E2E_PHONE_KEY       base64 PKCS#8 P-256: the owner's phone, toward KIFF and planque (from -signin)
+//	E2E_KIFF_SESSION    the phone's KIFF session on the test's own account (from -signin; 90 days).
+//	                    infra/e2e-signin.sh runs -signin and puts all three in the secrets
 //	E2E_SETUP_KEY       the setup agent's KIFF key (from -signin): an agent with no tools
 //	E2E_VENDOR          the vendor's MCP server (the fake vendor's /mcp)
 //	E2E_VENDOR_TOKEN    the fake vendor's /fake/calls token (the refund checks need it)
@@ -154,12 +155,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
 	transcript := fs.String("transcript", "", "write each step's details (what the owner and the agents said) to this file, in CI too: "+
 		"for the private reports bucket, never the public log")
-	signin := fs.String("signin", "", "once, before the test runs: sign the phone in to KIFF (a person approves in a browser), make the setup agent, "+
-		"and write the session's token and the setup agent's key to this file (0600)")
+	signin := fs.String("signin", "", "once, before the test runs: sign a new phone key in to KIFF on the test's own -account (a person approves in a browser), "+
+		"make the setup agent, and write the session's token, the setup agent's key and the phone key to this file (0600)")
 	peopleSignin := fs.String("people-signin", "", "once per person, before -people runs (step 9): sign -person in to KIFF on a new phone key "+
 		"(they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
 	person := fs.String("person", "", "-people-signin: maria (an editor) or luis (a viewer)")
-	account := fs.String("account", "", "-people-signin: the shared account's id; a sign-in approved on another account writes nothing")
+	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id. A sign-in approved on another account writes nothing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -192,16 +193,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	}
 	cfg.phone = env("E2E_PHONE_KEY")
 	if *signin != "" {
-		key, err := parsePhone(cfg.phone)
-		if err != nil {
-			return err
-		}
 		f, err := os.OpenFile(*signin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		return kiffSignIn(ctx, kiff.APIURL, key, "e2e-setup", &http.Client{Timeout: 30 * time.Second}, f, stdout)
+		return kiffSignIn(ctx, kiff.APIURL, *account, "e2e-setup", &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	cfg.vendor, cfg.vendorToken = env("E2E_VENDOR"), env("E2E_VENDOR_TOKEN")
