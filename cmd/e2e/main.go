@@ -1447,6 +1447,16 @@ func (t *test) checkRecords(ctx context.Context) error {
 // cleanup disconnects the grant, revokes the taf's Cards and archives the
 // taf's KIFF agent, unless -keep: the taf's key then reaches nothing, and
 // the account's tafs don't grow with each run. It touches only what this
+// unshare removes a taf's share with a group. KIFF reads which grant from
+// the query (?group=), as the app sends it, not from a body.
+func unshare(ctx context.Context, k *client, agent, group string) error {
+	a, err := k.do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(agent)+"/grants?group="+url.QueryEscape(group), nil)
+	if err != nil {
+		return err
+	}
+	return a.err()
+}
+
 // run recorded making: the account's other grants, Cards and tafs are left.
 func (t *test) cleanup() {
 	if t.cfg.keep || t.kiff == nil {
@@ -1456,8 +1466,8 @@ func (t *test) cleanup() {
 	defer cancel()
 	// Step 9's shared taf: its share and its taf on tafs cloud, the run's own.
 	for _, s := range t.shared {
-		if a, err := t.kiff.do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(s[0])+"/grants", map[string]string{"group": s[1]}); err != nil || a.err() != nil {
-			t.logf("cleanup: unsharing the taf: %v %v", err, a.err())
+		if err := unshare(ctx, t.kiff, s[0], s[1]); err != nil {
+			t.logf("cleanup: unsharing the taf: %v", err)
 		}
 	}
 	cloud := &client{base: strings.TrimRight(t.cfg.cloud, "/"), http: t.hc, auth: bearerAuth(t.cfg.session)}

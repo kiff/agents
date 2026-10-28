@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,5 +130,32 @@ func TestPeopleFromTheEnvironment(t *testing.T) {
 	bad := map[string]string{"E2E_MARIA_SESSION": "s1", "E2E_MARIA_PHONE_KEY": "x", "E2E_LUIS_SESSION": "s2", "E2E_LUIS_PHONE_KEY": key}
 	if _, err := peopleFrom(get(bad), "", "", http.DefaultClient); err == nil {
 		t.Fatal("a key that doesn't parse")
+	}
+}
+
+// Cleanup's unshare names the group in the query, where KIFF reads it, and
+// is signed with the phone's key as the app's is.
+func TestCleanupUnsharesByQuery(t *testing.T) {
+	var method, path, group, sig string
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, group, sig = r.Method, r.URL.Path, r.URL.Query().Get("group"), r.Header.Get("KIFF-Device-Signature")
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err := unshare(context.Background(), kiffSession(srv.URL, "s", "t_1", k, srv.Client()), "taf-shared", "grp_support"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodDelete || path != "/v1/agents/taf-shared/grants" || group != "grp_support" {
+		t.Errorf("%s %s ?group=%q", method, path, group)
+	}
+	if len(body) != 0 {
+		t.Errorf("the group went in a body KIFF doesn't read: %s", body)
+	}
+	if sig == "" {
+		t.Error("the unshare isn't signed")
 	}
 }
