@@ -129,6 +129,22 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 	if support == "" {
 		return errors.New("the account has no Support group; make it in the app")
 	}
+	// Earlier runs' shares that outlived their taf (an unshare that failed):
+	// Support's grants on agents that are no longer live, which the admin's
+	// access leaves out. Removing one takes nothing from anyone.
+	acc, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/access", nil)
+	if err != nil || acc.err() != nil {
+		return fmt.Errorf("reading the admin's access: %v %v", err, acc.err())
+	}
+	if stale := staleShares(gs.Body, support, acc.Body, tafAgent); len(stale) > 0 {
+		for _, a := range stale {
+			if err := unshare(ctx, t.kiff, a, support); err != nil {
+				return fmt.Errorf("removing an earlier run's share: %w", err)
+			}
+			t.logf("removed an earlier run's share with Support: %s", a)
+		}
+		fmt.Fprintf(t.cfg.log, "people  removed %d earlier run(s)' shares with Support\n", len(stale))
+	}
 	sh, err := t.kiff.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(tafAgent)+"/grants", map[string]string{"group": support})
 	if err != nil || sh.err() != nil {
 		return fmt.Errorf("sharing the taf with Support: %v %v", err, sh.err())
@@ -411,6 +427,31 @@ func sameSet(a, b []string) bool {
 	slices.Sort(a)
 	slices.Sort(b)
 	return slices.Equal(a, b)
+}
+
+// staleShares is the agents group is granted that the admin's /v1/me/access
+// doesn't list: archived or gone, so no one uses them. Unless that access
+// lists ours, the run's own live taf, it's no proof of what's live: none.
+func staleShares(groups map[string]any, group string, access map[string]any, ours string) []string {
+	live, _ := access["agents"].(map[string]any)
+	if live[ours] == nil {
+		return nil
+	}
+	gs, _ := groups["groups"].([]any)
+	var out []string
+	for _, g := range gs {
+		m, _ := g.(map[string]any)
+		if id, _ := m["id"].(string); id != group {
+			continue
+		}
+		agents, _ := m["agents"].([]any)
+		for _, a := range agents {
+			if id, _ := a.(string); id != "" && live[id] == nil {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
 }
 
 func groupNamed(body map[string]any, name string) string {
