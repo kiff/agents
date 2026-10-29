@@ -302,9 +302,12 @@ func (c Component) check() error {
 			return fmt.Errorf("questions has 1 to %d questions", MaxQuestions)
 		}
 		seen := map[string]bool{}
-		for _, q := range c.Questions {
-			if !idPattern.MatchString(q.ID) || seen[q.ID] {
-				return fmt.Errorf("each question's id is 1 to 64 of a-z 0-9 - _, and different")
+		for i, q := range c.Questions {
+			if !idPattern.MatchString(q.ID) {
+				return fmt.Errorf("question %d id %q: use 1 to 64 of a-z 0-9 - _", i+1, q.ID)
+			}
+			if seen[q.ID] {
+				return fmt.Errorf("question %d id %q: another question has it; each id is different", i+1, q.ID)
 			}
 			seen[q.ID] = true
 			if err := text("a question's text", q.Text, true, MaxLabel); err != nil {
@@ -393,9 +396,15 @@ func (c Component) check() error {
 // labels short, and a description only in a question.
 func checkOptions(options []Option, described bool) error {
 	seen := map[string]bool{}
-	for _, o := range options {
-		if !idPattern.MatchString(o.Value) || seen[o.Value] {
-			return fmt.Errorf("each option's value is 1 to 64 of a-z 0-9 - _, and different")
+	for i, o := range options {
+		// Name the option and the value as sent, so the agent fixes it in
+		// one turn. The value is never lower-cased here: it is what the
+		// owner's answer carries back.
+		if !idPattern.MatchString(o.Value) {
+			return fmt.Errorf("option %d value %q: use 1 to 64 of a-z 0-9 - _", i+1, o.Value)
+		}
+		if seen[o.Value] {
+			return fmt.Errorf("option %d value %q: another option has it; each value is different", i+1, o.Value)
 		}
 		seen[o.Value] = true
 		if err := text("an option's label", o.Label, true, 80); err != nil {
