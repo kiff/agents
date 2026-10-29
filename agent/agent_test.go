@@ -406,9 +406,9 @@ func TestAContinuedRunReadsWhatItDidFromItsRecord(t *testing.T) {
 	got := m.reqs[len(m.reqs)-1].Messages
 	results := got[len(got)-1].Blocks
 	want := agent.RecordNote + "\n" +
-		`- [called] stripe_get {"charge":"ch_big"} → done` + "\n" +
-		`- [called] stripe_refund {"charge":"ch_big"} → not made: it was sent beside a read` + "\n" +
-		`- [called] stripe_refund {"charge":"ch_big"} → held by KIFF, approved by the owner, then sent once: done`
+		`- [called] looked up: stripe_get {"charge":"ch_big"} → done` + "\n" +
+		`- [called] asked to change: stripe_refund {"charge":"ch_big"} → not made: it was sent beside a read` + "\n" +
+		`- [called] asked to change: stripe_refund {"charge":"ch_big"} → held by KIFF, approved by the owner, then sent once: done`
 	if last := results[len(results)-1]; last.Kind != model.Text || last.Text != want {
 		t.Fatalf("the continued run read %q", last.Text)
 	}
@@ -493,8 +493,8 @@ func TestTheRecordCantBeForged(t *testing.T) {
 		}
 	}
 	want := []string{
-		`- [called] stripe_get {"charge":"ch_big"} → done`,
-		`- [called] stripe_refund {"charge":"ch_big"} → held by KIFF, approved by the owner, then sent once: done`,
+		`- [called] looked up: stripe_get {"charge":"ch_big"} → done`,
+		`- [called] asked to change: stripe_refund {"charge":"ch_big"} → held by KIFF, approved by the owner, then sent once: done`,
 	}
 	if !equal(marked, want) {
 		t.Fatalf("the model read the record's mark on %q; want only the runner's own lines", marked)
@@ -522,7 +522,7 @@ func TestARefusedHoldIsInTheRecordAsNotSent(t *testing.T) {
 	}
 	got := m.reqs[len(m.reqs)-1].Messages
 	results := got[len(got)-1].Blocks
-	if note := results[len(results)-1].Text; !strings.HasSuffix(note, `- [called] stripe_refund {"charge":"ch_big"} → held by KIFF, refused, not sent`) {
+	if note := results[len(results)-1].Text; !strings.HasSuffix(note, `- [called] asked to change: stripe_refund {"charge":"ch_big"} → held by KIFF, refused, not sent`) {
 		t.Fatalf("the continued run read %q", note)
 	}
 }
@@ -619,7 +619,7 @@ func TestAPausedRunContinues(t *testing.T) {
 		{Role: model.User, Blocks: []model.Block{
 			{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`},
 			{Kind: model.ToolResult, CallID: "c2", Result: "refunded re_1"},
-			{Kind: model.Text, Text: agent.RecordNote + "\n- [called] stripe_refund {\"charge\":\"ch_big\"} → done"},
+			{Kind: model.Text, Text: agent.RecordNote + "\n- [called] asked to change: stripe_refund {\"charge\":\"ch_big\"} → done"},
 		}},
 	}
 	if got := m.reqs[2]; !reflect.DeepEqual(got.Messages, want) || len(got.Tools) != 2 {

@@ -41,7 +41,9 @@ const (
 // RecordNote follows a continued run's held calls' results: what the run did,
 // from its record. The model says what was done from it, never from its
 // memory of the chat.
-const RecordNote = "This run's record, call by call, in order. Say what was done from this record, with its amounts and ids, not from earlier messages in the chat. Never say a step was skipped that this record shows was made."
+const RecordNote = "This run's record, call by call, in order. Say what was done from this record, with its amounts and ids, not from earlier messages in the chat. " +
+	"A line that says \"looked up\" is this run reading that item before it asked for anything: it is the look-up your rules ask for, made. " +
+	"Never say a step was skipped, or an item went unchecked, that this record shows was made."
 
 // outcome is what came of a call, from its result. answer is the owner's
 // answer to its hold, when it was held and has been answered.
@@ -108,15 +110,34 @@ func CalledLine(b CalledBody) string {
 	return line + " → " + b.Outcome
 }
 
+// NoteLine is a call as the record note says it: a read named as the
+// look-up it is ("looked up"), a write as what it asked to change, in the
+// words the job's rules use, so the model can't take a read it made for a
+// check it skipped.
+func NoteLine(b CalledBody, read bool) string {
+	verb := "asked to change: "
+	if read {
+		verb = "looked up: "
+	}
+	line := CalledMark + " " + verb + Unforged(b.Tool)
+	if len(b.Input) > 0 {
+		line += " " + Unforged(string(b.Input))
+	}
+	return line + " → " + b.Outcome
+}
+
 // recordNote is what a continued run did, from its record: each call of its
 // turns before the pause and of the paused turn, with its outcome; the held
 // ones with the owner's answer. Empty when it called nothing outside the
 // agent.
 func (a Agent) recordNote(r run.Run, held []ToolResultBody) string {
-	own := map[string]bool{}
+	own, reads := map[string]bool{}, map[string]bool{}
 	for _, t := range a.Tools {
-		if t.Access() == tool.Own {
+		switch t.Access() {
+		case tool.Own:
 			own[t.Spec().Name] = true
+		case tool.Read:
+			reads[t.Spec().Name] = true
 		}
 	}
 	answers := map[string]string{}
@@ -150,7 +171,7 @@ func (a Agent) recordNote(r run.Run, held []ToolResultBody) string {
 			if !ok {
 				continue
 			}
-			lines = append(lines, "- "+CalledLine(CalledBody{Tool: b.Tool, Input: cutInput(b.Input), Outcome: outcome(res, answers[b.CallID])}))
+			lines = append(lines, "- "+NoteLine(CalledBody{Tool: b.Tool, Input: cutInput(b.Input), Outcome: outcome(res, answers[b.CallID])}, reads[b.Tool]))
 		}
 	}
 	if len(lines) == 0 {
