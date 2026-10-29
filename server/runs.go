@@ -27,6 +27,12 @@ const MaxInput = 32_000
 // followEvery is how often a stream looks for more of a run.
 const followEvery = 500 * time.Millisecond
 
+// handOffWait is how long a resumed stream follows a paused run that nothing
+// holds any more (its cards answered, its holds resolved) for the invocation
+// it was handed to to claim it. Past it, the stream ends with the run as
+// stored, and the sweep continues it.
+const handOffWait = 30 * time.Second
+
 // Run listing limits.
 const (
 	defaultRuns = 20
@@ -1097,12 +1103,17 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 	f := &follower{s: s, sse: newStream(w), tenant: c.Tenant, rn: rn, after: after}
 	tick := time.NewTicker(followEvery)
 	defer tick.Stop()
+	handedOff := time.Now().Add(handOffWait) // a wait in real time, not the run's clock
 	for {
 		if err := f.catchUp(ctx); err != nil {
 			s.logError(r, "resume", err)
 			return
 		}
-		if rn.Status.Final() || rn.Status == run.Paused {
+		// A paused run whose cards and holds are all answered is about to go
+		// on: it stays paused until the invocation it was handed to claims
+		// it. Ending there would end the stream before the run's answer.
+		goingOn := rn.Status == run.Paused && len(rn.Requirements) > 0 && resolved(rn, s.now()) && time.Now().Before(handedOff)
+		if rn.Status.Final() || rn.Status == run.Paused && !goingOn {
 			f.sse.send("end", viewRun(rn))
 			return
 		}
