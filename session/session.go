@@ -106,6 +106,11 @@ const (
 	// goes on (UntilIdle), sealed (kiff/agents#172). It never leaves the
 	// runner: a session's events as the API shows them leave it out.
 	KeptRead EventKind = "kept_read"
+	// Called is one call a run made to a tool outside the agent and what came
+	// of it, in words (agent.CalledBody), kept like the agent's messages: a
+	// chat's next runs read it, after the call's own events are gone. Only
+	// the runner reads it; a view of the session has the call's own events.
+	Called EventKind = "called"
 
 	// Summary is the agent's summary of a chat's earlier runs, written once
 	// they no longer fit its history (SummaryBody): kept like the agent's
@@ -120,9 +125,9 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 // Defaulted are kinds a Policy may leave out: each takes the rule of the kind
 // named here. A kind added later goes here, so a stored policy written before
 // it keeps working. A component, a trial's write, a call's reference and a
-// summary are kept like the agent's messages. A KeptRead left out is not
+// summary and a call's outcome (Called) are kept like the agent's messages. A KeptRead left out is not
 // written at all (Policy.Rule).
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead}
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead, Called: AgentMessage}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires
@@ -142,11 +147,15 @@ type Event struct {
 	seal bool
 }
 
-// Shown is events without what only the runner reads (KeptRead): what any
-// view of a session, its API, a stream or an operator's page, may show.
+// Shown is events without what only the runner reads (KeptRead, Called):
+// what any view of a session, its API, a stream or an operator's page, may show.
 func Shown(events []Event) []Event {
-	return slices.DeleteFunc(events, func(e Event) bool { return e.Kind == KeptRead })
+	return slices.DeleteFunc(events, func(e Event) bool { return RunnerOnly(e.Kind) })
 }
+
+// RunnerOnly reports whether only the runner reads events of kind: no view
+// of a session shows them (Shown).
+func RunnerOnly(kind EventKind) bool { return kind == KeptRead || kind == Called }
 
 // SortEvents puts a session's events in the order a Store returns them: run by
 // run, each in Seq order, the runs in the order of their first event.

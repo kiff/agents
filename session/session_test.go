@@ -570,3 +570,16 @@ func TestSpeedOf(t *testing.T) {
 		}
 	}
 }
+
+// What only the runner reads, a kept read and a call's line, is in no view of
+// a session.
+func TestShownLeavesOutWhatOnlyTheRunnerReads(t *testing.T) {
+	events := []session.Event{{Kind: session.OwnerMessage}, {Kind: session.KeptRead}, {Kind: session.Called}, {Kind: session.AgentMessage}}
+	var kinds []session.EventKind
+	for _, e := range session.Shown(events) {
+		kinds = append(kinds, e.Kind)
+	}
+	if !slices.Equal(kinds, []session.EventKind{session.OwnerMessage, session.AgentMessage}) {
+		t.Fatalf("shown %v", kinds)
+	}
+}

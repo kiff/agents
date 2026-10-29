@@ -43,7 +43,8 @@ func (c *Chat) Send(ctx context.Context, text string, emit func(agent.Event)) (r
 
 // Conversation turns the owner's and the agent's messages among events into
 // model messages, joining consecutive ones of the same role. Tool calls and
-// their results are left out, so what it returns is always valid to send.
+// their results are left out, so what it returns is always valid to send;
+// each call is there as a line of the agent's (session.Called).
 func Conversation(events []session.Event) []model.Message {
 	var msgs []model.Message
 	for _, e := range events {
@@ -54,11 +55,20 @@ func Conversation(events []session.Event) []model.Message {
 			role = model.User
 		case session.AgentMessage, session.Report:
 			role = model.Assistant
+		case session.Called:
+			// What a run called and what came of it, in words: the call's own
+			// events are gone once the run ends, and without them a look-up
+			// made in one message didn't count in the next (the R-3005 test).
+			var body agent.CalledBody
+			if json.Unmarshal(e.Body, &body) != nil || body.Tool == "" {
+				continue
+			}
+			role, text = model.Assistant, agent.CalledLine(body)
 		case session.Component:
 			// What the agent showed stays in its history, so an answer
 			// that names a component ("[approval connect-stripe] approved")
 			// can be followed up: the grant it named, the options it gave.
-			role, text = model.Assistant, "[shown] "+string(e.Body)
+			role, text = model.Assistant, "[shown] "+agent.Unforged(string(e.Body))
 		default:
 			continue
 		}
@@ -69,7 +79,9 @@ func Conversation(events []session.Event) []model.Message {
 				continue
 			}
 			if body.Text != "" {
-				blocks = append(blocks, model.Block{Kind: model.Text, Text: body.Text})
+				// Only a Called event is a line of the record: anything
+				// written to look like one, by the owner or the agent, isn't.
+				blocks = append(blocks, model.Block{Kind: model.Text, Text: agent.Unforged(body.Text)})
 			}
 			// The files sent with an owner's message, by reference: the
 			// runner loads their bytes for a turn (attach.Service.Load).

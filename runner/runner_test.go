@@ -344,7 +344,7 @@ func TestExecuteRunsToAnAnswer(t *testing.T) {
 	}
 	// The recording ended: tool calls, kept only until the end, are gone.
 	// Timing writes no event of its own: it rides on each turn's Usage (kiff/tafs#214).
-	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Usage, session.AgentMessage}
+	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Called, session.Usage, session.AgentMessage}
 	if got := f.events(r); !slices.Equal(got, want) {
 		t.Fatalf("recorded %v, want %v", got, want)
 	}
@@ -500,7 +500,7 @@ func TestHistoryWhenAPausedRunsEventsExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqs := f.model.requests()
-	if got := texts(reqs[len(reqs)-1].Messages); !slices.Equal(got, []string{"user: original request"}) {
+	if got := ownTexts(reqs[len(reqs)-1].Messages); !slices.Equal(got, []string{"user: original request"}) {
 		t.Fatalf("the continued run saw %q, want only its own input", got)
 	}
 }
@@ -689,7 +689,7 @@ func TestANewMessageWhilePaused(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqs = f.model.requests()
-	if got := texts(reqs[len(reqs)-1].Messages); !slices.Equal(got, []string{"user: refund order 42"}) {
+	if got := ownTexts(reqs[len(reqs)-1].Messages); !slices.Equal(got, []string{"user: refund order 42"}) {
 		t.Fatalf("the continued run saw %q, want only its own input", got)
 	}
 }
@@ -1699,4 +1699,10 @@ func TestAnUnapprovedHoldIsntAskedAgainAfterAnotherPause(t *testing.T) {
 	if c3 != runner.NotAgain {
 		t.Errorf("order 42 again after another pause: %q, want NotAgain", c3)
 	}
+}
+
+// ownTexts is texts without a continued run's note of its record
+// (agent.RecordNote), which follows the held calls' results.
+func ownTexts(msgs []model.Message) []string {
+	return slices.DeleteFunc(texts(msgs), func(t string) bool { return strings.HasPrefix(t, "user: "+agent.RecordNote) })
 }
