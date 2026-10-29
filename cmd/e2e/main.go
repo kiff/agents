@@ -1653,8 +1653,7 @@ func (t *test) noFalseConfession(ctx context.Context, sessionID, runID string, g
 		return err
 	}
 	reads, _ := chargeTools(g)
-	looked := slices.ContainsFunc(tools, func(tool string) bool { return isTool(tool, reads) })
-	if !looked {
+	if !lookedUp(tools, reads) {
 		return fmt.Errorf("%q: the taf asked for the refund without looking the charge up: its calls %v", ask, tools)
 	}
 	if t.cfg.judge == nil {
@@ -1672,24 +1671,39 @@ func (t *test) noFalseConfession(ctx context.Context, sessionID, runID string, g
 	return nil
 }
 
-// toolsCalled is the tools a run called, in order.
+// toolsCalled is the tools outside the agent a run called, in order, from
+// its Called record: the ToolCall events are kept only while the run goes
+// (DefaultPolicy), so once it has ended they are gone, and Called is what
+// stays, as the runner reads it.
 func (t *test) toolsCalled(ctx context.Context, sessionID, runID string) ([]string, error) {
 	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("reading the run's events: %w", err)
 	}
+	return calledIn(events, runID)
+}
+
+// calledIn is the tools run runID called, in order, as its Called events
+// record them.
+func calledIn(events []session.Event, runID string) ([]string, error) {
 	var tools []string
 	for _, e := range events {
-		if e.Run != runID || e.Kind != session.ToolCall {
+		if e.Run != runID || e.Kind != session.Called {
 			continue
 		}
-		var b agent.ToolCallBody
+		var b agent.CalledBody
 		if err := json.Unmarshal(e.Body, &b); err != nil {
 			return nil, err
 		}
 		tools = append(tools, b.Tool)
 	}
 	return tools, nil
+}
+
+// lookedUp is whether tools, a run's calls, read the charge with one of
+// reads: the R-3005 test's refused half fails on a run that didn't.
+func lookedUp(tools, reads []string) bool {
+	return slices.ContainsFunc(tools, func(tool string) bool { return isTool(tool, reads) })
 }
 
 // listTools are the names the grant gave its listing reads: a tool with no
