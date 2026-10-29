@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
@@ -104,4 +105,33 @@ func TestWritingWhileACardWaitsAnswersIt(t *testing.T) {
 	if err := json.Unmarshal(got.Requirements[0].Result, &res); err != nil || res.Wrote != "Use the live account, please" || string(res.Answer) != "null" {
 		t.Fatalf("recorded %s", got.Requirements[0].Result)
 	}
+}
+
+// An approval card answered "approved" is the owner's word on the card, never
+// KIFF's signed approval: a hold KIFF keeps on the same run stays held, and
+// the run doesn't go on.
+func TestAnApprovalCardNeverStandsInForKIFFsApproval(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.waitingOnCard()
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if _, err := run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
+		n.Requirements = []run.Requirement{
+			{CallID: "s2", Tool: "show", Input: json.RawMessage(`{"type":"approval","id":"connect","grant":"grt_1"}`), Kind: run.KindCard, Expires: now.Add(run.CardWait)},
+			{CallID: "c1", Tool: "stripe_refund", Operation: "op1", Exception: "exc_1", Expires: now.Add(time.Hour)},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cards/connect/answer",
+		map[string]any{"answer": "approved", "background": true, "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "the approval card answered")
+	got, _ = f.runs.Get(ctx, "t1", r.ID)
+	hold := got.Requirements[1]
+	if got.Status != run.Paused || !hold.Answered.IsZero() || hold.Answer != "" || len(f.background) != 0 || len(f.runner.execs) != 0 {
+		t.Fatalf("the hold moved: status %s, hold %+v, went on %v %v", got.Status, hold, f.background, f.runner.execs)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/continue", nil)
+	f.want(409, code, body, "the run still waits for KIFF")
 }
