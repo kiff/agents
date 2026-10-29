@@ -1022,7 +1022,10 @@ func TestResumeOfAnAnsweredRunFollowsItOn(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
 	r := f.stored(run.Paused)
-	r, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error { n.Requirements[0].Answered, n.Requirements[0].Answer = now, "answered"; return nil })
+	r, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error {
+		n.Requirements[0].Answered, n.Requirements[0].Answer = now, "answered"
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1030,7 +1033,10 @@ func TestResumeOfAnAnsweredRunFollowsItOn(t *testing.T) {
 		// The background invocation claims it, and it goes on to its answer.
 		time.Sleep(700 * time.Millisecond)
 		got, _ := f.runs.Get(ctx, "t1", r.ID)
-		got, _ = run.Change(ctx, f.runs, got, now, func(n *run.Run) error { n.Status, n.Claim, n.Lease = run.Running, "inv-2", now.Add(time.Hour); return nil })
+		got, _ = run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
+			n.Status, n.Claim, n.Lease = run.Running, "inv-2", now.Add(time.Hour)
+			return nil
+		})
 		f.record(r, 1, 1)
 		_, _ = run.Change(ctx, f.runs, got, now, func(n *run.Run) error { n.Status, n.Stop = run.Completed, "answered"; return nil })
 	}()
