@@ -245,7 +245,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		t.people = ps
 	}
 	defer t.cleanup()
-	return t.scenario(ctx, anthropic.New())
+	return t.scenario(ctx, &recordingModel{Model: anthropic.New()})
 }
 
 // test is one run of the scenario, and what it must clean up.
