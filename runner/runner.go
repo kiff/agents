@@ -311,8 +311,8 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return run.Run{}, err
 	}
 	paused := r.Status == run.Paused
-	if paused && rn.Collect == nil {
-		return r, ErrNoCollect
+	if holds, _ := splitCards(r.Requirements); paused && len(holds) > 0 && rn.Collect == nil {
+		return r, ErrNoCollect // a run that waits only on cards has their answers already
 	}
 	x := &execution{rn: rn, tenant: tenant, id: id, claim: run.NewID()}
 	if r, err = run.Claim(ctx, rn.Runs, tenant, id, x.claim, deadline, rn.now()); err != nil {
@@ -391,6 +391,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
+	a.Now = rn.now // a card waits run.CardWait from the runner's clock
 	a.Attachments = r.Attachments
 	if rn.Files != nil {
 		a.Load = func(ctx context.Context, msgs []model.Message) error { return rn.Files.Load(ctx, tenant, msgs) }
@@ -442,16 +443,19 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if len(p.fold) > 0 {
 		a.Spent = rn.fold(loop, a, recording, &p)
 	}
+	// A card's answer is on the run; only KIFF's holds are collected.
+	holds, cards := splitCards(r.Requirements)
 	var held []agent.ToolResultBody
 	// Collecting an approved hold is what has KIFF send it: not for a halted
 	// agent, nor for a member who may no longer use it (#221).
 	switch {
+	case len(holds) == 0:
 	case x.halted:
-		held = notCollected(r.Requirements, NotCollected)
+		held = notCollected(holds, NotCollected)
 	case x.noAccess:
-		held = notCollected(r.Requirements, NotCollectedNoAccess)
+		held = notCollected(holds, NotCollectedNoAccess)
 	default:
-		if held, err = rn.Collect(ctx, a, r.Requirements); err != nil {
+		if held, err = rn.Collect(ctx, a, holds); err != nil {
 			return x.repause(ctx, recording, r, fmt.Errorf("collecting its held calls: %w", err))
 		}
 	}
@@ -459,7 +463,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		if x.halted || x.noAccess {
 			break // never asked of KIFF: not an outcome to explain
 		}
-		for _, q := range r.Requirements {
+		for _, q := range holds {
 			if q.CallID == held[i].CallID {
 				held[i].Result = HeldOutcome(q, held[i].Result)
 			}
@@ -469,8 +473,11 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// run's: the identical call isn't sent again in this run.
 	// Kept on the run across its pauses, so a later pause doesn't forget it.
 	if !x.halted && !x.noAccess {
-		x.notAgain = unapproved(r.NotAgain, r.Requirements, held)
+		x.notAgain = unapproved(r.NotAgain, holds, held)
 		a.Tools = notAgain(a.Tools, x.notAgain)
+	}
+	for _, q := range cards {
+		held = append(held, CardResult(q))
 	}
 	history, _ := p.history()
 	a.Preface = p.preface(loop, a.Tools, rn.now())
@@ -495,6 +502,31 @@ func notCollected(reqs []run.Requirement, text string) []agent.ToolResultBody {
 		out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: text, IsError: true}})
 	}
 	return out
+}
+
+// splitCards is reqs' held calls, then its cards.
+func splitCards(reqs []run.Requirement) (holds, cards []run.Requirement) {
+	for _, q := range reqs {
+		if q.Card() {
+			cards = append(cards, q)
+		} else {
+			holds = append(holds, q)
+		}
+	}
+	return holds, cards
+}
+
+// NoAnswer is a card's result when it stopped waiting (run.CardWait) with
+// no answer.
+const NoAnswer = "The owner didn't answer this card. Don't assume an answer: ask again only if it's still needed."
+
+// CardResult is a card's answer as the show call's result: what the owner
+// chose, as recorded on the run (run.AnswerCard), or NoAnswer.
+func CardResult(q run.Requirement) agent.ToolResultBody {
+	if q.Answered.IsZero() || len(q.Result) == 0 {
+		return agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: NoAnswer}}
+	}
+	return agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: string(q.Result)}}
 }
 
 // HeldOutcome is a collected held call's result, opening with what happened

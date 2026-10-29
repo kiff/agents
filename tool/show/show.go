@@ -205,6 +205,10 @@ func (Tool) Call(_ context.Context, input json.RawMessage) (tool.Result, error) 
 		return tool.Result{Text: err.Error(), IsError: true}, nil
 	}
 	b, _ := json.Marshal(c)
+	if slices.Contains(Answerable, c.Type) {
+		// The run waits here: the owner's answer is this call's result.
+		return tool.Result{Text: "shown: " + c.Type + " " + c.ID + ", waiting for the owner's answer", Component: b, State: tool.StateAwaiting}, nil
+	}
 	return tool.Result{Text: "shown: " + c.Type + " " + c.ID, Component: b}, nil
 }
 

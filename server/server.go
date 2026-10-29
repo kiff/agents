@@ -212,6 +212,8 @@ func (s *Server) Handler() http.Handler {
 		// The same, for the run that paused on a held call (kiff/tafs#206): what
 		// the app that answered the hold knows.
 		mux.HandleFunc("POST /agents/{id}/holds/{exception}/continue", s.continueRun)
+		// A card the run waits on, answered as data, never as chat text.
+		mux.HandleFunc("POST /agents/{id}/runs/{run_id}/cards/{card}/answer", s.answerCard)
 		route("POST /schedules/{id}/trigger", s.triggerSchedule)
 		route("POST /agents/{id}/events", s.startEvent)
 		mux.HandleFunc("POST /agents/{id}/versions/{n}/trial", s.startTrial)

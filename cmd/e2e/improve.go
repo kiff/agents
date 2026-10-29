@@ -329,9 +329,11 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 	answered := map[string]bool{}
 	approvedGrant := ""
 	msg := first
+	var r runs.Run
 	for turn := 0; turn < t.cfg.maxTurns; turn++ {
 		t.logf("owner: %s", oneLine(msg))
-		r, err := ch.Send(ctx, msg, nil)
+		var err error
+		r, err = t.reply(ctx, ch, r, msg)
 		if err != nil {
 			return improvement{}, fmt.Errorf("the setup agent's run: %w", err)
 		}

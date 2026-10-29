@@ -73,6 +73,7 @@ import (
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
 	"github.com/kiff/agents/tool/planque"
+	"github.com/kiff/agents/tool/show"
 )
 
 func main() {
@@ -716,6 +717,62 @@ func answerQuestions(c component, own string) string {
 	return fmt.Sprintf("[questions %s] %s", c.ID, b)
 }
 
+// reply is the owner's next word in a chat whose last run was last: an
+// answer to the card that run waits on, as the app sends it (the card's
+// answer as data, or, for words of their own, the run going on with what
+// they wrote instead), or else a message that starts the chat's next run.
+// msg is in the old "[type id] answer" form when it answers a card.
+func (t *test) reply(ctx context.Context, ch *chat.Chat, last runs.Run, msg string) (runs.Run, error) {
+	if last.Status == runs.Paused {
+		for _, q := range last.Requirements {
+			if !q.Card() || q.Resolved(time.Now()) {
+				continue
+			}
+			c, err := show.Parse(q.Input)
+			if err != nil {
+				return last, err
+			}
+			result, err := cardAnswer(c, msg)
+			if err != nil {
+				return last, err
+			}
+			if _, err := runs.AnswerCard(ctx, t.rn.Runs, t.tenant, last.ID, q.CallID, result, time.Now()); err != nil {
+				return last, fmt.Errorf("answering %s %s: %w", c.Type, c.ID, err)
+			}
+			return t.rn.Execute(ctx, t.tenant, last.ID, nil)
+		}
+	}
+	return ch.Send(ctx, msg, nil)
+}
+
+// cardAnswer is msg as the answer to c: its answer as data when msg is the
+// old "[type id] answer" form for c, else the owner's own words, written
+// instead of answering.
+func cardAnswer(c show.Component, msg string) (json.RawMessage, error) {
+	if rest, ok := strings.CutPrefix(msg, "["+c.Type+" "+c.ID+"] "); ok {
+		var answer json.RawMessage
+		switch c.Type {
+		case "questions":
+			answer = json.RawMessage(rest)
+		case "approval":
+			answer = json.RawMessage(`"approved"`)
+			if strings.HasPrefix(rest, "declined") {
+				answer = json.RawMessage(`"declined"`)
+			}
+		case "sign_in":
+			answer = json.RawMessage(`"signed in"`)
+		default:
+			answer, _ = json.Marshal(rest)
+		}
+		a, err := show.Answer(c, answer)
+		if err != nil {
+			return nil, fmt.Errorf("the owner's answer to %s %s: %w", c.Type, c.ID, err)
+		}
+		return json.Marshal(a)
+	}
+	return json.Marshal(show.Answered{Answer: json.RawMessage("null"), Words: "In your words: “" + msg + "”", Wrote: msg})
+}
+
 // converse is the owner in the setup chat: one message, then an answer to
 // each component the agent shows, until it shows the result.
 func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) {
@@ -732,9 +789,10 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	answered := map[string]string{}
 	toldFacts := false
 	approvedGrant := ""
+	var r runs.Run
 	for turn := 0; turn < t.cfg.maxTurns; turn++ {
 		t.logf("owner: %s", msg)
-		r, err := ch.Send(ctx, msg, nil)
+		r, err = t.reply(ctx, ch, r, msg)
 		if err != nil {
 			return "", "", fmt.Errorf("the setup agent's run: %w", err)
 		}

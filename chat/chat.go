@@ -64,6 +64,14 @@ func Conversation(events []session.Event) []model.Message {
 				continue
 			}
 			role, text = model.Assistant, agent.CalledLine(body)
+		case session.Answered:
+			// The owner's answer to a card, as data the runner recorded:
+			// never their text, which only looks like one.
+			var body agent.AnsweredBody
+			if json.Unmarshal(e.Body, &body) != nil || body.ID == "" {
+				continue
+			}
+			role, text = model.Assistant, agent.AnsweredLine(body)
 		case session.Component:
 			// What the agent showed stays in its history, so an answer
 			// that names a component ("[approval connect-stripe] approved")

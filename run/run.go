@@ -307,7 +307,26 @@ type Requirement struct {
 	// invalidated (withdrawn). The outcome itself is collected from the
 	// gateway (Operation).
 	Answer string `json:"answer,omitempty"`
+	// Kind is KindCard for a card shown to the owner that waits for their
+	// answer (tool.StateAwaiting), empty for a call KIFF holds. A card is
+	// answered here, through the API (AnswerCard), not by KIFF; Expires is
+	// how long it waits (CardWait), and Result its answer.
+	Kind string `json:"kind,omitempty"`
+	// Result is a card's answer as the run reads it, the call's result:
+	// {"answer": …, "words": "…"}, or {"wrote": "…", "words": "…"} when the
+	// owner wrote a message instead.
+	Result json.RawMessage `json:"result,omitempty"`
 }
+
+// KindCard is a Requirement for a card that waits for the owner's answer.
+const KindCard = "card"
+
+// CardWait is how long a card waits for the owner's answer before the run
+// goes on without it, so a card nobody answers never keeps its chat open.
+const CardWait = 7 * 24 * time.Hour
+
+// Card reports whether the requirement is a card's, not a held call's.
+func (r Requirement) Card() bool { return r.Kind == KindCard }
 
 // Resolved reports whether KIFF has resolved the requirement as of now: it
 // was answered, or its hold has expired. A requirement with no expiry and no

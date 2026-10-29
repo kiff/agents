@@ -99,12 +99,24 @@ type Agent struct {
 	// model reads next, never inside a tool's result.
 	Steer func(ctx context.Context) ([]string, error)
 
+	// Now is the clock a card's wait is counted from (run.CardWait); nil is
+	// the system clock.
+	Now func() time.Time
+
 	// history is how many of a run's messages are its history (Run, Continue):
 	// the prefix the next run renders the same way, cached apart.
 	history int
 	// resumed says the next turn is the first after Continue: its timing
 	// says so (Resumed).
 	resumed bool
+}
+
+// clock is a.Now, or the system clock.
+func (a Agent) clock() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 // KIFFToolPrefix starts the name of every tool KIFF's gateway serves itself
@@ -121,6 +133,11 @@ const SteerNote = "The owner wrote this while you were working:\n\n"
 // text, leaving the run with no report (#78).
 const PauseNote = "KIFF holds a call above for the owner, so your run pauses here until they answer, and you can't call tools now. " +
 	"Write your report: what you did, what waits for the owner, and what you didn't do and why, naming each item."
+
+// CardPauseNote is PauseNote for a run that waits for the owner to answer a
+// card it showed (and for KIFF, if it also holds a call).
+const CardPauseNote = "Your run pauses here until the owner answers the card above, and you can't call tools now. " +
+	"Their answer comes back as the card's result. Say in one short line what you're waiting for; the card itself asks."
 
 // Check refuses an agent that can't run safely: no model or id, no cost cap,
 // or a write tool outside KIFF's gateway.
@@ -367,7 +384,11 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		if err := recordRef(rec, h.Result); err != nil {
 			return Outcome{}, history, err
 		}
-		if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID))); err != nil {
+		if q, ok := requirement(r, h.CallID); ok && q.Card() {
+			if err := recordAnswered(rec, q); err != nil {
+				return Outcome{}, history, err
+			}
+		} else if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID))); err != nil {
 			return Outcome{}, history, err
 		}
 		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
@@ -463,6 +484,16 @@ func wentThrough(r ToolResultBody) bool {
 // keeps it.
 func doneOf(r ToolResultBody, input json.RawMessage) run.Done {
 	return run.Done{CallID: r.CallID, Tool: r.Tool, Input: input, Resource: r.Resource, Invocation: r.Invocation}
+}
+
+// requirement is the requirement of r's call id.
+func requirement(r run.Run, id string) (run.Requirement, bool) {
+	for _, q := range r.Requirements {
+		if q.CallID == id {
+			return q, true
+		}
+	}
+	return run.Requirement{}, false
 }
 
 // requirementAnswer is the owner's answer to the call r waits for with id,
@@ -568,7 +599,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		waited = make([]session.ToolTiming, len(results))
 		for i, r := range results {
 			blocks[i] = resultBlock(r)
-			held = held || r.Held()
+			held = held || r.Waits()
 			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
 				out.Done = append(out.Done, doneOf(r, calls[i].Input))
 			}
@@ -696,10 +727,23 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	turn.Results = nil
 	turn.Before = before(msgs, a.history)
 	blocks := make([]model.Block, len(results))
+	cards := false
 	for i, r := range results {
 		blocks[i] = resultBlock(r)
-		if !r.Held() {
+		if !r.Waits() {
 			turn.Results = append(turn.Results, blocks[i])
+			continue
+		}
+		if r.State == tool.StateAwaiting {
+			// A card: the owner answers it through the API, and it stops
+			// waiting after CardWait.
+			for _, b := range turn.Reply.Blocks {
+				if b.Kind == model.ToolUse && b.CallID == r.CallID {
+					out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: b.Input,
+						Kind: run.KindCard, Expires: a.clock().Add(run.CardWait).UTC()})
+				}
+			}
+			cards = true
 			continue
 		}
 		var input json.RawMessage
@@ -722,7 +766,11 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	// The turn that says what it waits for is told so; the results the run
 	// keeps, and Continue sends, stay as they are.
 	asked := slices.Clone(msgs)
-	asked[len(asked)-1].Blocks = append(slices.Clone(blocks), model.Block{Kind: model.Text, Text: PauseNote})
+	note := PauseNote
+	if cards {
+		note = CardPauseNote
+	}
+	asked[len(asked)-1].Blocks = append(slices.Clone(blocks), model.Block{Kind: model.Text, Text: note})
 	reply, err := a.turn(ctx, rec, asked, specs, true, nil, &out, emit)
 	if err != nil {
 		return out, msgs, err

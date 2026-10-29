@@ -33,6 +33,10 @@ const (
 const (
 	StateHeld    = "held"    // waits for the owner's answer
 	StateRefused = "refused" // outside the Card, and not held
+	// StateAwaiting is a card shown to the owner that waits for their answer
+	// (show's answerable types): the run pauses as for a hold, and the
+	// answer comes back as the call's result, never as the owner's text.
+	StateAwaiting = "awaiting"
 )
 
 // Result is what a call returned. State is the gateway's word on the call,
@@ -148,6 +152,10 @@ func Named(components []json.RawMessage, field string, max int) []string {
 
 // Held reports whether KIFF holds the call for its owner.
 func (r Result) Held() bool { return r.State == StateHeld }
+
+// Waits reports whether the run waits on the call: KIFF holds it, or it is
+// a card the owner hasn't answered yet.
+func (r Result) Waits() bool { return r.State == StateHeld || r.State == StateAwaiting }
 
 // Tool is one tool an agent can call.
 type Tool interface {
