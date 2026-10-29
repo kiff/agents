@@ -278,7 +278,12 @@ func (r Run) clone() Run {
 		c.Requirements = append(c.Requirements, q)
 	}
 	if r.Paused != nil {
+		// Every part of the turn, Before included: a copy without it would give
+		// the continued run no memory of its earlier turns (the R-3005 test).
 		t := Turn{Reply: model.Message{Role: r.Paused.Reply.Role, Blocks: cloneBlocks(r.Paused.Reply.Blocks)}, Results: cloneBlocks(r.Paused.Results)}
+		for _, m := range r.Paused.Before {
+			t.Before = append(t.Before, model.Message{Role: m.Role, Blocks: cloneBlocks(m.Blocks)})
+		}
 		c.Paused = &t
 	}
 	return c
