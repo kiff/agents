@@ -150,9 +150,10 @@ func TestAFullTurnIsRecordedAndStreamed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tool call and its result are dropped when the run ends (the default
-	// keep rule); a run's last answer is its report. Timing a run writes no
-	// event of its own: it rides on each turn's Usage (kiff/tafs#214).
-	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Usage, session.Report}
+	// keep rule), not its line of what was called and came of it; a run's
+	// last answer is its report. Timing a run writes no event of its own: it
+	// rides on each turn's Usage (kiff/tafs#214).
+	want := []session.EventKind{session.OwnerMessage, session.Usage, session.Called, session.Usage, session.Report}
 	if got := kinds(events); !equal(got, want) {
 		t.Fatalf("recorded %v, want %v", got, want)
 	}
@@ -375,6 +376,94 @@ func TestAContinuedRunSeesWhatItDidBeforeThePause(t *testing.T) {
 	}
 }
 
+// A continued run reads what it did from its record, after the held calls'
+// results, and says what was done from it (kiff/tafs, the R-3005 test: after
+// an approved hold the taf said it hadn't looked the payment up, and first
+// named another refund's amount). A refund sent beside the look-up came back
+// unmade, and the record says so, rather than that the look-up was skipped.
+func TestAContinuedRunReadsWhatItDidFromItsRecord(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := &fakeTool{name: "stripe_get", access: tool.Read, gateway: true, result: tool.Result{Text: `{"amount":4500}`}}
+	m := &script{replies: []model.Reply{both(), use("c3", "stripe_refund", `{"charge":"ch_big"}`), say("Waiting for you."), say("Refunded $45.00.")}}
+	a := newAgent(m, read, heldRefund())
+	stored, s := paused(t, store, rec, a)
+	stored.Requirements[0].Answer = "approved"
+
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := []agent.ToolResultBody{{CallID: "c3", Tool: "stripe_refund", Result: tool.Result{Text: "refunded re_1", State: "allowed"}}}
+	if _, _, err := agent.Continue(ctx, a, r, nil, stored, held, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := m.reqs[len(m.reqs)-1].Messages
+	results := got[len(got)-1].Blocks
+	want := agent.RecordNote + "\n" +
+		`- [called] stripe_get {"charge":"ch_big"} → done` + "\n" +
+		`- [called] stripe_refund {"charge":"ch_big"} → not made: it was sent beside a read` + "\n" +
+		`- [called] stripe_refund {"charge":"ch_big"} → held by KIFF, approved by the owner, then sent once: done`
+	if last := results[len(results)-1]; last.Kind != model.Text || last.Text != want {
+		t.Fatalf("the continued run read %q", last.Text)
+	}
+	if results[0].CallID != "c3" {
+		t.Fatalf("the note came before the results: %+v", results)
+	}
+
+	// The record outlives the calls' own events: one Called line each.
+	if err := r.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.ReadRun(ctx, "t1", s.ID, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var called []string
+	for _, e := range events {
+		if e.Kind == session.Called {
+			var b agent.CalledBody
+			if err := json.Unmarshal(e.Body, &b); err != nil {
+				t.Fatal(err)
+			}
+			called = append(called, b.Tool+" "+b.Outcome)
+		}
+	}
+	if !equal(called, []string{"stripe_get done", "stripe_refund " + agent.OutcomeNotMade, "stripe_refund " + agent.OutcomeHeld, "stripe_refund " + agent.OutcomeApproved}) {
+		t.Fatalf("recorded %q", called)
+	}
+}
+
+// An owner's refusal is in the record as one: not sent.
+func TestARefusedHoldIsInTheRecordAsNotSent(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{use("c2", "stripe_refund", `{"charge":"ch_big"}`), say("Waiting."), say("Not refunded.")}}
+	a := newAgent(m, heldRefund())
+	stored, s := paused(t, store, rec, a)
+	stored.Requirements[0].Answer = "refused"
+	r, err := rec.Resume(context.Background(), s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "not sent", IsError: true, State: tool.StateRefused}}}
+	if _, _, err := agent.Continue(context.Background(), a, r, nil, stored, held, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := m.reqs[len(m.reqs)-1].Messages
+	results := got[len(got)-1].Blocks
+	if note := results[len(results)-1].Text; !strings.HasSuffix(note, `- [called] stripe_refund {"charge":"ch_big"} → held by KIFF, refused, not sent`) {
+		t.Fatalf("the continued run read %q", note)
+	}
+}
+
 // A long earlier result is kept cut, and a long run keeps only its latest
 // earlier turns, so a stored run stays small.
 func TestWhatAPausedRunKeepsIsBounded(t *testing.T) {
@@ -467,6 +556,7 @@ func TestAPausedRunContinues(t *testing.T) {
 		{Role: model.User, Blocks: []model.Block{
 			{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`},
 			{Kind: model.ToolResult, CallID: "c2", Result: "refunded re_1"},
+			{Kind: model.Text, Text: agent.RecordNote + "\n- [called] stripe_refund {\"charge\":\"ch_big\"} → done"},
 		}},
 	}
 	if got := m.reqs[2]; !reflect.DeepEqual(got.Messages, want) || len(got.Tools) != 2 {
@@ -482,8 +572,8 @@ func TestAPausedRunContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := events[len(events)-3:]
-	if got := kinds(last); !equal(got, []session.EventKind{session.ToolResult, session.Usage, session.Report}) {
+	last := events[len(events)-4:]
+	if got := kinds(last); !equal(got, []session.EventKind{session.ToolResult, session.Called, session.Usage, session.Report}) {
 		t.Fatalf("recorded on continuing: %v", got)
 	}
 }

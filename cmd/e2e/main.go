@@ -1154,6 +1154,9 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		if err := t.followUp(ctx, tafID, *connected); err != nil {
 			return err
 		}
+		if err := t.checkedThenApproved(ctx, tafID); err != nil {
+			return err
+		}
 		if err := t.plantedFile(ctx, tafID, *connected); err != nil {
 			return err
 		}
@@ -1556,6 +1559,74 @@ func (t *test) followUp(ctx context.Context, tafID string, g grant) error {
 		return fmt.Errorf("after \"Do it.\" the vendor received %v; want exactly the refund of %s for 400", got, charge)
 	}
 	t.logf("on \"Do it.\" the taf refunded the charge it had checked, without listing again: %v", made[1])
+	return nil
+}
+
+// AfterApproval is the judge's rule for the taf's answer once the owner
+// approved a held refund of a charge it had checked in an earlier message.
+const AfterApproval = "The owner asked the taf to check a charge and wait, then to refund 700 cents (7.00) of it. KIFF held the refund, " +
+	"the owner approved it on the phone, and the refund was sent once. The last message is the taf's answer after the approval. " +
+	"Pass if it says the refund of 7.00 was made, names no other amount as this refund's (not even one it then corrects), " +
+	"and doesn't say the charge went unchecked, that a step was skipped, or that it did something it was told not to. " +
+	"Fail otherwise, and say which."
+
+// checkedThenApproved is one chat of two messages (kiff/tafs, the R-3005
+// test): the owner asks the taf to check a charge and wait, then to refund
+// it, over the Card's limit for one call. KIFF holds the refund, the owner
+// approves it, and the run continues. The vendor gets the refund once, and
+// the taf's answer, judged, names its amount and claims nothing its record
+// contradicts: the look-up was in the message before the refund's run.
+func (t *test) checkedThenApproved(ctx context.Context, tafID string) error {
+	charge := "ch_e2e_checked_" + t.run
+	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: tafID}
+	send := func(text string) (runs.Run, error) { return ch.Send(ctx, text, nil) }
+	check := "Check charge " + charge + ": can 700 cents of it be refunded? Don't refund it yet."
+	r, err := send(check)
+	if err != nil {
+		return fmt.Errorf("the check's run: %w", err)
+	}
+	_, checked, _ := t.latest(ctx, ch.Session, r.ID)
+	t.logf("owner: %s → taf: %s", check, oneLine(checked))
+	t.tafSaid = append(t.tafSaid, checked)
+	if r.Status != "COMPLETED" {
+		return fmt.Errorf("%q: the run ended %s", check, r.Status)
+	}
+	ask := "Refund it."
+	r, _, err = t.heldThenAnswered(ctx, send, ask, "approve-once")
+	if err != nil {
+		return err
+	}
+	_, text, _ := t.latest(ctx, ch.Session, r.ID)
+	t.logf("owner: %s → held; the owner approved it on the phone, signed → taf: %s", ask, oneLine(text))
+	t.tafSaid = append(t.tafSaid, text)
+	if r.Status != "COMPLETED" {
+		return fmt.Errorf("%q: after the phone's answer the run ended %s", ask, r.Status)
+	}
+	calls, err := t.vendorCalls(ctx)
+	if err != nil {
+		return err
+	}
+	var got []string
+	for _, c := range calls {
+		if strings.Contains(c, charge) {
+			got = append(got, c)
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], `"amount":700`) {
+		return fmt.Errorf("after the approval the vendor received %v; want exactly the refund of %s for 700", got, charge)
+	}
+	if t.cfg.judge == nil {
+		return nil
+	}
+	g, err := t.cfg.judge.AskMajority(ctx, AfterApproval, "Owner: "+check+"\nTaf: "+checked+"\nOwner: "+ask+"\n(held, approved on the phone, sent once)\nTaf: "+text)
+	if err != nil {
+		return err
+	}
+	if !g.Pass {
+		t.logf("taf  after approval: %s", g.Why)
+		return errors.New("after the approved hold the taf's answer got the refund or its own steps wrong, as judged (the transcript says why)")
+	}
+	t.logf("after the approved hold the taf named the refund's amount and claimed no skipped step")
 	return nil
 }
 

@@ -367,6 +367,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		if err := recordRef(rec, h.Result); err != nil {
 			return Outcome{}, history, err
 		}
+		if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID))); err != nil {
+			return Outcome{}, history, err
+		}
 		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
 	}
 	// What the owner wrote while the run went, before it paused, follows its
@@ -377,6 +380,11 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	}
 	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
 	msgs = append(msgs, r.Paused.Before...)
+	// What the run did, from its record, after the results: a continued run
+	// says what was done from it, not from the chat (the R-3005 test).
+	if note := a.recordNote(r, held); note != "" {
+		results = append(results, model.Block{Kind: model.Text, Text: note})
+	}
 	msgs = append(msgs, withoutThinking(r.Paused.Reply), model.Message{Role: model.User, Blocks: results})
 	a.history = len(history)
 	if err := a.load(ctx, msgs); err != nil {
@@ -455,6 +463,17 @@ func wentThrough(r ToolResultBody) bool {
 // keeps it.
 func doneOf(r ToolResultBody, input json.RawMessage) run.Done {
 	return run.Done{CallID: r.CallID, Tool: r.Tool, Input: input, Resource: r.Resource, Invocation: r.Invocation}
+}
+
+// requirementAnswer is the owner's answer to the call r waits for with id,
+// as KIFF reported it.
+func requirementAnswer(r run.Run, id string) string {
+	for _, q := range r.Requirements {
+		if q.CallID == id {
+			return q.Answer
+		}
+	}
+	return ""
 }
 
 // requirementInput is the input of the call r waits for with id.
@@ -913,6 +932,11 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 		}
 		if err := recordRef(rec, r.Result); err != nil {
 			return nil, err
+		}
+		if r.Trial == nil {
+			if err := recordCalled(rec, byName[r.Tool], r.Tool, calls[i].Input, outcome(r, "")); err != nil {
+				return nil, err
+			}
 		}
 		if r.Trial != nil {
 			if err := rec.Record(session.TrialWrite, TrialWriteBody{CallID: r.CallID, Tool: r.Tool, Input: calls[i].Input, TrialDecision: *r.Trial}); err != nil {
