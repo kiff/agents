@@ -329,7 +329,7 @@ func (s *Server) cancel(ctx context.Context, rn run.Run) (run.Run, error) {
 			}
 			return next, err
 		case run.Completed, run.Error, run.Cancelled:
-			return rn, conflict("the run has ended")
+			return rn, conflict("run_ended", "the run has ended")
 		}
 		var expires time.Time
 		if rn.Status == run.Pending {
@@ -407,9 +407,9 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	next, err := run.SteerBy(ctx, s.Runs, c.Tenant, rn.ID, body.Text, q, s.now())
 	switch {
 	case errors.Is(err, run.ErrTransition):
-		return 0, nil, conflict("the run has ended, or was asked to stop: send the message as a new run")
+		return 0, nil, conflict("run_ended", "the run has ended, or was asked to stop: send the message as a new run")
 	case errors.Is(err, run.ErrFull):
-		return 0, nil, conflict("the run holds as many messages as it takes while it goes: wait for it to end, or stop it")
+		return 0, nil, conflict("steering_full", "the run holds as many messages as it takes while it goes: wait for it to end, or stop it")
 	case err != nil:
 		return 0, nil, err
 	}
@@ -429,11 +429,11 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 // recorded; repeating it withdraws the rest.
 func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) {
 	if s.Withdraw == nil {
-		return run.Run{}, conflict("a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
+		return run.Run{}, conflict("paused_run", "a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
 	}
 	for _, q := range rn.Requirements {
 		if q.Exception == "" {
-			return run.Run{}, conflict("a paused run can't be cancelled: KIFF holds a call it gave no ID to withdraw it by")
+			return run.Run{}, conflict("paused_run", "a paused run can't be cancelled: KIFF holds a call it gave no ID to withdraw it by")
 		}
 	}
 	if !rn.Cancel {
@@ -847,7 +847,7 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rn.Status != run.Paused {
-		s.fail(w, r, conflict("the run isn't paused: read it"))
+		s.fail(w, r, conflict("not_paused", "the run isn't paused: read it"))
 		return
 	}
 	if !resolved(rn, s.now()) {
@@ -857,7 +857,7 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !resolved(rn, s.now()) {
-		s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
+		s.fail(w, r, conflict("waiting_for_kiff", "the run still waits for KIFF to resolve its held calls"))
 		return
 	}
 	s.goOn(w, r, c, rn, body.Background)
@@ -969,7 +969,7 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 	}
 	card, ok := openCard(rn, r.PathValue("card"), s.now())
 	if !ok {
-		s.fail(w, r, conflict("no card of this run waits for an answer by that id: it was answered, it stopped waiting, or the run went on"))
+		s.fail(w, r, conflict("card_not_waiting", "no card of this run waits for an answer by that id: it was answered, it stopped waiting, or the run went on"))
 		return
 	}
 	shown, err := show.Parse(card.Input)
@@ -997,7 +997,7 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 	next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
 	switch {
 	case errors.Is(err, run.ErrNotOpen):
-		s.fail(w, r, conflict("the card was answered meanwhile, or the run went on: read it"))
+		s.fail(w, r, conflict("card_not_waiting", "the card was answered meanwhile, or the run went on: read it"))
 		return
 	case err != nil:
 		s.fail(w, r, err)

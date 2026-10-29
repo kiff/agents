@@ -1517,7 +1517,7 @@ func TestATenantsActiveRunsAreCapped(t *testing.T) {
 	} {
 		code, body := f.do("t1", "POST", c.path, c.body)
 		f.want(429, code, body, "at the cap: POST "+c.path)
-		if msg, _ := body["error"].(string); !strings.Contains(msg, "2 runs going") {
+		if msg, _ := body["message"].(string); body["error"] != "too_many_runs" || !strings.Contains(msg, "2 runs going") {
 			t.Errorf("POST %s: %q, want what to do", c.path, msg)
 		}
 	}
@@ -1800,7 +1800,7 @@ func TestTheFloodGuardIsPerRequester(t *testing.T) {
 	}
 	code, body := f.do("t1", "POST", "/agents/payouts/runs", msg("ana"))
 	f.want(429, code, body, "ana past her guard")
-	if m, _ := body["error"].(string); !strings.Contains(m, "2 messages in 10 minutes") {
+	if m, _ := body["message"].(string); body["error"] != "flood" || !strings.Contains(m, "2 messages in 10 minutes") {
 		t.Fatalf("refusal = %q", m)
 	}
 	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("luis"))

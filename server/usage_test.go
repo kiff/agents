@@ -32,8 +32,8 @@ func TestAIFairUse(t *testing.T) {
 	}
 	code, body = f.do("t1", "POST", "/agents/refunds/runs", ai(4_850_000))
 	f.want(409, code, body, "a chat at its bound")
-	if msg, _ := body["error"].(string); !strings.HasPrefix(msg, "ai_fair_use:") {
-		t.Fatalf("error %q: want it to start with ai_fair_use:", msg)
+	if msg, _ := body["message"].(string); body["error"] != "ai_fair_use" || !strings.HasPrefix(msg, "ai_fair_use:") {
+		t.Fatalf("error %v: want code ai_fair_use, and words that start with it", body)
 	}
 	if n := len(f.runner.starts); n != 1 {
 		t.Fatalf("a refused chat started: %d starts", n)

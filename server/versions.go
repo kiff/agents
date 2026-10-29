@@ -216,7 +216,7 @@ func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) 
 		return 0, nil, registry.ErrNoVersion
 	}
 	if vs[i].Live {
-		return 0, nil, conflict("that version is live already")
+		return 0, nil, conflict("version_live", "that version is live already")
 	}
 	if body.Replace {
 		if body.Draft == "" {
@@ -258,7 +258,8 @@ func (s *Server) pendingVersion(ctx context.Context, c Caller, r *http.Request) 
 		}
 		// The runs in the way, so the caller can offer to stop them (kiff/tafs#206).
 		return http.StatusConflict, map[string]any{
-			"error":    "a run of this agent is going or waiting on its owner: answer it, stop it or let it finish, then switch",
+			"error":    "runs_in_the_way",
+			"message":  "a run of this agent is going or waiting on its owner: answer it, stop it or let it finish, then switch",
 			"blocking": blocking,
 		}, nil
 	}

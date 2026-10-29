@@ -48,7 +48,7 @@ func TestAttachingAFile(t *testing.T) {
 	code, body = f.do("t1", "POST", "/agents/payouts/attachments?owner=member:ana",
 		map[string]any{"media_type": "image/jpeg", "name": "huge.jpg", "size": 11 << 20, "sha256": decl["sha256"]})
 	f.want(400, code, body, "a photo over 10 MB")
-	if msg, _ := body["error"].(string); !strings.Contains(msg, "huge.jpg is 11.0 MB; the most is 10.0 MB") {
+	if msg, _ := body["message"].(string); body["error"] != "invalid" || !strings.Contains(msg, "huge.jpg is 11.0 MB; the most is 10.0 MB") {
 		t.Fatalf("the limit isn't said: %q", msg)
 	}
 	code, body = f.do("t1", "POST", "/agents/payouts/attachments?owner=member:ana",

@@ -65,15 +65,16 @@ func TestClaimRoute(t *testing.T) {
 	if c.asked[0] != "t1 drf_ok kiff/taf-1" {
 		t.Fatalf("asked %v", c.asked)
 	}
-	for draft, want := range map[string]int{"drf_wait": 409, "drf_other": 409, "drf_taken": 409, "drf_old": 409, "drf_none": 404} {
-		if st, body := post("t1", draft, `{"key_ref":"kiff/taf-1"}`); st != want {
-			t.Errorf("%s: %d %s, want %d", draft, st, body, want)
-		} else if want == 409 {
-			var e map[string]string
-			_ = json.Unmarshal([]byte(body), &e)
-			if e["error"] == "" || e["error"] == "internal error" {
-				t.Errorf("%s says nothing useful: %s", draft, body)
-			}
+	// Each refusal has its own code, which the caller switches on, and words.
+	for draft, want := range map[string]struct {
+		status int
+		code   string
+	}{"drf_wait": {409, "draft_not_ready"}, "drf_other": {409, "draft_claimed"}, "drf_taken": {409, "key_ref_taken"}, "drf_old": {409, "draft_expired"}, "drf_none": {404, "not_found"}} {
+		st, body := post("t1", draft, `{"key_ref":"kiff/taf-1"}`)
+		var e map[string]string
+		_ = json.Unmarshal([]byte(body), &e)
+		if st != want.status || e["error"] != want.code || e["message"] == "" {
+			t.Errorf("%s: %d %s, want %d with code %s and words", draft, st, body, want.status, want.code)
 		}
 	}
 	n := len(c.asked)

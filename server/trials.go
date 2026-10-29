@@ -107,12 +107,12 @@ func (s *Server) openAlready(open registry.Trial, ok bool, err error, body openT
 		return 0, nil, err
 	}
 	if !ok { // ended meanwhile: the owner opens it again
-		return 0, nil, conflictError{"the trial changed while it was opened: try again"}
+		return 0, nil, conflictError{"trial_changed", "the trial changed while it was opened: try again"}
 	}
 	if open.N == body.N && open.Draft == body.Draft {
 		return http.StatusOK, map[string]any{"trial": open}, nil
 	}
-	return 0, nil, conflictError{fmt.Sprintf("this agent is already trying version %d: end that trial first", open.N)}
+	return 0, nil, conflictError{"trial_open", fmt.Sprintf("this agent is already trying version %d: end that trial first", open.N)}
 }
 
 func (s *Server) getOpenTrial(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
@@ -166,7 +166,7 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	if t.Idle(now) {
-		s.fail(w, r, conflictError{"this trial went unused for a week, and is ending"})
+		s.fail(w, r, conflictError{"trial_idle", "this trial went unused for a week, and is ending"})
 		return
 	}
 	// Marked used only while it is still this trial: one that ended meanwhile,
