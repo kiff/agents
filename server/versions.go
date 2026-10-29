@@ -32,6 +32,7 @@ type versionBody struct {
 	Definition registry.Definition `json:"definition"`
 	Note       string              `json:"note"`
 	By         string              `json:"by"`
+	ByKind     string              `json:"by_kind,omitempty"`
 	Draft      string              `json:"draft,omitempty"`
 	Revisions  []string            `json:"revisions,omitempty"`
 }
@@ -46,6 +47,9 @@ func (s *Server) listVersions(ctx context.Context, c Caller, r *http.Request) (i
 	}
 	if vs == nil {
 		vs = []registry.Version{}
+	}
+	for i := range vs {
+		vs[i] = vs[i].Author()
 	}
 	out := map[string]any{"versions": vs}
 	sw, on, err := s.Agents.Switching(ctx, c.Tenant, r.PathValue("id"))
@@ -75,6 +79,9 @@ func (s *Server) putVersion(ctx context.Context, c Caller, r *http.Request) (int
 	if len(body.Note) > MaxNote || len(body.By) > MaxNote {
 		return 0, nil, bad("a note is at most %d bytes", MaxNote)
 	}
+	if body.ByKind != "" && (body.By == "" || !slices.Contains([]string{registry.ByPerson, registry.ByAgent}, body.ByKind)) {
+		return 0, nil, bad("by_kind is %q or %q, with by", registry.ByPerson, registry.ByAgent)
+	}
 	d.Tenant, d.ID, d.Version = c.Tenant, id, 0
 	if err := d.Check(); err != nil {
 		return 0, nil, badRequest{err}
@@ -85,7 +92,7 @@ func (s *Server) putVersion(ctx context.Context, c Caller, r *http.Request) (int
 	if err := s.checkSkills(ctx, c.Tenant, d.Skills); err != nil {
 		return 0, nil, err
 	}
-	n, err := s.Agents.PutVersion(ctx, d, registry.Version{Note: body.Note, By: body.By, Draft: body.Draft, Revisions: body.Revisions})
+	n, err := s.Agents.PutVersion(ctx, d, registry.Version{Note: body.Note, By: body.By, ByKind: body.ByKind, Draft: body.Draft, Revisions: body.Revisions}.Author())
 	if err != nil {
 		return 0, nil, err
 	}
@@ -112,7 +119,7 @@ func (s *Server) getVersion(ctx context.Context, c Caller, r *http.Request) (int
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, map[string]any{"version": vs[i], "definition": d}, nil
+	return http.StatusOK, map[string]any{"version": vs[i].Author(), "definition": d}, nil
 }
 
 // liveBody is what POST /agents/{id}/versions/{n}/live may take: the KIFF

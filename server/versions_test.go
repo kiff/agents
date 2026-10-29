@@ -247,11 +247,28 @@ func TestAVersionReadsWithItsDefinition(t *testing.T) {
 	f.want(200, code, body, "put version")
 	code, body = f.do("t1", "GET", "/agents/payouts/versions/2", nil)
 	f.want(200, code, body, "get version")
-	if v := body["version"].(map[string]any); v["n"] != float64(2) || v["note"] != "reads first" || v["live"] != false {
+	if v := body["version"].(map[string]any); v["n"] != float64(2) || v["note"] != "reads first" || v["live"] != false || v["by_kind"] != "agent" {
 		t.Fatalf("version = %v", v)
 	}
 	if d := body["definition"].(map[string]any); d["instructions"] != "Version two." {
 		t.Fatalf("definition = %v", d)
+	}
+	// Who made a version is typed: by_kind, as sent, or a person for anyone but setup.
+	code, body = f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "three", "by": "member:ana"})
+	f.want(200, code, body, "a person's version")
+	code, body = f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "four", "by": "coach", "by_kind": "agent"})
+	f.want(200, code, body, "an agent's version, named")
+	code, body = f.do("t1", "POST", "/agents/payouts/versions", map[string]any{"definition": v2, "note": "five", "by": "x", "by_kind": "robot"})
+	f.want(400, code, body, "a kind that isn't one")
+	code, body = f.do("t1", "GET", "/agents/payouts/versions", nil)
+	f.want(200, code, body, "list versions")
+	kinds := map[string]any{}
+	for _, v := range body["versions"].([]any) {
+		v := v.(map[string]any)
+		kinds[fmt.Sprint(v["note"])] = v["by_kind"]
+	}
+	if kinds["reads first"] != "agent" || kinds["three"] != "person" || kinds["four"] != "agent" {
+		t.Fatalf("kinds = %v", kinds)
 	}
 	for _, c := range []struct{ tenant, path string }{{"t1", "/agents/payouts/versions/9"}, {"t1", "/agents/payouts/versions/x"}, {"t2", "/agents/payouts/versions/2"}} {
 		if code, _ := f.do(c.tenant, "GET", c.path, nil); code != 404 {
