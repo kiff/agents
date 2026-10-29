@@ -400,7 +400,8 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + Unforged(text)})
 	}
 	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
-	msgs = append(msgs, r.Paused.Before...)
+	// Paired again here: a run paused before pairing was kept may hold half a pair.
+	msgs = append(msgs, pairedServer(r.Paused.Before)...)
 	// What the run did, from its record, after the results: a continued run
 	// says what was done from it, not from the chat (the R-3005 test).
 	if note := a.recordNote(r, held); note != "" {
@@ -819,7 +820,71 @@ func before(msgs []model.Message, start int) []model.Message {
 	for len(out) > 0 && jsonSize(out) > BeforeBytes {
 		out = out[min(2, len(out)):]
 	}
+	return pairedServer(out)
+}
+
+// pairedServer is msgs with every server block whose other half isn't in
+// msgs left out: a tool search's result whose call was cut with an older turn,
+// or a call whose result was. The model provider refuses either alone (a 400,
+// so the run would end in ERROR), and a turn cut from the front can leave one.
+// A message left with no blocks keeps a line in their place, so the turns
+// still alternate.
+func pairedServer(msgs []model.Message) []model.Message {
+	calls, results := map[string]bool{}, map[string]bool{}
+	for _, m := range msgs {
+		for _, b := range m.Blocks {
+			if id, result, ok := serverBlock(b); ok {
+				if result {
+					results[id] = true
+				} else {
+					calls[id] = true
+				}
+			}
+		}
+	}
+	var out []model.Message
+	changed := false
+	for _, m := range msgs {
+		keep := m.Blocks[:0:0]
+		for _, b := range m.Blocks {
+			if id, result, ok := serverBlock(b); ok && ((result && !calls[id]) || (!result && !results[id])) {
+				changed = true
+				continue
+			}
+			keep = append(keep, b)
+		}
+		if len(keep) == 0 && len(m.Blocks) > 0 {
+			keep = []model.Block{{Kind: model.Text, Text: "[a tool search, cut with an earlier turn]"}}
+		}
+		out = append(out, model.Message{Role: m.Role, Blocks: keep})
+	}
+	if !changed {
+		return msgs
+	}
 	return out
+}
+
+// serverBlock is b's id when it is a server block: a server tool's call (its
+// id) or a server tool's result (the call's id it answers, result true).
+func serverBlock(b model.Block) (id string, result, ok bool) {
+	if b.Kind != model.Server {
+		return "", false, false
+	}
+	var v struct {
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		ToolUseID string `json:"tool_use_id"`
+	}
+	if json.Unmarshal([]byte(b.Data), &v) != nil {
+		return "", false, false
+	}
+	if v.ToolUseID != "" {
+		return v.ToolUseID, true, true
+	}
+	if v.ID != "" {
+		return v.ID, false, true
+	}
+	return "", false, false
 }
 
 // jsonSize is how many bytes msgs take as JSON, as a store keeps them.
