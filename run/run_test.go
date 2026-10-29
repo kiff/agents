@@ -156,6 +156,37 @@ func TestACancelledRunIsNotClaimed(t *testing.T) {
 	}
 }
 
+// A paused run keeps its earlier turns (Turn.Before) through every change,
+// KIFF's answer to its hold included: without them, the continued run has no
+// memory of the look-up it made before the hold, and says it skipped it (the
+// R-3005 test).
+func TestAPausedRunKeepsItsEarlierTurnsThroughAnAnswer(t *testing.T) {
+	ctx := context.Background()
+	runs := memory.NewRuns()
+	now := time.Now()
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "refund ch_1", now)
+	r.Status = run.Paused
+	before := []model.Message{
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "get_charge", Input: json.RawMessage(`{"charge":"ch_1"}`)}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":900}`}}},
+	}
+	r.Paused = &run.Turn{Reply: model.Message{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c2", Tool: "create_refund"}}}, Before: before}
+	r.Requirements = []run.Requirement{{CallID: "c2", Tool: "create_refund", Exception: "exc_1", Expires: now.Add(time.Hour)}}
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	got, err := run.Answer(ctx, runs, "t1", "exc_1", "rejected", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := runs.Get(ctx, "t1", r.ID)
+	for what, x := range map[string]run.Run{"answered": got, "stored": stored} {
+		if x.Paused == nil || !reflect.DeepEqual(x.Paused.Before, before) {
+			t.Errorf("%s: the paused turn's earlier turns are %+v, want the look-up", what, x.Paused)
+		}
+	}
+}
+
 // Starting a run is stored, then claimed: twice the store, on every message.
 func BenchmarkStart(b *testing.B) {
 	ctx := context.Background()
