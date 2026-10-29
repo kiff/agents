@@ -111,6 +111,11 @@ const (
 	// chat's next runs read it, after the call's own events are gone. Only
 	// the runner reads it; a view of the session has the call's own events.
 	Called EventKind = "called"
+	// Answered is the owner's answer to a card the agent showed, recorded
+	// when the run goes on with it (agent.AnsweredBody), kept like the
+	// agent's messages: what the app shows as the card's answer, and what
+	// the chat's next runs read of it. It is data, never the owner's text.
+	Answered EventKind = "answered"
 
 	// Summary is the agent's summary of a chat's earlier runs, written once
 	// they no longer fit its history (SummaryBody): kept like the agent's
@@ -127,7 +132,7 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 // it keeps working. A component, a trial's write, a call's reference and a
 // summary and a call's outcome (Called) are kept like the agent's messages. A KeptRead left out is not
 // written at all (Policy.Rule).
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead, Called: AgentMessage}
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead, Called: AgentMessage, Answered: AgentMessage}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires

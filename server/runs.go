@@ -17,6 +17,7 @@ import (
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool/show"
 	"github.com/kiff/agents/usage"
 )
 
@@ -766,6 +767,15 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("only a person's own chat message carries attachments: a door's never does"))
 		return
 	}
+	// The owner writing while a card of theirs waits in the chat answers it
+	// in their words, and that run goes on: typing still works, and no
+	// second line of thought starts beside the one waiting. Only their own
+	// message does: a door's, or one with files, starts a run as before.
+	if body.SessionID != "" && q.Kind == run.ByMember && len(body.Attachments) == 0 {
+		if done := s.wroteInstead(w, r, c, body.SessionID, q, body.Input, body.Background); done {
+			return
+		}
+	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
 		Attachments: body.Attachments}
 	if body.AI != nil {
@@ -843,13 +853,20 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
 		return
 	}
+	s.goOn(w, r, c, rn, body.Background)
+}
+
+// goOn continues rn, a PAUSED run whose requirements have all resolved:
+// streamed as SSE, or in the background, answering 202.
+func (s *Server) goOn(w http.ResponseWriter, r *http.Request, c Caller, rn run.Run, background bool) {
+	ctx := r.Context()
 	// Continued, the run is active again. The sweep would continue it too,
 	// uncapped: a 429 here only asks the caller not to add one more now.
 	if err := s.room(ctx, c.Tenant); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	if body.Background {
+	if background {
 		// A failed hand-off leaves the run paused; the sweep continues it.
 		if err := s.Background(ctx, rn.Tenant, rn.ID); err != nil {
 			s.fail(w, r, err)
@@ -866,6 +883,113 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.execute(w, r, c, rn, st.Seq)
+}
+
+// answerBody is what POST /agents/{id}/runs/{run_id}/cards/{card}/answer
+// takes: the answer, in the card's type's shape (show.Answer), who answers,
+// and whether the run goes on in the background.
+type answerBody struct {
+	Answer     json.RawMessage `json:"answer"`
+	Requester  *run.Requester  `json:"requester,omitempty"`
+	Background bool            `json:"background,omitempty"`
+}
+
+// answerCard answers a card the run showed and waits on (tool.StateAwaiting,
+// run.KindCard), as data: checked against the card, recorded on the run, and
+// the call's result when the run goes on, never text in the chat. Only the
+// person whose run it is answers, from their own app: a door's message or a
+// tool's result never does. Once nothing else holds the run, it goes on, as
+// continueRun does; until then, 202 with the run.
+func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
+	c, err := s.caller(w, r)
+	if err != nil {
+		return
+	}
+	ctx := r.Context()
+	var body answerBody
+	if err := decode(r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if body.Background && s.Background == nil {
+		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
+		return
+	}
+	q, err := requesterOf(body.Requester)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if q.Kind != run.ByMember {
+		s.fail(w, r, bad("a card is answered by the person whose run it is: requester {kind: member, id}"))
+		return
+	}
+	if err := notBoth(r); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	rn, err := s.agentRun(ctx, c, r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !own(rn, q) {
+		s.fail(w, r, run.ErrNotFound) // another person's run
+		return
+	}
+	if err := s.mayRead(ctx, c.Tenant, rn.Agent, q.Key()); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	card, ok := openCard(rn, r.PathValue("card"), s.now())
+	if !ok {
+		s.fail(w, r, conflict("no card of this run waits for an answer by that id: it was answered, it stopped waiting, or the run went on"))
+		return
+	}
+	shown, err := show.Parse(card.Input)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	answered, err := show.Answer(shown, body.Answer)
+	if err != nil {
+		s.fail(w, r, bad("%s", err.Error()))
+		return
+	}
+	result, _ := json.Marshal(answered)
+	next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
+	switch {
+	case errors.Is(err, run.ErrNotOpen):
+		s.fail(w, r, conflict("the card was answered meanwhile, or the run went on: read it"))
+		return
+	case err != nil:
+		s.fail(w, r, err)
+		return
+	}
+	if !resolved(next, s.now()) {
+		writeJSON(w, http.StatusAccepted, viewRun(next)) // it waits for KIFF, or another card, too
+		return
+	}
+	s.goOn(w, r, c, next, body.Background)
+}
+
+// openCard is rn's card shown with id that still waits for an answer.
+func openCard(rn run.Run, id string, now time.Time) (run.Requirement, bool) {
+	if rn.Status != run.Paused {
+		return run.Requirement{}, false
+	}
+	for _, q := range rn.Requirements {
+		if !q.Card() || q.Resolved(now) {
+			continue
+		}
+		var c struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(q.Input, &c) == nil && c.ID == id {
+			return q, true
+		}
+	}
+	return run.Requirement{}, false
 }
 
 // execute runs rn in this invocation, streamed to the caller as SSE: the run
@@ -1360,4 +1484,51 @@ func (s *Server) granted(ctx context.Context, tenant, agent string, q run.Reques
 		return q, fmt.Errorf("%w: the run grant names no person", run.ErrNoAccess)
 	}
 	return granted, nil
+}
+
+// wroteInstead answers the card a run of the session waits on with what the
+// owner wrote, and goes on with that run; it reports whether it answered the
+// request. With no card waiting, or one answered meanwhile, it does nothing,
+// and the message starts a run as any other.
+func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, sessionID string, q run.Requester, text string, background bool) bool {
+	ctx := r.Context()
+	sess, _, err := s.Sessions.Read(ctx, c.Tenant, sessionID)
+	if err != nil {
+		return false
+	}
+	for _, id := range sess.Held {
+		rn, err := s.Runs.Get(ctx, c.Tenant, id)
+		if err != nil || !own(rn, q) {
+			continue
+		}
+		card, ok := firstOpenCard(rn, s.now())
+		if !ok {
+			continue
+		}
+		result, _ := json.Marshal(show.Answered{Answer: json.RawMessage("null"), Words: "In your words: “" + text + "”", Wrote: text})
+		next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
+		if err != nil {
+			continue // answered meanwhile, or the run went on
+		}
+		if !resolved(next, s.now()) {
+			writeJSON(w, http.StatusAccepted, viewRun(next))
+			return true
+		}
+		s.goOn(w, r, c, next, background)
+		return true
+	}
+	return false
+}
+
+// firstOpenCard is rn's first card that still waits for an answer.
+func firstOpenCard(rn run.Run, now time.Time) (run.Requirement, bool) {
+	if rn.Status != run.Paused {
+		return run.Requirement{}, false
+	}
+	for _, q := range rn.Requirements {
+		if q.Card() && !q.Resolved(now) {
+			return q, true
+		}
+	}
+	return run.Requirement{}, false
 }

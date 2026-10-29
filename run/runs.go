@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -577,6 +578,33 @@ func (sw Sweeper) retry(ctx context.Context, r Run, now time.Time) (bool, error)
 		return false, err
 	}
 	return true, nil
+}
+
+// ErrNotOpen means no card of the run waits for an answer by that call: it
+// was answered already, it stopped waiting, or the run went on.
+var ErrNotOpen = errors.New("run: no card waits for that answer")
+
+// AnswerCard records result as the answer to the run's card shown by call,
+// once: the card's requirement is answered, and the run, paused, can go on.
+// A card already answered, or a run no longer paused, is ErrNotOpen.
+func AnswerCard(ctx context.Context, runs Runs, tenant, id, call string, result json.RawMessage, now time.Time) (Run, error) {
+	for try := 1; ; try++ {
+		r, err := runs.Get(ctx, tenant, id)
+		if err != nil {
+			return r, err
+		}
+		i := slices.IndexFunc(r.Requirements, func(q Requirement) bool { return q.Card() && q.CallID == call })
+		if i < 0 || r.Status != Paused || r.Requirements[i].Resolved(now) {
+			return r, ErrNotOpen
+		}
+		next, err := Change(ctx, runs, r, now, func(n *Run) error {
+			n.Requirements[i].Answered, n.Requirements[i].Answer, n.Requirements[i].Result = now.UTC(), "answered", result
+			return nil
+		})
+		if !errors.Is(err, ErrConflict) || try == SaveTries {
+			return next, err
+		}
+	}
 }
 
 // Answer records KIFF's answer on the requirement whose hold is exception:

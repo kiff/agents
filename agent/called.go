@@ -89,15 +89,47 @@ func cutInput(input json.RawMessage) json.RawMessage {
 // trusts what follows it as what was done.
 const CalledMark = "[called]"
 
-// forgedMark is the mark in any spelling the model would read as it.
-var forgedMark = regexp.MustCompile(`(?i)\[\s*called\s*\]`)
+// AnsweredMark opens the line of a card's answer in the chat's history,
+// and only that: the model trusts what follows it as the owner's answer.
+const AnsweredMark = "[answered]"
+
+// forgedMark is either mark in any spelling the model would read as it.
+var forgedMark = regexp.MustCompile(`(?i)\[\s*(called|answered)\s*\]`)
 
 // Unforged is text the runner didn't write as a record (an owner's message,
 // a tool's result, a customer's email, the agent's own words) with the
-// record's mark taken out, so nothing that only looks like a line of the
-// record is read as one.
+// record's marks taken out, so nothing that only looks like a line of the
+// record, or a card's answer, is read as one.
 func Unforged(text string) string {
-	return forgedMark.ReplaceAllString(text, "(called)")
+	return forgedMark.ReplaceAllStringFunc(text, func(m string) string {
+		return "(" + strings.ToLower(strings.Trim(m, "[] \t")) + ")"
+	})
+}
+
+// AnsweredBody is the body of an Answered event: the card (its id and type),
+// the owner's answer as the app sent it, and their choice in words. Wrote
+// is set instead when the owner wrote a message rather than answer it;
+// Unanswered, when the card stopped waiting with no answer.
+type AnsweredBody struct {
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Answer     json.RawMessage `json:"answer,omitempty"`
+	Words      string          `json:"words,omitempty"`
+	Wrote      string          `json:"wrote,omitempty"`
+	Unanswered bool            `json:"unanswered,omitempty"`
+}
+
+// AnsweredLine is an Answered event as the model reads it in the chat's
+// history: the only text that carries AnsweredMark.
+func AnsweredLine(b AnsweredBody) string {
+	line := AnsweredMark + " " + Unforged(b.Type) + " " + Unforged(b.ID) + ": "
+	switch {
+	case b.Unanswered:
+		return line + "no answer"
+	case b.Wrote != "":
+		return line + "the owner wrote instead: " + Unforged(b.Wrote)
+	}
+	return line + Unforged(b.Words)
 }
 
 // CalledLine is a Called event as the model reads it: the only text that
@@ -183,4 +215,33 @@ func (a Agent) recordNote(r run.Run, held []ToolResultBody) string {
 // copied is msgs, copied, so appending to it never writes into the run's.
 func copied(msgs []model.Message) []model.Message {
 	return append([]model.Message(nil), msgs...)
+}
+
+// recordAnswered records the owner's answer to the card q waited for, as
+// recorded on the run: an Answered event, and, when they wrote a message
+// instead, that message as theirs.
+func recordAnswered(rec *session.Recording, q run.Requirement) error {
+	var card struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(q.Input, &card)
+	b := AnsweredBody{ID: card.ID, Type: card.Type}
+	var res struct {
+		Answer json.RawMessage `json:"answer"`
+		Words  string          `json:"words"`
+		Wrote  string          `json:"wrote"`
+	}
+	switch {
+	case q.Answered.IsZero() || json.Unmarshal(q.Result, &res) != nil:
+		b.Unanswered = true
+	case res.Wrote != "":
+		b.Wrote = res.Wrote
+		if err := rec.Record(session.OwnerMessage, TextBody{Text: res.Wrote}); err != nil {
+			return err
+		}
+	default:
+		b.Answer, b.Words = res.Answer, res.Words
+	}
+	return rec.Record(session.Answered, b)
 }
