@@ -177,6 +177,7 @@ verified; the phone never calls it directly.
 | `GET /evals`, `GET /evals/{id}` | Eval runs and their cases, each linked to the run it produced |
 | `GET /usage?agent_id=&from=&to=` | Runs, tokens and cost per agent and per day: what a price is set from |
 | `GET /ops/runs`, `GET /ops/runs/paused`, `GET /ops/tenants/{tenant}/runs/{id}` | Operators only, read-only, across tenants: a run's state, cost and held tools, never its content (no input, output, steering, requester or session events) |
+| `GET /agents/{id}/runs/{run_id}/requester/access` | What the person who asked for the run may do now, asked of KIFF with the agent's own key and kept nowhere: `{requester, use, cards_manage?}`. `cards_manage` is there only when KIFF says it, which it does only to the account's Setup's key. A service checks it before it acts for them (a result's hand-over). 409 `no_requester` for a run no person asked for, 502 `kiff_unanswered` when KIFF doesn't answer |
 | `POST /agents/{id}/runs/{run_id}/cards/{card}/answer` | Answer a card the paused run waits on, as data checked against the card (`answer`), with `background` to go on in the background. The owner's cards (confirm, questions, approval, sign_in) are answered by the person whose run it is (`requester`). A `result` is answered by the service that handed the owner over, in its own name (`answered_by`), with what came of it: `{taf_id}`, `{version}` or `{failed}`. Neither answers in the other's place. 409 `card_not_waiting` once the card is answered or the run went on |
 | `GET /health` | Liveness |
 

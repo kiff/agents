@@ -50,13 +50,30 @@ func AskAccess(ctx context.Context, hc *http.Client, apiURL, key, subject string
 		return run.Access{}, fmt.Errorf("kiff: access: KIFF answered %d", resp.StatusCode)
 	}
 	var a struct {
-		Use     bool `json:"use"`
-		Oversee bool `json:"oversee"`
+		Use         bool  `json:"use"`
+		Oversee     bool  `json:"oversee"`
+		CardsManage *bool `json:"cards_manage"`
 	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return run.Access{}, fmt.Errorf("kiff: access: %w", err)
 	}
-	return run.Access{Use: a.Use, Oversee: a.Oversee}, nil
+	return run.Access{Use: a.Use, Oversee: a.Oversee, CardsManage: a.CardsManage}, nil
+}
+
+// FreshAccessor asks KIFF with the agent's own key each time, keeping
+// nothing: for what must hold at that moment.
+func FreshAccessor(agents registry.Agents, secrets registry.Secrets, hc *http.Client, apiURL string) run.AccessFunc {
+	return func(ctx context.Context, tenant, agent, subject string) (run.Access, error) {
+		d, err := agents.Get(ctx, tenant, agent)
+		if err != nil {
+			return run.Access{}, fmt.Errorf("kiff: access: the agent: %v", err)
+		}
+		key, err := secrets.Key(ctx, tenant, d.KeyRef)
+		if err != nil {
+			return run.Access{}, fmt.Errorf("kiff: access: the agent's KIFF key: %v", err)
+		}
+		return AskAccess(ctx, hc, apiURL, key, subject)
+	}
 }
 
 // Accessor is the runtime's run.AccessFunc: it asks KIFF with the agent's
@@ -66,6 +83,7 @@ func Accessor(agents registry.Agents, secrets registry.Secrets, hc *http.Client,
 	if now == nil {
 		now = time.Now
 	}
+	ask := FreshAccessor(agents, secrets, hc, apiURL)
 	type kept struct {
 		a     run.Access
 		until time.Time
@@ -80,15 +98,7 @@ func Accessor(agents registry.Agents, secrets registry.Secrets, hc *http.Client,
 			return c.a, nil
 		}
 		mu.Unlock()
-		d, err := agents.Get(ctx, tenant, agent)
-		if err != nil {
-			return run.Access{}, fmt.Errorf("kiff: access: the agent: %v", err)
-		}
-		key, err := secrets.Key(ctx, tenant, d.KeyRef)
-		if err != nil {
-			return run.Access{}, fmt.Errorf("kiff: access: the agent's KIFF key: %v", err)
-		}
-		a, err := AskAccess(ctx, hc, apiURL, key, subject)
+		a, err := ask(ctx, tenant, agent, subject)
 		if err != nil {
 			return run.Access{}, err
 		}

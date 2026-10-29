@@ -85,6 +85,9 @@ type Server struct {
 	// member reads their sessions with it, and writes into their runs, only
 	// if they may. Nil: nothing is checked. The runner checks runs.
 	Access run.AccessFunc
+	// AccessNow is Access asked afresh, nothing kept: GET a run's requester
+	// access answers from it. Nil: that route says KIFF wasn't asked.
+	AccessNow run.AccessFunc
 	// ResolveGrant asks the account who a run grant was signed for, for
 	// this agent: the person's KIFF subject. A grant KIFF doesn't vouch
 	// for is an error. Nil: grants aren't taken.
@@ -224,6 +227,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	route("GET /agents/{id}/runs", s.listRuns)
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
+	route("GET /agents/{id}/runs/{run_id}/requester/access", s.requesterAccess)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
 	route("POST /agents/{id}/runs/{run_id}/messages", s.steerRun)
 	mux.HandleFunc("POST /agents/{id}/runs/{run_id}/resume", s.resumeRun)
@@ -336,6 +340,11 @@ func (f floodError) Error() string {
 // RetryAfter is how long a 429 asks the caller to wait, in seconds.
 const RetryAfter = 30
 
+// kiffUnanswered is KIFF not answering a question asked for the caller.
+type kiffUnanswered struct{ msg string }
+
+func (k kiffUnanswered) Error() string { return k.msg }
+
 // unavailableError is a request this server isn't set up to serve.
 type unavailableError struct{ msg string }
 
@@ -352,6 +361,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var un unavailableError
 	var tm tooManyError
 	var fl floodError
+	var ku kiffUnanswered
 	var tooBig *http.MaxBytesError
 	status, code, msg := http.StatusInternalServerError, "internal", "internal error"
 	if errors.Is(err, run.ErrNoOversight) {
@@ -399,6 +409,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.As(err, &fl):
 		status, code, msg = http.StatusTooManyRequests, "flood", fl.Error()
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
+	case errors.As(err, &ku):
+		status, code, msg = http.StatusBadGateway, "kiff_unanswered", ku.Error()
 	case errors.As(err, &un):
 		status, code, msg = http.StatusServiceUnavailable, "unavailable", un.Error()
 	case errors.As(err, &cf):

@@ -266,6 +266,8 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	access := kiff.Accessor(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI, nil)
 	f.api.Access = access
 	rn.Access = access
+	// What a run's requester may do now, for a service about to act for them.
+	f.api.AccessNow = kiff.FreshAccessor(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	// A member's run grant, the person KIFF signed it for: taken
 	// once KIFF mints them, AGENTS_RUN_GRANTS=take; required of every
 	// member's run, =require. Unset: grants aren't taken, as before.

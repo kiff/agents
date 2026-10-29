@@ -1010,6 +1010,36 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 	s.goOn(w, r, c, next, body.Background)
 }
 
+// requesterAccess answers what the person who asked for the run may do now,
+// as KIFF says when asked with the agent's own key, nothing kept: what a
+// service checks before it acts for them (a result's hand-over). cards_manage
+// is left out when KIFF didn't say. A run no member asked for has no one to
+// ask about (409 no_requester); KIFF not answering is 502 kiff_unanswered.
+func (s *Server) requesterAccess(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	rn, err := s.agentRun(ctx, c, r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if rn.Requester.Kind != run.ByMember {
+		return 0, nil, conflict("no_requester", "no person asked for this run: there is no one whose rights to check")
+	}
+	if s.AccessNow == nil {
+		return 0, nil, kiffUnanswered{"this server doesn't ask KIFF"}
+	}
+	a, err := s.AccessNow(ctx, c.Tenant, rn.Agent, rn.Requester.ID)
+	if err != nil {
+		if s.Log != nil {
+			s.Log.WarnContext(ctx, "requester access unanswered", "run", rn.ID, "err", err)
+		}
+		return 0, nil, kiffUnanswered{"KIFF didn't say what this person may do now"}
+	}
+	out := map[string]any{"requester": rn.Requester, "use": a.Use}
+	if a.CardsManage != nil {
+		out["cards_manage"] = *a.CardsManage
+	}
+	return http.StatusOK, out, nil
+}
+
 // openCard is rn's card shown with id that still waits for an answer.
 func openCard(rn run.Run, id string, now time.Time) (run.Requirement, bool) {
 	if rn.Status != run.Paused {

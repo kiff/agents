@@ -136,3 +136,38 @@ func TestAnothersSessionsNeedAReadGrant(t *testing.T) {
 	code, body = read("list", "/sessions?agent_id=payouts&owner=member:ana&reader=member:ada")
 	f.want(403, code, body, "a read grant where none is taken")
 }
+
+// A service about to act for a run's requester asks what they may do now:
+// KIFF's answer, afresh, cards_manage only when KIFF said it. A run no
+// person asked for, or KIFF not answering, is said so by code.
+func TestARunsRequesterAccessIsAskedNow(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.waitingOnCard()
+	path := "/agents/payouts/runs/" + r.ID + "/requester/access"
+	code, body := f.do("t1", "GET", path, nil)
+	f.want(502, code, body, "no one to ask KIFF")
+	if body["error"] != "kiff_unanswered" {
+		t.Fatalf("body = %v", body)
+	}
+	yes := true
+	var asked []string
+	f.server.AccessNow = func(_ context.Context, tenant, agent, subject string) (run.Access, error) {
+		asked = append(asked, tenant+" "+agent+" "+subject)
+		return run.Access{Use: true, CardsManage: &yes}, nil
+	}
+	f.restart()
+	code, body = f.do("t1", "GET", path, nil)
+	f.want(200, code, body, "ana's access now")
+	if body["cards_manage"] != true || body["use"] != true || len(asked) != 1 || asked[0] != "t1 payouts ana" {
+		t.Fatalf("body = %v, asked %v", body, asked)
+	}
+	f.server.AccessNow = func(context.Context, string, string, string) (run.Access, error) { return run.Access{Use: true}, nil }
+	f.restart()
+	code, body = f.do("t1", "GET", path, nil)
+	if _, said := body["cards_manage"]; code != 200 || said {
+		t.Fatalf("KIFF didn't say: %d %v; want cards_manage left out", code, body)
+	}
+	code, body = f.do("t2", "GET", path, nil)
+	f.want(404, code, body, "another tenant's run")
+}
