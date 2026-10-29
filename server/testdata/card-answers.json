@@ -1,0 +1,51 @@
+{
+  "about": "The wire between tafs cloud and kiff/agents for a card's answer: the app's old form (text), the card it answers, the request tafs cloud sends to POST /agents/{agent}/runs/{run}/cards/{card.id}/answer (body), and the result kiff/agents records (result). One file, copied byte for byte: kiff/tafs runtime/test/fixtures/card-answers.json and kiff/agents server/testdata/card-answers.json. A change to one is a change to both, in the same round.",
+  "cases": [
+    {
+      "text": "[confirm which] test",
+      "card": {"type": "confirm", "id": "which", "text": "Which account?", "options": [{"value": "live", "label": "Live"}, {"value": "test", "label": "Test mode"}]},
+      "body": {"answer": "test", "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": "test", "words": "Test mode"}
+    },
+    {
+      "text": "[questions limits] {\"cap\":{\"value\":\"50\"},\"days\":{\"values\":[\"mon\",\"tue\"]},\"note\":{\"own\":\"Only EU customers\"}}",
+      "card": {"type": "questions", "id": "limits", "text": "A few limits", "questions": [
+        {"id": "cap", "text": "Most per refund?", "options": [{"value": "50", "label": "$50"}, {"value": "100", "label": "$100"}]},
+        {"id": "days", "text": "Which days?", "multi": true, "options": [{"value": "mon", "label": "Monday"}, {"value": "tue", "label": "Tuesday"}]},
+        {"id": "note", "text": "Anything else?", "options": [{"value": "no", "label": "No"}, {"value": "yes", "label": "Yes"}]}
+      ]},
+      "body": {"answer": {"cap": {"value": "50"}, "days": {"values": ["mon", "tue"]}, "note": {"own": "Only EU customers"}}, "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": {"cap": {"value": "50"}, "days": {"values": ["mon", "tue"]}, "note": {"own": "Only EU customers"}}, "words": "$50 · Monday, Tuesday · In your words: “Only EU customers”"}
+    },
+    {
+      "text": "[approval connect] approved, signed in",
+      "card": {"type": "approval", "id": "connect", "grant": "grt_1"},
+      "body": {"answer": "approved", "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": "approved", "words": "Approved"}
+    },
+    {
+      "text": "[approval connect] declined",
+      "card": {"type": "approval", "id": "connect", "grant": "grt_1"},
+      "body": {"answer": "declined", "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": "declined", "words": "Declined"}
+    },
+    {
+      "text": "[approval connect] failed: Face ID was cancelled",
+      "card": {"type": "approval", "id": "connect", "grant": "grt_1"},
+      "body": {"answer": "failed: Face ID was cancelled", "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": "failed: Face ID was cancelled", "words": "Approve · it didn't go through: Face ID was cancelled"}
+    },
+    {
+      "text": "[sign_in stripe] signed in",
+      "card": {"type": "sign_in", "id": "stripe", "grant": "grt_1", "service": "mcp.stripe.com"},
+      "body": {"answer": "signed in", "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": "signed in", "words": "Signed in"}
+    },
+    {
+      "text": "[sign_in stripe] not now",
+      "card": {"type": "sign_in", "id": "stripe", "grant": "grt_1", "service": "mcp.stripe.com"},
+      "body": {"answer": "not now", "requester": {"kind": "member", "id": "u_ana"}, "background": true},
+      "result": {"answer": "not now", "words": "Not now"}
+    }
+  ]
+}
