@@ -37,7 +37,9 @@ func paired(t *testing.T, what string, msgs []model.Message) {
 			if b.Kind != model.Server {
 				continue
 			}
-			var v struct{ ID, ToolUseID string `json:"-"` }
+			var v struct {
+				ID, ToolUseID string `json:"-"`
+			}
 			var raw map[string]any
 			_ = json.Unmarshal([]byte(b.Data), &raw)
 			v.ID, _ = raw["id"].(string)
