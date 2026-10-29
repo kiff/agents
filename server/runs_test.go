@@ -1015,6 +1015,37 @@ func TestResumeOfAStoppedRunEnds(t *testing.T) {
 	}
 }
 
+// A run whose card was just answered stays paused until the invocation it
+// was handed to claims it: a stream resumed in between follows it through to
+// the answer, rather than ending on the pause it is leaving.
+func TestResumeOfAnAnsweredRunFollowsItOn(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.stored(run.Paused)
+	r, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error {
+		n.Requirements[0].Answered, n.Requirements[0].Answer = now, "answered"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		// The background invocation claims it, and it goes on to its answer.
+		time.Sleep(700 * time.Millisecond)
+		got, _ := f.runs.Get(ctx, "t1", r.ID)
+		got, _ = run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
+			n.Status, n.Claim, n.Lease = run.Running, "inv-2", now.Add(time.Hour)
+			return nil
+		})
+		f.record(r, 1, 1)
+		_, _ = run.Change(ctx, f.runs, got, now, func(n *run.Run) error { n.Status, n.Stop = run.Completed, "answered"; return nil })
+	}()
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs/"+r.ID+"/resume?as=service", "")
+	if code != 200 || names(events) != "event,end" || events[1].data["status"] != string(run.Completed) {
+		t.Fatalf("got %d %s %v", code, names(events), events)
+	}
+}
+
 func TestScheduleRuns(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")

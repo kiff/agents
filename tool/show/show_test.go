@@ -75,7 +75,6 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"steps","id":"a","steps":[]}`:                                                                                                     "1 to 20 steps",
 		`{"type":"steps","id":"a","steps":[{"label":"x","status":"maybe"}]}`:                                                                       "status is one of",
 		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"}]}`:                                                             "2 to 4",
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"y","label":"Again"}]}`:                               "different",
 		`{"type":"approval","id":"a","grant":"grt 1"}`:                                                                                             "planque's grant id",
 		`{"type":"approval","id":"a","grant":"grt_1","text":"Approve me"}`:                                                                         `has no field "text"`,
 		`{"type":"approval","id":"a","grant":"grt_1","title":"Read only"}`:                                                                         `has no field "title"`,
@@ -99,6 +98,9 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}],"own":true}]}`: "unknown",
 		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y","description":"more"},{"value":"n","label":"N"}]}`:                             "no description",
 		`{"type":"questions","id":"q","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                       "text is required",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"cur","text":"?","options":[{"value":"usd","label":"USD"},{"value":"EUR","label":"EUR"}]}]}`:  `question cur: option 2 value "EUR": use 1 to 64 of a-z 0-9 - _`,
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"y","label":"Again"}]}`:                                              `option 2 value "y": another option has it`,
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"Currency","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:     `question 1 id "Currency": use 1 to 64`,
 		`not json`: "a JSON object",
 	} {
 		r := call(t, in)
