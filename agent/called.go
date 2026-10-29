@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/kiff/agents/model"
@@ -82,11 +83,27 @@ func cutInput(input json.RawMessage) json.RawMessage {
 	return cut
 }
 
-// CalledLine is a Called event as the model reads it.
+// CalledMark opens each line of a run's record, and only those: the model
+// trusts what follows it as what was done.
+const CalledMark = "[called]"
+
+// forgedMark is the mark in any spelling the model would read as it.
+var forgedMark = regexp.MustCompile(`(?i)\[\s*called\s*\]`)
+
+// Unforged is text the runner didn't write as a record (an owner's message,
+// a tool's result, a customer's email, the agent's own words) with the
+// record's mark taken out, so nothing that only looks like a line of the
+// record is read as one.
+func Unforged(text string) string {
+	return forgedMark.ReplaceAllString(text, "(called)")
+}
+
+// CalledLine is a Called event as the model reads it: the only text that
+// carries CalledMark.
 func CalledLine(b CalledBody) string {
-	line := "[called] " + b.Tool
+	line := CalledMark + " " + Unforged(b.Tool)
 	if len(b.Input) > 0 {
-		line += " " + string(b.Input)
+		line += " " + Unforged(string(b.Input))
 	}
 	return line + " → " + b.Outcome
 }

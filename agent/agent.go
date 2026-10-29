@@ -320,7 +320,7 @@ func Run(ctx context.Context, a Agent, rec *session.Recording, history []model.M
 func (a Agent) asked(input string) []model.Block {
 	asked := slices.Clone(a.Preface)
 	if input != "" {
-		asked = append(asked, model.Block{Kind: model.Text, Text: input})
+		asked = append(asked, model.Block{Kind: model.Text, Text: Unforged(input)})
 	}
 	return asked
 }
@@ -376,7 +376,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	// input: the continued run doesn't see the turns between them.
 	asked := append(a.asked(r.Input), attach.Blocks(r.Attachments)...)
 	for _, text := range r.Taken() {
-		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + text})
+		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + Unforged(text)})
 	}
 	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
 	msgs = append(msgs, r.Paused.Before...)
@@ -487,7 +487,8 @@ func requirementInput(r run.Run, id string) json.RawMessage {
 }
 
 func resultBlock(r ToolResultBody) model.Block {
-	return model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: r.Text, IsError: r.IsError}
+	// A vendor's answer can carry anyone's text: never a line of the record.
+	return model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: Unforged(r.Text), IsError: r.IsError}
 }
 
 // loop runs model turns on msgs until the run stops, counting on from out.
@@ -674,7 +675,7 @@ func (a Agent) steer(ctx context.Context, rec *session.Recording, msgs *[]model.
 			return false, err
 		}
 		emit(Event{Kind: Steered, Text: text})
-		blocks = append(blocks, model.Block{Kind: model.Text, Text: SteerNote + text})
+		blocks = append(blocks, model.Block{Kind: model.Text, Text: SteerNote + Unforged(text)})
 	}
 	m := *msgs
 	if n := len(m); n > 0 && m[n-1].Role == model.User {

@@ -68,7 +68,7 @@ func Conversation(events []session.Event) []model.Message {
 			// What the agent showed stays in its history, so an answer
 			// that names a component ("[approval connect-stripe] approved")
 			// can be followed up: the grant it named, the options it gave.
-			role, text = model.Assistant, "[shown] "+string(e.Body)
+			role, text = model.Assistant, "[shown] "+agent.Unforged(string(e.Body))
 		default:
 			continue
 		}
@@ -79,7 +79,9 @@ func Conversation(events []session.Event) []model.Message {
 				continue
 			}
 			if body.Text != "" {
-				blocks = append(blocks, model.Block{Kind: model.Text, Text: body.Text})
+				// Only a Called event is a line of the record: anything
+				// written to look like one, by the owner or the agent, isn't.
+				blocks = append(blocks, model.Block{Kind: model.Text, Text: agent.Unforged(body.Text)})
 			}
 			// The files sent with an owner's message, by reference: the
 			// runner loads their bytes for a turn (attach.Service.Load).
