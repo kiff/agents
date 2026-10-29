@@ -527,6 +527,44 @@ func TestARefusedHoldIsInTheRecordAsNotSent(t *testing.T) {
 	}
 }
 
+// A hold KIFF answered "changed" (the owner gave the Card extra room, and the
+// call went under it) is in the record as sent when the call's result says it
+// went through: the result decides, never the answer's word alone. The run
+// that went on after such an approval said its record and the tool's answer
+// disagreed (kiff/tafs, the T-2102 and T-2103 refunds).
+func TestAHoldAnsweredChangedThatWentThroughIsInTheRecordAsSent(t *testing.T) {
+	for _, c := range []struct {
+		result tool.Result
+		want   string
+	}{
+		{tool.Result{Text: `{"id":"re_1","status":"succeeded"}`}, agent.OutcomeChanged},
+		{tool.Result{Text: "not sent", IsError: true, State: tool.StateRefused}, "held by KIFF, changed, not sent"},
+	} {
+		store := memory.New()
+		rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := &script{replies: []model.Reply{use("c2", "stripe_refund", `{"charge":"ch_big"}`), say("Waiting."), say("Refunded.")}}
+		a := newAgent(m, heldRefund())
+		stored, s := paused(t, store, rec, a)
+		stored.Requirements[0].Answer = "changed"
+		r, err := rec.Resume(context.Background(), s, stored.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: c.result}}
+		if _, _, err := agent.Continue(context.Background(), a, r, nil, stored, held, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := m.reqs[len(m.reqs)-1].Messages
+		results := got[len(got)-1].Blocks
+		if note := results[len(results)-1].Text; !strings.HasSuffix(note, `- [called] asked to change: stripe_refund {"charge":"ch_big"} → `+c.want) {
+			t.Errorf("%s: the continued run read %q; want it to end %q", c.result.Text, note, c.want)
+		}
+	}
+}
+
 // A long earlier result is kept cut, and a long run keeps only its latest
 // earlier turns, so a stored run stays small.
 func TestWhatAPausedRunKeepsIsBounded(t *testing.T) {

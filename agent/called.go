@@ -36,6 +36,7 @@ const (
 	OutcomeHeld     = "held by KIFF for the owner"
 	OutcomeRefused  = "refused by KIFF, not sent"
 	OutcomeApproved = "held by KIFF, approved by the owner, then sent once: done"
+	OutcomeChanged  = "held by KIFF, its Card changed for it by the owner, then sent once: done"
 )
 
 // RecordNote follows a continued run's held calls' results: what the run did,
@@ -45,15 +46,18 @@ const RecordNote = "This run's record, call by call, in order. Say what was done
 	"A line that says \"looked up\" is this run reading that item before it asked for anything: it is the look-up your rules ask for, made. " +
 	"Never say a step was skipped, or an item went unchecked, that this record shows was made."
 
-// outcome is what came of a call, from its result. answer is the owner's
-// answer to its hold, when it was held and has been answered.
+// outcome is what came of a call, from its result. answer is KIFF's answer
+// to its hold, when it was held and has been answered. The result decides:
+// a hold KIFF answered with another word than approved can still have been
+// sent (changed: the Card changed, and the call went under it), so the word
+// only says why a call that didn't go through didn't.
 func outcome(r ToolResultBody, answer string) string {
 	switch {
 	case r.NotMade:
 		return OutcomeNotMade
 	case r.Held():
 		return OutcomeHeld
-	case answer != "" && answer != "approved":
+	case r.State == tool.StateRefused && answer != "" && answer != "approved":
 		return "held by KIFF, " + answer + ", not sent"
 	case r.State == tool.StateRefused:
 		return OutcomeRefused
@@ -61,7 +65,9 @@ func outcome(r ToolResultBody, answer string) string {
 		return "sent, but whether it took effect is unknown"
 	case r.IsError:
 		return OutcomeFailed
-	case answer == "approved":
+	case answer == "changed":
+		return OutcomeChanged
+	case answer != "":
 		return OutcomeApproved
 	}
 	return OutcomeDone
