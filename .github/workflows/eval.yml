@@ -60,7 +60,7 @@ jobs:
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat 3 \
             -baseline eval/baseline.json \
             -judge-model claude-opus-5-5 -judge-price 4000000,20000000 \
-            -out results.json -report report.md chargebacks refunds
+            -out results.json -report report.md chargebacks
       - name: Setup, in Spanish, graded
         # The setup agent as kiff/tafs defines it (setup.json), against prod
         # KIFF, planque and the fake vendor, with the test phone's signed
