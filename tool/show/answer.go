@@ -1,6 +1,7 @@
 package show
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,10 +10,25 @@ import (
 	"unicode/utf8"
 )
 
-// Answerable are the types the owner answers: showing one, the run waits for
-// the answer (tool.StateAwaiting), which comes back as the call's result,
-// never as text in the chat. The others are shown and the run goes on.
-var Answerable = []string{"confirm", "questions", "approval", "sign_in"}
+// Answerable are the types that wait for an answer: showing one, the run
+// waits for it (tool.StateAwaiting), and it comes back as the call's result,
+// never as text in the chat. The others are shown and the run goes on. The
+// owner answers each of them but a result, which the service that hands the
+// owner over answers with what came of it (AnsweredBy).
+var Answerable = []string{"confirm", "questions", "approval", "sign_in", "result"}
+
+// ByService are the types a service answers in the owner's place, naming
+// itself (Answered.AnsweredBy); the owner answers the others.
+var ByService = []string{"result"}
+
+// Outcome is a result's answer: what came of handing the owner over. Exactly
+// one is set: TafID, the new taf's id; Version, the improved taf's new
+// version; or Failed, why neither was made.
+type Outcome struct {
+	TafID   string `json:"taf_id,omitempty"`
+	Version int    `json:"version,omitempty"`
+	Failed  string `json:"failed,omitempty"`
+}
 
 // MaxOwn bounds the owner's own words in an answer.
 const MaxOwn = 2000
@@ -25,6 +41,9 @@ type Answered struct {
 	Answer json.RawMessage `json:"answer"`
 	Words  string          `json:"words"`
 	Wrote  string          `json:"wrote,omitempty"`
+	// AnsweredBy names the service that answered in the owner's place (a
+	// result, ByService); empty when the owner answered.
+	AnsweredBy string `json:"answered_by,omitempty"`
 }
 
 // QuestionAnswer is one question's answer on a questions card: one of its
@@ -42,13 +61,17 @@ type QuestionAnswer struct {
 //     every question answered, a value only among its options;
 //   - approval: "approved", "declined", or "failed: <why>" (the phone's
 //     approval didn't go through);
-//   - sign_in: "signed in", "not now", or "failed: <why>".
+//   - sign_in: "signed in", "not now", or "failed: <why>";
+//   - result: an Outcome, {"taf_id": …} | {"version": n} | {"failed": "<why>"}.
 func Answer(c Component, answer json.RawMessage) (Answered, error) {
 	if !slices.Contains(Answerable, c.Type) {
 		return Answered{}, fmt.Errorf("a %s isn't answered", c.Type)
 	}
-	if c.Type == "questions" {
+	switch c.Type {
+	case "questions":
 		return answerQuestions(c, answer)
+	case "result":
+		return answerResult(c, answer)
 	}
 	var s string
 	if err := json.Unmarshal(answer, &s); err != nil {
@@ -89,6 +112,46 @@ func Answer(c Component, answer json.RawMessage) (Answered, error) {
 		}
 		return Answered{}, errors.New(`a sign_in's answer is "signed in", "not now" or "failed: <why>"`)
 	}
+}
+
+func answerResult(c Component, answer json.RawMessage) (Answered, error) {
+	var o Outcome
+	dec := json.NewDecoder(bytes.NewReader(answer))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&o); err != nil {
+		return Answered{}, errors.New(`a result's answer is {"taf_id": "…"}, {"version": n} or {"failed": "<why>"}`)
+	}
+	set := 0
+	for _, b := range []bool{o.TafID != "", o.Version != 0, o.Failed != ""} {
+		if b {
+			set++
+		}
+	}
+	switch {
+	case set != 1:
+		return Answered{}, errors.New(`a result's answer sets exactly one of taf_id, version and failed`)
+	case o.TafID != "":
+		if c.Taf.Improves != "" {
+			return Answered{}, errors.New("this result improves a taf: its answer is {version} or {failed}")
+		}
+		if !refPattern.MatchString(o.TafID) {
+			return Answered{}, errors.New("taf_id is the new taf's tafs id")
+		}
+		return Answered{Answer: answer, Words: c.Taf.Name + " is set up"}, nil
+	case o.Version != 0:
+		if c.Taf.Improves == "" {
+			return Answered{}, errors.New("this result sets up a new taf: its answer is {taf_id} or {failed}")
+		}
+		if o.Version < 1 {
+			return Answered{}, errors.New("version is the taf's new version, from 1")
+		}
+		return Answered{Answer: answer, Words: fmt.Sprintf("Version %d of %s is ready to try", o.Version, c.Taf.Name)}, nil
+	}
+	why := strings.TrimSpace(o.Failed)
+	if why == "" || utf8.RuneCountInString(why) > MaxOwn {
+		return Answered{}, errors.New("failed says why, at most 2000 characters")
+	}
+	return Answered{Answer: answer, Words: "It didn't go through: " + why}, nil
 }
 
 func answerQuestions(c Component, answer json.RawMessage) (Answered, error) {

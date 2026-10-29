@@ -135,3 +135,44 @@ func TestAnApprovalCardNeverStandsInForKIFFsApproval(t *testing.T) {
 	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/continue", nil)
 	f.want(409, code, body, "the run still waits for KIFF")
 }
+
+const resultCard = `{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","job":"refunds","draft":"drf_1"}}`
+
+// A result is answered by the service that hands the owner over, naming
+// itself, and the run records it as that service's answer, never the
+// owner's. The person can't answer it, a service can't answer the person's
+// cards, and an answer can't name both.
+func TestAResultIsAnsweredByTheServiceNeverAsTheOwner(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.waitingOnCard()
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if _, err := run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
+		n.Requirements = append(n.Requirements, run.Requirement{CallID: "s2", Tool: "show", Input: json.RawMessage(resultCard), Kind: run.KindCard, Expires: now.Add(run.CardWait)})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := "/agents/payouts/runs/" + r.ID + "/cards/done/answer"
+	ana := map[string]any{"kind": "member", "id": "ana"}
+	code, body := f.do("t1", "POST", result, map[string]any{"answer": map[string]any{"taf_id": "taf_9"}, "requester": ana})
+	f.want(400, code, body, "the person answering a result")
+	code, body = f.do("t1", "POST", result, map[string]any{"answer": map[string]any{"taf_id": "taf_9"}, "requester": ana, "answered_by": "tafs cloud"})
+	f.want(400, code, body, "both the person and a service")
+	code, body = f.do("t1", "POST", result, map[string]any{"answer": map[string]any{"taf_id": "taf_9"}, "answered_by": "Tafs Cloud!"})
+	f.want(400, code, body, "a service name out of shape")
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cards/which/answer", map[string]any{"answer": "test", "answered_by": "tafs cloud"})
+	f.want(400, code, body, "a service answering the person's card")
+
+	code, body = f.do("t1", "POST", result, map[string]any{"answer": map[string]any{"taf_id": "taf_9"}, "answered_by": "tafs cloud", "background": true})
+	f.want(202, code, body, "tafs cloud's answer")
+	got, _ = f.runs.Get(ctx, "t1", r.ID)
+	if q := got.Requirements[1]; q.Answered.IsZero() || string(q.Result) != `{"answer":{"taf_id":"taf_9"},"words":"Refunds is set up","answered_by":"tafs cloud"}` {
+		t.Fatalf("recorded %+v", q)
+	}
+	if !got.Requirements[0].Answered.IsZero() || len(f.background) != 0 {
+		t.Fatalf("the person's card moved, or the run went on before it was answered: %+v %v", got.Requirements[0], f.background)
+	}
+	code, body = f.do("t1", "POST", result, map[string]any{"answer": map[string]any{"failed": "x"}, "answered_by": "tafs cloud"})
+	f.want(409, code, body, "a second answer")
+}

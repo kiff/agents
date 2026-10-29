@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -893,12 +894,18 @@ func (s *Server) goOn(w http.ResponseWriter, r *http.Request, c Caller, rn run.R
 
 // answerBody is what POST /agents/{id}/runs/{run_id}/cards/{card}/answer
 // takes: the answer, in the card's type's shape (show.Answer), who answers,
-// and whether the run goes on in the background.
+// and whether the run goes on in the background. Who answers is the person
+// whose run it is (Requester), or, for a card a service answers
+// (show.ByService), that service by name (AnsweredBy), never both.
 type answerBody struct {
 	Answer     json.RawMessage `json:"answer"`
 	Requester  *run.Requester  `json:"requester,omitempty"`
+	AnsweredBy string          `json:"answered_by,omitempty"`
 	Background bool            `json:"background,omitempty"`
 }
+
+// servicePattern is a service's name as an answer names it.
+var servicePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9 ._-]{0,63}$`)
 
 // answerCard answers a card the run showed and waits on (tool.StateAwaiting,
 // run.KindCard), as data: checked against the card, recorded on the run, and
@@ -921,14 +928,25 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
 		return
 	}
-	q, err := requesterOf(body.Requester)
-	if err != nil {
-		s.fail(w, r, err)
+	service := body.AnsweredBy != ""
+	var q run.Requester
+	switch {
+	case service && body.Requester != nil:
+		s.fail(w, r, bad("a card is answered by the person (requester) or by a service (answered_by), not both"))
 		return
-	}
-	if q.Kind != run.ByMember {
-		s.fail(w, r, bad("a card is answered by the person whose run it is: requester {kind: member, id}"))
+	case service && !servicePattern.MatchString(body.AnsweredBy):
+		s.fail(w, r, bad("answered_by is the service's name: 1 to 64 of a-z 0-9, space . _ -"))
 		return
+	case !service:
+		var err error
+		if q, err = requesterOf(body.Requester); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if q.Kind != run.ByMember {
+			s.fail(w, r, bad("a card is answered by the person whose run it is: requester {kind: member, id}"))
+			return
+		}
 	}
 	if err := notBoth(r); err != nil {
 		s.fail(w, r, err)
@@ -939,13 +957,15 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	if !own(rn, q) {
-		s.fail(w, r, run.ErrNotFound) // another person's run
-		return
-	}
-	if err := s.mayRead(ctx, c.Tenant, rn.Agent, q.Key()); err != nil {
-		s.fail(w, r, err)
-		return
+	if !service {
+		if !own(rn, q) {
+			s.fail(w, r, run.ErrNotFound) // another person's run
+			return
+		}
+		if err := s.mayRead(ctx, c.Tenant, rn.Agent, q.Key()); err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	card, ok := openCard(rn, r.PathValue("card"), s.now())
 	if !ok {
@@ -957,11 +977,22 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	// The owner never answers in a service's place, nor a service in theirs:
+	// what the run and the Record say about who answered stays true.
+	if byService := slices.Contains(show.ByService, shown.Type); byService != service {
+		if byService {
+			s.fail(w, r, bad("a %s is answered by the service that hands the owner over (answered_by), not by the person", shown.Type))
+		} else {
+			s.fail(w, r, bad("a %s is answered by the person whose run it is (requester), not by a service", shown.Type))
+		}
+		return
+	}
 	answered, err := show.Answer(shown, body.Answer)
 	if err != nil {
 		s.fail(w, r, bad("%s", err.Error()))
 		return
 	}
+	answered.AnsweredBy = body.AnsweredBy
 	result, _ := json.Marshal(answered)
 	next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
 	switch {

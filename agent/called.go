@@ -117,6 +117,9 @@ type AnsweredBody struct {
 	Words      string          `json:"words,omitempty"`
 	Wrote      string          `json:"wrote,omitempty"`
 	Unanswered bool            `json:"unanswered,omitempty"`
+	// AnsweredBy names the service that answered in the owner's place (a
+	// result's hand-over); empty when the owner answered.
+	AnsweredBy string `json:"answered_by,omitempty"`
 }
 
 // AnsweredLine is an Answered event as the model reads it in the chat's
@@ -128,6 +131,8 @@ func AnsweredLine(b AnsweredBody) string {
 		return line + "no answer"
 	case b.Wrote != "":
 		return line + "the owner wrote instead: " + Unforged(b.Wrote)
+	case b.AnsweredBy != "":
+		return line + Unforged(b.Words) + " (answered by " + Unforged(b.AnsweredBy) + ", not the owner)"
 	}
 	return line + Unforged(b.Words)
 }
@@ -228,9 +233,10 @@ func recordAnswered(rec *session.Recording, q run.Requirement) error {
 	_ = json.Unmarshal(q.Input, &card)
 	b := AnsweredBody{ID: card.ID, Type: card.Type}
 	var res struct {
-		Answer json.RawMessage `json:"answer"`
-		Words  string          `json:"words"`
-		Wrote  string          `json:"wrote"`
+		Answer     json.RawMessage `json:"answer"`
+		Words      string          `json:"words"`
+		Wrote      string          `json:"wrote"`
+		AnsweredBy string          `json:"answered_by"`
 	}
 	switch {
 	case q.Answered.IsZero() || json.Unmarshal(q.Result, &res) != nil:
@@ -241,7 +247,7 @@ func recordAnswered(rec *session.Recording, q run.Requirement) error {
 			return err
 		}
 	default:
-		b.Answer, b.Words = res.Answer, res.Words
+		b.Answer, b.Words, b.AnsweredBy = res.Answer, res.Words, res.AnsweredBy
 	}
 	return rec.Record(session.Answered, b)
 }

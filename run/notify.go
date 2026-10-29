@@ -18,12 +18,33 @@ type Notify struct {
 	Ref string `json:"ref"`
 }
 
-// Note is what a Notify URL is sent.
+// Note is what a Notify URL is sent. A PAUSED run's note names the cards it
+// waits on (Cards), so a caller that answers some of them (a result's
+// hand-over) knows which to read the run back for.
 type Note struct {
-	Run    string `json:"run"`
-	Agent  string `json:"agent"`
-	Status Status `json:"status"`
-	Ref    string `json:"ref"`
+	Run    string     `json:"run"`
+	Agent  string     `json:"agent"`
+	Status Status     `json:"status"`
+	Ref    string     `json:"ref"`
+	Cards  []NoteCard `json:"cards,omitempty"`
+}
+
+// NoteCard is a card a paused run waits on: its id and type, as shown.
+type NoteCard struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+// waitingCards are the cards r waits on, unanswered, in order.
+func waitingCards(r Run) []NoteCard {
+	var out []NoteCard
+	for _, q := range r.Requirements {
+		var c NoteCard
+		if q.Card() && q.Answered.IsZero() && json.Unmarshal(q.Input, &c) == nil && c.ID != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // NotifyWait bounds one note: a note that can't be sent in it is dropped, and
@@ -58,7 +79,11 @@ func (n Notifying) Put(ctx context.Context, prev, next Run) error {
 }
 
 func (n Notifying) send(ctx context.Context, r Run) error {
-	body, err := json.Marshal(Note{Run: r.ID, Agent: r.Agent, Status: r.Status, Ref: r.Notify.Ref})
+	note := Note{Run: r.ID, Agent: r.Agent, Status: r.Status, Ref: r.Notify.Ref}
+	if r.Status == Paused {
+		note.Cards = waitingCards(r)
+	}
+	body, err := json.Marshal(note)
 	if err != nil {
 		return err
 	}
