@@ -1236,6 +1236,11 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		if err := t.plantedFile(ctx, tafID, *connected); err != nil {
 			return err
 		}
+		// The reliability round's proof: a door's refund, stopped mid-call, carried on once.
+		_, refunds := chargeTools(*connected)
+		if err := t.crashMidRefund(ctx, tafID, refunds); err != nil {
+			return err
+		}
 	}
 	if t.stripe != nil {
 		// Stripe's own account of it: one refund, of 3.00.
@@ -1957,12 +1962,19 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 				if json.Unmarshal(e.Body, &b) == nil {
 					did = append(did, fmt.Sprintf("%s(error %v)", b.Tool, b.IsError))
 				}
+			case session.Component:
+				var c component
+				if json.Unmarshal(e.Body, &c) == nil {
+					did = append(did, "showed "+c.Type)
+				}
 			case session.AgentMessage, session.Report:
 				did = append(did, "wrote")
 				wrote = true
 			}
 		}
-		t.logf("Setup after the hand-over: %d turns in all; %s", end.Turns, strings.Join(did, ", "))
+		// Always in the log, CI's too: only tool names, component types and
+		// whether it wrote, so a missing closing message can be read there.
+		fmt.Fprintf(t.cfg.log, "  Setup after the hand-over: %d turns in all; %s\n", end.Turns, strings.Join(did, ", "))
 	}
 	if end.Status != runs.Completed {
 		// What it waits on, so a miss can be read from CI: the tools and
