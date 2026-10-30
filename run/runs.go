@@ -127,6 +127,9 @@ func (r Run) Due() time.Time {
 // resolved is when the last of the run's requirements was answered or
 // expires, or zero: no requirements, or one with neither.
 func (r Run) resolved() time.Time {
+	if len(r.Requirements) == 0 && r.Resumes > 0 {
+		return r.Updated // a crashed run whose acting turn had all its results
+	}
 	var last time.Time
 	for _, q := range r.Requirements {
 		at := q.Answered
@@ -469,7 +472,21 @@ type Sweeper struct {
 	// Expires is when a run the sweep ends may go, from its agent's keep
 	// rules (nil, or zero: kept until deleted).
 	Expires func(r Run) time.Time
+	// Hold holds the recording of a RUNNING run whose invocation stopped
+	// while it acted (its lease ran out with an Acting turn), so a continue
+	// can resume it. With Hold and Continue both set, such a run is carried
+	// on from its acting turn, up to MaxResumes times, instead of marked
+	// ERROR. It must accept a recording held already.
+	Hold func(ctx context.Context, r Run) error
 }
+
+// MaxResumes is how many times the sweep carries a crashed run on from its
+// acting turn. Past it, the run ends ERROR with NeedsYou: what keeps
+// stopping it is for the owner to look at.
+const MaxResumes = 3
+
+// NeedsYou is the error of a run the sweep carried on MaxResumes times.
+const NeedsYou = "it stopped while it worked, again after each of 3 restarts: it needs you to look at it"
 
 // Sweep looks at every run whose Due has passed: at most limit RUNNING and
 // PENDING runs, which it marks ERROR (or CANCELLED if asked to stop), and
@@ -516,6 +533,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, nil // it moved on meanwhile
 	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
 		return sw.retry(ctx, r, now)
+	case r.Status == Running && !r.Cancel && r.Acting != nil && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:
+		return sw.resume(ctx, r, now)
 	}
 	paused := r.Status == Paused
 	if paused {
@@ -543,6 +562,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 			n.Status = Cancelled
 		case paused:
 			n.Status, n.Error = Error, "it could not continue once KIFF resolved its held calls"
+		case r.Status == Running && r.Acting != nil && r.Resumes >= MaxResumes:
+			n.Status, n.Error = Error, NeedsYou
 		case r.Status == Running:
 			n.Status, n.Error = Error, "its lease ran out: the invocation crashed or timed out"
 		default:
@@ -562,6 +583,49 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, nil // it moved on meanwhile: not ours to mark
 	}
 	return err == nil, err
+}
+
+// resume carries on a RUNNING run whose invocation stopped while it acted:
+// its recording held, it is stored PAUSED on its acting turn (resumeOf),
+// already resolved, and handed to Continue, which repeats the turn's calls
+// that have no result by their operation IDs. If Continue fails, the run is
+// a resolved paused run like any other, and the sweep continues it later.
+func (sw Sweeper) resume(ctx context.Context, r Run, now time.Time) (bool, error) {
+	if err := sw.Hold(ctx, r); err != nil {
+		return false, err // still due: the next sweep tries again
+	}
+	r, err := Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		n.Status, n.Resumes, n.Retries, n.Retry = Paused, n.Resumes+1, 0, time.Time{}
+		n.Paused, n.Requirements = resumeOf(*n.Acting, now)
+		return nil
+	})
+	switch {
+	case errors.Is(err, ErrConflict):
+		return false, nil // it moved on meanwhile
+	case err != nil:
+		return false, err
+	}
+	if err := sw.Continue(ctx, r.Tenant, r.ID); err != nil {
+		return true, fmt.Errorf("continuing a crashed run: %w", err)
+	}
+	return true, nil
+}
+
+// resumeOf is the paused turn and requirements a crashed run carries on
+// from, from its acting turn t: the results it stored stay results, and each
+// call without one is a KindResume requirement, resolved at now.
+func resumeOf(t Turn, now time.Time) (*Turn, []Requirement) {
+	have := map[string]bool{}
+	for _, b := range t.Results {
+		have[b.CallID] = true
+	}
+	var reqs []Requirement
+	for _, b := range t.Reply.Blocks {
+		if b.Kind == model.ToolUse && !have[b.CallID] {
+			reqs = append(reqs, Requirement{CallID: b.CallID, Tool: b.Tool, Input: b.Input, Kind: KindResume, Expires: now.UTC()})
+		}
+	}
+	return &t, reqs
 }
 
 // retry pushes a resolved PAUSED run's next look out, then hands it to

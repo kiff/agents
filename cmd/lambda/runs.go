@@ -135,7 +135,7 @@ const sweepLimit = 100
 // one sweep doesn't wait on a hundred runs.
 func sweeping(runs run.Runs, rn *runner.Runner, cont func(ctx context.Context, tenant, id string) error) func(ctx context.Context, now time.Time) (int, error) {
 	return func(ctx context.Context, now time.Time) (int, error) {
-		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont,
+		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont, Hold: rn.Held,
 			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
 		return sw.Sweep(ctx, now, sweepLimit)
 	}

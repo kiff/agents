@@ -43,6 +43,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"APausedRunContinuesWhenResolved", aPausedRunContinuesWhenResolved},
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
 		{"AnActingTurnIsKeptBesideThePausedOne", anActingTurnIsKeptBesideThePausedOne},
+		{"ACrashedRunIsCarriedOnFromItsActingTurn", aCrashedRunIsCarriedOnFromItsActingTurn},
 		{"SweepMarksWhatIsDue", sweepMarksWhatIsDue},
 		{"SweepLeavesWhatMovedOn", sweepLeavesWhatMovedOn},
 		{"SweepContinuesAResolvedPausedRun", sweepContinuesAResolvedPausedRun},
@@ -441,6 +442,63 @@ func anActingTurnIsKeptBesideThePausedOne(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	if got := get(t, s, r); got.Acting != nil {
 		t.Fatalf("an ended run keeps its acting turn")
+	}
+}
+
+// A RUNNING run whose lease ran out while it acted is carried on: stored
+// PAUSED on its acting turn, the call without a result waiting to be repeated
+// by its operation ID, and continued, up to run.MaxResumes times; then it
+// ends ERROR for the owner to look at. Without Hold, it's marked ERROR as
+// before.
+func aCrashedRunIsCarriedOnFromItsActingTurn(t *testing.T, s run.Runs, c *clock) {
+	acting := &run.Turn{Reply: model.Message{Role: model.Assistant, Blocks: []model.Block{
+		{Kind: model.ToolUse, CallID: "c1", Tool: "refund", Input: json.RawMessage(`{"payment":"pi_1"}`)},
+		{Kind: model.ToolUse, CallID: "c2", Tool: "note", Input: json.RawMessage(`{}`)},
+	}}, Results: []model.Block{{Kind: model.ToolResult, CallID: "c2", Result: "noted"}}}
+	crashed := func(resumes int) run.Run {
+		r := claimed(t, s, c)
+		r, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Acting, n.Resumes = acting, resumes; return nil })
+		check(t, err)
+		return r
+	}
+	var held, continued []string
+	sw := run.Sweeper{Runs: s, Ended: func(context.Context, run.Run) error { return nil },
+		Hold:     func(_ context.Context, r run.Run) error { held = append(held, r.ID); return nil },
+		Continue: func(_ context.Context, _, id string) error { continued = append(continued, id); return nil }}
+	r := crashed(0)
+	c.add(20 * time.Minute)
+	if n, err := sw.Sweep(ctx, c.now(), 10); err != nil || n != 1 {
+		t.Fatalf("sweep: %d, %v", n, err)
+	}
+	got := get(t, s, r)
+	if got.Status != run.Paused || got.Resumes != 1 || got.Acting != nil || got.Claim != "" || !reflect.DeepEqual(got.Paused, acting) {
+		t.Fatalf("carried on as %+v", got)
+	}
+	if len(got.Requirements) != 1 || got.Requirements[0].CallID != "c1" || !got.Requirements[0].Resume() || !got.Requirements[0].Resolved(c.now()) {
+		t.Fatalf("waits for %+v, want c1 to repeat", got.Requirements)
+	}
+	if len(held) != 1 || held[0] != r.ID || len(continued) != 1 || continued[0] != r.ID {
+		t.Fatalf("held %v, continued %v", held, continued)
+	}
+
+	// The last of its restarts used: the owner's to look at.
+	last := crashed(run.MaxResumes)
+	c.add(20 * time.Minute)
+	if _, err := sw.Sweep(ctx, c.now(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(t, s, last); got.Status != run.Error || got.Error != run.NeedsYou {
+		t.Fatalf("after %d restarts: %+v", run.MaxResumes, got)
+	}
+
+	// No Hold: ERROR, as a run that crashed always was.
+	plain := crashed(0)
+	c.add(20 * time.Minute)
+	if _, err := (run.Sweeper{Runs: s}).Sweep(ctx, c.now(), 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(t, s, plain); got.Status != run.Error {
+		t.Fatalf("without Hold: %+v", got)
 	}
 }
 

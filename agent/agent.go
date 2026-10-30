@@ -370,7 +370,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if err := a.Check(); err != nil {
 		return Outcome{}, history, err
 	}
-	if r.Paused == nil || len(r.Requirements) == 0 {
+	// A crashed run carried on (run.Resumes) may wait on nothing: its acting
+	// turn had all its results.
+	if r.Paused == nil || (len(r.Requirements) == 0 && r.Resumes == 0) {
 		return Outcome{}, history, fmt.Errorf("%w: run %s has no paused turn", ErrResults, r.ID)
 	}
 	results, err := merge(r, held)

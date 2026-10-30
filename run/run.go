@@ -12,6 +12,7 @@ package run
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -221,6 +222,9 @@ type Run struct {
 	// first outcome, so nothing is done twice. Nil once the run leaves
 	// RUNNING, and for a run that hasn't acted yet.
 	Acting *Turn `json:"acting,omitempty"`
+	// Resumes counts the times the sweep carried the run on from its acting
+	// turn after its invocation stopped (MaxResumes).
+	Resumes int `json:"resumes,omitempty"`
 	// Holds are the exceptions of every call KIFF has held in the run, over
 	// all its pauses: what Runs.ByHold finds it by, for as long as the run
 	// exists. Change keeps it; it only grows.
@@ -327,6 +331,24 @@ type Requirement struct {
 
 // KindCard is a Requirement for a card that waits for the owner's answer.
 const KindCard = "card"
+
+// KindResume is a Requirement for a call of the turn a crashed run was acting
+// in: it went out, or was about to, before the run's invocation stopped. It
+// is resolved from the start: continuing the run repeats it by its
+// operation ID (Operation), and KIFF answers with its first outcome, so it is
+// made once, never twice.
+const KindResume = "resume"
+
+// Resume reports whether the requirement is a crashed turn's call.
+func (r Requirement) Resume() bool { return r.Kind == KindResume }
+
+// Operation is the kiff_operation_id of the model's call callID in run run:
+// the same every time that call is made, after a crash too, and no other
+// call's.
+func Operation(run, callID string) string {
+	sum := sha256.Sum256([]byte(run + "\x00" + callID))
+	return "op-" + hex.EncodeToString(sum[:])[:40]
+}
 
 // CardWait is how long a card waits for the owner's answer before the run
 // goes on without it, so a card nobody answers never keeps its chat open.

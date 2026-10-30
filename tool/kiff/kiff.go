@@ -12,8 +12,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -220,12 +218,9 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	return out, m, nil
 }
 
-// Operation is the kiff_operation_id of the model's call callID in run: the
-// same every time that call is made, and no other call's.
-func Operation(run, callID string) string {
-	sum := sha256.Sum256([]byte(run + "\x00" + callID))
-	return "op-" + hex.EncodeToString(sum[:])[:40]
-}
+// Operation is the kiff_operation_id of the model's call callID in a run
+// (run.Operation).
+func Operation(runID, callID string) string { return run.Operation(runID, callID) }
 
 // atPath is the value at a dotted path in a call's arguments
 // ("parameters.charge"), as KIFF's gateway reads it (lookupPath): each segment
