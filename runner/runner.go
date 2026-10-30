@@ -199,6 +199,10 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	r.NewSession = opened
 	r.Meter = s.Meter
 	r.Notify = s.Notify
+	if s.After != "" {
+		// Queued behind the thread's run: the sweep lets it go (run.QueueLook).
+		r.After, r.Wait = s.After, rn.now().UTC().Add(run.QueueLook)
+	}
 	r.AgentVersion = d.Version
 	if trial {
 		r.Draft = s.Draft
@@ -314,6 +318,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	r, err := rn.Runs.Get(ctx, tenant, id)
 	if err != nil {
 		return run.Run{}, err
+	}
+	if r.Status == run.Pending && r.After != "" {
+		return r, run.ErrQueued // the sweep starts it once the thread's run before it is done
 	}
 	paused := r.Status == run.Paused
 	if holds, _, resumes := splitCards(r.Requirements); paused && len(holds)+len(resumes) > 0 && rn.Collect == nil {

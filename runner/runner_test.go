@@ -316,6 +316,22 @@ func TestStartRefuses(t *testing.T) {
 	}
 }
 
+// A run queued behind its thread's run (After) is stored waiting, looked at
+// again in QueueLook, and Execute leaves it alone: the sweep starts it once
+// the run before it is done.
+func TestAQueuedRunWaitsForItsThread(t *testing.T) {
+	f := newFixture(t, say("Done."))
+	first := f.start(server.Start{Input: "refund order 42"})
+	queued := f.start(server.Start{Input: "refund order 43", Session: first.Session, After: first.ID})
+	if queued.After != first.ID || !queued.Wait.Equal(f.clock.now().UTC().Add(run.QueueLook)) || queued.Status != run.Pending {
+		t.Fatalf("queued %+v", queued)
+	}
+	got, err := f.r.Execute(ctx, "t1", queued.ID, nil)
+	if !errors.Is(err, run.ErrQueued) || got.Status != run.Pending || got.Claim != "" {
+		t.Fatalf("executing a queued run: %s, claim %q, %v", got.Status, got.Claim, err)
+	}
+}
+
 func TestExecuteRunsToAnAnswer(t *testing.T) {
 	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Refunded order 42."))
 	r := f.start(server.Start{Input: "refund order 42"})

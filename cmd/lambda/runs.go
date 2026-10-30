@@ -82,6 +82,8 @@ func (f *function) execute(ctx context.Context, tenant, id string) error {
 		f.log.WarnContext(ctx, "run not executed", "tenant", tenant, "run", id, "err", err)
 	case errors.Is(err, runner.ErrNoCollect):
 		f.log.WarnContext(ctx, "paused run can't continue yet", "tenant", tenant, "run", id)
+	case errors.Is(err, run.ErrQueued):
+		f.log.InfoContext(ctx, "run waits for its thread", "tenant", tenant, "run", id)
 	default:
 		f.log.ErrorContext(ctx, "run", "tenant", tenant, "run", id, "status", r.Status, "err", err)
 	}

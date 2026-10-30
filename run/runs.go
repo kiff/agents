@@ -121,6 +121,10 @@ func (r Run) statusDue() time.Time {
 	case Running:
 		return r.Lease
 	case Pending:
+		// Queued behind another run, or let go from the queue: its own time.
+		if !r.Wait.IsZero() {
+			return r.Wait
+		}
 		return r.Created.Add(PendingTimeout)
 	case Paused:
 		at := r.resolved()
@@ -561,6 +565,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, nil // it moved on meanwhile
 	case sw.Note != nil && !r.NoteRetry.IsZero() && r.NoteRetry.Before(now):
 		return true, sw.Note(ctx, r)
+	case r.Status == Pending && r.After != "" && sw.Continue != nil:
+		return sw.queued(ctx, r, now)
 	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
 		return sw.retry(ctx, r, now)
 	case r.Status == Running && !r.Cancel && r.Acting != nil && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:
@@ -783,4 +789,40 @@ func Answer(ctx context.Context, runs Runs, tenant, exception, answer string, no
 			return next, err
 		}
 	}
+}
+
+// QueueLook is how often the sweep looks at a run waiting for another in
+// its thread (Run.After).
+const QueueLook = time.Minute
+
+// ErrQueued: the run waits for another in its thread (Run.After) and isn't
+// started yet; the sweep lets it go once that run is no longer at work.
+var ErrQueued = errors.New("run: it waits for the thread's run before it")
+
+// queued looks at a run waiting for another in its thread: still at work,
+// it looks again in QueueLook; otherwise the run is let go (After cleared,
+// a claim's wait from now) and sent to Continue, which starts it.
+func (sw Sweeper) queued(ctx context.Context, r Run, now time.Time) (bool, error) {
+	before, err := sw.Runs.Get(ctx, r.Tenant, r.After)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return false, err
+	}
+	if err == nil && before.Active() {
+		_, err = Change(ctx, sw.Runs, r, now, func(n *Run) error { n.Wait = now.UTC().Add(QueueLook); return nil })
+		if errors.Is(err, ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+	r, err = Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		n.After, n.Wait = "", now.UTC().Add(PendingTimeout)
+		return nil
+	})
+	switch {
+	case errors.Is(err, ErrConflict):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, sw.Continue(ctx, r.Tenant, r.ID)
 }
