@@ -71,6 +71,11 @@ type Runner struct {
 	// until KIFF's operation IDs are recorded (step 4): a paused run can't
 	// continue without it.
 	Collect func(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error)
+	// Settle, when set, is asked about each crashed turn's call whose
+	// outcome came back unknown (sent, and the response lost): KIFF's
+	// status lookup may prove it had no effect, and then it is sent once
+	// more (kiff.Settle). Nil: an unknown outcome stays unknown.
+	Settle func(ctx context.Context, a agent.Agent, q run.Requirement, res tool.Result) (tool.Result, error)
 	// Sealer seals what a chat keeps of its reads for its next runs
 	// (session.KeptRead), and opens it for them. Nil: nothing is kept.
 	Sealer session.Sealer
@@ -311,7 +316,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return run.Run{}, err
 	}
 	paused := r.Status == run.Paused
-	if holds, _ := splitCards(r.Requirements); paused && len(holds) > 0 && rn.Collect == nil {
+	if holds, _, resumes := splitCards(r.Requirements); paused && len(holds)+len(resumes) > 0 && rn.Collect == nil {
 		return r, ErrNoCollect // a run that waits only on cards has their answers already
 	}
 	x := &execution{rn: rn, tenant: tenant, id: id, claim: run.NewID()}
@@ -391,6 +396,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
+	a.Checkpoint = x.checkpoint
 	a.Now = rn.now // a card waits run.CardWait from the runner's clock
 	a.Attachments = r.Attachments
 	if rn.Files != nil {
@@ -443,8 +449,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if len(p.fold) > 0 {
 		a.Spent = rn.fold(loop, a, recording, &p)
 	}
-	// A card's answer is on the run; only KIFF's holds are collected.
-	holds, cards := splitCards(r.Requirements)
+	// A card's answer is on the run; only KIFF's holds are collected, and a
+	// crashed turn's calls (resumes), each by its operation ID.
+	holds, cards, resumes := splitCards(r.Requirements)
 	var held []agent.ToolResultBody
 	// Collecting an approved hold is what has KIFF send it: not for a halted
 	// agent, nor for a member who may no longer use it (#221).
@@ -479,6 +486,11 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	for _, q := range cards {
 		held = append(held, CardResult(q))
 	}
+	resumed, err := rn.resumed(ctx, a, r, resumes, x.halted || x.noAccess)
+	if err != nil {
+		return x.repause(ctx, recording, r, fmt.Errorf("collecting its crashed turn's calls: %w", err))
+	}
+	held = append(held, resumed...)
 	history, _ := p.history()
 	a.Preface = p.preface(loop, a.Tools, rn.now())
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
@@ -505,15 +517,92 @@ func notCollected(reqs []run.Requirement, text string) []agent.ToolResultBody {
 }
 
 // splitCards is reqs' held calls, then its cards.
-func splitCards(reqs []run.Requirement) (holds, cards []run.Requirement) {
+func splitCards(reqs []run.Requirement) (holds, cards, resumes []run.Requirement) {
 	for _, q := range reqs {
-		if q.Card() {
+		switch {
+		case q.Card():
 			cards = append(cards, q)
-		} else {
+		case q.Resume():
+			resumes = append(resumes, q)
+		default:
 			holds = append(holds, q)
 		}
 	}
-	return holds, cards
+	return holds, cards, resumes
+}
+
+// resumed is the result of each call of a crashed run's acting turn that had
+// none (run.KindResume). A call through KIFF's gateway is repeated with its
+// operation ID: KIFF gives back its first outcome if it went out, and makes it
+// once if it didn't. Any other call is told it was cut off. With stop set (a
+// halted agent, or a member who may no longer use it), nothing is repeated.
+func (rn *Runner) resumed(ctx context.Context, a agent.Agent, r run.Run, resumes []run.Requirement, stop bool) ([]agent.ToolResultBody, error) {
+	gateway := map[string]bool{}
+	for _, t := range a.Tools {
+		gateway[t.Spec().Name] = t.Gateway()
+	}
+	var out []agent.ToolResultBody
+	var ask []run.Requirement
+	for _, q := range resumes {
+		switch {
+		case !gateway[q.Tool]:
+			out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: CutOff, IsError: true}})
+		case stop:
+			out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: ResumeNotCollected, IsError: true}})
+		default:
+			q.Operation = run.OperationOf(r.ID, q.CallID, q.Input)
+			ask = append(ask, q)
+		}
+	}
+	if len(ask) == 0 {
+		return out, nil
+	}
+	got, err := rn.Collect(ctx, a, ask)
+	if err != nil {
+		return nil, err
+	}
+	for i := range got {
+		if rn.Settle != nil {
+			for _, q := range ask {
+				if q.CallID == got[i].CallID {
+					if got[i].Result, err = rn.Settle(ctx, a, q, got[i].Result); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		got[i].Result = ResumedOutcome(got[i].Result)
+	}
+	return append(out, got...), nil
+}
+
+// CutOff is the result of a call of a crashed turn that isn't KIFF's: the run
+// stopped before its result was kept.
+const CutOff = "The run stopped before this call's result was kept, and it was restarted. Whether the call took effect is unknown: make it again only if it's still needed and safe to repeat."
+
+// ResumeNotCollected is the result of a crashed turn's call when the agent was
+// halted, or the member may no longer use it, before the call was checked.
+const ResumeNotCollected = "The run stopped while this call was out, and it wasn't checked before the agent stopped: whether it went out is unknown. Don't repeat it; check first."
+
+// ResumedOutcome is the outcome KIFF gave back for a crashed turn's call,
+// repeated by its operation ID, as the run reads it.
+func ResumedOutcome(res tool.Result) tool.Result {
+	notSent := func(why string) tool.Result {
+		res.Text = why + "\n\nKIFF said: " + res.Text
+		res.IsError = true
+		return res
+	}
+	const restarted = "The run stopped while this call was out, and was restarted. KIFF answered the call again by its operation ID"
+	switch res.State {
+	case tool.StateRefused:
+		return notSent(restarted + ": it refused it, so it was not sent.")
+	case "failed":
+		return notSent(restarted + ": it could not send it, so it was not sent.")
+	case "unknown":
+		return notSent(restarted + ": it sent it, but the tool's response was lost, so whether it took effect is unknown. Don't repeat it; check first.")
+	}
+	res.Text = restarted + ", so it was made once, not twice. The tool answered:\n\n" + res.Text
+	return res
 }
 
 // NoAnswer is a card's result when it stopped waiting (run.CardWait) with
@@ -590,6 +679,12 @@ func (rn *Runner) Ended(ctx context.Context, r run.Run) error {
 		return nil
 	}
 	return err
+}
+
+// Held holds the recording of a run whose invocation stopped while it acted,
+// so continuing it resumes the recording: the sweep's run.Sweeper.Hold.
+func (rn *Runner) Held(ctx context.Context, r run.Run) error {
+	return rn.Sessions.Hold(ctx, r.Tenant, r.Session, r.ID)
 }
 
 // Expires is when a run the sweep ends at now may go: its agent's keep rules,
@@ -827,6 +922,13 @@ func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.
 		return r, run.ErrLeaseLost
 	}
 	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), change)
+}
+
+// checkpoint stores turn as the run's last safe step (Run.Acting), under its
+// lease: a run whose invocation crashes carries on from it.
+func (x *execution) checkpoint(ctx context.Context, turn run.Turn) error {
+	_, err := x.save(ctx, func(n *run.Run) error { n.Acting = &turn; return nil })
+	return err
 }
 
 // stop stores where the loop stopped. The recording is paused or ended first:

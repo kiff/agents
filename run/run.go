@@ -12,6 +12,7 @@ package run
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -214,6 +215,16 @@ type Run struct {
 	Requirements []Requirement `json:"requirements,omitempty"`
 	// Paused is the turn the run paused in, to carry on from.
 	Paused *Turn `json:"paused,omitempty"`
+	// Acting is a RUNNING run's last turn whose calls act, stored before they
+	// go out, and again with their results (Results) once they're in: its
+	// last safe step. A run whose invocation crashed carries on from it: its
+	// calls repeated by their operation IDs, which KIFF answers with their
+	// first outcome, so nothing is done twice. Nil once the run leaves
+	// RUNNING, and for a run that hasn't acted yet.
+	Acting *Turn `json:"acting,omitempty"`
+	// Resumes counts the times the sweep carried the run on from its acting
+	// turn after its invocation stopped (MaxResumes).
+	Resumes int `json:"resumes,omitempty"`
 	// Holds are the exceptions of every call KIFF has held in the run, over
 	// all its pauses: what Runs.ByHold finds it by, for as long as the run
 	// exists. Change keeps it; it only grows.
@@ -320,6 +331,45 @@ type Requirement struct {
 
 // KindCard is a Requirement for a card that waits for the owner's answer.
 const KindCard = "card"
+
+// KindResume is a Requirement for a call of the turn a crashed run was acting
+// in: it went out, or was about to, before the run's invocation stopped. It
+// is resolved from the start: continuing the run repeats it by its
+// operation ID (Operation), and KIFF answers with its first outcome, so it is
+// made once, never twice.
+const KindResume = "resume"
+
+// Resume reports whether the requirement is a crashed turn's call.
+func (r Requirement) Resume() bool { return r.Kind == KindResume }
+
+// Operation is the kiff_operation_id of the model's call callID in run run:
+// the same every time that call is made, after a crash too, and no other
+// call's.
+func Operation(run, callID string) string {
+	sum := sha256.Sum256([]byte(run + "\x00" + callID))
+	return "op-" + hex.EncodeToString(sum[:])[:40]
+}
+
+// OperationArg is the argument KIFF's gateway reads a call's operation ID
+// from.
+const OperationArg = "kiff_operation_id"
+
+// OperationOf is the kiff_operation_id the run run sends for the model's call
+// callID with input: Operation of the call, or, when the model named an
+// operation of its own in input (to repeat an action it made before, as
+// KIFF's skill tells it), Operation of that name, within the run. Either
+// way it's the run's, never another run's, and the same after a crash: the
+// call and its input are in the stored turn.
+func OperationOf(run, callID string, input json.RawMessage) string {
+	var args map[string]json.RawMessage
+	if json.Unmarshal(input, &args) == nil {
+		var named string
+		if json.Unmarshal(args[OperationArg], &named) == nil && named != "" {
+			return Operation(run, "named\x00"+named)
+		}
+	}
+	return Operation(run, callID)
+}
 
 // CardWait is how long a card waits for the owner's answer before the run
 // goes on without it, so a card nobody answers never keeps its chat open.

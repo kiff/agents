@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/store/memory"
 )
@@ -149,5 +150,54 @@ func TestAPausedRunsNoteNamesTheCardsItWaitsOn(t *testing.T) {
 	}
 	if !reflect.DeepEqual(n.got, want) {
 		t.Fatalf("notes %+v", n.got)
+	}
+}
+
+// A crashed run's note says it's retrying, which restart of how many, and
+// when; one past its last restart says it needs the owner, and why, so an
+// app's line can say so rather than a bare ERROR.
+func TestACrashedRunsNoteSaysWhereItStands(t *testing.T) {
+	ctx := context.Background()
+	n := &notes{}
+	srv := httptest.NewServer(n)
+	defer srv.Close()
+	runs := run.Notifying{Runs: memory.NewRuns()}
+	now := time.Now().UTC().Truncate(time.Second)
+	acting := &run.Turn{Reply: model.Message{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "refund"}}}}
+	crashed := func(resumes int) run.Run {
+		r := run.New("t1", "refunds", "s1", run.ByOwner, "go", now)
+		r.Notify = run.Notify{URL: srv.URL, Ref: "ref-0123456789abcdef"}
+		if err := runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		r, err := run.Claim(ctx, runs, "t1", r.ID, "i1", now, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err = run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Acting, x.Resumes = acting, resumes; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	sw := run.Sweeper{Runs: runs, Hold: func(context.Context, run.Run) error { return nil },
+		Continue: func(context.Context, string, string) error { return nil }, Ended: func(context.Context, run.Run) error { return nil }}
+	first := crashed(0)
+	last := crashed(run.MaxResumes)
+	at := now.Add(time.Hour)
+	if _, err := sw.Sweep(ctx, at, 10); err != nil {
+		t.Fatal(err)
+	}
+	byRun := map[string]run.Note{}
+	for _, note := range n.got {
+		byRun[note.Run] = note
+	}
+	if got, want := byRun[first.ID], (run.Note{Run: first.ID, Agent: "refunds", Status: run.Paused, Ref: "ref-0123456789abcdef",
+		State: "retrying", Reason: run.Restarted, Try: 1, Of: run.MaxResumes, NextAt: at.Add(run.ResumeWaits[0])}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("retrying note %+v, want %+v", got, want)
+	}
+	if got, want := byRun[last.ID], (run.Note{Run: last.ID, Agent: "refunds", Status: run.Error, Ref: "ref-0123456789abcdef",
+		State: "needs_you", Reason: run.NeedsYou}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("needs_you note %+v, want %+v", got, want)
 	}
 }

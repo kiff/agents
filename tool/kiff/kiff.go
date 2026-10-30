@@ -141,6 +141,23 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}
+	// A run's call goes with its own operation ID, the same each time the
+	// call is made: after a crash, KIFF gives its first outcome back rather
+	// than act twice. One the model named is kept as the name of the action
+	// within the run (run.OperationOf), so its repeat of an action is still
+	// the same operation. A trial's call is only decided, never sent, so it
+	// needs none; a call made outside a run's loop (Collect) brings its own.
+	if ref, ok := run.RefFrom(ctx); ok && ref.Run != "" {
+		if id := tool.CallFrom(ctx); id != "" {
+			if _, trial := run.TrialFrom(ctx); !trial {
+				with, err := withOperation(input, run.OperationOf(ref.Run, id, input))
+				if err != nil {
+					return tool.Result{}, meta{}, fmt.Errorf("kiff: call %s: %w", id, err)
+				}
+				input = with
+			}
+		}
+	}
 	var res struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -202,6 +219,10 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	}
 	return out, m, nil
 }
+
+// Operation is the kiff_operation_id of the model's call callID in a run
+// (run.Operation).
+func Operation(runID, callID string) string { return run.Operation(runID, callID) }
 
 // atPath is the value at a dotted path in a call's arguments
 // ("parameters.charge"), as KIFF's gateway reads it (lookupPath): each segment

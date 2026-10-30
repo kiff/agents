@@ -223,7 +223,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
 			return planque.New(base, tenant, key, nil).ReadThrough(kiff.New(gateway, key, nil))
 		},
-	}, Collect: kiff.Collect, Usage: use}
+	}, Collect: kiff.Collect, Settle: kiff.Settle, Usage: use}
 	// What a chat keeps of its reads for its next messages, sealed under the
 	// tenant's own key (#172): off unless set, so nothing is kept by default.
 	if sp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")); sp != "" {

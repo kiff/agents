@@ -137,10 +137,18 @@ type runView struct {
 	Draft        string    `json:"draft,omitempty"`
 	Created      time.Time `json:"created"`
 	Updated      time.Time `json:"updated"`
+	// State is where its work stands when the status doesn't say (run.Work):
+	// "retrying" (Try of Of, next at NextAt) or "needs_you", with Reason.
+	State  string    `json:"state,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+	Try    int       `json:"try,omitempty"`
+	Of     int       `json:"of,omitempty"`
+	NextAt time.Time `json:"next_at,omitzero"`
 }
 
 func viewRun(r run.Run) runView {
-	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
+	w := r.Work()
+	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
@@ -173,7 +181,8 @@ const ActiveScanned = 200
 // listRuns lists an agent's runs, newest first, at most limit (20 by
 // default, 100 at most), without their paused turn. With active=true, only
 // the PENDING, RUNNING and PAUSED ones among its ActiveScanned newest: what
-// it is doing and waiting on (kiff/tafs#206).
+// it is doing and waiting on (kiff/tafs#206). With state=retrying or
+// state=needs_you, only those among its ActiveScanned newest (run.Work).
 func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
@@ -192,8 +201,12 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 		return 0, nil, err
 	}
 	active := r.URL.Query().Get("active") == "true"
+	state := r.URL.Query().Get("state")
+	if state != "" && state != run.WorkRetrying && state != run.WorkNeedsYou {
+		return 0, nil, bad("state is retrying or needs_you")
+	}
 	scan := limit
-	if active {
+	if active || state != "" {
 		scan = ActiveScanned
 	}
 	runs, err := s.Runs.List(ctx, c.Tenant, id, scan)
@@ -202,7 +215,7 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	out := []runView{}
 	for _, rn := range runs {
-		if active && (rn.Status.Final()) || !readBy(rn, q) {
+		if active && (rn.Status.Final()) || state != "" && rn.Work().State != state || !readBy(rn, q) {
 			continue
 		}
 		if out = append(out, viewRun(rn)); len(out) == limit {
@@ -548,6 +561,20 @@ type startBody struct {
 	// RunGrant is the account's grant for a member's run: the requester
 	// is the person KIFF signed it for (Server.ResolveGrant).
 	RunGrant string `json:"run_grant,omitempty"`
+	// DedupKey names the request at its origin (a door message's id): one
+	// key starts one run of the agent, however often it is sent, and a
+	// second send gets the first run (RequestRunID). Background only.
+	DedupKey string `json:"dedup_key,omitempty"`
+	// Source is where the request came from ("email", "whatsapp"): the
+	// run's Source. Only with DedupKey.
+	Source string `json:"source,omitempty"`
+}
+
+// RequestRunID is the ID of the run a request with a dedup key starts: one
+// per tenant, agent and key, apart from events' (EventRunID).
+func RequestRunID(tenant, agent, key string) string {
+	h := sha256.Sum256(fmt.Appendf(nil, "request|%d:%s|%d:%s|%d:%s", len(tenant), tenant, len(agent), agent, len(key), key))
+	return hex.EncodeToString(h[:16])
 }
 
 // DefaultLiveChat is Server.LiveChat's default: a chat the requester wrote
@@ -703,6 +730,18 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
 		return
 	}
+	switch {
+	case body.DedupKey == "" && body.Source != "":
+		s.fail(w, r, bad("source goes with a dedup_key"))
+		return
+	case body.DedupKey == "":
+	case len(body.DedupKey) > MaxEventKey || !body.Background:
+		s.fail(w, r, bad("dedup_key is 1 to %d bytes, with background: true", MaxEventKey))
+		return
+	case body.Source != "" && !sourceName(body.Source):
+		s.fail(w, r, bad("the source is 1 to %d of a-z, 0-9, '.', '_' and '-'", MaxEventSource))
+		return
+	}
 	var q run.Requester
 	if body.Requester != nil {
 		if q = *body.Requester; !q.Valid() {
@@ -730,6 +769,26 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		s.fail(w, r, err)
 		return
+	}
+	if body.DedupKey != "" {
+		// Sent before: the run it started, never a second one (its calls'
+		// operation IDs are that run's). One still PENDING, whose hand-off
+		// may have failed, is handed on once more: it's claimed once.
+		switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, body.DedupKey)); {
+		case err == nil && rn.Status == run.Pending:
+			if err := s.toBackground(ctx, rn); err != nil {
+				s.fail(w, r, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, viewRun(rn))
+			return
+		case err == nil:
+			writeJSON(w, http.StatusOK, viewRun(rn))
+			return
+		case !errors.Is(err, run.ErrNotFound):
+			s.fail(w, r, err)
+			return
+		}
 	}
 	if body.SessionID != "" && q.Key() == "" {
 		// Going on in a session with no person: only as the service, by name.
@@ -784,7 +843,10 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
-		Attachments: body.Attachments}
+		Attachments: body.Attachments, Source: body.Source}
+	if body.DedupKey != "" {
+		st.ID = RequestRunID(c.Tenant, id, body.DedupKey)
+	}
 	if body.AI != nil {
 		if err := s.fairUse(ctx, c.Tenant, *body.AI); err != nil {
 			s.fail(w, r, err)
@@ -797,6 +859,11 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rn, err := s.start(ctx, st)
+	if errors.Is(err, run.ErrExists) {
+		// Sent twice at once: the other send started it.
+		writeJSON(w, http.StatusOK, viewRun(rn))
+		return
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return

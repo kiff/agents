@@ -1706,3 +1706,80 @@ func TestAnUnapprovedHoldIsntAskedAgainAfterAnotherPause(t *testing.T) {
 func ownTexts(msgs []model.Message) []string {
 	return slices.DeleteFunc(texts(msgs), func(t string) bool { return strings.HasPrefix(t, "user: "+agent.RecordNote) })
 }
+
+// lookUp is a tool that only reads. Each call runs onCall, if set.
+type lookUp struct {
+	name   string
+	onCall func()
+}
+
+func (r *lookUp) Spec() model.ToolSpec {
+	return model.ToolSpec{Name: r.name, InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (r *lookUp) Access() tool.Access { return tool.Read }
+func (r *lookUp) Gateway() bool       { return true }
+func (r *lookUp) Call(context.Context, json.RawMessage) (tool.Result, error) {
+	if r.onCall != nil {
+		r.onCall()
+	}
+	return tool.Result{Text: "pi_1: 20.00 EUR"}, nil
+}
+
+// A turn whose calls act is stored before they go out, as the run's last safe
+// step, and again with their results once they're in; a turn that only reads
+// isn't. The run keeps none once it ends.
+func TestARunStoresATurnBeforeItActs(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"payment":"pi_1"}`), use("c2", "stripe_read", `{}`), say("Refunded."))
+	read := &lookUp{name: "stripe_read"}
+	f.extra = []tool.Tool{read}
+	r := f.start(server.Start{Input: "refund pi_1"})
+	var sending, after *run.Turn
+	f.refund.onCall = func() { sending = f.get(r.ID).Acting }
+	read.onCall = func() { after = f.get(r.ID).Acting }
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil || got.Status != run.Completed {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	callIn := func(turn *run.Turn) string {
+		for _, b := range turn.Reply.Blocks {
+			if b.Kind == model.ToolUse {
+				return b.CallID
+			}
+		}
+		return ""
+	}
+	if sending == nil || callIn(sending) != "c1" || len(sending.Results) != 0 {
+		t.Fatalf("while the refund went: %+v, want its turn without results", sending)
+	}
+	// The read's turn didn't replace it: the refund's turn, with its result.
+	if after == nil || callIn(after) != "c1" || len(after.Results) != 1 || after.Results[0].CallID != "c1" {
+		t.Fatalf("while the read went: %+v, want the refund's turn with its result", after)
+	}
+	if stored := f.get(r.ID); stored.Acting != nil {
+		t.Fatalf("an ended run keeps %+v", stored.Acting)
+	}
+}
+
+// failActing is a run store whose write of a run's first acting turn fails.
+type failActing struct{ *memory.Runs }
+
+func (s failActing) Put(cx context.Context, prev, next run.Run) error {
+	if prev.Acting == nil && next.Acting != nil {
+		return errors.New("throttled")
+	}
+	return s.Runs.Put(cx, prev, next)
+}
+
+// A turn that can't be stored before it acts isn't made: nothing is sent that
+// a crash couldn't carry on from.
+func TestATurnNotStoredIsNotMade(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), say("Refunded."))
+	f.r.Runs = failActing{f.runs}
+	r := f.start(server.Start{Input: "refund"})
+	sent := false
+	f.refund.onCall = func() { sent = true }
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || sent || got.Status != run.Error || len(got.Done) != 0 {
+		t.Fatalf("got %+v, %v, sent %v; want an error and nothing sent", got, err, sent)
+	}
+}

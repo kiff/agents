@@ -27,6 +27,15 @@ type Note struct {
 	Status Status     `json:"status"`
 	Ref    string     `json:"ref"`
 	Cards  []NoteCard `json:"cards,omitempty"`
+	// State is set when the status alone doesn't say where the work stands:
+	// "retrying" for a crashed run waiting for its restart Try of Of, at
+	// NextAt; "needs_you" for one past its last restart. Reason says why, in
+	// words an app shows as they are.
+	State  string    `json:"state,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+	Try    int       `json:"try,omitempty"`
+	Of     int       `json:"of,omitempty"`
+	NextAt time.Time `json:"next_at,omitzero"`
 }
 
 // NoteCard is a card a paused run waits on: its id and type, as shown.
@@ -83,6 +92,8 @@ func (n Notifying) send(ctx context.Context, r Run) error {
 	if r.Status == Paused {
 		note.Cards = waitingCards(r)
 	}
+	w := r.Work()
+	note.State, note.Reason, note.Try, note.Of, note.NextAt = w.State, w.Reason, w.Try, w.Of, w.NextAt
 	body, err := json.Marshal(note)
 	if err != nil {
 		return err

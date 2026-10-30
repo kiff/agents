@@ -1679,6 +1679,102 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 	f.want(400, code, body, "a bad limit")
 }
 
+// A request with a dedup key (a door message's id) starts one run, however
+// often it's sent: a second send gets the first run, never a second, so its
+// calls keep their operation IDs. One still PENDING is handed on again.
+func TestARequestSentTwiceStartsOneRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	send := func(key string) (int, map[string]any) {
+		return f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "refund pi_1", "background": true,
+			"dedup_key": key, "source": "email", "requester": map[string]any{"kind": "door", "id": "thread-1"}})
+	}
+	code, first := send("msg-1@mail")
+	f.want(202, code, first, "the first send")
+	id := first["id"].(string)
+	if id != server.RequestRunID("t1", "payouts", "msg-1@mail") || first["source"] != "email" {
+		t.Fatalf("started %v", first)
+	}
+	// Sent again while still PENDING (its hand-off may have failed): handed on once more.
+	code, again := send("msg-1@mail")
+	f.want(202, code, again, "sent again, pending")
+	if again["id"] != id || len(f.background) != 2 {
+		t.Fatalf("again %v, background %v", again["id"], f.background)
+	}
+	// Once it's going: the run, and nothing handed on.
+	r, err := f.runs.Get(ctx, "t1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Claim(ctx, f.runs, "t1", id, "i1", now.Add(time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	code, later := send("msg-1@mail")
+	f.want(200, code, later, "sent again, running")
+	if later["id"] != id || later["status"] != string(run.Running) || len(f.background) != 2 || r.ID != id {
+		t.Fatalf("later %v, background %v", later, f.background)
+	}
+	// Another key, another run; the same key for another agent, another run.
+	code, other := send("msg-2@mail")
+	f.want(202, code, other, "another message")
+	if other["id"] == id {
+		t.Fatal("another key got the same run")
+	}
+	if server.RequestRunID("t1", "refunds", "msg-1@mail") == id || server.RequestRunID("t1", "payouts", "msg-1@mail") == server.EventRunID("t1", "payouts", "msg-1@mail") {
+		t.Fatal("a request's run ID isn't its own")
+	}
+	for name, body := range map[string]map[string]any{
+		"not background": {"input": "x", "dedup_key": "k"},
+		"a long key":     {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1), "background": true},
+		"a bad source":   {"input": "x", "dedup_key": "k", "source": "E Mail", "background": true},
+		"source, no key": {"input": "x", "source": "email", "background": true},
+	} {
+		code, got := f.do("t1", "POST", "/agents/payouts/runs?as=service", body)
+		f.want(400, code, got, name)
+	}
+}
+
+// A run says where its work stands when its status doesn't (run.Work), on
+// the run and in the list, and the list takes state=retrying or
+// state=needs_you: an app's line comes from the run, never a copy.
+func TestARunSaysWhereItsWorkStands(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	next := now.Add(5 * time.Minute).UTC()
+	retrying := run.New("t1", "payouts", "s1", run.ByOwner, "x", now)
+	retrying.Status, retrying.Resumes, retrying.Retry = run.Paused, 1, next
+	retrying.Requirements = []run.Requirement{{CallID: "c1", Tool: "refund", Kind: run.KindResume, Expires: now}}
+	stuck := run.New("t1", "payouts", "s1", run.ByOwner, "x", now)
+	stuck.Status, stuck.Error = run.Error, run.NeedsYou
+	plain := run.New("t1", "payouts", "s1", run.ByOwner, "x", now)
+	plain.Status = run.Completed
+	for _, r := range []run.Run{retrying, stuck, plain} {
+		if err := f.runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+retrying.ID+"?as=service", nil)
+	f.want(200, code, body, "the retrying run")
+	if body["state"] != "retrying" || body["reason"] != run.Restarted || body["try"] != 1.0 || body["of"] != float64(run.MaxResumes) || body["next_at"] != next.Format(time.RFC3339) {
+		t.Fatalf("retrying run %v", body)
+	}
+	for state, want := range map[string]string{"retrying": retrying.ID, "needs_you": stuck.ID} {
+		code, body := f.do("t1", "GET", "/agents/payouts/runs?state="+state+"&as=service", nil)
+		f.want(200, code, body, state)
+		runs := body["runs"].([]any)
+		if len(runs) != 1 || runs[0].(map[string]any)["id"] != want || runs[0].(map[string]any)["state"] != state {
+			t.Fatalf("%s: %v", state, runs)
+		}
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+plain.ID+"?as=service", nil)
+	f.want(200, code, body, "a plain run")
+	if _, ok := body["state"]; ok {
+		t.Fatalf("a plain run says %v", body["state"])
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs?state=busy", nil)
+	f.want(400, code, body, "a bad state")
+}
+
 // Each person's chat with a shared agent is theirs alone (#219): a live
 // message goes on in its requester's own recent chat, never another's; a
 // person can't name, list or read another's; a quiet chat isn't taken up

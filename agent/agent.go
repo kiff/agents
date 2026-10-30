@@ -98,6 +98,13 @@ type Agent struct {
 	// recorded as an owner message, streamed as Steered, and added to what the
 	// model reads next, never inside a tool's result.
 	Steer func(ctx context.Context) ([]string, error)
+	// Checkpoint, when set, stores a turn whose calls act, as the run's last
+	// safe step: before the calls go out, and again with their results once
+	// they're in (unless a call was held: the pause stores it then). Before
+	// they go out it must be stored when it returns: if it fails, nothing of
+	// the turn is made and the run ends with the error. After, only a lost
+	// lease ends the run. A turn that only reads isn't stored.
+	Checkpoint func(ctx context.Context, turn run.Turn) error
 
 	// Now is the clock a card's wait is counted from (run.CardWait); nil is
 	// the system clock.
@@ -363,7 +370,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if err := a.Check(); err != nil {
 		return Outcome{}, history, err
 	}
-	if r.Paused == nil || len(r.Requirements) == 0 {
+	// A crashed run carried on (run.Resumes) may wait on nothing: its acting
+	// turn had all its results.
+	if r.Paused == nil || (len(r.Requirements) == 0 && r.Resumes == 0) {
 		return Outcome{}, history, fmt.Errorf("%w: run %s has no paused turn", ErrResults, r.ID)
 	}
 	results, err := merge(r, held)
@@ -591,6 +600,13 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			return out, msgs, nil
 		}
 
+		var acting *run.Turn
+		if a.Checkpoint != nil && slices.ContainsFunc(calls, func(c model.Block) bool { return acts(byName[c.Tool], c.Input) }) {
+			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history)}
+			if err := a.Checkpoint(ctx, *acting); err != nil {
+				return out, msgs, fmt.Errorf("agent: storing the turn before it acts: %w", err)
+			}
+		}
 		results, err := a.callTools(ctx, rec, byName, calls, emit)
 		if err != nil {
 			return out, msgs, err
@@ -608,6 +624,15 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		if held {
 			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
+		}
+		if acting != nil {
+			// A passing failure here leaves the turn stored as it was before it
+			// acted, which a crash still carries on from (its calls give back
+			// their first outcomes): the run goes on. A lost lease ends it.
+			acting.Results = blocks
+			if err := a.Checkpoint(ctx, *acting); errors.Is(err, run.ErrLeaseLost) {
+				return out, msgs, fmt.Errorf("agent: storing what the turn did: %w", err)
+			}
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 		msgs = clearRead(msgs, ClearAfter)
@@ -1093,7 +1118,7 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 	if t == nil {
 		return tool.Result{Text: fmt.Sprintf("there is no tool named %q", c.Tool), IsError: true}
 	}
-	r, err := t.Call(ctx, c.Input)
+	r, err := t.Call(tool.WithCall(ctx, c.CallID), c.Input)
 	if err != nil {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}

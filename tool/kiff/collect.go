@@ -11,7 +11,7 @@ import (
 )
 
 // OperationArg is the argument the gateway reads a call's operation ID from.
-const OperationArg = "kiff_operation_id"
+const OperationArg = run.OperationArg
 
 // ErrNotFinal means KIFF has no final outcome for a call yet: the gateway
 // answered its repeat with retry "same_call" (it still holds the call, or is
