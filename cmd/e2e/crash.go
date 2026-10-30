@@ -84,7 +84,12 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string, refunds []strin
 		return fmt.Errorf("the door's run: %w", err)
 	}
 	finished := make(chan error, 1)
-	go func() { _, err := crashing.Execute(ctx, t.tenant, r.ID, nil); finished <- err }()
+	// Its own deadline, as a Lambda's: the run's lease is that deadline's, and
+	// the test's context runs far longer, so the sweep's clock moved past
+	// MaxRun would never find the lease lapsed.
+	invocation, stop := context.WithTimeout(context.WithoutCancel(ctx), runner.MaxRun)
+	defer stop()
+	go func() { _, err := crashing.Execute(invocation, t.tenant, r.ID, nil); finished <- err }()
 	select {
 	case <-sent:
 	case err := <-finished:
@@ -120,7 +125,12 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string, refunds []strin
 	fresh.Runs, fresh.Now, fresh.Settle = store, now, kiff.Settle
 	sw := runs.Sweeper{Runs: store, Ended: fresh.Ended, Hold: fresh.Held, Note: store.Again,
 		Continue: func(ctx context.Context, tenant, id string) error {
-			_, err := fresh.Execute(ctx, tenant, id, nil)
+			// A deadline on the moved clock, as the fresh Lambda's would be:
+			// the test's own (20 minutes, real time) is before it, and a lease
+			// from it would have lapsed before the run was claimed.
+			invocation, stop := context.WithDeadline(context.WithoutCancel(ctx), now().Add(runner.MaxRun))
+			defer stop()
+			_, err := fresh.Execute(invocation, tenant, id, nil)
 			return err
 		}}
 	if n, err := sw.Sweep(ctx, now(), 10); err != nil || n != 1 {
