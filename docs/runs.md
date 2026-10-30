@@ -114,7 +114,12 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   stopped: the recording is ended (or paused) once, then the run is saved,
   retrying a save that fails. If either still fails, the run stays RUNNING
   until its lease runs out, and the next sweep marks it ERROR (or CANCELLED,
-  if it was asked to stop). Nothing schedules the sweep yet (#13).
+  if it was asked to stop), unless it was acting (below).
+- **Never twice.** Each gateway call goes with a `kiff_operation_id` of the
+  run's own: a hash of the run and the model's call, or of the run and the
+  model's own id when it names one (`run.OperationOf`). Before a turn's
+  acting calls go out, the run stores the turn (`Acting`), and again with
+  their results: its last safe step. A turn that only reads isn't stored.
 - A failed run is stored ERROR with a public message (`runner.FailedBuild`,
   `FailedStart`, `FailedRun`, `FailedTime`); the cause is returned, never
   stored.
@@ -231,6 +236,24 @@ n, err := sw.Sweep(ctx, time.Now(), 100)
 Marks ERROR (or CANCELLED, if asked to stop) a RUNNING run whose lease ran
 out, and a PENDING run not claimed within `run.PendingTimeout` (5 min). `Ended`
 ends the run's recording first.
+
+A RUNNING run whose lease ran out while it held an acting turn is carried on
+instead, when `Hold` and `Continue` are set: its recording held, it is stored
+PAUSED on that turn, each call without a result a `resume` requirement, with
+its restart 5 min, then 20 min, then 1 h away (`run.ResumeWaits`). Continuing
+repeats each gateway call by its operation ID, so KIFF gives back its first
+outcome, or makes it once if it never got it; an `unknown` outcome is settled
+once by KIFF's reconcile (`Runner.Settle`). Past 3 restarts, the run ends ERROR
+with `run.NeedsYou`. Its note, `GET …/runs/{run}` and the runs list
+(`?state=retrying|needs_you`) say where it stands (`run.Work`).
+
+## Requests sent more than once
+
+`POST /agents/{id}/runs` with `dedup_key` (a door message's id) and `source`
+(`email`, `whatsapp`), in the background: the run's ID comes from the key
+(`server.RequestRunID`), it is stored PENDING before it is handed on, and the
+same key sent again gets that run, never a second one (200; 202 and handed on
+again if it is still PENDING).
 
 Then, read apart (`Runs.DuePaused`), PAUSED runs due `run.ResolvedGrace`
 (1 min) after their last requirement is answered or expires: the sweep calls
