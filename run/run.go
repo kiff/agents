@@ -350,6 +350,27 @@ func Operation(run, callID string) string {
 	return "op-" + hex.EncodeToString(sum[:])[:40]
 }
 
+// OperationArg is the argument KIFF's gateway reads a call's operation ID
+// from.
+const OperationArg = "kiff_operation_id"
+
+// OperationOf is the kiff_operation_id the run run sends for the model's call
+// callID with input: Operation of the call, or, when the model named an
+// operation of its own in input (to repeat an action it made before, as
+// KIFF's skill tells it), Operation of that name, within the run. Either
+// way it's the run's, never another run's, and the same after a crash: the
+// call and its input are in the stored turn.
+func OperationOf(run, callID string, input json.RawMessage) string {
+	var args map[string]json.RawMessage
+	if json.Unmarshal(input, &args) == nil {
+		var named string
+		if json.Unmarshal(args[OperationArg], &named) == nil && named != "" {
+			return Operation(run, "named\x00"+named)
+		}
+	}
+	return Operation(run, callID)
+}
+
 // CardWait is how long a card waits for the owner's answer before the run
 // goes on without it, so a card nobody answers never keeps its chat open.
 const CardWait = 7 * 24 * time.Hour

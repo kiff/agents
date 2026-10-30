@@ -550,7 +550,7 @@ func (rn *Runner) resumed(ctx context.Context, a agent.Agent, r run.Run, resumes
 		case stop:
 			out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: ResumeNotCollected, IsError: true}})
 		default:
-			q.Operation = run.Operation(r.ID, q.CallID)
+			q.Operation = run.OperationOf(r.ID, q.CallID, q.Input)
 			ask = append(ask, q)
 		}
 	}

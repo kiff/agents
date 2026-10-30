@@ -143,12 +143,14 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	}
 	// A run's call goes with its own operation ID, the same each time the
 	// call is made: after a crash, KIFF gives its first outcome back rather
-	// than act twice. A trial's call is only decided, never sent, so it needs
-	// none; a call made outside a run's loop (Collect) brings its own.
+	// than act twice. One the model named is kept as the name of the action
+	// within the run (run.OperationOf), so its repeat of an action is still
+	// the same operation. A trial's call is only decided, never sent, so it
+	// needs none; a call made outside a run's loop (Collect) brings its own.
 	if ref, ok := run.RefFrom(ctx); ok && ref.Run != "" {
 		if id := tool.CallFrom(ctx); id != "" {
 			if _, trial := run.TrialFrom(ctx); !trial {
-				with, err := withOperation(input, Operation(ref.Run, id))
+				with, err := withOperation(input, run.OperationOf(ref.Run, id, input))
 				if err != nil {
 					return tool.Result{}, meta{}, fmt.Errorf("kiff: call %s: %w", id, err)
 				}

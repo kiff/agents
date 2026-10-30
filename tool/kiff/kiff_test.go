@@ -418,7 +418,10 @@ func TestARunsCallGoesWithItsOwnOperation(t *testing.T) {
 		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1"}`, kiff.Operation("run-1", "toolu_1")},
 		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1"}`, kiff.Operation("run-1", "toolu_1")},
 		{tool.WithCall(inRun, "toolu_2"), `{"charge":"ch_1"}`, kiff.Operation("run-1", "toolu_2")},
-		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1","kiff_operation_id":"mine"}`, kiff.Operation("run-1", "toolu_1")},
+		// One the model named is the action's name within the run: its repeat,
+		// in another call, is the same operation; never the raw name.
+		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1","kiff_operation_id":"mine"}`, run.OperationOf("run-1", "toolu_1", json.RawMessage(`{"kiff_operation_id":"mine"}`))},
+		{tool.WithCall(inRun, "toolu_9"), `{"charge":"ch_1","kiff_operation_id":"mine"}`, run.OperationOf("run-1", "toolu_1", json.RawMessage(`{"kiff_operation_id":"mine"}`))},
 		{inRun, `{"charge":"ch_1"}`, ""},
 		{context.Background(), `{"charge":"ch_1","kiff_operation_id":"op-held"}`, "op-held"},
 	} {
@@ -432,5 +435,9 @@ func TestARunsCallGoesWithItsOwnOperation(t *testing.T) {
 	}
 	if a, b := kiff.Operation("run-1", "toolu_1"), kiff.Operation("run-2", "toolu_1"); a == b || !strings.HasPrefix(a, "op-") {
 		t.Fatalf("operations %q %q", a, b)
+	}
+	named := json.RawMessage(`{"kiff_operation_id":"mine"}`)
+	if a, b := run.OperationOf("run-1", "c", named), run.OperationOf("run-2", "c", named); a == b || a == "mine" || a == run.Operation("run-1", "mine") {
+		t.Fatalf("named operations %q %q", a, b)
 	}
 }

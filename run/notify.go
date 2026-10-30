@@ -92,12 +92,8 @@ func (n Notifying) send(ctx context.Context, r Run) error {
 	if r.Status == Paused {
 		note.Cards = waitingCards(r)
 	}
-	switch {
-	case r.Retrying():
-		note.State, note.Reason, note.Try, note.Of, note.NextAt = "retrying", Restarted, r.Resumes, MaxResumes, r.Retry
-	case r.Status == Error && r.Error == NeedsYou:
-		note.State, note.Reason = "needs_you", NeedsYou
-	}
+	w := r.Work()
+	note.State, note.Reason, note.Try, note.Of, note.NextAt = w.State, w.Reason, w.Try, w.Of, w.NextAt
 	body, err := json.Marshal(note)
 	if err != nil {
 		return err

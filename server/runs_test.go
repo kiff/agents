@@ -1679,6 +1679,47 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 	f.want(400, code, body, "a bad limit")
 }
 
+// A run says where its work stands when its status doesn't (run.Work), on
+// the run and in the list, and the list takes state=retrying or
+// state=needs_you: an app's line comes from the run, never a copy.
+func TestARunSaysWhereItsWorkStands(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	next := now.Add(5 * time.Minute).UTC()
+	retrying := run.New("t1", "payouts", "s1", run.ByOwner, "x", now)
+	retrying.Status, retrying.Resumes, retrying.Retry = run.Paused, 1, next
+	retrying.Requirements = []run.Requirement{{CallID: "c1", Tool: "refund", Kind: run.KindResume, Expires: now}}
+	stuck := run.New("t1", "payouts", "s1", run.ByOwner, "x", now)
+	stuck.Status, stuck.Error = run.Error, run.NeedsYou
+	plain := run.New("t1", "payouts", "s1", run.ByOwner, "x", now)
+	plain.Status = run.Completed
+	for _, r := range []run.Run{retrying, stuck, plain} {
+		if err := f.runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+retrying.ID+"?as=service", nil)
+	f.want(200, code, body, "the retrying run")
+	if body["state"] != "retrying" || body["reason"] != run.Restarted || body["try"] != 1.0 || body["of"] != float64(run.MaxResumes) || body["next_at"] != next.Format(time.RFC3339) {
+		t.Fatalf("retrying run %v", body)
+	}
+	for state, want := range map[string]string{"retrying": retrying.ID, "needs_you": stuck.ID} {
+		code, body := f.do("t1", "GET", "/agents/payouts/runs?state="+state+"&as=service", nil)
+		f.want(200, code, body, state)
+		runs := body["runs"].([]any)
+		if len(runs) != 1 || runs[0].(map[string]any)["id"] != want || runs[0].(map[string]any)["state"] != state {
+			t.Fatalf("%s: %v", state, runs)
+		}
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+plain.ID+"?as=service", nil)
+	f.want(200, code, body, "a plain run")
+	if _, ok := body["state"]; ok {
+		t.Fatalf("a plain run says %v", body["state"])
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs?state=busy", nil)
+	f.want(400, code, body, "a bad state")
+}
+
 // Each person's chat with a shared agent is theirs alone (#219): a live
 // message goes on in its requester's own recent chat, never another's; a
 // person can't name, list or read another's; a quiet chat isn't taken up

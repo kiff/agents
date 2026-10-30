@@ -137,10 +137,18 @@ type runView struct {
 	Draft        string    `json:"draft,omitempty"`
 	Created      time.Time `json:"created"`
 	Updated      time.Time `json:"updated"`
+	// State is where its work stands when the status doesn't say (run.Work):
+	// "retrying" (Try of Of, next at NextAt) or "needs_you", with Reason.
+	State  string    `json:"state,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+	Try    int       `json:"try,omitempty"`
+	Of     int       `json:"of,omitempty"`
+	NextAt time.Time `json:"next_at,omitzero"`
 }
 
 func viewRun(r run.Run) runView {
-	return runView{ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
+	w := r.Work()
+	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
@@ -173,7 +181,8 @@ const ActiveScanned = 200
 // listRuns lists an agent's runs, newest first, at most limit (20 by
 // default, 100 at most), without their paused turn. With active=true, only
 // the PENDING, RUNNING and PAUSED ones among its ActiveScanned newest: what
-// it is doing and waiting on (kiff/tafs#206).
+// it is doing and waiting on (kiff/tafs#206). With state=retrying or
+// state=needs_you, only those among its ActiveScanned newest (run.Work).
 func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
@@ -192,8 +201,12 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 		return 0, nil, err
 	}
 	active := r.URL.Query().Get("active") == "true"
+	state := r.URL.Query().Get("state")
+	if state != "" && state != run.WorkRetrying && state != run.WorkNeedsYou {
+		return 0, nil, bad("state is retrying or needs_you")
+	}
 	scan := limit
-	if active {
+	if active || state != "" {
 		scan = ActiveScanned
 	}
 	runs, err := s.Runs.List(ctx, c.Tenant, id, scan)
@@ -202,7 +215,7 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	out := []runView{}
 	for _, rn := range runs {
-		if active && (rn.Status.Final()) || !readBy(rn, q) {
+		if active && (rn.Status.Final()) || state != "" && rn.Work().State != state || !readBy(rn, q) {
 			continue
 		}
 		if out = append(out, viewRun(rn)); len(out) == limit {

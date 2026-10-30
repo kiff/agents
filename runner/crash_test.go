@@ -54,9 +54,9 @@ func (k *kiffRefund) Spec() model.ToolSpec {
 }
 func (k *kiffRefund) Access() tool.Access { return tool.Write }
 func (k *kiffRefund) Gateway() bool       { return true }
-func (k *kiffRefund) Call(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
+func (k *kiffRefund) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
 	ref, _ := run.RefFrom(ctx)
-	op := run.Operation(ref.Run, tool.CallFrom(ctx))
+	op := run.OperationOf(ref.Run, tool.CallFrom(ctx), input) // as KIFF's gateway tool sends it
 	switch k.crash {
 	case "before":
 		k.crash = ""
@@ -156,9 +156,15 @@ func TestARunThatStopsAfterItActedRepeatsNothing(t *testing.T) {
 // invocation stopped before the call reached KIFF, or after KIFF sent it and
 // before its result was stored.
 func TestACrashedRunRefundsExactlyOnce(t *testing.T) {
-	for _, crash := range []string{"before", "after"} {
+	for _, c := range []struct{ crash, input string }{
+		{"before", `{"payment":"pi_1"}`},
+		{"after", `{"payment":"pi_1"}`},
+		// The model named the action's id, as KIFF's skill tells it to.
+		{"after", `{"payment":"pi_1","kiff_operation_id":"chb-T2005-accept"}`},
+	} {
+		crash := c.crash
 		t.Run(crash, func(t *testing.T) {
-			f := newFixture(t, use("c1", "stripe_refund", `{"payment":"pi_1"}`), say("Refunded pi_1."))
+			f := newFixture(t, use("c1", "stripe_refund", c.input), say("Refunded pi_1."))
 			k := newKIFFRefund(crash)
 			t.Cleanup(func() { close(k.stuck) })
 			f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }

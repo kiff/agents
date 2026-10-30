@@ -620,6 +620,37 @@ func (sw Sweeper) resume(ctx context.Context, r Run, now time.Time) (bool, error
 	return true, nil
 }
 
+// Work is where a run's work stands when its status alone doesn't say:
+// what its note, the API's run and the runs list all give, from the run
+// itself, so a caller keeps no copy of it.
+type Work struct {
+	// State is WorkRetrying for a crashed run waiting for restart Try of Of,
+	// at NextAt, or WorkNeedsYou for one past its last; empty otherwise.
+	State string
+	// Reason says why, in words an app shows as they are.
+	Reason string
+	Try    int
+	Of     int
+	NextAt time.Time
+}
+
+// The states Work names.
+const (
+	WorkRetrying = "retrying"
+	WorkNeedsYou = "needs_you"
+)
+
+// Work is where r's work stands (see Work).
+func (r Run) Work() Work {
+	switch {
+	case r.Retrying():
+		return Work{State: WorkRetrying, Reason: Restarted, Try: r.Resumes, Of: MaxResumes, NextAt: r.Retry}
+	case r.Status == Error && r.Error == NeedsYou:
+		return Work{State: WorkNeedsYou, Reason: NeedsYou}
+	}
+	return Work{}
+}
+
 // Retrying reports whether r is a crashed run waiting for its next restart:
 // paused on its acting turn by the sweep, not by a hold or a card.
 func (r Run) Retrying() bool {
