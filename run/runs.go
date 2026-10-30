@@ -481,12 +481,22 @@ type Sweeper struct {
 }
 
 // MaxResumes is how many times the sweep carries a crashed run on from its
-// acting turn. Past it, the run ends ERROR with NeedsYou: what keeps
-// stopping it is for the owner to look at.
+// acting turn, after the wait ResumeWaits gives each: a turn that stops its
+// invocation every time isn't restarted three times in a few minutes. Past
+// it, the run ends ERROR with NeedsYou, for the owner to look at.
 const MaxResumes = 3
 
-// NeedsYou is the error of a run the sweep carried on MaxResumes times.
-const NeedsYou = "it stopped while it worked, again after each of 3 restarts: it needs you to look at it"
+// ResumeWaits is how long the sweep waits before each restart of a crashed
+// run, from when it finds it stopped.
+var ResumeWaits = [MaxResumes]time.Duration{5 * time.Minute, 20 * time.Minute, time.Hour}
+
+// NeedsYou is the error of a run the sweep carried on MaxResumes times: its
+// note says needs_you, with it as the reason.
+const NeedsYou = "It stopped 3 times while it worked, and was restarted each time from its last safe step. It needs you to look at it."
+
+// Restarted is the reason a crashed run's note gives while it waits for its
+// next restart.
+const Restarted = "It stopped while it worked. It carries on from its last safe step, and nothing it did is done twice."
 
 // Sweep looks at every run whose Due has passed: at most limit RUNNING and
 // PENDING runs, which it marks ERROR (or CANCELLED if asked to stop), and
@@ -587,15 +597,17 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 
 // resume carries on a RUNNING run whose invocation stopped while it acted:
 // its recording held, it is stored PAUSED on its acting turn (resumeOf),
-// already resolved, and handed to Continue, which repeats the turn's calls
-// that have no result by their operation IDs. If Continue fails, the run is
-// a resolved paused run like any other, and the sweep continues it later.
+// already resolved, with its next look (Retry) ResumeWaits away. Its note
+// says it's retrying, and when. The sweep then continues it as any resolved
+// paused run, and continuing repeats the turn's calls that have no result
+// by their operation IDs.
 func (sw Sweeper) resume(ctx context.Context, r Run, now time.Time) (bool, error) {
 	if err := sw.Hold(ctx, r); err != nil {
 		return false, err // still due: the next sweep tries again
 	}
-	r, err := Change(ctx, sw.Runs, r, now, func(n *Run) error {
-		n.Status, n.Resumes, n.Retries, n.Retry = Paused, n.Resumes+1, 0, time.Time{}
+	_, err := Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		n.Status, n.Retries, n.Retry = Paused, 0, now.UTC().Add(ResumeWaits[n.Resumes])
+		n.Resumes++
 		n.Paused, n.Requirements = resumeOf(*n.Acting, now)
 		return nil
 	})
@@ -605,10 +617,21 @@ func (sw Sweeper) resume(ctx context.Context, r Run, now time.Time) (bool, error
 	case err != nil:
 		return false, err
 	}
-	if err := sw.Continue(ctx, r.Tenant, r.ID); err != nil {
-		return true, fmt.Errorf("continuing a crashed run: %w", err)
-	}
 	return true, nil
+}
+
+// Retrying reports whether r is a crashed run waiting for its next restart:
+// paused on its acting turn by the sweep, not by a hold or a card.
+func (r Run) Retrying() bool {
+	if r.Status != Paused || r.Resumes == 0 {
+		return false
+	}
+	for _, q := range r.Requirements {
+		if !q.Resume() {
+			return false
+		}
+	}
+	return true
 }
 
 // resumeOf is the paused turn and requirements a crashed run carries on

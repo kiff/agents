@@ -86,6 +86,71 @@ func (k *kiffRefund) collect(_ context.Context, _ agent.Agent, held []run.Requir
 	return out, nil
 }
 
+// restart is the sweep finding run id stopped, and restarting it once wait
+// has passed, not before.
+func restart(t *testing.T, f *fixture, sw run.Sweeper, id string, wait time.Duration) {
+	t.Helper()
+	if n, err := sw.Sweep(ctx, f.clock.now(), 10); err != nil || n != 1 {
+		t.Fatalf("sweep: %d, %v", n, err)
+	}
+	if got := f.get(id); !got.Retrying() || !got.Retry.Equal(f.clock.now().Add(wait)) {
+		t.Fatalf("found stopped: %+v, want it retrying in %v", got, wait)
+	}
+	f.clock.add(wait)
+	if n, err := sw.Sweep(ctx, f.clock.now(), 10); err != nil || n != 0 {
+		t.Fatalf("a sweep before the wait is over: %d, %v", n, err)
+	}
+	f.clock.add(time.Second)
+	if n, err := sw.Sweep(ctx, f.clock.now(), 10); err != nil || n != 1 {
+		t.Fatalf("the sweep after the wait: %d, %v", n, err)
+	}
+}
+
+// sweeper is the sweep of f's runs, continuing in fresh.
+func sweeper(f *fixture, fresh *runner.Runner) run.Sweeper {
+	return run.Sweeper{Runs: f.runs, Ended: fresh.Ended, Hold: fresh.Held,
+		Continue: func(ctx context.Context, tenant, id string) error {
+			_, err := fresh.Execute(ctx, tenant, id, nil)
+			return err
+		}}
+}
+
+// A run that stops in a later turn that only reads, once its acting turn's
+// results are stored, carries on from those results: the refund isn't
+// repeated, and there's still one.
+func TestARunThatStopsAfterItActedRepeatsNothing(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"payment":"pi_1"}`), use("c2", "stripe_read", `{}`), say("Refunded pi_1."))
+	k := newKIFFRefund("")
+	stuck, inFlow := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	read := &lookUp{name: "stripe_read", onCall: func() { close(inFlow); <-stuck }}
+	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{k, read}, nil }
+	r := f.start(server.Start{Input: "refund pi_1"})
+	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
+	<-inFlow
+	if acting := f.get(r.ID).Acting; acting == nil || len(acting.Results) != 1 {
+		t.Fatalf("while the read went: %+v, want the refund's turn with its result", acting)
+	}
+	f.clock.add(runner.MaxRun + run.LeaseGrace + time.Second)
+	fresh := f.newRunner()
+	fresh.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) {
+		return []tool.Tool{k, &lookUp{name: "stripe_read"}}, nil
+	}
+	asked := 0
+	fresh.Collect = func(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error) {
+		asked += len(held)
+		return k.collect(ctx, a, held)
+	}
+	restart(t, f, sweeper(f, fresh), r.ID, run.ResumeWaits[0])
+	got := f.get(r.ID)
+	if got.Status != run.Completed || got.Output != "Refunded pi_1." || got.Resumes != 1 {
+		t.Fatalf("carried on to %+v", got)
+	}
+	if k.sent != 1 || asked != 0 {
+		t.Fatalf("the vendor got %d refunds and KIFF was asked %d times, want 1 and 0", k.sent, asked)
+	}
+}
+
 // A run whose invocation stops in a turn that acts is carried on by the sweep
 // from that turn, and the refund is made exactly once: whether the
 // invocation stopped before the call reached KIFF, or after KIFF sent it and
@@ -110,14 +175,8 @@ func TestACrashedRunRefundsExactlyOnce(t *testing.T) {
 			fresh := f.newRunner()
 			fresh.Builder.Connect = f.r.Builder.Connect
 			fresh.Collect = k.collect
-			sw := run.Sweeper{Runs: f.runs, Ended: fresh.Ended, Hold: fresh.Held,
-				Continue: func(ctx context.Context, tenant, id string) error {
-					_, err := fresh.Execute(ctx, tenant, id, nil)
-					return err
-				}}
-			if n, err := sw.Sweep(ctx, f.clock.now(), 10); err != nil || n != 1 {
-				t.Fatalf("sweep: %d, %v", n, err)
-			}
+			sw := sweeper(f, fresh)
+			restart(t, f, sw, r.ID, run.ResumeWaits[0])
 			got := f.get(r.ID)
 			if got.Status != run.Completed || got.Output != "Refunded pi_1." || got.Resumes != 1 || got.Acting != nil {
 				t.Fatalf("carried on to %+v", got)

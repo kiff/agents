@@ -477,8 +477,24 @@ func aCrashedRunIsCarriedOnFromItsActingTurn(t *testing.T, s run.Runs, c *clock)
 	if len(got.Requirements) != 1 || got.Requirements[0].CallID != "c1" || !got.Requirements[0].Resume() || !got.Requirements[0].Resolved(c.now()) {
 		t.Fatalf("waits for %+v, want c1 to repeat", got.Requirements)
 	}
-	if len(held) != 1 || held[0] != r.ID || len(continued) != 1 || continued[0] != r.ID {
-		t.Fatalf("held %v, continued %v", held, continued)
+	// Restarted only once its wait is over.
+	if !got.Retrying() || !got.Retry.Equal(c.now().Add(run.ResumeWaits[0])) || len(held) != 1 || held[0] != r.ID || len(continued) != 0 {
+		t.Fatalf("retry %v, held %v, continued %v", got.Retry, held, continued)
+	}
+	c.add(run.ResumeWaits[0] + time.Second)
+	if n, err := sw.Sweep(ctx, c.now(), 10); err != nil || n != 1 || len(continued) != 1 || continued[0] != r.ID {
+		t.Fatalf("after its wait: %d, %v, continued %v", n, err, continued)
+	}
+	// Each later restart waits longer.
+	for i := 1; i < run.MaxResumes; i++ {
+		again := crashed(i)
+		c.add(20 * time.Minute)
+		if _, err := sw.Sweep(ctx, c.now(), 10); err != nil {
+			t.Fatal(err)
+		}
+		if got := get(t, s, again); got.Resumes != i+1 || !got.Retry.Equal(c.now().Add(run.ResumeWaits[i])) {
+			t.Fatalf("restart %d: %+v, want it %v away", i+1, got, run.ResumeWaits[i])
+		}
 	}
 
 	// The last of its restarts used: the owner's to look at.
