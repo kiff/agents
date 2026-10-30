@@ -104,8 +104,19 @@ func (r Run) Active() bool { return r.Status == Pending || r.Status == Running }
 // one ResolvedGrace after its last requirement is answered or expires, or at
 // its Retry if the sweep has continued it already. A
 // paused run with an unanswered requirement that never expires is never due:
-// only an answer resolves it.
+// only an answer resolves it. A run that owes a note (NoteRetry) is due when
+// it's to be sent again, if that's sooner.
 func (r Run) Due() time.Time {
+	at := r.statusDue()
+	// A note Notify didn't take is sent again at its time, in any status.
+	if !r.NoteRetry.IsZero() && (at.IsZero() || r.NoteRetry.Before(at)) {
+		return r.NoteRetry
+	}
+	return at
+}
+
+// statusDue is Due by the run's status alone.
+func (r Run) statusDue() time.Time {
 	switch r.Status {
 	case Running:
 		return r.Lease
@@ -226,6 +237,10 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	}
 	if next.Status != Running {
 		next.Claim, next.Lease, next.Acting = "", time.Time{}, nil
+	}
+	if next.Status != r.Status {
+		// A note kept for the status it leaves is stale: the new one is noted on its own.
+		next.NoteTries, next.NoteRetry = 0, time.Time{}
 	}
 	if next.Status.Final() {
 		next.Paused = nil
@@ -478,6 +493,9 @@ type Sweeper struct {
 	// on from its acting turn, up to MaxResumes times, instead of marked
 	// ERROR. It must accept a recording held already.
 	Hold func(ctx context.Context, r Run) error
+	// Note sends a run's note again (Notifying.Again): one Notify didn't take
+	// is kept and sent on NoteWaits, then given up. Nil: notes aren't kept.
+	Note func(ctx context.Context, r Run) error
 }
 
 // MaxResumes is how many times the sweep carries a crashed run on from its
@@ -541,6 +559,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, err
 	case r.Due().IsZero() || !r.Due().Before(now):
 		return false, nil // it moved on meanwhile
+	case sw.Note != nil && !r.NoteRetry.IsZero() && r.NoteRetry.Before(now):
+		return true, sw.Note(ctx, r)
 	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
 		return sw.retry(ctx, r, now)
 	case r.Status == Running && !r.Cancel && r.Acting != nil && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:

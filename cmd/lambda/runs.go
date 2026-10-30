@@ -136,6 +136,8 @@ const sweepLimit = 100
 func sweeping(runs run.Runs, rn *runner.Runner, cont func(ctx context.Context, tenant, id string) error) func(ctx context.Context, now time.Time) (int, error) {
 	return func(ctx context.Context, now time.Time) (int, error) {
 		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont, Hold: rn.Held,
+			// A note tafs cloud didn't take is sent again (run.NoteWaits), when runs keeps notes.
+			Note:    noteAgain(runs),
 			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
 		return sw.Sweep(ctx, now, sweepLimit)
 	}
@@ -258,6 +260,15 @@ func outsidePrefix(secret, prefix string) error {
 	}
 	if strings.HasPrefix(secret, prefix) {
 		return fmt.Errorf("lambda: AGENTS_MODEL_KEY_SECRET must not be under AGENTS_SECRETS_PREFIX %q: an agent's key reference could name it", prefix)
+	}
+	return nil
+}
+
+// noteAgain is how the sweep sends a kept note again: Notifying's, when runs
+// announces runs, else none.
+func noteAgain(runs run.Runs) func(ctx context.Context, r run.Run) error {
+	if n, ok := runs.(run.Notifying); ok {
+		return n.Again
 	}
 	return nil
 }

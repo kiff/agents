@@ -225,6 +225,11 @@ type Run struct {
 	// Resumes counts the times the sweep carried the run on from its acting
 	// turn after its invocation stopped (MaxResumes).
 	Resumes int `json:"resumes,omitempty"`
+	// NoteTries counts the notes about the run's latest pause or end that
+	// Notify didn't take (no 2xx); NoteRetry is when the sweep sends it again
+	// (NoteWaits), zero once one was taken or the last try is past.
+	NoteTries int       `json:"note_tries,omitempty"`
+	NoteRetry time.Time `json:"note_retry,omitzero"`
 	// Holds are the exceptions of every call KIFF has held in the run, over
 	// all its pauses: what Runs.ByHold finds it by, for as long as the run
 	// exists. Change keeps it; it only grows.
