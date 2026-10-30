@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
@@ -97,7 +98,7 @@ func (s *Server) openTrial(ctx context.Context, c Caller, r *http.Request) (int,
 		}
 		return 0, nil, err
 	}
-	return http.StatusOK, map[string]any{"trial": t}, nil
+	return http.StatusOK, map[string]any{"trial": viewTrial(t)}, nil
 }
 
 // openAlready answers an open of a trial when the agent has one: the same
@@ -107,12 +108,12 @@ func (s *Server) openAlready(open registry.Trial, ok bool, err error, body openT
 		return 0, nil, err
 	}
 	if !ok { // ended meanwhile: the owner opens it again
-		return 0, nil, conflictError{"the trial changed while it was opened: try again"}
+		return 0, nil, conflictError{"trial_changed", "the trial changed while it was opened: try again"}
 	}
 	if open.N == body.N && open.Draft == body.Draft {
-		return http.StatusOK, map[string]any{"trial": open}, nil
+		return http.StatusOK, map[string]any{"trial": viewTrial(open)}, nil
 	}
-	return 0, nil, conflictError{fmt.Sprintf("this agent is already trying version %d: end that trial first", open.N)}
+	return 0, nil, conflictError{"trial_open", fmt.Sprintf("this agent is already trying version %d: end that trial first", open.N)}
 }
 
 func (s *Server) getOpenTrial(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
@@ -123,7 +124,7 @@ func (s *Server) getOpenTrial(ctx context.Context, c Caller, r *http.Request) (i
 	if !ok {
 		return 0, nil, registry.ErrNoTrial
 	}
-	return http.StatusOK, map[string]any{"trial": t}, nil
+	return http.StatusOK, map[string]any{"trial": viewTrial(t)}, nil
 }
 
 // trialMessage runs one turn of the trial's chat: version n's definition,
@@ -166,7 +167,7 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now()
 	if t.Idle(now) {
-		s.fail(w, r, conflictError{"this trial went unused for a week, and is ending"})
+		s.fail(w, r, conflictError{"trial_idle", "this trial went unused for a week, and is ending"})
 		return
 	}
 	// Marked used only while it is still this trial: one that ended meanwhile,
@@ -187,7 +188,7 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"run": viewRun(rn), "trial": t})
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": viewRun(rn), "trial": viewTrial(t)})
 }
 
 // closeTrial ends the agent's open trial: Install or Go back, from the
@@ -278,4 +279,16 @@ func (s *Server) SweepTrials(ctx context.Context) ([]registry.Trial, error) {
 		ended = append(ended, t)
 	}
 	return ended, errors.Join(errs...)
+}
+
+// trialView is a trial as the API answers it: how many days unused end it,
+// and when it ends if it stays unused, so no caller keeps its own copy.
+type trialView struct {
+	registry.Trial
+	IdleDays int       `json:"idle_days"`
+	Ends     time.Time `json:"ends"`
+}
+
+func viewTrial(t registry.Trial) trialView {
+	return trialView{Trial: t, IdleDays: int(registry.TrialIdle / (24 * time.Hour)), Ends: t.Ends()}
 }

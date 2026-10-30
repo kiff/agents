@@ -257,9 +257,11 @@ func HoldsOf(runs ...Run) []string {
 }
 
 // clone is r with its own copy of everything a change could edit in place:
-// the requirements and the paused turn, with their inputs and results.
+// every slice it holds, with their inputs and results, and the paused turn.
+// TestCloneSharesNothingAChangeCouldEdit checks it field by field.
 func (r Run) clone() Run {
 	c := r
+	c.Attachments = slices.Clone(r.Attachments)
 	c.Holds = slices.Clone(r.Holds)
 	c.NotAgain = nil
 	for _, k := range r.NotAgain {
@@ -274,7 +276,7 @@ func (r Run) clone() Run {
 	c.Steering = slices.Clone(r.Steering)
 	c.Requirements = nil
 	for _, q := range r.Requirements {
-		q.Input = bytes.Clone(q.Input)
+		q.Input, q.Result = bytes.Clone(q.Input), bytes.Clone(q.Result)
 		c.Requirements = append(c.Requirements, q)
 	}
 	if r.Paused != nil {
@@ -295,7 +297,7 @@ func cloneBlocks(blocks []model.Block) []model.Block {
 	}
 	out := make([]model.Block, len(blocks))
 	for i, b := range blocks {
-		b.Input = bytes.Clone(b.Input)
+		b.Input, b.Bytes = bytes.Clone(b.Input), bytes.Clone(b.Bytes)
 		out[i] = b
 	}
 	return out

@@ -11,6 +11,10 @@ import (
 type Access struct {
 	Use     bool
 	Oversee bool
+	// CardsManage is whether the person may manage the account's Cards now,
+	// when KIFF said (it says so only to the account's Setup's key); nil
+	// when it didn't.
+	CardsManage *bool
 }
 
 // AccessFunc answers what the person with this subject may do with the

@@ -40,7 +40,7 @@ func (s *Server) putSkill(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	if err := s.Skills.Put(ctx, p); err != nil {
 		if errors.Is(err, skill.ErrExists) {
-			return 0, nil, conflict(fmt.Sprintf("%s@%s is stored with other content: a version never changes, so store a new one", p.Name, p.Version))
+			return 0, nil, conflict("skill_version_exists", fmt.Sprintf("%s@%s is stored with other content: a version never changes, so store a new one", p.Name, p.Version))
 		}
 		return 0, nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestARunIsAnnouncedAtEachPauseAndAtItsEnd(t *testing.T) {
 		{Run: r.ID, Agent: "refunds", Status: run.Paused, Ref: "ref-0123456789abcdef"},
 		{Run: r.ID, Agent: "refunds", Status: run.Completed, Ref: "ref-0123456789abcdef"},
 	}
-	if len(n.got) != 2 || n.got[0] != want[0] || n.got[1] != want[1] {
+	if !reflect.DeepEqual(n.got, want) {
 		t.Fatalf("notes %+v", n.got)
 	}
 }
@@ -104,5 +105,49 @@ func TestNotifyNeverChanges(t *testing.T) {
 		return nil
 	}); err == nil {
 		t.Fatal("a run's Notify changed")
+	}
+}
+
+// A paused run's note names the cards it waits on, unanswered, so a service
+// that answers some of them knows which run to read back; an ended run's
+// names none.
+func TestAPausedRunsNoteNamesTheCardsItWaitsOn(t *testing.T) {
+	ctx := context.Background()
+	n := &notes{}
+	srv := httptest.NewServer(n)
+	defer srv.Close()
+	runs := run.Notifying{Runs: memory.NewRuns()}
+	now := time.Now()
+	r := run.New("t1", "setup", "s1", run.ByOwner, "go", now)
+	r.Notify = run.Notify{URL: srv.URL, Ref: "ref-0123456789abcdef"}
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	card := func(id, typ string) run.Requirement {
+		return run.Requirement{CallID: "c-" + id, Tool: "show", Kind: run.KindCard, Input: json.RawMessage(`{"type":"` + typ + `","id":"` + id + `"}`)}
+	}
+	answered := card("which", "confirm")
+	answered.Answered = now
+	r, err := run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Running; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = run.Change(ctx, runs, r, now, func(x *run.Run) error {
+		x.Status, x.Paused = run.Paused, &run.Turn{}
+		x.Requirements = []run.Requirement{answered, card("done", "result"), {CallID: "h1", Tool: "refund", Operation: "op"}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Cancelled; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	want := []run.Note{
+		{Run: r.ID, Agent: "setup", Status: run.Paused, Ref: "ref-0123456789abcdef", Cards: []run.NoteCard{{ID: "done", Type: "result"}}},
+		{Run: r.ID, Agent: "setup", Status: run.Cancelled, Ref: "ref-0123456789abcdef"},
+	}
+	if !reflect.DeepEqual(n.got, want) {
+		t.Fatalf("notes %+v", n.got)
 	}
 }

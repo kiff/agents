@@ -167,6 +167,7 @@ func (Tool) Spec() model.ToolSpec {
 			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed; " +
 			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
 			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
+			"A result waits while the taf or its version is made for the owner; what came of it is the call's result: {taf_id} (set up), {version} (the new version) or {failed} (why not): then say why, and hand over again once it's fixed. " +
 			"The app keeps no words of its own on a card: a sign_in takes title, text, yes (the button that opens the vendor's page), no (e.g. Not now) and note; a result takes yes (the button that opens the taf). " +
 			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
@@ -207,7 +208,11 @@ func (Tool) Call(_ context.Context, input json.RawMessage) (tool.Result, error) 
 	b, _ := json.Marshal(c)
 	if slices.Contains(Answerable, c.Type) {
 		// The run waits here: the owner's answer is this call's result.
-		return tool.Result{Text: "shown: " + c.Type + " " + c.ID + ", waiting for the owner's answer", Component: b, State: tool.StateAwaiting}, nil
+		who := "the owner's answer"
+		if slices.Contains(ByService, c.Type) {
+			who = "what came of the hand-over"
+		}
+		return tool.Result{Text: "shown: " + c.Type + " " + c.ID + ", waiting for " + who, Component: b, State: tool.StateAwaiting}, nil
 	}
 	return tool.Result{Text: "shown: " + c.Type + " " + c.ID, Component: b}, nil
 }

@@ -143,8 +143,11 @@ type Version struct {
 	N int `json:"n"`
 	// Note is what changed, in plain words.
 	Note string `json:"note,omitempty"`
-	// By is who made it: the owner's subject, or "setup".
+	// By is who made it: the owner's subject, or "setup". ByKind says which
+	// kind that is, ByPerson or ByAgent, so no caller tells them apart by
+	// the name.
 	By      string    `json:"by,omitempty"`
+	ByKind  string    `json:"by_kind,omitempty"`
 	Created time.Time `json:"created"`
 	// Digest is Digest(the version's definition).
 	Digest string `json:"digest"`
@@ -160,6 +163,25 @@ type Version struct {
 	Cards []CardRevision `json:"cards,omitempty"`
 	// Trials are the trials of this version that have ended, oldest first.
 	Trials []TrialSummary `json:"trials,omitempty"`
+}
+
+// The kinds of a version's author.
+const (
+	ByPerson = "person"
+	ByAgent  = "agent"
+)
+
+// Author is v with its ByKind set: as stored, or, for a version stored
+// before kinds, "setup" is the setup agent and any other By a person.
+func (v Version) Author() Version {
+	switch {
+	case v.ByKind != "" || v.By == "":
+	case v.By == "setup":
+		v.ByKind = ByAgent
+	default:
+		v.ByKind = ByPerson
+	}
+	return v
 }
 
 // CardRevision is one KIFF Card at one revision (kiff/tafs#107).
@@ -218,6 +240,9 @@ const TrialIdle = 7 * 24 * time.Hour
 
 // Idle reports whether t has gone unused for TrialIdle at now.
 func (t Trial) Idle(now time.Time) bool { return now.Sub(t.Used) >= TrialIdle }
+
+// Ends is when t ends if it stays unused from now on.
+func (t Trial) Ends() time.Time { return t.Used.Add(TrialIdle) }
 
 // Why a trial ended.
 const (

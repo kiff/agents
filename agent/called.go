@@ -36,6 +36,7 @@ const (
 	OutcomeHeld     = "held by KIFF for the owner"
 	OutcomeRefused  = "refused by KIFF, not sent"
 	OutcomeApproved = "held by KIFF, approved by the owner, then sent once: done"
+	OutcomeChanged  = "held by KIFF, its Card changed for it by the owner, then sent once: done"
 )
 
 // RecordNote follows a continued run's held calls' results: what the run did,
@@ -45,15 +46,18 @@ const RecordNote = "This run's record, call by call, in order. Say what was done
 	"A line that says \"looked up\" is this run reading that item before it asked for anything: it is the look-up your rules ask for, made. " +
 	"Never say a step was skipped, or an item went unchecked, that this record shows was made."
 
-// outcome is what came of a call, from its result. answer is the owner's
-// answer to its hold, when it was held and has been answered.
+// outcome is what came of a call, from its result. answer is KIFF's answer
+// to its hold, when it was held and has been answered. The result decides:
+// a hold KIFF answered with another word than approved can still have been
+// sent (changed: the Card changed, and the call went under it), so the word
+// only says why a call that didn't go through didn't.
 func outcome(r ToolResultBody, answer string) string {
 	switch {
 	case r.NotMade:
 		return OutcomeNotMade
 	case r.Held():
 		return OutcomeHeld
-	case answer != "" && answer != "approved":
+	case r.State == tool.StateRefused && answer != "" && answer != "approved":
 		return "held by KIFF, " + answer + ", not sent"
 	case r.State == tool.StateRefused:
 		return OutcomeRefused
@@ -61,7 +65,9 @@ func outcome(r ToolResultBody, answer string) string {
 		return "sent, but whether it took effect is unknown"
 	case r.IsError:
 		return OutcomeFailed
-	case answer == "approved":
+	case answer == "changed":
+		return OutcomeChanged
+	case answer != "":
 		return OutcomeApproved
 	}
 	return OutcomeDone
@@ -117,6 +123,9 @@ type AnsweredBody struct {
 	Words      string          `json:"words,omitempty"`
 	Wrote      string          `json:"wrote,omitempty"`
 	Unanswered bool            `json:"unanswered,omitempty"`
+	// AnsweredBy names the service that answered in the owner's place (a
+	// result's hand-over); empty when the owner answered.
+	AnsweredBy string `json:"answered_by,omitempty"`
 }
 
 // AnsweredLine is an Answered event as the model reads it in the chat's
@@ -128,6 +137,8 @@ func AnsweredLine(b AnsweredBody) string {
 		return line + "no answer"
 	case b.Wrote != "":
 		return line + "the owner wrote instead: " + Unforged(b.Wrote)
+	case b.AnsweredBy != "":
+		return line + Unforged(b.Words) + " (answered by " + Unforged(b.AnsweredBy) + ", not the owner)"
 	}
 	return line + Unforged(b.Words)
 }
@@ -228,9 +239,10 @@ func recordAnswered(rec *session.Recording, q run.Requirement) error {
 	_ = json.Unmarshal(q.Input, &card)
 	b := AnsweredBody{ID: card.ID, Type: card.Type}
 	var res struct {
-		Answer json.RawMessage `json:"answer"`
-		Words  string          `json:"words"`
-		Wrote  string          `json:"wrote"`
+		Answer     json.RawMessage `json:"answer"`
+		Words      string          `json:"words"`
+		Wrote      string          `json:"wrote"`
+		AnsweredBy string          `json:"answered_by"`
 	}
 	switch {
 	case q.Answered.IsZero() || json.Unmarshal(q.Result, &res) != nil:
@@ -241,7 +253,7 @@ func recordAnswered(rec *session.Recording, q run.Requirement) error {
 			return err
 		}
 	default:
-		b.Answer, b.Words = res.Answer, res.Words
+		b.Answer, b.Words, b.AnsweredBy = res.Answer, res.Words, res.AnsweredBy
 	}
 	return rec.Record(session.Answered, b)
 }

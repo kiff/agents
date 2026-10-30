@@ -85,6 +85,9 @@ type Server struct {
 	// member reads their sessions with it, and writes into their runs, only
 	// if they may. Nil: nothing is checked. The runner checks runs.
 	Access run.AccessFunc
+	// AccessNow is Access asked afresh, nothing kept: GET a run's requester
+	// access answers from it. Nil: that route says KIFF wasn't asked.
+	AccessNow run.AccessFunc
 	// ResolveGrant asks the account who a run grant was signed for, for
 	// this agent: the person's KIFF subject. A grant KIFF doesn't vouch
 	// for is an error. Nil: grants aren't taken.
@@ -224,6 +227,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	route("GET /agents/{id}/runs", s.listRuns)
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
+	route("GET /agents/{id}/runs/{run_id}/requester/access", s.requesterAccess)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
 	route("POST /agents/{id}/runs/{run_id}/messages", s.steerRun)
 	mux.HandleFunc("POST /agents/{id}/runs/{run_id}/resume", s.resumeRun)
@@ -246,10 +250,10 @@ func (j jsonErrors) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	j.mux.ServeHTTP(rec, r)
 	switch rec.code {
 	case http.StatusNotFound:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeJSON(w, http.StatusNotFound, failure{Code: "not_found", Message: "not found"})
 	case http.StatusMethodNotAllowed:
 		w.Header().Set("Allow", rec.header.Get("Allow"))
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "this path doesn't take that method"})
+		writeJSON(w, http.StatusMethodNotAllowed, failure{Code: "method_not_allowed", Message: "this path doesn't take that method"})
 	default: // a redirect to a path's clean form: the mux's own
 		j.mux.ServeHTTP(w, r)
 	}
@@ -308,13 +312,13 @@ func (b badRequest) Unwrap() error { return b.err }
 
 func bad(format string, args ...any) error { return badRequest{fmt.Errorf(format, args...)} }
 
-// conflictError is a request the current state refuses: its message says
-// what to do instead.
-type conflictError struct{ msg string }
+// conflictError is a request the current state refuses: code says which
+// state, for the caller to switch on, and msg what to do instead.
+type conflictError struct{ code, msg string }
 
 func (c conflictError) Error() string { return c.msg }
 
-func conflict(msg string) error { return conflictError{msg} }
+func conflict(code, msg string) error { return conflictError{code, msg} }
 
 // tooManyError is a request over the tenant's cap on active runs.
 type tooManyError struct{ n, max int }
@@ -336,6 +340,11 @@ func (f floodError) Error() string {
 // RetryAfter is how long a 429 asks the caller to wait, in seconds.
 const RetryAfter = 30
 
+// kiffUnanswered is KIFF not answering a question asked for the caller.
+type kiffUnanswered struct{ msg string }
+
+func (k kiffUnanswered) Error() string { return k.msg }
+
 // unavailableError is a request this server isn't set up to serve.
 type unavailableError struct{ msg string }
 
@@ -352,14 +361,15 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var un unavailableError
 	var tm tooManyError
 	var fl floodError
+	var ku kiffUnanswered
 	var tooBig *http.MaxBytesError
-	status, msg := http.StatusInternalServerError, "internal error"
+	status, code, msg := http.StatusInternalServerError, "internal", "internal error"
 	if errors.Is(err, run.ErrNoOversight) {
 		// A read of another person's work the account didn't allow.
 		if s.Log != nil {
 			s.Log.InfoContext(r.Context(), "no read grant", "method", r.Method, "path", r.URL.Path, "err", err)
 		}
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no_access", "need": "oversee"})
+		writeJSON(w, http.StatusForbidden, failure{Code: "no_access", Message: "the account doesn't let this person read that work", Need: "oversee"})
 		return
 	}
 	if errors.Is(err, run.ErrNoAccess) {
@@ -368,58 +378,69 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		if s.Log != nil {
 			s.Log.InfoContext(r.Context(), "no access", "method", r.Method, "path", r.URL.Path, "err", err)
 		}
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no_access", "need": "use"})
+		writeJSON(w, http.StatusForbidden, failure{Code: "no_access", Message: "the account doesn't let this person use the agent", Need: "use"})
 		return
 	}
 	switch {
 	case errors.Is(err, ErrUnauthorized):
-		status, msg = http.StatusUnauthorized, "the caller is not verified"
+		status, code, msg = http.StatusUnauthorized, "unauthorized", "the caller is not verified"
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrNoVersion), errors.Is(err, schedule.ErrNotFound), errors.Is(err, session.ErrNotFound),
 		errors.Is(err, run.ErrNotFound), errors.Is(err, drafts.ErrNotFound), errors.Is(err, skill.ErrNotFound):
-		status, msg = http.StatusNotFound, "not found"
+		status, code, msg = http.StatusNotFound, "not_found", "not found"
 	case errors.Is(err, registry.ErrNoTrial):
-		status, msg = http.StatusNotFound, "this agent has no open trial"
+		status, code, msg = http.StatusNotFound, "no_trial", "this agent has no open trial"
 	case errors.Is(err, registry.ErrSwitching):
-		status, msg = http.StatusConflict, "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
+		status, code, msg = http.StatusConflict, "switching", "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
 	case errors.Is(err, ErrAIFairUse):
-		status, msg = http.StatusConflict, ErrAIFairUse.Error()
+		status, code, msg = http.StatusConflict, "ai_fair_use", ErrAIFairUse.Error()
 	case errors.Is(err, registry.ErrHalted):
-		status, msg = http.StatusConflict, "halted: this agent, or its whole account, is halted; nothing of it runs until it is resumed"
+		status, code, msg = http.StatusConflict, "halted", "halted: this agent, or its whole account, is halted; nothing of it runs until it is resumed"
 	case errors.Is(err, registry.ErrSwitchChanged):
-		status, msg = http.StatusConflict, "the switch changed meanwhile; read it again"
+		status, code, msg = http.StatusConflict, "switch_changed", "the switch changed meanwhile; read it again"
 	case errors.Is(err, registry.ErrNoSwitch):
-		status, msg = http.StatusConflict, "this agent isn't switching to that version: begin the switch first"
+		status, code, msg = http.StatusConflict, "no_switch", "this agent isn't switching to that version: begin the switch first"
 	case errors.Is(err, run.ErrConflict), errors.Is(err, run.ErrTransition):
-		status, msg = http.StatusConflict, "the run changed meanwhile, or can't take that action now; read it again"
+		status, code, msg = http.StatusConflict, "run_changed", "the run changed meanwhile, or can't take that action now; read it again"
 	case errors.As(err, &tooBig):
-		status, msg = http.StatusRequestEntityTooLarge, "the body is too large"
+		status, code, msg = http.StatusRequestEntityTooLarge, "too_large", "the body is too large"
 	case errors.As(err, &tm):
-		status, msg = http.StatusTooManyRequests, tm.Error()
+		status, code, msg = http.StatusTooManyRequests, "too_many_runs", tm.Error()
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
 	case errors.As(err, &fl):
-		status, msg = http.StatusTooManyRequests, fl.Error()
+		status, code, msg = http.StatusTooManyRequests, "flood", fl.Error()
 		w.Header().Set("Retry-After", strconv.Itoa(RetryAfter))
+	case errors.As(err, &ku):
+		status, code, msg = http.StatusBadGateway, "kiff_unanswered", ku.Error()
 	case errors.As(err, &un):
-		status, msg = http.StatusServiceUnavailable, un.Error()
+		status, code, msg = http.StatusServiceUnavailable, "unavailable", un.Error()
 	case errors.As(err, &cf):
-		status, msg = http.StatusConflict, cf.Error()
+		status, code, msg = http.StatusConflict, cf.code, cf.Error()
 	case errors.As(err, &br):
-		status, msg = http.StatusBadRequest, br.Error()
+		status, code, msg = http.StatusBadRequest, "invalid", br.Error()
 	case errors.Is(err, schedule.ErrNoAgent):
-		status, msg = http.StatusBadRequest, "the tenant has no such agent"
+		status, code, msg = http.StatusBadRequest, "no_agent", "the tenant has no such agent"
 	case errors.Is(err, attach.ErrNotFound):
-		status, msg = http.StatusNotFound, "not found"
+		status, code, msg = http.StatusNotFound, "not_found", "not found"
 	case errors.Is(err, attach.ErrBound):
-		status, msg = http.StatusConflict, "a file was already sent with another message: attach it again"
+		status, code, msg = http.StatusConflict, "attachment_sent", "a file was already sent with another message: attach it again"
 	case errors.Is(err, attach.ErrInvalid):
-		status, msg = http.StatusBadRequest, strings.TrimPrefix(err.Error(), attach.ErrInvalid.Error()+": ")
+		status, code, msg = http.StatusBadRequest, "invalid", strings.TrimPrefix(err.Error(), attach.ErrInvalid.Error()+": ")
 	}
 	if status >= 500 || status == http.StatusUnauthorized {
 		if s.Log != nil {
 			s.Log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "status", status, "err", err)
 		}
 	}
-	writeJSON(w, status, map[string]string{"error": msg})
+	writeJSON(w, status, failure{Code: code, Message: msg})
+}
+
+// failure is every error the API answers: Code, which the caller switches
+// on, never on Message, which says it in words. Need is what a no_access
+// lacks (use, oversee).
+type failure struct {
+	Code    string `json:"error"`
+	Message string `json:"message"`
+	Need    string `json:"need,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -732,7 +753,7 @@ func (s *Server) shareMemory(ctx context.Context, c Caller, r *http.Request) (in
 		return 0, nil, session.ErrNotFound
 	}
 	if shared != nil && shared.Text != own.Text {
-		return 0, nil, conflict("a shared note of that name already says something else: forget it first")
+		return 0, nil, conflict("note_differs", "a shared note of that name already says something else: forget it first")
 	}
 	n := *own
 	n.Scope = session.Shared
@@ -821,7 +842,7 @@ func (s *Server) releaseNote(ctx context.Context, r *http.Request, notes []sessi
 			continue
 		}
 		if !n.Quarantined() {
-			return 0, nil, conflict("that note is shared already")
+			return 0, nil, conflict("note_shared", "that note is shared already")
 		}
 		n.SharedBy = by
 		if err := s.Notes.PutNote(ctx, n); err != nil {
@@ -1081,7 +1102,7 @@ func (s *Server) createSchedule(ctx context.Context, c Caller, r *http.Request) 
 	}
 	switch _, err := s.Schedules.Store.Get(ctx, c.Tenant, sc.ID); {
 	case err == nil:
-		return 0, nil, conflict("a schedule with that id exists; update it instead")
+		return 0, nil, conflict("schedule_exists", "a schedule with that id exists; update it instead")
 	case !errors.Is(err, schedule.ErrNotFound):
 		return 0, nil, err
 	}

@@ -31,13 +31,13 @@ func (s *Server) claimDraft(ctx context.Context, c Caller, r *http.Request) (int
 	agent, err := s.Drafts.Claim(ctx, c.Tenant, r.PathValue("draft_id"), ref)
 	switch {
 	case errors.Is(err, drafts.ErrOtherRef):
-		return 0, nil, conflict("this draft's key was already claimed into another key_ref")
+		return 0, nil, conflict("draft_claimed", "this draft's key was already claimed into another key_ref")
 	case errors.Is(err, drafts.ErrTaken):
-		return 0, nil, conflict("a key is already stored under that key_ref; name another")
+		return 0, nil, conflict("key_ref_taken", "a key is already stored under that key_ref; name another")
 	case errors.Is(err, drafts.ErrNotClaimable):
-		return 0, nil, conflict("KIFF can't give this draft's key now: the owner hasn't confirmed it yet, or it was claimed or discarded")
+		return 0, nil, conflict("draft_not_ready", "KIFF can't give this draft's key now: the owner hasn't confirmed it yet, or it was claimed or discarded")
 	case errors.Is(err, drafts.ErrExpired):
-		return 0, nil, conflict("the draft expired in KIFF; the setup agent must submit it again")
+		return 0, nil, conflict("draft_expired", "the draft expired in KIFF; the setup agent must submit it again")
 	case err != nil:
 		return 0, nil, err
 	}

@@ -118,6 +118,9 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	if err != nil {
 		return err
 	}
+	if err := t.answerResult(ctx, fmt.Sprintf(`{"version":%d}`, n)); err != nil {
+		return err
+	}
 
 	// The trial: an 8-euro refund, which the live Card holds, is decided allowed on the
 	// revised one, and nothing is sent.
@@ -381,6 +384,9 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 				}
 				msg = fmt.Sprintf("[%s %s] approved, signed in", c.Type, c.ID)
 			case "result":
+				if err := t.keepResult(r, ch.Session, c.ID); err != nil {
+					return improvement{}, err
+				}
 				switch {
 				case c.Taf == nil || c.Taf.Improves == "":
 					return improvement{}, errors.New("Setup's result sets up a new taf instead of improving this one")

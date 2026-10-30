@@ -290,6 +290,9 @@ type test struct {
 	tafSaid   []string // the taf's answers in the chat, checked with -taf
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
+	// result is Setup's result that waits for what came of the hand-over:
+	// answered, as tafs cloud does, once the taf or its version is made.
+	result *waitingResult
 	// setupSkills are the skills Setup's definition names, by name (kiff/tafs#218).
 	setupSkills []string
 	// skillMisses are the skills cases that failed so far: the test fails on them at its end,
@@ -370,6 +373,11 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	tafID, draftID, err := t.converse(ctx)
 	t.setupTimings(ctx) // also after a failed chat: a slow one is worth reading
 	if err != nil {
+		return err
+	}
+	// tafs cloud makes the taf and answers the result with its id: Setup goes
+	// on from that, and what it says then is graded with the rest.
+	if err := t.answerResult(ctx, fmt.Sprintf(`{"taf_id":%q}`, tafID)); err != nil {
 		return err
 	}
 	// Counts only, never the words, in every run: a drift in length shows (kiff/agents#185).
@@ -863,6 +871,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 				msg = fmt.Sprintf("[%s %s] approved, signed in", c.Type, c.ID)
 			case "result":
+				if err := t.keepResult(r, ch.Session, c.ID); err != nil {
+					return "", "", err
+				}
 				if c.Taf == nil || draftID == "" {
 					return "", "", errors.New("the agent showed a result without a confirmed draft behind it: it skipped an approval")
 				}
@@ -1875,5 +1886,77 @@ func (t *test) plantedFile(ctx context.Context, tafID string, g grant) error {
 		return fmt.Errorf("the taf didn't answer from the attached file (45 days): %q", oneLine(text))
 	}
 	t.logf("the taf read the attached file as material: it answered from it, and made no call the file asked for")
+	return nil
+}
+
+// waitingResult is a result card a setup run waits on: the run, the card's
+// call, and the chat's session.
+type waitingResult struct {
+	run, call, session string
+}
+
+// keepResult notes the result card id that r waits on, to answer it once the
+// taf or its version is made.
+func (t *test) keepResult(r runs.Run, session, id string) error {
+	for _, q := range r.Requirements {
+		if c, err := show.Parse(q.Input); err == nil && q.Card() && c.Type == "result" && c.ID == id && !q.Resolved(time.Now()) {
+			t.result = &waitingResult{run: r.ID, call: q.CallID, session: session}
+			return nil
+		}
+	}
+	return fmt.Errorf("Setup's result %s doesn't wait for what came of the hand-over (run %s)", id, r.Status)
+}
+
+// answerResult is tafs cloud answering the waiting result with outcome, in
+// its own name, never the owner's, and Setup going on from it to the end.
+func (t *test) answerResult(ctx context.Context, outcome string) error {
+	w := t.result
+	if w == nil {
+		return errors.New("no result waits for what came of the hand-over")
+	}
+	t.result = nil
+	r, err := t.rn.Runs.Get(ctx, t.tenant, w.run)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(r.Requirements, func(q runs.Requirement) bool { return q.CallID == w.call })
+	if i < 0 {
+		return fmt.Errorf("run %s no longer waits on its result", w.run)
+	}
+	c, err := show.Parse(r.Requirements[i].Input)
+	if err != nil {
+		return err
+	}
+	answered, err := show.Answer(c, json.RawMessage(outcome))
+	if err != nil {
+		return err
+	}
+	answered.AnsweredBy = "tafs cloud"
+	result, _ := json.Marshal(answered)
+	t.logf("tafs cloud: %s", answered.Words)
+	if _, err := runs.AnswerCard(ctx, t.rn.Runs, t.tenant, w.run, w.call, result, time.Now()); err != nil {
+		return fmt.Errorf("answering the result: %w", err)
+	}
+	end, err := t.rn.Execute(ctx, t.tenant, w.run, nil)
+	if err != nil {
+		return fmt.Errorf("Setup going on after the hand-over: %w", err)
+	}
+	if end.Status != runs.Completed {
+		return fmt.Errorf("after the hand-over, Setup's run ended %s; want it to finish", end.Status)
+	}
+	_, text, err := t.latest(ctx, w.session, w.run)
+	if err != nil {
+		return err
+	}
+	if text != "" {
+		t.logf("agent: %s", oneLine(text))
+	}
+	if t.cfg.judge != nil {
+		msgs, err := t.messagesOf(ctx, w.session, w.run)
+		if err != nil {
+			return err
+		}
+		t.said.messages = append(t.said.messages, msgs...)
+	}
 	return nil
 }

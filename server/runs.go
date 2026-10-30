@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -328,7 +329,7 @@ func (s *Server) cancel(ctx context.Context, rn run.Run) (run.Run, error) {
 			}
 			return next, err
 		case run.Completed, run.Error, run.Cancelled:
-			return rn, conflict("the run has ended")
+			return rn, conflict("run_ended", "the run has ended")
 		}
 		var expires time.Time
 		if rn.Status == run.Pending {
@@ -406,9 +407,9 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	next, err := run.SteerBy(ctx, s.Runs, c.Tenant, rn.ID, body.Text, q, s.now())
 	switch {
 	case errors.Is(err, run.ErrTransition):
-		return 0, nil, conflict("the run has ended, or was asked to stop: send the message as a new run")
+		return 0, nil, conflict("run_ended", "the run has ended, or was asked to stop: send the message as a new run")
 	case errors.Is(err, run.ErrFull):
-		return 0, nil, conflict("the run holds as many messages as it takes while it goes: wait for it to end, or stop it")
+		return 0, nil, conflict("steering_full", "the run holds as many messages as it takes while it goes: wait for it to end, or stop it")
 	case err != nil:
 		return 0, nil, err
 	}
@@ -428,11 +429,11 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 // recorded; repeating it withdraws the rest.
 func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) {
 	if s.Withdraw == nil {
-		return run.Run{}, conflict("a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
+		return run.Run{}, conflict("paused_run", "a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
 	}
 	for _, q := range rn.Requirements {
 		if q.Exception == "" {
-			return run.Run{}, conflict("a paused run can't be cancelled: KIFF holds a call it gave no ID to withdraw it by")
+			return run.Run{}, conflict("paused_run", "a paused run can't be cancelled: KIFF holds a call it gave no ID to withdraw it by")
 		}
 	}
 	if !rn.Cancel {
@@ -846,7 +847,7 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rn.Status != run.Paused {
-		s.fail(w, r, conflict("the run isn't paused: read it"))
+		s.fail(w, r, conflict("not_paused", "the run isn't paused: read it"))
 		return
 	}
 	if !resolved(rn, s.now()) {
@@ -856,7 +857,7 @@ func (s *Server) continueRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !resolved(rn, s.now()) {
-		s.fail(w, r, conflict("the run still waits for KIFF to resolve its held calls"))
+		s.fail(w, r, conflict("waiting_for_kiff", "the run still waits for KIFF to resolve its held calls"))
 		return
 	}
 	s.goOn(w, r, c, rn, body.Background)
@@ -893,12 +894,18 @@ func (s *Server) goOn(w http.ResponseWriter, r *http.Request, c Caller, rn run.R
 
 // answerBody is what POST /agents/{id}/runs/{run_id}/cards/{card}/answer
 // takes: the answer, in the card's type's shape (show.Answer), who answers,
-// and whether the run goes on in the background.
+// and whether the run goes on in the background. Who answers is the person
+// whose run it is (Requester), or, for a card a service answers
+// (show.ByService), that service by name (AnsweredBy), never both.
 type answerBody struct {
 	Answer     json.RawMessage `json:"answer"`
 	Requester  *run.Requester  `json:"requester,omitempty"`
+	AnsweredBy string          `json:"answered_by,omitempty"`
 	Background bool            `json:"background,omitempty"`
 }
+
+// servicePattern is a service's name as an answer names it.
+var servicePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9 ._-]{0,63}$`)
 
 // answerCard answers a card the run showed and waits on (tool.StateAwaiting,
 // run.KindCard), as data: checked against the card, recorded on the run, and
@@ -921,14 +928,25 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, unavailable("this server doesn't run runs in the background"))
 		return
 	}
-	q, err := requesterOf(body.Requester)
-	if err != nil {
-		s.fail(w, r, err)
+	service := body.AnsweredBy != ""
+	var q run.Requester
+	switch {
+	case service && body.Requester != nil:
+		s.fail(w, r, bad("a card is answered by the person (requester) or by a service (answered_by), not both"))
 		return
-	}
-	if q.Kind != run.ByMember {
-		s.fail(w, r, bad("a card is answered by the person whose run it is: requester {kind: member, id}"))
+	case service && !servicePattern.MatchString(body.AnsweredBy):
+		s.fail(w, r, bad("answered_by is the service's name: 1 to 64 of a-z 0-9, space . _ -"))
 		return
+	case !service:
+		var err error
+		if q, err = requesterOf(body.Requester); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if q.Kind != run.ByMember {
+			s.fail(w, r, bad("a card is answered by the person whose run it is: requester {kind: member, id}"))
+			return
+		}
 	}
 	if err := notBoth(r); err != nil {
 		s.fail(w, r, err)
@@ -939,17 +957,19 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	if !own(rn, q) {
-		s.fail(w, r, run.ErrNotFound) // another person's run
-		return
-	}
-	if err := s.mayRead(ctx, c.Tenant, rn.Agent, q.Key()); err != nil {
-		s.fail(w, r, err)
-		return
+	if !service {
+		if !own(rn, q) {
+			s.fail(w, r, run.ErrNotFound) // another person's run
+			return
+		}
+		if err := s.mayRead(ctx, c.Tenant, rn.Agent, q.Key()); err != nil {
+			s.fail(w, r, err)
+			return
+		}
 	}
 	card, ok := openCard(rn, r.PathValue("card"), s.now())
 	if !ok {
-		s.fail(w, r, conflict("no card of this run waits for an answer by that id: it was answered, it stopped waiting, or the run went on"))
+		s.fail(w, r, conflict("card_not_waiting", "no card of this run waits for an answer by that id: it was answered, it stopped waiting, or the run went on"))
 		return
 	}
 	shown, err := show.Parse(card.Input)
@@ -957,16 +977,27 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	// The owner never answers in a service's place, nor a service in theirs:
+	// what the run and the Record say about who answered stays true.
+	if byService := slices.Contains(show.ByService, shown.Type); byService != service {
+		if byService {
+			s.fail(w, r, bad("a %s is answered by the service that hands the owner over (answered_by), not by the person", shown.Type))
+		} else {
+			s.fail(w, r, bad("a %s is answered by the person whose run it is (requester), not by a service", shown.Type))
+		}
+		return
+	}
 	answered, err := show.Answer(shown, body.Answer)
 	if err != nil {
 		s.fail(w, r, bad("%s", err.Error()))
 		return
 	}
+	answered.AnsweredBy = body.AnsweredBy
 	result, _ := json.Marshal(answered)
 	next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
 	switch {
 	case errors.Is(err, run.ErrNotOpen):
-		s.fail(w, r, conflict("the card was answered meanwhile, or the run went on: read it"))
+		s.fail(w, r, conflict("card_not_waiting", "the card was answered meanwhile, or the run went on: read it"))
 		return
 	case err != nil:
 		s.fail(w, r, err)
@@ -977,6 +1008,36 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.goOn(w, r, c, next, body.Background)
+}
+
+// requesterAccess answers what the person who asked for the run may do now,
+// as KIFF says when asked with the agent's own key, nothing kept: what a
+// service checks before it acts for them (a result's hand-over). cards_manage
+// is left out when KIFF didn't say. A run no member asked for has no one to
+// ask about (409 no_requester); KIFF not answering is 502 kiff_unanswered.
+func (s *Server) requesterAccess(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	rn, err := s.agentRun(ctx, c, r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if rn.Requester.Kind != run.ByMember {
+		return 0, nil, conflict("no_requester", "no person asked for this run: there is no one whose rights to check")
+	}
+	if s.AccessNow == nil {
+		return 0, nil, kiffUnanswered{"this server doesn't ask KIFF"}
+	}
+	a, err := s.AccessNow(ctx, c.Tenant, rn.Agent, rn.Requester.ID)
+	if err != nil {
+		if s.Log != nil {
+			s.Log.WarnContext(ctx, "requester access unanswered", "run", rn.ID, "err", err)
+		}
+		return 0, nil, kiffUnanswered{"KIFF didn't say what this person may do now"}
+	}
+	out := map[string]any{"requester": rn.Requester, "use": a.Use}
+	if a.CardsManage != nil {
+		out["cards_manage"] = *a.CardsManage
+	}
+	return http.StatusOK, out, nil
 }
 
 // openCard is rn's card shown with id that still waits for an answer.

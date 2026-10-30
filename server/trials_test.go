@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -36,6 +37,10 @@ func TestATrialIsOneChatWithAVersion(t *testing.T) {
 	tr := body["trial"].(map[string]any)
 	if tr["n"] != float64(2) || tr["draft"] != "drf_t2" || tr["session"] == nil || tr["id"] == "" {
 		t.Fatalf("trial = %v", tr)
+	}
+	// How long unused ends it, and when, are the server's: no caller keeps a copy.
+	if ends, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(tr["ends"])); tr["idle_days"] != float64(7) || !ends.Equal(now.Add(registry.TrialIdle)) {
+		t.Fatalf("trial = %v; want idle_days 7, ends a week from its last use", tr)
 	}
 	id := tr["id"]
 	// Opened again the same way, it is the same trial; another one waits for this one's end.

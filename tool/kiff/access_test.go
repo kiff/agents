@@ -56,3 +56,33 @@ func TestAccessorAsksWithTheAgentsKeyAndKeepsAMinute(t *testing.T) {
 		t.Fatalf("ana once KIFF is back: %+v, %v (%d asks)", a, err, asked.Load())
 	}
 }
+
+// Asked afresh, KIFF is asked every time, and cards_manage is read only
+// when KIFF says it: missing stays unknown, never no or yes.
+func TestFreshAccessAsksEachTimeAndReadsCardsManage(t *testing.T) {
+	var asked atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		var body struct{ Subject string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		out := map[string]any{"use": true}
+		if body.Subject == "ana" {
+			out["cards_manage"] = true
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	access := kiff.FreshAccessor(oneAgent{}, keys{}, srv.Client(), srv.URL)
+	ctx := context.Background()
+	for range 2 {
+		if a, err := access(ctx, "t1", "rae", "ana"); err != nil || a.CardsManage == nil || !*a.CardsManage {
+			t.Fatalf("ana: %+v, %v", a, err)
+		}
+	}
+	if a, err := access(ctx, "t1", "rae", "bo"); err != nil || a.CardsManage != nil {
+		t.Fatalf("bo: %+v, %v; want cards_manage unknown", a, err)
+	}
+	if asked.Load() != 3 {
+		t.Fatalf("KIFF asked %d times, want 3", asked.Load())
+	}
+}

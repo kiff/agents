@@ -95,7 +95,7 @@ when to try again:
 POST /agents/payouts/runs
 
 429 Retry-After: 30
-{"error":"the tenant has 10 runs going and may have 10: wait for one to end, then try again"}
+{"error":"too_many_runs","message":"the tenant has 10 runs going and may have 10: wait for one to end, then try again"}
 ```
 
 - **Capped:** `POST /agents/{id}/runs`, `POST /schedules/{id}/trigger`,
