@@ -201,3 +201,35 @@ func TestACrashedRunRefundsExactlyOnce(t *testing.T) {
 		})
 	}
 }
+
+// A crashed turn's call whose outcome comes back unknown is settled once
+// (Runner.Settle) before the run reads it: here KIFF's lookup proved the
+// first try had no effect, and the call went once more.
+func TestAnUnknownOutcomeIsSettledBeforeTheRunReadsIt(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"payment":"pi_1"}`), say("Refunded pi_1."))
+	k := newKIFFRefund("after")
+	t.Cleanup(func() { close(k.stuck) })
+	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }
+	r := f.start(server.Start{Input: "refund pi_1"})
+	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
+	<-k.inFlow
+	f.clock.add(runner.MaxRun + run.LeaseGrace + time.Second)
+	fresh := f.newRunner()
+	fresh.Builder.Connect = f.r.Builder.Connect
+	fresh.Collect = func(_ context.Context, _ agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: held[0].CallID, Tool: held[0].Tool, Result: tool.Result{Text: "response lost", State: "unknown", Invocation: "tc-u", IsError: true}}}, nil
+	}
+	var settled []string
+	fresh.Settle = func(_ context.Context, _ agent.Agent, q run.Requirement, res tool.Result) (tool.Result, error) {
+		settled = append(settled, q.Operation+" "+res.State)
+		return tool.Result{Text: "refunded re_2", State: "forwarded"}, nil
+	}
+	restart(t, f, sweeper(f, fresh), r.ID, run.ResumeWaits[0])
+	got := f.get(r.ID)
+	if got.Status != run.Completed || len(got.Done) != 1 {
+		t.Fatalf("carried on to %+v", got)
+	}
+	if len(settled) != 1 || settled[0] != run.Operation(r.ID, "c1")+" unknown" {
+		t.Fatalf("settled %v", settled)
+	}
+}

@@ -71,6 +71,11 @@ type Runner struct {
 	// until KIFF's operation IDs are recorded (step 4): a paused run can't
 	// continue without it.
 	Collect func(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agent.ToolResultBody, error)
+	// Settle, when set, is asked about each crashed turn's call whose
+	// outcome came back unknown (sent, and the response lost): KIFF's
+	// status lookup may prove it had no effect, and then it is sent once
+	// more (kiff.Settle). Nil: an unknown outcome stays unknown.
+	Settle func(ctx context.Context, a agent.Agent, q run.Requirement, res tool.Result) (tool.Result, error)
 	// Sealer seals what a chat keeps of its reads for its next runs
 	// (session.KeptRead), and opens it for them. Nil: nothing is kept.
 	Sealer session.Sealer
@@ -557,6 +562,15 @@ func (rn *Runner) resumed(ctx context.Context, a agent.Agent, r run.Run, resumes
 		return nil, err
 	}
 	for i := range got {
+		if rn.Settle != nil {
+			for _, q := range ask {
+				if q.CallID == got[i].CallID {
+					if got[i].Result, err = rn.Settle(ctx, a, q, got[i].Result); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
 		got[i].Result = ResumedOutcome(got[i].Result)
 	}
 	return append(out, got...), nil
