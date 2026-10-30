@@ -391,6 +391,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
+	a.Checkpoint = x.checkpoint
 	a.Now = rn.now // a card waits run.CardWait from the runner's clock
 	a.Attachments = r.Attachments
 	if rn.Files != nil {
@@ -827,6 +828,13 @@ func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.
 		return r, run.ErrLeaseLost
 	}
 	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), change)
+}
+
+// checkpoint stores turn as the run's last safe step (Run.Acting), under its
+// lease: a run whose invocation crashes carries on from it.
+func (x *execution) checkpoint(ctx context.Context, turn run.Turn) error {
+	_, err := x.save(ctx, func(n *run.Run) error { n.Acting = &turn; return nil })
+	return err
 }
 
 // stop stores where the loop stopped. The recording is paused or ended first:

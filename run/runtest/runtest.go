@@ -42,6 +42,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"ASaveGivesUpOnARunThatKeepsChanging", aSaveGivesUpOnARunThatKeepsChanging},
 		{"APausedRunContinuesWhenResolved", aPausedRunContinuesWhenResolved},
 		{"ABigPausedTurnIsKept", aBigPausedTurnIsKept},
+		{"AnActingTurnIsKeptBesideThePausedOne", anActingTurnIsKeptBesideThePausedOne},
 		{"SweepMarksWhatIsDue", sweepMarksWhatIsDue},
 		{"SweepLeavesWhatMovedOn", sweepLeavesWhatMovedOn},
 		{"SweepContinuesAResolvedPausedRun", sweepContinuesAResolvedPausedRun},
@@ -416,6 +417,30 @@ func aBigPausedTurnIsKept(t *testing.T, s run.Runs, c *clock) {
 	check(t, err)
 	if got := get(t, s, r); !reflect.DeepEqual(got.Paused, small) {
 		t.Fatalf("a smaller turn came back as %+v", got.Paused)
+	}
+}
+
+// A running run's acting turn is kept whole, big or not, beside the turn it
+// paused in before; it goes once the run leaves RUNNING.
+func anActingTurnIsKeptBesideThePausedOne(t *testing.T, s run.Runs, c *clock) {
+	r := claimed(t, s, c)
+	paused := &run.Turn{Reply: model.Message{Role: model.Assistant}, Results: []model.Block{{Kind: model.ToolResult, CallID: "p", Result: "held"}}}
+	r, err := run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Paused = paused; return nil })
+	check(t, err)
+	big := strings.Repeat("x", 250<<10)
+	acting := &run.Turn{Reply: model.Message{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "refund"}}}}
+	for range 4 {
+		acting.Results = append(acting.Results, model.Block{Kind: model.ToolResult, CallID: "c1", Result: big})
+	}
+	r, err = run.Change(ctx, s, r, c.now(), func(n *run.Run) error { n.Acting = acting; return nil })
+	check(t, err)
+	if got := get(t, s, r); !reflect.DeepEqual(got.Acting, acting) || !reflect.DeepEqual(got.Paused, paused) {
+		t.Fatalf("came back with acting %v, paused %v", got.Acting != nil, got.Paused != nil)
+	}
+	r, err = run.Save(ctx, s, r, c.now(), set(run.Completed))
+	check(t, err)
+	if got := get(t, s, r); got.Acting != nil {
+		t.Fatalf("an ended run keeps its acting turn")
 	}
 }
 

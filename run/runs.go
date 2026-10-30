@@ -222,7 +222,7 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 		return r, fmt.Errorf("%w: %s to %s", ErrTransition, r.Status, next.Status)
 	}
 	if next.Status != Running {
-		next.Claim, next.Lease = "", time.Time{}
+		next.Claim, next.Lease, next.Acting = "", time.Time{}, nil
 	}
 	if next.Status.Final() {
 		next.Paused = nil
@@ -279,16 +279,22 @@ func (r Run) clone() Run {
 		q.Input, q.Result = bytes.Clone(q.Input), bytes.Clone(q.Result)
 		c.Requirements = append(c.Requirements, q)
 	}
-	if r.Paused != nil {
-		// Every part of the turn, Before included: a copy without it would give
-		// the continued run no memory of its earlier turns (the R-3005 test).
-		t := Turn{Reply: model.Message{Role: r.Paused.Reply.Role, Blocks: cloneBlocks(r.Paused.Reply.Blocks)}, Results: cloneBlocks(r.Paused.Results)}
-		for _, m := range r.Paused.Before {
-			t.Before = append(t.Before, model.Message{Role: m.Role, Blocks: cloneBlocks(m.Blocks)})
-		}
-		c.Paused = &t
-	}
+	// Every part of a turn, Before included: a copy without it would give the
+	// continued run no memory of its earlier turns (the R-3005 test).
+	c.Paused, c.Acting = r.Paused.clone(), r.Acting.clone()
 	return c
+}
+
+// clone is a deep copy of t, or nil.
+func (t *Turn) clone() *Turn {
+	if t == nil {
+		return nil
+	}
+	c := Turn{Reply: model.Message{Role: t.Reply.Role, Blocks: cloneBlocks(t.Reply.Blocks)}, Results: cloneBlocks(t.Results)}
+	for _, m := range t.Before {
+		c.Before = append(c.Before, model.Message{Role: m.Role, Blocks: cloneBlocks(m.Blocks)})
+	}
+	return &c
 }
 
 func cloneBlocks(blocks []model.Block) []model.Block {

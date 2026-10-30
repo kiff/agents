@@ -132,20 +132,37 @@ func dueSK(r run.Run) string {
 
 // stored is a run as its items hold it.
 type stored struct {
-	head  []byte   // the run without its paused turn, as JSON
-	parts [][]byte // the paused turn, as JSON, cut into parts
-	ttl   types.AttributeValue
+	head  []byte   // the run without its turns, as JSON
+	parts [][]byte // its turns, as JSON, cut into parts
+	// acting says the parts hold both turns (turns), not the paused one alone
+	// as runs from before the acting turn hold it.
+	acting bool
+	ttl    types.AttributeValue
+}
+
+// turns are a run's paused and acting turns, as its parts hold them when it
+// has an acting turn.
+type turns struct {
+	Paused *run.Turn `json:"paused,omitempty"`
+	Acting *run.Turn `json:"acting,omitempty"`
 }
 
 func storedOf(r run.Run) (stored, error) {
-	turn := r.Paused
-	r.Paused = nil
+	var turn any
+	if r.Paused != nil {
+		turn = r.Paused
+	}
+	acting := r.Acting != nil
+	if acting {
+		turn = turns{Paused: r.Paused, Acting: r.Acting}
+	}
+	r.Paused, r.Acting = nil, nil
 	head, err := json.Marshal(r)
 	if err != nil {
 		return stored{}, err
 	}
 	var st stored
-	st.head = head
+	st.head, st.acting = head, acting
 	if turn != nil {
 		raw, err := json.Marshal(turn)
 		if err != nil {
@@ -195,6 +212,9 @@ func (rs *Runs) runItem(r run.Run, st stored) map[string]types.AttributeValue {
 	item["run"] = &types.AttributeValueMemberB{Value: st.head}
 	item["version"] = n(r.Version)
 	item["parts"] = n(int64(len(st.parts)))
+	if st.acting {
+		item["acting"] = &types.AttributeValueMemberBOOL{Value: true}
+	}
 	item["who"] = s(who(r))
 	return withTTL(item, st.ttl)
 }
@@ -302,11 +322,15 @@ func (rs *Runs) readOnce(ctx context.Context, tenant, id string) (run.Run, error
 	var head []byte
 	parts := map[string][]byte{}
 	count := int64(0)
+	acting := false
 	for _, item := range items {
 		sk := getS(item, "sk")
 		if sk == metaSK {
 			if b, ok := item["run"].(*types.AttributeValueMemberB); ok {
 				head, count = b.Value, getN(item, "parts")
+			}
+			if b, ok := item["acting"].(*types.AttributeValueMemberBOOL); ok {
+				acting = b.Value
 			}
 		} else if b, ok := item["b"].(*types.AttributeValueMemberB); ok {
 			parts[sk] = b.Value
@@ -328,9 +352,17 @@ func (rs *Runs) readOnce(ctx context.Context, tenant, id string) (run.Run, error
 			}
 			turn.Write(part)
 		}
-		r.Paused = new(run.Turn)
-		if err := json.Unmarshal(turn.Bytes(), r.Paused); err != nil {
-			return run.Run{}, fmt.Errorf("%w: run %s: %w", errTorn, id, err)
+		if acting {
+			var both turns
+			if err := json.Unmarshal(turn.Bytes(), &both); err != nil {
+				return run.Run{}, fmt.Errorf("%w: run %s: %w", errTorn, id, err)
+			}
+			r.Paused, r.Acting = both.Paused, both.Acting
+		} else {
+			r.Paused = new(run.Turn)
+			if err := json.Unmarshal(turn.Bytes(), r.Paused); err != nil {
+				return run.Run{}, fmt.Errorf("%w: run %s: %w", errTorn, id, err)
+			}
 		}
 	}
 	return r, nil

@@ -214,6 +214,13 @@ type Run struct {
 	Requirements []Requirement `json:"requirements,omitempty"`
 	// Paused is the turn the run paused in, to carry on from.
 	Paused *Turn `json:"paused,omitempty"`
+	// Acting is a RUNNING run's last turn whose calls act, stored before they
+	// go out, and again with their results (Results) once they're in: its
+	// last safe step. A run whose invocation crashed carries on from it: its
+	// calls repeated by their operation IDs, which KIFF answers with their
+	// first outcome, so nothing is done twice. Nil once the run leaves
+	// RUNNING, and for a run that hasn't acted yet.
+	Acting *Turn `json:"acting,omitempty"`
 	// Holds are the exceptions of every call KIFF has held in the run, over
 	// all its pauses: what Runs.ByHold finds it by, for as long as the run
 	// exists. Change keeps it; it only grows.
