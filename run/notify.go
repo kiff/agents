@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -63,7 +64,8 @@ var NotifyWait = 3 * time.Second
 // Notifying is runs, announcing each run that has a Notify once per pause and
 // once at its end: on the Put that moves it to PAUSED or a final status, from
 // whichever path (the run itself, a cancel, the sweep). A note that fails
-// never fails the Put.
+// never fails the Put: it's kept on the run (NoteTries, NoteRetry), and the
+// sweep sends it again (Again) after each of NoteWaits, until Notify takes it.
 type Notifying struct {
 	Runs
 	// Client sends the notes; nil is one that follows no redirect, so a note
@@ -71,20 +73,81 @@ type Notifying struct {
 	Client *http.Client
 	// Log, when set, hears of a note that failed.
 	Log func(msg string, err error)
+	// Now is the clock a kept note's next try is set by; nil is time.Now.
+	Now func() time.Time
 }
+
+// NoteWaits is how long a note Notify didn't take waits before each of its
+// tries again: the same waits as a step's. Past the last, it's given up, and
+// the caller reads the run as it would without one.
+var NoteWaits = [...]time.Duration{5 * time.Minute, 20 * time.Minute, time.Hour}
 
 // Put is Runs.Put, then the note when next is a new pause or the end.
 func (n Notifying) Put(ctx context.Context, prev, next Run) error {
 	if err := n.Runs.Put(ctx, prev, next); err != nil {
 		return err
 	}
-	if next.Notify.URL == "" || next.Status == prev.Status || !(next.Status == Paused || next.Status.Final()) {
+	if next.Notify.URL == "" || next.Status == prev.Status || !noted(next.Status) {
 		return nil
 	}
-	if err := n.send(context.WithoutCancel(ctx), next); err != nil && n.Log != nil {
-		n.Log("run: a note was not sent", err)
+	ctx = context.WithoutCancel(ctx)
+	if err := n.send(ctx, next); err != nil {
+		n.log("run: a note was not sent; it's kept and sent again", err)
+		n.keep(ctx, next, 1)
 	}
 	return nil
+}
+
+// Again sends r's kept note again, from the sweep: as the run is now, so a
+// run that moved on since sends its new state. Taken, the note is no longer
+// kept; not taken, it waits for its next try, or is given up past the last.
+func (n Notifying) Again(ctx context.Context, r Run) error {
+	if r.Notify.URL == "" || !noted(r.Status) {
+		return n.keep(ctx, r, 0) // nothing to say: a run at work is noted when it next stops
+	}
+	if err := n.send(ctx, r); err != nil {
+		if r.NoteTries >= len(NoteWaits) {
+			n.log("run: a note was given up after its last try", err)
+			return n.keep(ctx, r, 0)
+		}
+		n.log("run: a note was not sent again; it's kept", err)
+		return n.keep(ctx, r, r.NoteTries+1)
+	}
+	return n.keep(ctx, r, 0)
+}
+
+// noted reports whether a run in status s is announced: paused, or ended.
+func noted(s Status) bool { return s == Paused || s.Final() }
+
+// keep stores r's note as owed for its tries-th time (0: not owed), as r was
+// read. A run that moved on since is left as it is: its own Put noted it.
+func (n Notifying) keep(ctx context.Context, r Run, tries int) error {
+	now := time.Now
+	if n.Now != nil {
+		now = n.Now
+	}
+	next := r.clone()
+	next.NoteTries, next.NoteRetry = tries, time.Time{}
+	if tries > 0 {
+		next.NoteRetry = now().UTC().Add(NoteWaits[tries-1])
+	} else {
+		next.NoteTries = 0
+	}
+	if next.NoteTries == r.NoteTries && next.NoteRetry.Equal(r.NoteRetry) {
+		return nil
+	}
+	next.Version, next.Updated = r.Version+1, now().UTC()
+	err := n.Runs.Put(ctx, r, next)
+	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+func (n Notifying) log(msg string, err error) {
+	if n.Log != nil {
+		n.Log(msg, err)
+	}
 }
 
 func (n Notifying) send(ctx context.Context, r Run) error {

@@ -232,8 +232,13 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		}
 		rn.Sealer = &session.KeySealer{Keys: secretsmanager.NewSealingKeys(secrets, sp).Key}
 	}
+	scheduleStore := dynamodb.NewSchedules(db, table)
 	schedules := &schedule.Service{
-		Store:     dynamodb.NewSchedules(db, table),
+		Store: scheduleStore,
+		// Each firing is kept in its schedule's history: run, or skipped as
+		// missed or busy (schedule.Schedule's rules).
+		History:   scheduleStore,
+		Busy:      lastRunAtWork(runs),
 		Scheduler: eventbridge.New(sch.NewFromConfig(cfg), group, target, role),
 		// The registry's Get is a consistent read, as Fire needs: it deletes
 		// the schedules of an agent Live reports gone.

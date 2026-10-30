@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -15,7 +16,8 @@ import (
 // Schedules is a schedule.Schedules on the store's table. A schedule is one
 // item, with no TTL: it lives until it, or its agent, is removed.
 //
-//	schedule  pk=C|tenant  sk=id  the Schedule, as JSON in "sched"
+//	schedule  pk=C|tenant         sk=id         the Schedule, as JSON in "sched"
+//	firing    pk=SF|tenant|id     sk=due (ns)   a Fired, as JSON in "fired", kept FiredKept
 type Schedules struct {
 	db    API
 	table string
@@ -24,7 +26,58 @@ type Schedules struct {
 // NewSchedules returns the schedule store on table.
 func NewSchedules(db API, table string) *Schedules { return &Schedules{db: db, table: table} }
 
-var _ schedule.Schedules = (*Schedules)(nil)
+var (
+	_ schedule.Schedules = (*Schedules)(nil)
+	_ schedule.History   = (*Schedules)(nil)
+)
+
+// FiredKept is how long a schedule's firing is kept in its history.
+const FiredKept = 90 * 24 * time.Hour
+
+func firedPK(tenant, id string) string { return key("SF", tenant, id) }
+
+// Add keeps f, by its due time: the same firing kept again replaces it.
+func (st *Schedules) Add(ctx context.Context, tenant, id string, f schedule.Fired) error {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	item := pkey(firedPK(tenant, id), fmt.Sprintf("%020d", f.Due.UnixNano()))
+	item["fired"] = &types.AttributeValueMemberS{Value: string(b)}
+	item["ttl"] = ttl(f.At.Add(FiredKept))
+	_, err = st.db.PutItem(ctx, &ddb.PutItemInput{TableName: &st.table, Item: item})
+	return err
+}
+
+// Firings reads the schedule's history, newest first.
+func (st *Schedules) Firings(ctx context.Context, tenant, id string, limit int) ([]schedule.Fired, error) {
+	if limit <= 0 || limit > schedule.MaxHistory {
+		limit = schedule.MaxHistory
+	}
+	out, err := st.db.Query(ctx, &ddb.QueryInput{
+		TableName:                 &st.table,
+		KeyConditionExpression:    aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": &types.AttributeValueMemberS{Value: firedPK(tenant, id)}},
+		ScanIndexForward:          aws.Bool(false),
+		Limit:                     aws.Int32(int32(limit)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	fired := make([]schedule.Fired, 0, len(out.Items))
+	for _, item := range out.Items {
+		v, _ := item["fired"].(*types.AttributeValueMemberS)
+		if v == nil {
+			continue
+		}
+		var f schedule.Fired
+		if err := json.Unmarshal([]byte(v.Value), &f); err != nil {
+			return nil, fmt.Errorf("dynamodb: a firing: %w", err)
+		}
+		fired = append(fired, f)
+	}
+	return fired, nil
+}
 
 func schedulesPK(tenant string) string { return key("C", tenant) }
 

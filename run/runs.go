@@ -104,12 +104,27 @@ func (r Run) Active() bool { return r.Status == Pending || r.Status == Running }
 // one ResolvedGrace after its last requirement is answered or expires, or at
 // its Retry if the sweep has continued it already. A
 // paused run with an unanswered requirement that never expires is never due:
-// only an answer resolves it.
+// only an answer resolves it. A run that owes a note (NoteRetry) is due when
+// it's to be sent again, if that's sooner.
 func (r Run) Due() time.Time {
+	at := r.statusDue()
+	// A note Notify didn't take is sent again at its time, in any status.
+	if !r.NoteRetry.IsZero() && (at.IsZero() || r.NoteRetry.Before(at)) {
+		return r.NoteRetry
+	}
+	return at
+}
+
+// statusDue is Due by the run's status alone.
+func (r Run) statusDue() time.Time {
 	switch r.Status {
 	case Running:
 		return r.Lease
 	case Pending:
+		// Queued behind another run, or let go from the queue: its own time.
+		if !r.Wait.IsZero() {
+			return r.Wait
+		}
 		return r.Created.Add(PendingTimeout)
 	case Paused:
 		at := r.resolved()
@@ -226,6 +241,10 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 	}
 	if next.Status != Running {
 		next.Claim, next.Lease, next.Acting = "", time.Time{}, nil
+	}
+	if next.Status != r.Status {
+		// A note kept for the status it leaves is stale: the new one is noted on its own.
+		next.NoteTries, next.NoteRetry = 0, time.Time{}
 	}
 	if next.Status.Final() {
 		next.Paused = nil
@@ -478,6 +497,9 @@ type Sweeper struct {
 	// on from its acting turn, up to MaxResumes times, instead of marked
 	// ERROR. It must accept a recording held already.
 	Hold func(ctx context.Context, r Run) error
+	// Note sends a run's note again (Notifying.Again): one Notify didn't take
+	// is kept and sent on NoteWaits, then given up. Nil: notes aren't kept.
+	Note func(ctx context.Context, r Run) error
 }
 
 // MaxResumes is how many times the sweep carries a crashed run on from its
@@ -541,6 +563,10 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, err
 	case r.Due().IsZero() || !r.Due().Before(now):
 		return false, nil // it moved on meanwhile
+	case sw.Note != nil && !r.NoteRetry.IsZero() && r.NoteRetry.Before(now):
+		return true, sw.Note(ctx, r)
+	case r.Status == Pending && r.After != "" && sw.Continue != nil:
+		return sw.queued(ctx, r, now)
 	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
 		return sw.retry(ctx, r, now)
 	case r.Status == Running && !r.Cancel && r.Acting != nil && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:
@@ -763,4 +789,87 @@ func Answer(ctx context.Context, runs Runs, tenant, exception, answer string, no
 			return next, err
 		}
 	}
+}
+
+// QueueLook is how often the sweep looks at a run waiting for another in
+// its thread (Run.After).
+const QueueLook = time.Minute
+
+// ErrQueued: the run waits for another in its thread (Run.After) and isn't
+// started yet; the sweep lets it go once that run is no longer at work.
+var ErrQueued = errors.New("run: it waits for the thread's run before it")
+
+// queued looks at a run waiting for another in its thread: still at work,
+// it looks again in QueueLook; otherwise the run is let go (After cleared,
+// a claim's wait from now) and sent to Continue, which starts it.
+func (sw Sweeper) queued(ctx context.Context, r Run, now time.Time) (bool, error) {
+	before, err := sw.Runs.Get(ctx, r.Tenant, r.After)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return false, err
+	}
+	if err == nil && before.Active() {
+		_, err = Change(ctx, sw.Runs, r, now, func(n *Run) error { n.Wait = now.UTC().Add(QueueLook); return nil })
+		if errors.Is(err, ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+	// Two messages that came together both queued behind the same run: the
+	// older goes first, and this one waits for it. The thread runs in the
+	// order its messages came, whatever After said when each was queued.
+	ahead, err := sw.ahead(ctx, r)
+	if err != nil {
+		return false, err
+	}
+	if ahead != "" {
+		_, err = Change(ctx, sw.Runs, r, now, func(n *Run) error { n.After, n.Wait = ahead, now.UTC().Add(QueueLook); return nil })
+		if errors.Is(err, ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+	r, err = Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		n.After, n.Wait = "", now.UTC().Add(PendingTimeout)
+		return nil
+	})
+	switch {
+	case errors.Is(err, ErrConflict):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, sw.Continue(ctx, r.Tenant, r.ID)
+}
+
+// ahead is the latest run of r's thread (its session and source) still at
+// work, or still queued, that came before r: the one r waits for. "" when
+// none did.
+func (sw Sweeper) ahead(ctx context.Context, r Run) (string, error) {
+	recent, err := sw.Runs.ListSource(ctx, r.Tenant, r.Trigger, r.Source, 20)
+	if err != nil {
+		return "", err
+	}
+	var last *Run
+	for i := range recent {
+		o := &recent[i]
+		// One that waits for r is behind it, whatever their times say.
+		if o.ID == r.ID || o.After == r.ID || o.Session != r.Session || !o.Active() || !cameBefore(*o, r) {
+			continue
+		}
+		if last == nil || cameBefore(*last, *o) {
+			last = o
+		}
+	}
+	if last == nil {
+		return "", nil
+	}
+	return last.ID, nil
+}
+
+// cameBefore orders a thread's runs by when they came, then by ID.
+func cameBefore(a, b Run) bool {
+	if !a.Created.Equal(b.Created) {
+		return a.Created.Before(b.Created)
+	}
+	return a.ID < b.ID
 }

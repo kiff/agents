@@ -10,6 +10,7 @@
 package schedule
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -43,7 +44,37 @@ type Schedule struct {
 	Input string `json:"input"`
 	// Enabled is whether it fires.
 	Enabled bool `json:"enabled"`
+	// Missed is what a firing that comes late does (MissedWithinHour, the
+	// default when empty, or MissedSkip); Busy, one that comes while the
+	// schedule's last run is still at work (BusySkip, the default and only
+	// rule).
+	Missed string `json:"missed,omitempty"`
+	Busy   string `json:"busy,omitempty"`
 }
+
+// A schedule's rules for a firing that comes late, or while its last run is
+// still at work.
+const (
+	// MissedWithinHour runs a firing missed by less than MissedWithin, once;
+	// an older one is skipped.
+	MissedWithinHour = "within_1h"
+	// MissedSkip skips every missed firing.
+	MissedSkip = "skip"
+	// BusySkip skips a firing that comes while the schedule's last run is
+	// still at work (PENDING or RUNNING; one paused for its owner isn't).
+	BusySkip = "skip"
+)
+
+// MissedAfter is how late a firing may come and still be on time: a
+// Scheduler's own delay. Later than that, it was missed.
+const MissedAfter = 5 * time.Minute
+
+// MissedWithin is how late a missed firing may be and still run, under
+// MissedWithinHour.
+const MissedWithin = time.Hour
+
+// MissedRule is the schedule's Missed, its default filled in.
+func (s Schedule) MissedRule() string { return cmp.Or(s.Missed, MissedWithinHour) }
 
 // Check refuses a schedule that can't be stored or fired as written.
 func (s Schedule) Check() error {
@@ -54,6 +85,10 @@ func (s Schedule) Check() error {
 		return fmt.Errorf("schedule: an id or agent is 1 to %d letters, digits, '-', '_' or '.'", maxID)
 	case s.Input == "" || len(s.Input) > MaxInput:
 		return fmt.Errorf("schedule: the input is 1 to %d bytes", MaxInput)
+	case s.Missed != "" && s.Missed != MissedWithinHour && s.Missed != MissedSkip:
+		return fmt.Errorf("schedule: missed is %q or %q", MissedWithinHour, MissedSkip)
+	case s.Busy != "" && s.Busy != BusySkip:
+		return fmt.Errorf("schedule: busy is %q", BusySkip)
 	}
 	c, err := ParseCron(s.Cron)
 	if err != nil {
@@ -129,6 +164,37 @@ type Schedules interface {
 	Delete(ctx context.Context, tenant, id string) error
 }
 
+// Fired is one firing as a schedule's history keeps it: when it was due, when
+// it came, and what came of it: its run, or why it was skipped.
+type Fired struct {
+	Due     time.Time `json:"due"`
+	At      time.Time `json:"at"`
+	Outcome string    `json:"outcome"`
+	// Run is the run it started (Outcome FiredRun).
+	Run string `json:"run,omitempty"`
+}
+
+// What came of a firing.
+const (
+	FiredRun    = "run"
+	FiredMissed = "skipped_missed"
+	FiredBusy   = "skipped_busy"
+)
+
+// MaxHistory is how many firings a schedule's history keeps, newest first.
+const MaxHistory = 100
+
+// History keeps each schedule's firings. Every call is scoped by tenant. A
+// firing is kept once by its schedule and due time: the same firing kept
+// again replaces it.
+type History interface {
+	// Add keeps f in the schedule's history.
+	Add(ctx context.Context, tenant, id string, f Fired) error
+	// Firings returns the schedule's history, newest first, at most limit
+	// (at most MaxHistory).
+	Firings(ctx context.Context, tenant, id string, limit int) ([]Fired, error)
+}
+
 // Scheduler fires schedules: EventBridge Scheduler in production. Each
 // firing calls Service.Fire with the schedule's tenant and ID and the time
 // it was due. A tenant and an ID can be longer than a name the Scheduler
@@ -172,6 +238,14 @@ type Service struct {
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
 	// Start starts a background run for the firing, once per Key.
 	Start func(ctx context.Context, f Firing) error
+	// Busy reports whether the schedule's last run, other than the firing's
+	// own (a repeated delivery), is still at work: BusySkip skips the
+	// firing then. Nil: never busy.
+	Busy func(ctx context.Context, f Firing) (bool, error)
+	// History, when set, keeps each firing: run, or skipped and why.
+	History History
+	// Now is the clock a firing's lateness is read by; nil is time.Now.
+	Now func() time.Time
 }
 
 // Put stores s and sets it to fire. Its agent must exist: schedules are
@@ -251,5 +325,35 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	if !s.names(due) {
 		return sv.Scheduler.Set(ctx, s)
 	}
-	return sv.Start(ctx, Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: due})
+	f := Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: due}
+	now := time.Now()
+	if sv.Now != nil {
+		now = sv.Now()
+	}
+	// Missed: later than a Scheduler's own delay, and past what the rule runs.
+	if late := now.Sub(due); late > MissedAfter && (s.MissedRule() == MissedSkip || late > MissedWithin) {
+		return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredMissed})
+	}
+	if sv.Busy != nil {
+		busy, err := sv.Busy(ctx, f)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredBusy})
+		}
+	}
+	if err := sv.Start(ctx, f); err != nil {
+		return err
+	}
+	return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredRun, Run: f.Key()})
+}
+
+// keep adds fired to the schedule's history, when there is one.
+func (sv *Service) keep(ctx context.Context, f Firing, fired Fired) error {
+	if sv.History == nil {
+		return nil
+	}
+	fired.Due, fired.At = fired.Due.UTC(), fired.At.UTC()
+	return sv.History.Add(ctx, f.Tenant, f.Schedule, fired)
 }

@@ -201,3 +201,141 @@ func TestACrashedRunsNoteSaysWhereItStands(t *testing.T) {
 		t.Fatalf("needs_you note %+v, want %+v", got, want)
 	}
 }
+
+// A note Notify doesn't take is kept on the run and sent again by the sweep,
+// after each of NoteWaits, as the run is then; once taken it's no longer kept,
+// and past the last try it's given up. The run's change never fails for it.
+func TestANoteNotTakenIsKeptAndSentAgainUntilTaken(t *testing.T) {
+	ctx := context.Background()
+	n := &notes{code: http.StatusServiceUnavailable}
+	srv := httptest.NewServer(n)
+	defer srv.Close()
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	store := memory.NewRunsAt(clock)
+	runs := run.Notifying{Runs: store, Now: clock}
+	sw := run.Sweeper{Runs: runs, Note: runs.Again}
+
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", now)
+	r.Notify = run.Notify{URL: srv.URL, Ref: "ref-0123456789abcdef"}
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err := run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Running; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Completed; return nil }); err != nil {
+		t.Fatal(err, "a note not taken never fails the change")
+	}
+	get := func() run.Run {
+		got, err := store.Get(ctx, "t1", r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := get(); got.NoteTries != 1 || !got.NoteRetry.Equal(now.Add(run.NoteWaits[0])) || !got.Due().Equal(got.NoteRetry) {
+		t.Fatalf("kept as tries %d, retry %v, due %v", got.NoteTries, got.NoteRetry, got.Due())
+	}
+
+	// Not yet: nothing is sent before its time.
+	if done, err := sw.Sweep(ctx, now.Add(run.NoteWaits[0]-time.Second), 10); err != nil || done != 0 || len(n.got) != 1 {
+		t.Fatalf("swept %d early (%v), %d notes", done, err, len(n.got))
+	}
+	// Still not taken: kept for its next try, on the next wait.
+	now = now.Add(run.NoteWaits[0] + time.Second)
+	if _, err := sw.Sweep(ctx, now, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(); len(n.got) != 2 || got.NoteTries != 2 || !got.NoteRetry.Equal(now.Add(run.NoteWaits[1])) {
+		t.Fatalf("%d notes; tries %d, retry %v", len(n.got), got.NoteTries, got.NoteRetry)
+	}
+	// Taken: no longer kept, and never sent again.
+	n.code = 0
+	now = now.Add(run.NoteWaits[1] + time.Second)
+	if _, err := sw.Sweep(ctx, now, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(); len(n.got) != 3 || got.NoteTries != 0 || !got.NoteRetry.IsZero() || !got.Due().IsZero() {
+		t.Fatalf("%d notes; tries %d, retry %v, due %v", len(n.got), got.NoteTries, got.NoteRetry, got.Due())
+	}
+	if last := n.got[2]; last.Status != run.Completed || last.Run != r.ID {
+		t.Fatalf("sent again as %+v", last)
+	}
+	now = now.Add(2 * time.Hour)
+	if _, err := sw.Sweep(ctx, now, 10); err != nil || len(n.got) != 3 {
+		t.Fatalf("sent again after it was taken: %d (%v)", len(n.got), err)
+	}
+}
+
+// A note never taken is given up after its last try: the run isn't swept for
+// it again.
+func TestANoteIsGivenUpAfterItsLastTry(t *testing.T) {
+	ctx := context.Background()
+	n := &notes{code: http.StatusBadGateway}
+	srv := httptest.NewServer(n)
+	defer srv.Close()
+	now := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	store := memory.NewRunsAt(clock)
+	var logged []string
+	runs := run.Notifying{Runs: store, Now: clock, Log: func(msg string, _ error) { logged = append(logged, msg) }}
+	sw := run.Sweeper{Runs: runs, Note: runs.Again}
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", now)
+	r.Notify = run.Notify{URL: srv.URL, Ref: "ref-0123456789abcdef"}
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Cancelled; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for range run.NoteWaits {
+		now = now.Add(2 * time.Hour)
+		if _, err := sw.Sweep(ctx, now, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.Get(ctx, "t1", r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(n.got) != 1+len(run.NoteWaits) || got.NoteTries != 0 || !got.Due().IsZero() {
+		t.Fatalf("%d notes; tries %d, due %v", len(n.got), got.NoteTries, got.Due())
+	}
+	if logged[len(logged)-1] != "run: a note was given up after its last try" {
+		t.Fatalf("logged %q", logged)
+	}
+}
+
+// A note kept for a pause is dropped when the run moves on: the run is noted
+// for its new status on its own, never for the one it left.
+func TestAKeptNoteGoesWithTheStatusItWasFor(t *testing.T) {
+	ctx := context.Background()
+	n := &notes{code: http.StatusServiceUnavailable}
+	srv := httptest.NewServer(n)
+	defer srv.Close()
+	now := time.Now().UTC()
+	store := memory.NewRuns()
+	runs := run.Notifying{Runs: store}
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", now)
+	r.Notify = run.Notify{URL: srv.URL, Ref: "ref-0123456789abcdef"}
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	for _, s := range []run.Status{run.Running, run.Paused} {
+		if r, err = run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = s; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r, err = store.Get(ctx, "t1", r.ID); err != nil || r.NoteTries != 1 {
+		t.Fatalf("tries %d, %v", r.NoteTries, err)
+	}
+	if r, err = run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Running; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if r.NoteTries != 0 || !r.NoteRetry.IsZero() {
+		t.Fatalf("still kept at work: tries %d, retry %v", r.NoteTries, r.NoteRetry)
+	}
+}

@@ -255,6 +255,24 @@ with `run.NeedsYou`. Its note, `GET …/runs/{run}` and the runs list
 same key sent again gets that run, never a second one (200; 202 and handed on
 again if it is still PENDING).
 
+### One run at a time per door thread
+
+Such a request with a `session_id` whose run from the same `source` is still
+at work (PENDING, queued, or RUNNING) waits for it: it's stored PENDING with
+`after`, the run it waits for (the end of the thread's queue), is answered 202
+and isn't handed on. The sweep looks at it every `run.QueueLook` (1 min):
+once the run before it is no longer at work (done, failed, stopped, or paused
+for its owner), it's let go (`after` cleared) and `Continue` starts it. So a
+thread's messages run in the order they came, one at a time. `Execute` leaves
+a queued run alone (`run.ErrQueued`). A person's own message isn't queued.
+
+Two messages that come together can both be queued behind the same run, since
+each reads the thread before the other is stored. When that run is done, the
+sweep lets only the older go, by when each came and then by ID. The newer then
+waits for the older (`after` moves to it). The thread is read from the
+source's last 20 runs: on a door busier than that, a message can miss the
+thread's run at work and start beside it.
+
 Then, read apart (`Runs.DuePaused`), PAUSED runs due `run.ResolvedGrace`
 (1 min) after their last requirement is answered or expires: the sweep calls
 `Continue` for each. One still paused is looked at again after 2, 4, 8 …

@@ -62,7 +62,9 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 	t.Helper()
 	agents, store, runs := memory.NewAgents(), memory.New(), memory.NewRuns()
 	sched := &scheduler{set: map[[2]string]schedule.Schedule{}}
+	// The firings in these tests come on time: the clock is at their due.
 	svc := &schedule.Service{Store: memory.NewSchedules(), Scheduler: sched,
+		Now: func() time.Time { return time.Date(2026, 10, 19, 7, 0, 30, 0, time.UTC) },
 		Live: func(ctx context.Context, tenant, agent string) (bool, error) {
 			_, err := agents.Get(ctx, tenant, agent)
 			return err == nil, nil

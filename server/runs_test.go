@@ -64,6 +64,9 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
 	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession, r.Grant = s.Source, s.Version, s.Draft, s.Requester, opened, s.Grant
+	if s.After != "" { // the contract: queued behind the thread's run, looked at again in QueueLook
+		r.After, r.Wait = s.After, now.Add(run.QueueLook)
+	}
 	if s.ID != "" { // the contract: a named run is stored once; again, it is the stored run with ErrExists
 		r.ID = s.ID
 		if got, err := rr.runs.Get(ctx, s.Tenant, s.ID); err == nil {
@@ -1677,6 +1680,170 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 	f.want(404, code, body, "another tenant")
 	code, body = f.do("t1", "GET", "/agents/payouts/runs?limit=0", nil)
 	f.want(400, code, body, "a bad limit")
+}
+
+// One run at a time per door thread: a door message to a session whose door
+// run is still at work waits for it (after), isn't handed on, and the next
+// waits for the newest; the sweep lets each go once the one before is done.
+func TestADoorThreadRunsOneAtATime(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	send := func(key, session string) (int, map[string]any) {
+		b := map[string]any{"input": "refund " + key, "background": true, "dedup_key": key, "source": "email",
+			"requester": map[string]any{"kind": "door", "id": "thread-1"}}
+		if session != "" {
+			b["session_id"] = session
+		}
+		return f.do("t1", "POST", "/agents/payouts/runs", b)
+	}
+	code, first := send("msg-1@mail", "")
+	f.want(202, code, first, "the thread's first message")
+	sid, id1 := first["session"].(string), first["id"].(string)
+	if _, err := run.Claim(ctx, f.runs, "t1", id1, "i1", now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	handed := len(f.background)
+	code, second := send("msg-2@mail", sid)
+	f.want(202, code, second, "a second message while the first works")
+	code, third := send("msg-3@mail", sid)
+	f.want(202, code, third, "a third")
+	id2, id3 := second["id"].(string), third["id"].(string)
+	if second["after"] != id1 || third["after"] != id2 || len(f.background) != handed {
+		t.Fatalf("after: %v, %v; handed on %d more", second["after"], third["after"], len(f.background)-handed)
+	}
+
+	var started []string
+	sw := run.Sweeper{Runs: f.runs, Continue: func(_ context.Context, _, id string) error { started = append(started, id); return nil }}
+	later := now.Add(2 * run.QueueLook)
+	if _, err := sw.Sweep(ctx, later, 10); err != nil || len(started) != 0 {
+		t.Fatalf("a sweep while the first works: started %v (%v)", started, err)
+	}
+	r1, _ := f.runs.Get(ctx, "t1", id1)
+	if _, err := run.Change(ctx, f.runs, r1, later, func(n *run.Run) error { n.Status, n.Output = run.Completed, "done"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	later = later.Add(2 * run.QueueLook)
+	if _, err := sw.Sweep(ctx, later, 10); err != nil || strings.Join(started, ",") != id2 {
+		t.Fatalf("once the first is done: started %v (%v)", started, err)
+	}
+	r2, _ := f.runs.Get(ctx, "t1", id2)
+	r3, _ := f.runs.Get(ctx, "t1", id3)
+	if r2.After != "" || r2.Status != run.Pending || r3.After != id2 {
+		t.Fatalf("second: after %q %s; third after %q", r2.After, r2.Status, r3.After)
+	}
+	// A person's own message isn't queued: it isn't a door's.
+	code, own := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true})
+	f.want(202, code, own, "the owner's own")
+	if own["after"] != nil {
+		t.Fatalf("the owner's message queued: %v", own["after"])
+	}
+}
+
+// A queued run that's cancelled stays CANCELLED and never starts; the one
+// queued behind it is let go once the run before both is done.
+func TestACancelledQueuedRunNeverStarts(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	send := func(key, session string) map[string]any {
+		b := map[string]any{"input": "refund " + key, "background": true, "dedup_key": key, "source": "email",
+			"requester": map[string]any{"kind": "door", "id": "thread-1"}}
+		if session != "" {
+			b["session_id"] = session
+		}
+		code, out := f.do("t1", "POST", "/agents/payouts/runs", b)
+		f.want(202, code, out, key)
+		return out
+	}
+	first := send("msg-1@mail", "")
+	sid, id1 := first["session"].(string), first["id"].(string)
+	if _, err := run.Claim(ctx, f.runs, "t1", id1, "i1", now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	id2 := send("msg-2@mail", sid)["id"].(string)
+	id3 := send("msg-3@mail", sid)["id"].(string)
+	code, out := f.do("t1", "POST", "/agents/payouts/runs/"+id2+"/cancel", nil)
+	if code != 200 || out["status"] != string(run.Cancelled) {
+		t.Fatalf("cancel the queued run: %d %v", code, out)
+	}
+	var started []string
+	sw := run.Sweeper{Runs: f.runs, Continue: func(_ context.Context, _, id string) error { started = append(started, id); return nil }}
+	r1, _ := f.runs.Get(ctx, "t1", id1)
+	later := now.Add(run.QueueLook)
+	if _, err := run.Change(ctx, f.runs, r1, later, func(n *run.Run) error { n.Status, n.Output = run.Completed, "done"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		later = later.Add(2 * run.QueueLook)
+		if _, err := sw.Sweep(ctx, later, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r2, _ := f.runs.Get(ctx, "t1", id2); r2.Status != run.Cancelled || strings.Join(started, ",") != id3 {
+		t.Fatalf("cancelled run %s; started %v, want only %s", r2.Status, started, id3)
+	}
+}
+
+// Two door messages that came together both queue behind the same run (each
+// read the thread before the other was stored): once that run is done, only
+// the older starts, and the newer waits for it.
+func TestTwoMessagesQueuedTogetherRunInTheOrderTheyCame(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	send := func(key, session string) map[string]any {
+		b := map[string]any{"input": "refund " + key, "background": true, "dedup_key": key, "source": "email",
+			"requester": map[string]any{"kind": "door", "id": "thread-1"}}
+		if session != "" {
+			b["session_id"] = session
+		}
+		code, out := f.do("t1", "POST", "/agents/payouts/runs", b)
+		f.want(202, code, out, key)
+		return out
+	}
+	first := send("msg-1@mail", "")
+	sid, id1 := first["session"].(string), first["id"].(string)
+	if _, err := run.Claim(ctx, f.runs, "t1", id1, "i1", now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	id2 := send("msg-2@mail", sid)["id"].(string)
+	id3 := send("msg-3@mail", sid)["id"].(string)
+	// As if both had read the thread at once: each waits for the first.
+	r3, _ := f.runs.Get(ctx, "t1", id3)
+	if _, err := run.Change(ctx, f.runs, r3, now, func(n *run.Run) error { n.After = id1; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// They came at the same time here (the fixture's clock stands still), so
+	// their IDs order them: older, then newer.
+	older, newer := id2, id3
+	if newer < older {
+		older, newer = newer, older
+	}
+
+	var started []string
+	sw := run.Sweeper{Runs: f.runs, Continue: func(_ context.Context, _, id string) error { started = append(started, id); return nil }}
+	r1, _ := f.runs.Get(ctx, "t1", id1)
+	later := now.Add(run.QueueLook)
+	if _, err := run.Change(ctx, f.runs, r1, later, func(n *run.Run) error { n.Status, n.Output = run.Completed, "done"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	later = later.Add(2 * run.QueueLook)
+	if _, err := sw.Sweep(ctx, later, 10); err != nil || strings.Join(started, ",") != older {
+		t.Fatalf("once the first is done: started %v, want only %s (%v)", started, older, err)
+	}
+	if rn, _ := f.runs.Get(ctx, "t1", newer); rn.After != older {
+		t.Fatalf("the newer waits for %q, want %s", rn.After, older)
+	}
+	// The older ends: the newer starts, once.
+	ro, err := run.Claim(ctx, f.runs, "t1", older, "i2", later.Add(time.Hour), later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Change(ctx, f.runs, ro, later, func(n *run.Run) error { n.Status, n.Output = run.Completed, "done"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	later = later.Add(2 * run.QueueLook)
+	if _, err := sw.Sweep(ctx, later, 10); err != nil || strings.Join(started, ",") != older+","+newer {
+		t.Fatalf("once the second is done: started %v (%v)", started, err)
+	}
 }
 
 // A request with a dedup key (a door message's id) starts one run, however

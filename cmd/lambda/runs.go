@@ -82,6 +82,8 @@ func (f *function) execute(ctx context.Context, tenant, id string) error {
 		f.log.WarnContext(ctx, "run not executed", "tenant", tenant, "run", id, "err", err)
 	case errors.Is(err, runner.ErrNoCollect):
 		f.log.WarnContext(ctx, "paused run can't continue yet", "tenant", tenant, "run", id)
+	case errors.Is(err, run.ErrQueued):
+		f.log.InfoContext(ctx, "run waits for its thread", "tenant", tenant, "run", id)
 	default:
 		f.log.ErrorContext(ctx, "run", "tenant", tenant, "run", id, "status", r.Status, "err", err)
 	}
@@ -136,6 +138,8 @@ const sweepLimit = 100
 func sweeping(runs run.Runs, rn *runner.Runner, cont func(ctx context.Context, tenant, id string) error) func(ctx context.Context, now time.Time) (int, error) {
 	return func(ctx context.Context, now time.Time) (int, error) {
 		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont, Hold: rn.Held,
+			// A note tafs cloud didn't take is sent again (run.NoteWaits), when runs keeps notes.
+			Note:    noteAgain(runs),
 			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
 		return sw.Sweep(ctx, now, sweepLimit)
 	}
@@ -260,4 +264,32 @@ func outsidePrefix(secret, prefix string) error {
 		return fmt.Errorf("lambda: AGENTS_MODEL_KEY_SECRET must not be under AGENTS_SECRETS_PREFIX %q: an agent's key reference could name it", prefix)
 	}
 	return nil
+}
+
+// noteAgain is how the sweep sends a kept note again: Notifying's, when runs
+// announces runs, else none.
+func noteAgain(runs run.Runs) func(ctx context.Context, r run.Run) error {
+	if n, ok := runs.(run.Notifying); ok {
+		return n.Again
+	}
+	return nil
+}
+
+// lastRunAtWork reports whether a schedule's last run, other than the
+// firing's own (a repeated delivery), is still at work: PENDING or RUNNING. A
+// run paused for its owner isn't at work, and doesn't keep the next firing
+// from running.
+func lastRunAtWork(runs run.Runs) func(ctx context.Context, f schedule.Firing) (bool, error) {
+	return func(ctx context.Context, f schedule.Firing) (bool, error) {
+		recent, err := runs.ListSource(ctx, f.Tenant, run.BySchedule, f.Schedule, 5)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range recent {
+			if r.ID != f.Key() && r.Active() {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 }

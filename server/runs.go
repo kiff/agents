@@ -17,6 +17,7 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool/show"
 	"github.com/kiff/agents/usage"
@@ -101,14 +102,19 @@ type Start struct {
 	// as stored with run.ErrExists. Never taken from a request as is: an
 	// event's run ID is derived from its key (EventRunID).
 	ID string
+	// After is the thread's run still at work when this one came: it waits
+	// for it (run.Run.After), one run at a time per thread.
+	After string
 }
 
 // runView is a run as the API shows it: no paused turn (it holds what tools
 // returned, and exists only to continue the run) and no claim.
 type runView struct {
-	ID        string        `json:"id"`
-	Agent     string        `json:"agent"`
-	Session   string        `json:"session"`
+	ID      string `json:"id"`
+	Agent   string `json:"agent"`
+	Session string `json:"session"`
+	// After is the thread's run it waits for: it starts once that one is done.
+	After     string        `json:"after,omitempty"`
 	Trigger   run.Trigger   `json:"trigger"`
 	Source    string        `json:"source,omitempty"`
 	Requester run.Requester `json:"requester,omitzero"`
@@ -148,7 +154,7 @@ type runView struct {
 
 func viewRun(r run.Run) runView {
 	w := r.Work()
-	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
+	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
@@ -775,6 +781,10 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		// operation IDs are that run's). One still PENDING, whose hand-off
 		// may have failed, is handed on once more: it's claimed once.
 		switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, body.DedupKey)); {
+		case err == nil && rn.Status == run.Pending && rn.After != "":
+			// Queued behind the thread's run: the sweep starts it, not a resend.
+			writeJSON(w, http.StatusAccepted, viewRun(rn))
+			return
 		case err == nil && rn.Status == run.Pending:
 			if err := s.toBackground(ctx, rn); err != nil {
 				s.fail(w, r, err)
@@ -858,6 +868,15 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	// One run at a time per door thread: a door's message to a session whose
+	// door run is still at work waits for it, and they run in the order they
+	// came. A person's own message isn't queued: it steers or answers.
+	if body.SessionID != "" && q.Kind != run.ByMember && body.Source != "" {
+		if st.After, err = s.threadAtWork(ctx, c.Tenant, body.SessionID, body.Source); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	rn, err := s.start(ctx, st)
 	if errors.Is(err, run.ErrExists) {
 		// Sent twice at once: the other send started it.
@@ -866,6 +885,11 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.fail(w, r, err)
+		return
+	}
+	if rn.After != "" {
+		// Queued: the sweep starts it once the run before it is done.
+		writeJSON(w, http.StatusAccepted, viewRun(rn))
 		return
 	}
 	if body.Background {
@@ -1551,6 +1575,33 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 	return http.StatusOK, map[string]any{"runs": out}, nil
 }
 
+// scheduleFirings is a schedule's history, newest first: each firing, when it
+// was due and came, and what came of it (its run, or skipped as missed or
+// busy).
+func (s *Server) scheduleFirings(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	id := r.PathValue("id")
+	if _, err := s.Schedules.Store.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	limit := schedule.MaxHistory
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > schedule.MaxHistory {
+			return 0, nil, bad("limit is 1 to %d", schedule.MaxHistory)
+		}
+		limit = n
+	}
+	fired := []schedule.Fired{}
+	if s.Schedules.History != nil {
+		got, err := s.Schedules.History.Firings(ctx, c.Tenant, id, limit)
+		if err != nil {
+			return 0, nil, err
+		}
+		fired = append(fired, got...)
+	}
+	return http.StatusOK, map[string]any{"firings": fired}, nil
+}
+
 // ErrAIFairUse refuses a chat past its account's AI fair use for the period,
 // until the owner says go on (kiff/tafs#193).
 var ErrAIFairUse = errors.New("ai_fair_use: this period's AI use is past its bound; the owner says go on in KIFF to continue")
@@ -1670,4 +1721,31 @@ func firstOpenCard(rn run.Run, now time.Time) (run.Requirement, bool) {
 		}
 	}
 	return run.Requirement{}, false
+}
+
+// threadAtWork is the last of a session's runs from source still at work
+// (PENDING, queued too, or RUNNING): the one no other of them waits for, so a
+// new message joins the end of the thread's queue. "" when none is at work. A
+// run paused for its owner isn't at work, so it doesn't hold the thread.
+func (s *Server) threadAtWork(ctx context.Context, tenant, sessionID, source string) (string, error) {
+	recent, err := s.Runs.ListSource(ctx, tenant, run.ByOwner, source, 20)
+	if err != nil {
+		return "", err
+	}
+	var working []run.Run
+	waitedFor := map[string]bool{}
+	for _, r := range recent {
+		if r.Session == sessionID && r.Active() {
+			working = append(working, r)
+			if r.After != "" {
+				waitedFor[r.After] = true
+			}
+		}
+	}
+	for _, r := range working { // newest first
+		if !waitedFor[r.ID] {
+			return r.ID, nil
+		}
+	}
+	return "", nil
 }
