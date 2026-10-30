@@ -1944,6 +1944,7 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 	}
 	// What the run did once it went on, so CI shows it: each tool by name,
 	// refused or not, and whether it wrote, never inputs or results' words.
+	wrote := false
 	if _, events, err := t.sessions.Read(ctx, t.tenant, w.session); err == nil {
 		var did []string
 		for _, e := range events {
@@ -1958,6 +1959,7 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 				}
 			case session.AgentMessage, session.Report:
 				did = append(did, "wrote")
+				wrote = true
 			}
 		}
 		t.logf("Setup after the hand-over: %d turns in all; %s", end.Turns, strings.Join(did, ", "))
@@ -1977,6 +1979,11 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 			waits = append(waits, what)
 		}
 		return fmt.Errorf("after the hand-over, Setup's run ended %s (waits on %s; error %q); want it to finish", end.Status, strings.Join(waits, ", "), end.Error)
+	}
+	// Finishing isn't enough: the owner reads Setup's closing message, what
+	// came of the hand-over in its own words.
+	if !wrote {
+		return errors.New("after the hand-over, Setup's run finished without a new message; want it to say what came of it")
 	}
 	_, text, err := t.latest(ctx, w.session, w.run)
 	if err != nil {
