@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,10 @@ import (
 // again. The vendor then has exactly one refund for the charge, the run
 // completes, the door's receiver gets exactly one end note (the one reply
 // tafs cloud sends), and the second send started no second run.
-func (t *test) crashMidRefund(ctx context.Context, tafID string) error {
+//
+// refunds are the names the grant gave the refund (chargeTools): the stop
+// comes on a call of one of them for the charge.
+func (t *test) crashMidRefund(ctx context.Context, tafID string, refunds []string) error {
 	charge := "ch_e2e_crash_" + t.run
 	key := "e2e-crash-" + t.run + "@mail"
 
@@ -52,6 +56,9 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string) error {
 	stuck, sent := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	defer close(stuck)
+	// Every call the stopping invocation makes, for the log when it never refunds.
+	var called, names []string
+	note := func(name, c string) { mu.Lock(); called = append(called, c); names = append(names, name); mu.Unlock() }
 	crashing := *t.rn
 	crashing.Runs = store
 	builder := *t.rn.Builder
@@ -59,7 +66,8 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string) error {
 	builder.Connect = func(ctx context.Context, gateway, k string) ([]tool.Tool, error) {
 		tools, err := connect(ctx, gateway, k)
 		for i, x := range tools {
-			tools[i] = stopsAfterSend{Tool: x, charge: charge, sent: func() { once.Do(func() { close(sent) }) }, stuck: stuck}
+			tools[i] = stopsAfterSend{Tool: x, charge: charge, refunds: refunds, note: note,
+				sent: func() { once.Do(func() { close(sent) }) }, stuck: stuck}
 		}
 		return tools, err
 	}
@@ -67,18 +75,22 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string) error {
 
 	start := server.Start{Tenant: t.tenant, Agent: tafID, Trigger: runs.ByOwner, Source: "email",
 		Requester: runs.Requester{Kind: runs.ByDoor, ID: "e2e-thread-" + t.run},
-		Input:     "[door email · from Ana <ana@example.com>] Please refund charge " + charge + " for 300 cents.",
-		Notify:    runs.Notify{URL: receiver.URL, Ref: "e2e-crash"},
-		ID:        server.RequestRunID(t.tenant, tafID, key)}
+		// Worded as the owner's own ask that refunds inside the Card above.
+		Input:  "[door email · from Ana <ana@example.com>, a paired sender]\n\nCheck charge " + charge + ", then refund 300 cents of it.",
+		Notify: runs.Notify{URL: receiver.URL, Ref: "e2e-crash"},
+		ID:     server.RequestRunID(t.tenant, tafID, key)}
 	r, err := crashing.Start(ctx, start)
 	if err != nil {
 		return fmt.Errorf("the door's run: %w", err)
 	}
-	go func() { _, _ = crashing.Execute(ctx, t.tenant, r.ID, nil) }()
+	finished := make(chan error, 1)
+	go func() { _, err := crashing.Execute(ctx, t.tenant, r.ID, nil); finished <- err }()
 	select {
 	case <-sent:
+	case err := <-finished:
+		return t.noRefund(ctx, store, r.ID, "the door's run ended before its refund reached the vendor", err, &called, &names, &mu)
 	case <-time.After(4 * time.Minute):
-		return errors.New("the door's run never sent its refund to the vendor")
+		return t.noRefund(ctx, store, r.ID, "the door's run never sent its refund to the vendor", nil, &called, &names, &mu)
 	}
 	stopped, err := store.Get(ctx, t.tenant, r.ID)
 	if err != nil {
@@ -131,14 +143,14 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string) error {
 	if err != nil {
 		return err
 	}
-	refunds := 0
+	sentRefunds := 0
 	for _, c := range calls {
 		if strings.Contains(c, charge) && strings.Contains(c, "refund") {
-			refunds++
+			sentRefunds++
 		}
 	}
-	if refunds != 1 {
-		return fmt.Errorf("the vendor has %d refunds of %s, want exactly 1", refunds, charge)
+	if sentRefunds != 1 {
+		return fmt.Errorf("the vendor has %d refunds of %s, want exactly 1", sentRefunds, charge)
 	}
 	t.logf("✓ exactly one refund of %s reached the vendor", charge)
 
@@ -158,20 +170,43 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string) error {
 	return nil
 }
 
+// noRefund says what the door's run did instead of its refund: its status,
+// its words and every call it made, so a miss can be read from CI.
+// CI's log gets its status and the tools' names, never inputs or words; the
+// private transcript gets them all.
+func (t *test) noRefund(ctx context.Context, store runs.Runs, id, why string, err error, called, names *[]string, mu *sync.Mutex) error {
+	if r, gerr := store.Get(ctx, t.tenant, id); gerr == nil {
+		fmt.Fprintf(t.cfg.log, "  the door's run: %s after %d turns\n", r.Status, r.Turns)
+		t.logf("the door's run: %s (%s) → %s", r.Status, oneLine(r.Error), oneLine(r.Output))
+	}
+	mu.Lock()
+	fmt.Fprintf(t.cfg.log, "  its calls: %s\n", strings.Join(*names, ", "))
+	t.logf("its calls: %s", strings.Join(*called, "; "))
+	mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("%s: %w", why, err)
+	}
+	return errors.New(why)
+}
+
 // stopsAfterSend is a tool of an invocation that stops mid-refund: the refund
 // of charge goes to the vendor as usual, then its result never comes back
 // (until stuck closes, when the test ends), as when a Lambda stops after
 // KIFF sent the call.
 type stopsAfterSend struct {
 	tool.Tool
-	charge string
-	sent   func()
-	stuck  chan struct{}
+	charge  string
+	refunds []string
+	note    func(name, call string)
+	sent    func()
+	stuck   chan struct{}
 }
 
 func (s stopsAfterSend) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
 	res, err := s.Tool.Call(ctx, input)
-	if strings.Contains(strings.ToLower(s.Spec().Name), "refund") && strings.Contains(string(input), s.charge) {
+	name := s.Spec().Name
+	s.note(fmt.Sprintf("%s(error %v)", name, err != nil || res.IsError), fmt.Sprintf("%s(%s) err=%v", name, oneLine(string(input)), err))
+	if slices.Contains(s.refunds, name) && strings.Contains(string(input), s.charge) {
 		s.sent()
 		<-s.stuck
 	}
