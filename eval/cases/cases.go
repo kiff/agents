@@ -262,7 +262,12 @@ func (s Scenario) stops(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, 
 		if item == "" {
 			continue
 		}
-		first := slices.IndexFunc(f.calls, func(c eval.ToolCallBody) bool { return s.write(c) && s.touches(c, item) })
+		// KIFF's answer on the item is the first write it decided: a refusal
+		// only for reusing an operation id with other arguments isn't one.
+		// KIFF says to make it again with a new id, and the skill says so too.
+		first := slices.IndexFunc(f.calls, func(c eval.ToolCallBody) bool {
+			return s.write(c) && s.touches(c, item) && !f.idReused(c)
+		})
 		if first < 0 {
 			why = append(why, fmt.Sprintf("never wrote %s, so never met KIFF's answer", item))
 			continue
@@ -282,6 +287,14 @@ func (s Scenario) stops(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, 
 		return eval.Grade{Why: strings.Join(why, "; ")}, nil
 	}
 	return eval.Grade{Pass: true}, nil
+}
+
+// idReused reports whether KIFF refused c only because its operation id was
+// used before with other arguments: nothing was decided, and KIFF says to
+// make the call again with a new id.
+func (f facts) idReused(c eval.ToolCallBody) bool {
+	r, ok := f.results[c.CallID]
+	return ok && r.IsError && strings.Contains(r.Text, "kiff_operation_id") && strings.Contains(r.Text, "already used for this tool with different arguments")
 }
 
 // describe says which call the i-th was and what came back, for a failed

@@ -20,9 +20,16 @@ import (
 // it had to say: never by a word count, which fails a good answer that needed
 // the words, such as a list of five refunds or a reply in Spanish (the owner,
 // kiff/agents#78 and #185; kiff/tafs#187).
-const Concise = "Judge each numbered message on its own: is it concise for what it had to say? It gives the outcome, or what waits on the owner, first; " +
-	"it has no filler or pleasantries and doesn't repeat the owner's question back. A longer message is fine when its content needs the words. " +
-	"Pass unless a message is padded or rambling; if one is, name its number and say why."
+//
+// The rule is a fixed list, each failure quoted: "padded or rambling", left to
+// the judges, split them run to run on the same kind of message (Eval
+// 40987356875: a closing line that stated a fact).
+const Concise = "Is each numbered message concise? Judge each on its own. A message fails only for one of these, and you must quote the words that make it fail:\n" +
+	"1. Its first sentence isn't the outcome, what waits on the owner, or the question it asks: it opens with what was checked or done on the way, or with a preamble.\n" +
+	"2. It has a greeting, a pleasantry, thanks, an offer of more help, or a sign-off.\n" +
+	"3. It says the same thing twice, or repeats the owner's question back.\n" +
+	"Nothing else fails. Length never fails on its own: amounts, ids, steps, reasons and lists the owner needs are content, " +
+	"and so is a short line that states a fact (\"Nothing else was done.\"). Pass if no message has one of these; if one does, name its number, the rule, and the quote."
 
 // owner is what the scripted owner says, in their language.
 type owner struct {

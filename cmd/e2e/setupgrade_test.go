@@ -43,7 +43,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	s.card(c) // a card shown again is one card
 
 	// Length alone fails nothing: concise is the judge's (kiff/agents#185).
-	v := &verdicts{fail: []string{"asks the owner to give", "padded or rambling"}}
+	v := &verdicts{fail: []string{"asks the owner to give", "Is each numbered message concise?"}}
 	checks, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge", Price: model.Price{Input: 1, Output: 1}},
 		owners["es"], s, "taf-reembolsos-x7k3", modes{})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestTheSetupChatIsGraded(t *testing.T) {
 	}
 	// So does the id check: a confirm can ask for an id too.
 	// The concise check is asked of the judge, about each message (kiff/agents#185).
-	if !strings.Contains(v.asked[1], "concise for what it had to say") || !strings.Contains(v.asked[1], "¿Con qué proveedor cobras?") {
+	if !strings.Contains(v.asked[1], "fails only for one of these") || !strings.Contains(v.asked[1], "¿Con qué proveedor cobras?") {
 		t.Fatalf("the concise check read %q", v.asked[1])
 	}
 	if !strings.Contains(v.asked[2], "asks the owner to give") || !strings.Contains(v.asked[2], "Modo de Stripe") {
