@@ -1236,6 +1236,10 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		if err := t.plantedFile(ctx, tafID, *connected); err != nil {
 			return err
 		}
+		// The reliability round's proof: a door's refund, stopped mid-call, carried on once.
+		if err := t.crashMidRefund(ctx, tafID); err != nil {
+			return err
+		}
 	}
 	if t.stripe != nil {
 		// Stripe's own account of it: one refund, of 3.00.
