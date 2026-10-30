@@ -266,6 +266,13 @@ for its owner), it's let go (`after` cleared) and `Continue` starts it. So a
 thread's messages run in the order they came, one at a time. `Execute` leaves
 a queued run alone (`run.ErrQueued`). A person's own message isn't queued.
 
+Two messages that come together can both be queued behind the same run, since
+each reads the thread before the other is stored. When that run is done, the
+sweep lets only the older go, by when each came and then by ID. The newer then
+waits for the older (`after` moves to it). The thread is read from the
+source's last 20 runs: on a door busier than that, a message can miss the
+thread's run at work and start beside it.
+
 Then, read apart (`Runs.DuePaused`), PAUSED runs due `run.ResolvedGrace`
 (1 min) after their last requirement is answered or expires: the sweep calls
 `Continue` for each. One still paused is looked at again after 2, 4, 8 …

@@ -814,6 +814,20 @@ func (sw Sweeper) queued(ctx context.Context, r Run, now time.Time) (bool, error
 		}
 		return false, err
 	}
+	// Two messages that came together both queued behind the same run: the
+	// older goes first, and this one waits for it. The thread runs in the
+	// order its messages came, whatever After said when each was queued.
+	ahead, err := sw.ahead(ctx, r)
+	if err != nil {
+		return false, err
+	}
+	if ahead != "" {
+		_, err = Change(ctx, sw.Runs, r, now, func(n *Run) error { n.After, n.Wait = ahead, now.UTC().Add(QueueLook); return nil })
+		if errors.Is(err, ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
 	r, err = Change(ctx, sw.Runs, r, now, func(n *Run) error {
 		n.After, n.Wait = "", now.UTC().Add(PendingTimeout)
 		return nil
@@ -825,4 +839,37 @@ func (sw Sweeper) queued(ctx context.Context, r Run, now time.Time) (bool, error
 		return false, err
 	}
 	return true, sw.Continue(ctx, r.Tenant, r.ID)
+}
+
+// ahead is the latest run of r's thread (its session and source) still at
+// work, or still queued, that came before r: the one r waits for. "" when
+// none did.
+func (sw Sweeper) ahead(ctx context.Context, r Run) (string, error) {
+	recent, err := sw.Runs.ListSource(ctx, r.Tenant, r.Trigger, r.Source, 20)
+	if err != nil {
+		return "", err
+	}
+	var last *Run
+	for i := range recent {
+		o := &recent[i]
+		// One that waits for r is behind it, whatever their times say.
+		if o.ID == r.ID || o.After == r.ID || o.Session != r.Session || !o.Active() || !cameBefore(*o, r) {
+			continue
+		}
+		if last == nil || cameBefore(*last, *o) {
+			last = o
+		}
+	}
+	if last == nil {
+		return "", nil
+	}
+	return last.ID, nil
+}
+
+// cameBefore orders a thread's runs by when they came, then by ID.
+func cameBefore(a, b Run) bool {
+	if !a.Created.Equal(b.Created) {
+		return a.Created.Before(b.Created)
+	}
+	return a.ID < b.ID
 }
