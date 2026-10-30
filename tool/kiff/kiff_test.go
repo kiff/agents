@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
 )
@@ -387,5 +388,49 @@ func TestA502IsRetriedOnceOnReadsOnly(t *testing.T) {
 	defer always.Close()
 	if _, err := kiff.New(always.URL, testKey, always.Client()).Tools(context.Background()); err == nil {
 		t.Fatal("a gateway that keeps answering 502 listed tools")
+	}
+}
+
+// A run's call goes with an operation ID of its own: the same each time that
+// call is made, after a crash too, so KIFF gives its first outcome back rather
+// than act twice. The model can't pick it, and a call outside the run's loop
+// keeps what it brings.
+func TestARunsCallGoesWithItsOwnOperation(t *testing.T) {
+	srv, _ := gateway(t, false)
+	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inRun := run.WithRef(context.Background(), run.Ref{Session: "s1", Run: "run-1"})
+	op := func(i int) string {
+		var args map[string]any
+		if err := json.Unmarshal([]byte(calls[i]), &args); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := args[kiff.OperationArg].(string)
+		return s
+	}
+	for _, c := range []struct {
+		ctx   context.Context
+		input string
+		want  string
+	}{
+		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1"}`, kiff.Operation("run-1", "toolu_1")},
+		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1"}`, kiff.Operation("run-1", "toolu_1")},
+		{tool.WithCall(inRun, "toolu_2"), `{"charge":"ch_1"}`, kiff.Operation("run-1", "toolu_2")},
+		{tool.WithCall(inRun, "toolu_1"), `{"charge":"ch_1","kiff_operation_id":"mine"}`, kiff.Operation("run-1", "toolu_1")},
+		{inRun, `{"charge":"ch_1"}`, ""},
+		{context.Background(), `{"charge":"ch_1","kiff_operation_id":"op-held"}`, "op-held"},
+	} {
+		calls = nil
+		if _, err := tools[0].Call(c.ctx, json.RawMessage(c.input)); err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || op(0) != c.want {
+			t.Fatalf("%s: operation %q, want %q (%v)", c.input, op(0), c.want, calls)
+		}
+	}
+	if a, b := kiff.Operation("run-1", "toolu_1"), kiff.Operation("run-2", "toolu_1"); a == b || !strings.HasPrefix(a, "op-") {
+		t.Fatalf("operations %q %q", a, b)
 	}
 }

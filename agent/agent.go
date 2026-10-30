@@ -1093,7 +1093,7 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 	if t == nil {
 		return tool.Result{Text: fmt.Sprintf("there is no tool named %q", c.Tool), IsError: true}
 	}
-	r, err := t.Call(ctx, c.Input)
+	r, err := t.Call(tool.WithCall(ctx, c.CallID), c.Input)
 	if err != nil {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}

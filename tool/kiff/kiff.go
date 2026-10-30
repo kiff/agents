@@ -12,6 +12,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,6 +143,21 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
 	}
+	// A run's call goes with its own operation ID, the same each time the
+	// call is made: after a crash, KIFF gives its first outcome back rather
+	// than act twice. A trial's call is only decided, never sent, so it needs
+	// none; a call made outside a run's loop (Collect) brings its own.
+	if ref, ok := run.RefFrom(ctx); ok && ref.Run != "" {
+		if id := tool.CallFrom(ctx); id != "" {
+			if _, trial := run.TrialFrom(ctx); !trial {
+				with, err := withOperation(input, Operation(ref.Run, id))
+				if err != nil {
+					return tool.Result{}, meta{}, fmt.Errorf("kiff: call %s: %w", id, err)
+				}
+				input = with
+			}
+		}
+	}
 	var res struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -201,6 +218,13 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		}
 	}
 	return out, m, nil
+}
+
+// Operation is the kiff_operation_id of the model's call callID in run: the
+// same every time that call is made, and no other call's.
+func Operation(run, callID string) string {
+	sum := sha256.Sum256([]byte(run + "\x00" + callID))
+	return "op-" + hex.EncodeToString(sum[:])[:40]
 }
 
 // atPath is the value at a dotted path in a call's arguments
