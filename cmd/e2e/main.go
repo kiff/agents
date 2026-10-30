@@ -1937,9 +1937,30 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 	if _, err := runs.AnswerCard(ctx, t.rn.Runs, t.tenant, w.run, w.call, result, time.Now()); err != nil {
 		return fmt.Errorf("answering the result: %w", err)
 	}
+	answeredAt := time.Now()
 	end, err := t.rn.Execute(ctx, t.tenant, w.run, nil)
 	if err != nil {
 		return fmt.Errorf("Setup going on after the hand-over: %w", err)
+	}
+	// What the run did once it went on, so CI shows it: each tool by name,
+	// refused or not, and whether it wrote, never inputs or results' words.
+	if _, events, err := t.sessions.Read(ctx, t.tenant, w.session); err == nil {
+		var did []string
+		for _, e := range events {
+			if e.Run != w.run || e.Time.Before(answeredAt) {
+				continue
+			}
+			switch e.Kind {
+			case session.ToolResult:
+				var b agent.ToolResultBody
+				if json.Unmarshal(e.Body, &b) == nil {
+					did = append(did, fmt.Sprintf("%s(error %v)", b.Tool, b.IsError))
+				}
+			case session.AgentMessage, session.Report:
+				did = append(did, "wrote")
+			}
+		}
+		t.logf("Setup after the hand-over: %d turns in all; %s", end.Turns, strings.Join(did, ", "))
 	}
 	if end.Status != runs.Completed {
 		// What it waits on, so a miss can be read from CI: the tools and
