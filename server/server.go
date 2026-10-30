@@ -7,6 +7,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -208,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 		return s.switchSchedule(ctx, c, r, false)
 	})
 	route("GET /schedules/{id}/runs", s.scheduleRuns)
+	route("GET /schedules/{id}/firings", s.scheduleFirings)
 
 	if s.Runner != nil { // until runs can be executed, there is no starting one
 		mux.HandleFunc("POST /agents/{id}/runs", s.startRun)
@@ -1062,6 +1064,8 @@ type scheduleView struct {
 }
 
 func (s *Server) view(sc schedule.Schedule) scheduleView {
+	// Its rules as they apply: an empty one is its default.
+	sc.Missed, sc.Busy = sc.MissedRule(), cmp.Or(sc.Busy, schedule.BusySkip)
 	v := scheduleView{Schedule: sc}
 	if next := sc.Next(s.now()); !next.IsZero() {
 		next = next.UTC() // like every time the API returns

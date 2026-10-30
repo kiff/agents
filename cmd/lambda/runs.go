@@ -272,3 +272,22 @@ func noteAgain(runs run.Runs) func(ctx context.Context, r run.Run) error {
 	}
 	return nil
 }
+
+// lastRunAtWork reports whether a schedule's last run, other than the
+// firing's own (a repeated delivery), is still at work: PENDING or RUNNING. A
+// run paused for its owner isn't at work, and doesn't keep the next firing
+// from running.
+func lastRunAtWork(runs run.Runs) func(ctx context.Context, f schedule.Firing) (bool, error) {
+	return func(ctx context.Context, f schedule.Firing) (bool, error) {
+		recent, err := runs.ListSource(ctx, f.Tenant, run.BySchedule, f.Schedule, 5)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range recent {
+			if r.ID != f.Key() && r.Active() {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+}

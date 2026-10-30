@@ -3,6 +3,7 @@ package schedule_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,11 @@ type fixture struct {
 	sched   *scheduler
 	agents  map[[2]string]bool
 	started []schedule.Firing
+	// now is the service's clock; zero puts every firing on time.
+	now time.Time
+	// busy is what Busy reports.
+	busy    bool
+	history *memory.Schedules
 }
 
 func newFixture() *fixture {
@@ -120,7 +126,11 @@ func newFixture() *fixture {
 			f.started = append(f.started, fi)
 			return nil
 		},
+		Busy: func(context.Context, schedule.Firing) (bool, error) { return f.busy, nil },
+		Now:  func() time.Time { return f.now },
 	}
+	f.history = f.store
+	f.sv.History = f.store
 	return f
 }
 
@@ -344,5 +354,76 @@ func TestFireReportsWhatShouldBeRetried(t *testing.T) {
 		if err := f.sv.Fire(ctx, "t1", "morning", due); err == nil {
 			t.Errorf("%s failed, and the firing reported success", name)
 		}
+	}
+}
+
+// A firing that comes late runs if it was missed by less than an hour, once,
+// and is skipped when older, or always under "skip"; one that comes while the
+// schedule's last run still works is skipped. Every firing is kept in the
+// schedule's history, with what came of it.
+func TestAFiringLateOrBusyFollowsTheSchedulesRules(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "morning")
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)
+	fire := func(late time.Duration) {
+		t.Helper()
+		f.now = due.Add(late)
+		if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fire(2 * time.Minute)  // a Scheduler's own delay: on time
+	fire(40 * time.Minute) // missed, but within the hour: runs (the same firing, so the same run)
+	if len(f.started) != 2 || f.started[0].Key() != f.started[1].Key() {
+		t.Fatalf("started %d", len(f.started))
+	}
+	due = due.Add(24 * time.Hour)
+	fire(2 * time.Hour) // missed by more than an hour: skipped
+	if len(f.started) != 2 {
+		t.Fatalf("an old firing ran: %d", len(f.started))
+	}
+
+	s.Missed = schedule.MissedSkip
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	due = due.Add(24 * time.Hour)
+	fire(10 * time.Minute) // missed at all: skipped under "skip"
+	due = due.Add(24 * time.Hour)
+	f.busy = true
+	fire(0) // the last run still works: skipped
+	if len(f.started) != 2 {
+		t.Fatalf("started %d", len(f.started))
+	}
+
+	got, err := f.history.Firings(ctx, "t1", "morning", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []string
+	for _, h := range got {
+		outcomes = append(outcomes, h.Outcome)
+	}
+	want := []string{schedule.FiredBusy, schedule.FiredMissed, schedule.FiredMissed, schedule.FiredRun}
+	if !slices.Equal(outcomes, want) {
+		t.Fatalf("history %v, want %v (newest first, one per firing)", outcomes, want)
+	}
+	if run := got[3]; run.Run == "" || !run.Due.Equal(time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the run's firing kept as %+v", run)
+	}
+}
+
+func TestARuleThatDoesntExistIsRefused(t *testing.T) {
+	s := scheduletest.Schedule("t1", "morning")
+	s.Missed = "always"
+	if err := s.Check(); err == nil {
+		t.Fatal("missed: always taken")
+	}
+	s.Missed, s.Busy = "", "queue"
+	if err := s.Check(); err == nil {
+		t.Fatal("busy: queue taken")
 	}
 }

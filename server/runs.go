@@ -17,6 +17,7 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool/show"
 	"github.com/kiff/agents/usage"
@@ -1549,6 +1550,33 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 		out[i] = viewRun(rn)
 	}
 	return http.StatusOK, map[string]any{"runs": out}, nil
+}
+
+// scheduleFirings is a schedule's history, newest first: each firing, when it
+// was due and came, and what came of it (its run, or skipped as missed or
+// busy).
+func (s *Server) scheduleFirings(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	id := r.PathValue("id")
+	if _, err := s.Schedules.Store.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	limit := schedule.MaxHistory
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > schedule.MaxHistory {
+			return 0, nil, bad("limit is 1 to %d", schedule.MaxHistory)
+		}
+		limit = n
+	}
+	fired := []schedule.Fired{}
+	if s.Schedules.History != nil {
+		got, err := s.Schedules.History.Firings(ctx, c.Tenant, id, limit)
+		if err != nil {
+			return 0, nil, err
+		}
+		fired = append(fired, got...)
+	}
+	return http.StatusOK, map[string]any{"firings": fired}, nil
 }
 
 // ErrAIFairUse refuses a chat past its account's AI fair use for the period,
