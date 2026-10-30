@@ -1739,6 +1739,50 @@ func TestADoorThreadRunsOneAtATime(t *testing.T) {
 	}
 }
 
+// A queued run that's cancelled stays CANCELLED and never starts; the one
+// queued behind it is let go once the run before both is done.
+func TestACancelledQueuedRunNeverStarts(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	send := func(key, session string) map[string]any {
+		b := map[string]any{"input": "refund " + key, "background": true, "dedup_key": key, "source": "email",
+			"requester": map[string]any{"kind": "door", "id": "thread-1"}}
+		if session != "" {
+			b["session_id"] = session
+		}
+		code, out := f.do("t1", "POST", "/agents/payouts/runs", b)
+		f.want(202, code, out, key)
+		return out
+	}
+	first := send("msg-1@mail", "")
+	sid, id1 := first["session"].(string), first["id"].(string)
+	if _, err := run.Claim(ctx, f.runs, "t1", id1, "i1", now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	id2 := send("msg-2@mail", sid)["id"].(string)
+	id3 := send("msg-3@mail", sid)["id"].(string)
+	code, out := f.do("t1", "POST", "/agents/payouts/runs/"+id2+"/cancel", nil)
+	if code != 200 || out["status"] != string(run.Cancelled) {
+		t.Fatalf("cancel the queued run: %d %v", code, out)
+	}
+	var started []string
+	sw := run.Sweeper{Runs: f.runs, Continue: func(_ context.Context, _, id string) error { started = append(started, id); return nil }}
+	r1, _ := f.runs.Get(ctx, "t1", id1)
+	later := now.Add(run.QueueLook)
+	if _, err := run.Change(ctx, f.runs, r1, later, func(n *run.Run) error { n.Status, n.Output = run.Completed, "done"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		later = later.Add(2 * run.QueueLook)
+		if _, err := sw.Sweep(ctx, later, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r2, _ := f.runs.Get(ctx, "t1", id2); r2.Status != run.Cancelled || strings.Join(started, ",") != id3 {
+		t.Fatalf("cancelled run %s; started %v, want only %s", r2.Status, started, id3)
+	}
+}
+
 // Two door messages that came together both queue behind the same run (each
 // read the thread before the other was stored): once that run is done, only
 // the older starts, and the newer waits for it.
