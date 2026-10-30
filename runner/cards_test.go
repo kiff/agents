@@ -100,3 +100,31 @@ func TestAnUnansweredCardStopsWaiting(t *testing.T) {
 		t.Fatalf("the card's result was %q", res.Result)
 	}
 }
+
+// A run that goes on after a card's answer and then acts, as Setup does after
+// its result is answered: the acting turn is stored under the continued
+// run's claim, and the run finishes (Eval 40998275223).
+func TestARunActsAfterACardsAnswerAndFinishes(t *testing.T) {
+	f := newFixture(t, use("s1", "show", whichCard), say("Pick one on the card."), use("c2", "stripe_refund", `{"charge":"ch_1"}`), say("Refunded."))
+	f.extra = append(f.extra, show.New())
+	r := f.start(server.Start{Input: "Refund ch_1."})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil || got.Status != run.Paused {
+		t.Fatalf("ran to %s, %v", got.Status, err)
+	}
+	answered, _ := show.Answer(show.Component{Type: "confirm", ID: "which", Options: []show.Option{{Value: "live", Label: "Live"}, {Value: "test", Label: "Test mode"}}}, json.RawMessage(`"test"`))
+	answered.AnsweredBy = "tafs cloud"
+	result, _ := json.Marshal(answered)
+	if _, err := run.AnswerCard(ctx, f.runs, "t1", r.ID, got.Requirements[0].CallID, result, f.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	var acting *run.Turn
+	f.refund.onCall = func() { acting = f.get(r.ID).Acting }
+	got, err = f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil || got.Status != run.Completed || got.Output != "Refunded." {
+		t.Fatalf("went on to %s (%q, waits on %+v), %v", got.Status, got.Output, got.Requirements, err)
+	}
+	if acting == nil || len(got.Done) != 2 || got.Done[1].CallID != "c2" {
+		t.Fatalf("acting %v, done %+v", acting, got.Done)
+	}
+}

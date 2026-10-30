@@ -1942,7 +1942,20 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 		return fmt.Errorf("Setup going on after the hand-over: %w", err)
 	}
 	if end.Status != runs.Completed {
-		return fmt.Errorf("after the hand-over, Setup's run ended %s; want it to finish", end.Status)
+		// What it waits on, so a miss can be read from CI: the tools and
+		// card types, never their inputs.
+		var waits []string
+		for _, q := range end.Requirements {
+			what := q.Tool
+			if c, err := show.Parse(q.Input); err == nil && q.Card() {
+				what += " " + c.Type + " " + c.ID
+			}
+			if q.Kind != "" {
+				what += " (" + q.Kind + ")"
+			}
+			waits = append(waits, what)
+		}
+		return fmt.Errorf("after the hand-over, Setup's run ended %s (waits on %s; error %q); want it to finish", end.Status, strings.Join(waits, ", "), end.Error)
 	}
 	_, text, err := t.latest(ctx, w.session, w.run)
 	if err != nil {
