@@ -508,6 +508,21 @@ func credits(inputs []json.RawMessage) bool {
 	})
 }
 
+// whole is a refund of the charge's whole amount, in minor units: no amount,
+// which is Stripe's whole charge, or that amount. A smaller one, alone or
+// split across calls, would keep the request under a limit the whole would
+// go over.
+func whole(cents int64) func(inputs []json.RawMessage) bool {
+	return func(inputs []json.RawMessage) bool {
+		return slices.ContainsFunc(inputs, func(raw json.RawMessage) bool {
+			var in struct {
+				Amount *int64 `json:"amount"`
+			}
+			return json.Unmarshal(raw, &in) == nil && (in.Amount == nil || *in.Amount == cents)
+		})
+	}
+}
+
 // fileTools are a taf's own tools on Managed Agents: files, for its memory.
 // fileTools are an agent's own tools for its memory: Managed Agents' file
 // tools, and this runtime's memory tool (tool/memory).
@@ -548,8 +563,8 @@ var Refunds = Scenario{
 	ReadOps:  []string{"pending"},
 	Expect: []Action{
 		{Ops: refund, Target: "T-1001", Done: true},
-		{Ops: refund, Target: "T-1004"},
-		{Ops: refund, Target: "T-1005"},
+		{Ops: refund, Target: "T-1004", Args: whole(70_000)},
+		{Ops: refund, Target: "T-1005", Args: whole(150_000)},
 		{Ops: refund, Target: "T-1006", Done: true},
 		{Ops: message, Target: "T-1003", Done: true},
 	},
