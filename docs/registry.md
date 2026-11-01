@@ -40,6 +40,12 @@ of its eight kinds):
 - `keep.kept_read`, `{ "Keep": 3, "Retention": <idle>, "Max": <at most> }`
   (`UntilIdle`), keeps what a chat read for its next messages, sealed. Left
   out, nothing is kept.
+- Kinds a `keep` leaves out take another kind's rule (`session.Defaulted`):
+  `component`, `trial_write`, `call_ref`, `summary`, `called`, `answered` and
+  `own_refused` are kept like `agent_message`. `own_refused` is a call to the
+  agent's own tool (a card, a note) that the tool refused, with the start of
+  its input (512 bytes, which can hold the owner's words, as a card does) and
+  the tool's reason.
 
 - `price` is per million tokens, in millionths of a dollar. With both cache
   prices set, every turn uses the prompt cache; without them it doesn't, so

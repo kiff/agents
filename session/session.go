@@ -116,6 +116,12 @@ const (
 	// agent's messages: what the app shows as the card's answer, and what
 	// the chat's next runs read of it. It is data, never the owner's text.
 	Answered EventKind = "answered"
+	// OwnRefused is a call to one of the agent's own tools (a card it tried
+	// to show, a note) that the tool refused, and why (agent.OwnRefusedBody):
+	// the call's own result is dropped when its run ends, and without this a
+	// transcript only says a card failed. Kept like the agent's messages; no
+	// chat history reads it.
+	OwnRefused EventKind = "own_refused"
 
 	// Summary is the agent's summary of a chat's earlier runs, written once
 	// they no longer fit its history (SummaryBody): kept like the agent's
@@ -130,9 +136,9 @@ var EventKinds = []EventKind{OwnerMessage, AgentMessage, ToolCall, ToolResult, R
 // Defaulted are kinds a Policy may leave out: each takes the rule of the kind
 // named here. A kind added later goes here, so a stored policy written before
 // it keeps working. A component, a trial's write, a call's reference and a
-// summary and a call's outcome (Called) are kept like the agent's messages. A KeptRead left out is not
+// summary, a call's outcome (Called) and an own tool's refusal (OwnRefused) are kept like the agent's messages. A KeptRead left out is not
 // written at all (Policy.Rule).
-var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead, Called: AgentMessage, Answered: AgentMessage}
+var Defaulted = map[EventKind]EventKind{Component: AgentMessage, TrialWrite: AgentMessage, CallRef: AgentMessage, Summary: AgentMessage, KeptRead: KeptRead, Called: AgentMessage, Answered: AgentMessage, OwnRefused: AgentMessage}
 
 // Event is one thing that happened in a run. Seq numbers a run's events from
 // 1, without gaps, and is set by the Recording, the run's only writer. Expires

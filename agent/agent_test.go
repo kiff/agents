@@ -1709,3 +1709,39 @@ func TestAFastAgentKeepsOneSpeed(t *testing.T) {
 		t.Fatalf("a standard agent asked fast %v, recorded %s", m.reqs[0].Fast, events[len(events)-2].Body)
 	}
 }
+
+// A card the agent's own tool refuses keeps why, after its run ends: the
+// call's result is dropped with the run, so a transcript would only say the
+// card failed. A refusal by a tool outside the agent is the Called line's.
+func TestAnOwnToolsRefusalIsKept(t *testing.T) {
+	why := `result result-5: taf.note is required`
+	show := &fakeTool{name: "show", access: tool.Own, result: tool.Result{Text: why, IsError: true}}
+	m := &script{replies: []model.Reply{use("c1", "show", `{"type":"result","id":"result-5"}`), say("Shown again.")}}
+	store, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, show), r, nil, "Hand over.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []agent.OwnRefusedBody
+	for _, e := range events {
+		if e.Kind == session.OwnRefused {
+			var b agent.OwnRefusedBody
+			if err := json.Unmarshal(e.Body, &b); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, b)
+		}
+		if e.Kind == session.Called {
+			t.Errorf("an own tool's call got a Called line: %s", e.Body)
+		}
+	}
+	if len(got) != 1 || got[0].Tool != "show" || got[0].Error != why || string(got[0].Input) != `{"type":"result","id":"result-5"}` {
+		t.Fatalf("own refusals kept: %+v", got)
+	}
+}

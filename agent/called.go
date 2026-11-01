@@ -81,6 +81,24 @@ func recordCalled(rec *session.Recording, t tool.Tool, name string, input json.R
 	return rec.Record(session.Called, CalledBody{Tool: name, Input: cutInput(input), Outcome: oc})
 }
 
+// OwnRefusedBody is the body of an OwnRefused event: a call to one of the
+// agent's own tools that the tool refused, the start of its input, and the
+// tool's words for why, as the model read them.
+type OwnRefusedBody struct {
+	Tool  string          `json:"tool"`
+	Input json.RawMessage `json:"input,omitempty"`
+	Error string          `json:"error"`
+}
+
+// recordOwnRefused records a call to one of the agent's own tools that came
+// back an error, so a transcript names why (a card show refused).
+func recordOwnRefused(rec *session.Recording, t tool.Tool, name string, input json.RawMessage, r tool.Result) error {
+	if t == nil || t.Access() != tool.Own || !r.IsError {
+		return nil
+	}
+	return rec.Record(session.OwnRefused, OwnRefusedBody{Tool: name, Input: cutInput(input), Error: r.Text})
+}
+
 // cutInput is input within CalledInputMax, as a JSON string when it had to
 // be cut, so what is kept stays valid JSON.
 func cutInput(input json.RawMessage) json.RawMessage {

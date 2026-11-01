@@ -1077,6 +1077,9 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				return nil, err
 			}
 		}
+		if err := recordOwnRefused(rec, byName[r.Tool], r.Tool, calls[i].Input, r.Result); err != nil {
+			return nil, err
+		}
 		if r.Trial != nil {
 			if err := rec.Record(session.TrialWrite, TrialWriteBody{CallID: r.CallID, Tool: r.Tool, Input: calls[i].Input, TrialDecision: *r.Trial}); err != nil {
 				return nil, err
