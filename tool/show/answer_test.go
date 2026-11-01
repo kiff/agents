@@ -37,6 +37,7 @@ func TestACardsAnswerIsCheckedAgainstTheCard(t *testing.T) {
 		{approval, `"approved"`, "Approved"},
 		{approval, `"declined"`, "Declined"},
 		{approval, `"failed: the phone couldn't sign"`, "Approve · it didn't go through: the phone couldn't sign"},
+		{approval, `"already approved: Stripe is connected and its Card is confirmed"`, "Already approved"},
 		{signIn, `"signed in"`, "Signed in"},
 		{signIn, `"not now"`, "Later"},
 	} {
@@ -57,8 +58,9 @@ func TestACardsAnswerIsCheckedAgainstTheCard(t *testing.T) {
 		{questions, `{"mode":{"values":["test"]},"days":{"values":["mon"]},"cap":{"own":"x"}}`, "only when it's multi"},
 		{questions, `{"mode":{"value":"test","own":"x"},"days":{"values":["mon"]},"cap":{"own":"x"}}`, "one of value, values or own"},
 		{questions, `{"mode":{"value":"prod"},"days":{"values":["mon"]},"cap":{"own":"x"}}`, `isn't one of question "mode"'s options`},
-		{approval, `"yes"`, `"approved", "declined" or "failed: <why>"`},
+		{approval, `"yes"`, `"approved", "declined", "already approved: <why>" or "failed: <why>"`},
 		{approval, `"failed:"`, "followed by why"},
+		{approval, `"already approved:"`, "followed by why"},
 		{signIn, `"approved"`, `"signed in", "not now" or "failed: <why>"`},
 		{card(t, `{"type":"notice","id":"n","tone":"info","text":"Hi"}`), `"ok"`, "isn't answered"},
 	} {
