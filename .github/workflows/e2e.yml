@@ -27,6 +27,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: read
 # One group with the Eval: both run on the test's account with the same setup agent,
 # and a run starts by disconnecting the grants that agent asked for, so two at
 # once take each other's tools away. They queue instead.
@@ -43,18 +44,48 @@ jobs:
       HAS_PEOPLE: ${{ secrets.E2E_MARIA_SESSION != '' && secrets.E2E_LUIS_SESSION != '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Unchanged since the last pass?
+        # A scheduled night measures nothing new when the latest completed
+        # run of this workflow on main passed and nothing but docs changed
+        # since its commit (eval/tafs.ref included): it says so and spends
+        # nothing. Its success carries that pass, with the same
+        # eval/tafs.ref, so kiff/tafs' Upgrade gate accepts it. A latest run
+        # that failed, or was cancelled, is never skipped over: the night
+        # runs, so a red stays red. A dispatch always runs.
+        id: unchanged
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/e2e.yml/runs?branch=main&status=completed&per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0] | \"\\(.id) \\(.conclusion) \\(.head_sha)\"")
+          read -r id conclusion sha <<<"$last"
+          if [ "$conclusion" != success ] || [ -z "$sha" ] || ! git cat-file -e "$sha" 2>/dev/null; then
+            exit 0
+          fi
+          changed=$(git diff --name-only "$sha" HEAD | grep -v -E '^docs/|\.md$' || true)
+          if [ -z "$changed" ]; then
+            echo "skipped: unchanged since run $id (${sha:0:12})"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-go@v5
+        if: steps.unchanged.outputs.skip != 'true'
         with:
           go-version-file: go.mod
       - uses: actions/setup-node@v4
+        if: steps.unchanged.outputs.skip != 'true'
         with:
           node-version: 22
       - name: tafs' definitions, at eval/tafs.ref
+        if: steps.unchanged.outputs.skip != 'true'
         run: |
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
       - name: The simulated owner
+        if: steps.unchanged.outputs.skip != 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -72,7 +103,7 @@ jobs:
       # Support (cmd/e2e/people.go). Nightly, and by hand unless turned off;
       # skipped while the people's sessions aren't set (infra/e2e-people-signin.sh).
       - name: Step 9's people
-        if: always() && (github.event_name == 'schedule' || inputs.people) && env.HAS_PEOPLE == 'true'
+        if: steps.unchanged.outputs.skip != 'true' && (always() && (github.event_name == 'schedule' || inputs.people) && env.HAS_PEOPLE == 'true')
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -87,12 +118,12 @@ jobs:
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript people.md -people
       # The role assumes only from main (infra/aws.sh).
       - uses: aws-actions/configure-aws-credentials@v4
-        if: always() && github.ref == 'refs/heads/main'
+        if: steps.unchanged.outputs.skip != 'true' && (always() && github.ref == 'refs/heads/main')
         with:
           role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
           aws-region: eu-west-1
       - name: The transcript, to the private bucket
-        if: always() && github.ref == 'refs/heads/main'
+        if: steps.unchanged.outputs.skip != 'true' && (always() && github.ref == 'refs/heads/main')
         run: |
           key="reports/e2e-$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
           [ -f setup.md ] && aws s3 cp --only-show-errors setup.md "s3://$REPORTS/$key/setup.md"

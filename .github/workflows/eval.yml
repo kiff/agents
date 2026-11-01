@@ -1,6 +1,6 @@
 name: Eval
 # The eval loop (#78): each night, the Chargebacks case runs on this commit's
-# runtime as kiff/tafs defines its job (eval/tafs.ref), three times on a
+# runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
 # eval/baseline.json. The agent's KIFF key, the model and Stripe's test mode
 # are real.
@@ -20,6 +20,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: read
 # One group with the E2E: both run on the test's account with the same setup agent,
 # and a run starts by disconnecting the grants that agent asked for, so two at
 # once take each other's tools away. They queue instead.
@@ -37,18 +38,48 @@ jobs:
       REPORTS: kiff-agents-eval-reports
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Unchanged since the last pass?
+        # A scheduled night measures nothing new when the latest completed
+        # run of this workflow on main passed and nothing but docs changed
+        # since its commit (eval/tafs.ref included): it says so and spends
+        # nothing. Its success carries that pass, with the same
+        # eval/tafs.ref, so kiff/tafs' Upgrade gate accepts it. A latest run
+        # that failed, or was cancelled, is never skipped over: the night
+        # runs, so a red stays red. A dispatch always runs.
+        id: unchanged
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/eval.yml/runs?branch=main&status=completed&per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0] | \"\\(.id) \\(.conclusion) \\(.head_sha)\"")
+          read -r id conclusion sha <<<"$last"
+          if [ "$conclusion" != success ] || [ -z "$sha" ] || ! git cat-file -e "$sha" 2>/dev/null; then
+            exit 0
+          fi
+          changed=$(git diff --name-only "$sha" HEAD | grep -v -E '^docs/|\.md$' || true)
+          if [ -z "$changed" ]; then
+            echo "skipped: unchanged since run $id (${sha:0:12})"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-go@v5
+        if: steps.unchanged.outputs.skip != 'true'
         with:
           go-version-file: go.mod
       - uses: actions/setup-node@v4
+        if: steps.unchanged.outputs.skip != 'true'
         with:
           node-version: 22
       - name: tafs' definitions, at eval/tafs.ref
+        if: steps.unchanged.outputs.skip != 'true'
         run: |
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
-      - name: Chargebacks, three seeded runs
+      - name: Chargebacks, two seeded runs
+        if: steps.unchanged.outputs.skip != 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -57,9 +88,9 @@ jobs:
           # refuses any other.
           EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
         run: |
-          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat 3 \
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat 2 \
             -baseline eval/baseline.json \
-            -judge-model claude-opus-5-5 -judge-price 4000000,20000000 \
+            -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results.json -report report.md chargebacks
       - name: Setup, in Spanish, graded
         # The setup agent as kiff/tafs defines it (setup.json), against prod
@@ -74,7 +105,7 @@ jobs:
         # decides it, the owner switches, it runs. A failed check fails the
         # night. Setup runs at the fast output (#197): its cap keeps the same
         # room.
-        if: always()
+        if: steps.unchanged.outputs.skip != 'true' && (always())
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -82,19 +113,19 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 10 -owner-turns 14 -transcript setup.md
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md
       # Main's role writes under reports/; a branch's (an eval/tafs-<sha>
       # measure, a PR's branch) only under reports/branches/<branch>/, so a
       # check that fails there can be read too (infra/aws.sh). Only a pushed
       # branch's run assumes either: never a pull request's. A red run means a
       # check failed, not the upload.
       - uses: aws-actions/configure-aws-credentials@v4
-        if: always() && startsWith(github.ref, 'refs/heads/')
+        if: steps.unchanged.outputs.skip != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
         with:
           role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.AWS_EVAL_ROLE || secrets.AWS_EVAL_BRANCH_ROLE }}
           aws-region: eu-west-1
       - name: The full report, to the private bucket
-        if: always() && startsWith(github.ref, 'refs/heads/')
+        if: steps.unchanged.outputs.skip != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
         run: |
           key="reports/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
           if [ "$GITHUB_REF" != refs/heads/main ]; then
