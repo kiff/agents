@@ -1956,20 +1956,36 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 			if e.Run != w.run || e.Time.Before(answeredAt) {
 				continue
 			}
+			// The transcript (logf) has the run in full, so "finished without
+			// a new message" can be quoted: each call with its outcome, a
+			// refusal's words, each card, and Coach's text.
 			switch e.Kind {
 			case session.ToolResult:
 				var b agent.ToolResultBody
 				if json.Unmarshal(e.Body, &b) == nil {
 					did = append(did, fmt.Sprintf("%s(error %v)", b.Tool, b.IsError))
+					if b.IsError || b.NotMade {
+						t.logf("  after the hand-over, refused: %s: %s", b.Tool, oneLine(b.Text))
+					}
+				}
+			case session.Called:
+				var b agent.CalledBody
+				if json.Unmarshal(e.Body, &b) == nil {
+					t.logf("  after the hand-over, called: %s %s → %s", b.Tool, oneLine(string(b.Input)), b.Outcome)
 				}
 			case session.Component:
 				var c component
 				if json.Unmarshal(e.Body, &c) == nil {
 					did = append(did, "showed "+c.Type)
+					t.logf("  after the hand-over, showed: %s %s", c.Type, c.ID)
 				}
 			case session.AgentMessage, session.Report:
 				did = append(did, "wrote")
 				wrote = true
+				var b agent.TextBody
+				if json.Unmarshal(e.Body, &b) == nil {
+					t.logf("  after the hand-over, Coach: %s", strings.Join(strings.Fields(b.Text), " "))
+				}
 			}
 		}
 		// Always in the log, CI's too: only tool names, component types and
