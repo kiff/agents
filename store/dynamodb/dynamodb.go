@@ -688,7 +688,7 @@ const listPage = 8
 // session in an older minute was updated before all of those. So it reads
 // about as many sessions as it returns, however long the agent's history.
 func (st *Store) List(ctx context.Context, tenant, agent string, limit int) ([]session.Session, error) {
-	return st.list(ctx, tenant, agent, "", limit)
+	return st.list(ctx, tenant, agent, "", false, limit)
 }
 
 // ListOwned reads the agent's index newest first, keeping the entries of
@@ -700,10 +700,18 @@ func (st *Store) ListOwned(ctx context.Context, tenant, agent, owner string, lim
 	if owner == "" {
 		return nil, errors.New("dynamodb: ListOwned needs an owner")
 	}
-	return st.list(ctx, tenant, agent, owner, limit)
+	return st.list(ctx, tenant, agent, owner, false, limit)
 }
 
-func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+// ListOwnOnly is ListOwned without the entries that have no owner.
+func (st *Store) ListOwnOnly(ctx context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+	if owner == "" {
+		return nil, errors.New("dynamodb: ListOwnOnly needs an owner")
+	}
+	return st.list(ctx, tenant, agent, owner, true, limit)
+}
+
+func (st *Store) list(ctx context.Context, tenant, agent, owner string, ownOnly bool, limit int) ([]session.Session, error) {
 	in := &ddb.QueryInput{
 		TableName:                 &st.table,
 		KeyConditionExpression:    aws.String("pk = :pk"),
@@ -711,7 +719,11 @@ func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit in
 		ScanIndexForward:          aws.Bool(false),
 		ConsistentRead:            aws.Bool(true),
 	}
-	if owner != "" {
+	if owner != "" && ownOnly {
+		in.FilterExpression = aws.String("#owner = :owner")
+		in.ExpressionAttributeNames = map[string]string{"#owner": "owner"}
+		in.ExpressionAttributeValues[":owner"] = s(owner)
+	} else if owner != "" {
 		in.FilterExpression = aws.String("attribute_not_exists(#owner) OR #owner = :owner")
 		in.ExpressionAttributeNames = map[string]string{"#owner": "owner"}
 		in.ExpressionAttributeValues[":owner"] = s(owner)
@@ -747,7 +759,7 @@ func (st *Store) list(ctx context.Context, tenant, agent, owner string, limit in
 		for _, item := range metas {
 			// The index filtered by owner; the session itself decides, so a
 			// stale index entry never shows another person's session.
-			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) && (owner == "" || m.Session.OwnedBy(owner)) {
+			if m := metaOf(tenant, item); !m.deleting && !m.Expired(now) && (owner == "" || m.Session.OwnedBy(owner)) && (!ownOnly || m.Session.Owner == owner) {
 				out = append(out, m.Session)
 			}
 		}

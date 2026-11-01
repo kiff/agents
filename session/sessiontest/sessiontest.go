@@ -696,6 +696,16 @@ func listOwnedIsTheOwners(t *testing.T, b Backend, c *clock) {
 	if all := list(t, b, "t1", 0); len(all) != 6 {
 		t.Fatalf("List still lists every session: %d", len(all))
 	}
+	// ListOwnOnly: the owner's own alone, never the taf's job runs, so they
+	// can't crowd a person's chats out of their export.
+	got, err = b.ListOwnOnly(ctx, "t1", "refunds", "member:ana", 0)
+	check(t, err)
+	if want := []string{ana.Session().ID, anaAgain.Session().ID}; !slices.Equal(ids(got), want) {
+		t.Fatalf("ana's own = %v, want %v (not the job's %s)", ids(got), want, job.Session().ID)
+	}
+	if got, err := b.ListOwnOnly(ctx, "t1", "refunds", "member:ana", 1); err != nil || !slices.Equal(ids(got), []string{ana.Session().ID}) {
+		t.Fatalf("ana's own, limit 1 = %v, %v", ids(got), err)
+	}
 }
 
 // A chat its owner archives says so when listed and read, and can be put

@@ -180,6 +180,10 @@ func (m *Store) ListOwned(_ context.Context, tenant, agent, owner string, limit 
 	return m.list(tenant, agent, func(s session.Session) bool { return s.OwnedBy(owner) }, limit)
 }
 
+func (m *Store) ListOwnOnly(_ context.Context, tenant, agent, owner string, limit int) ([]session.Session, error) {
+	return m.list(tenant, agent, func(s session.Session) bool { return owner != "" && s.Owner == owner }, limit)
+}
+
 func (m *Store) list(tenant, agent string, keep func(session.Session) bool, limit int) ([]session.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

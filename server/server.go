@@ -38,6 +38,9 @@ const maxBody = 4 << 20
 const (
 	defaultSessions = 20
 	maxSessions     = 100
+	// maxOwnSessions bounds own_only: a person's own sessions with one agent,
+	// as their export reads them all at once.
+	maxOwnSessions = 1000
 )
 
 // ErrUnauthorized means the request's caller couldn't be verified.
@@ -781,11 +784,18 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	if agent == "" {
 		return 0, nil, bad("agent_id is required")
 	}
+	// own_only: the owner's sessions alone, without the taf's job runs and
+	// trials, and up to maxOwnSessions (a person's export).
+	ownOnly := r.URL.Query().Get("own_only") == "true"
+	most := maxSessions
+	if ownOnly {
+		most = maxOwnSessions
+	}
 	limit := defaultSessions
 	if v := r.URL.Query().Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxSessions {
-			return 0, nil, bad("limit is 1 to %d", maxSessions)
+		if err != nil || n < 1 || n > most {
+			return 0, nil, bad("limit is 1 to %d", most)
 		}
 		limit = n
 	}
@@ -794,6 +804,9 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 	owner, err := ownerParam(r)
 	if err != nil {
 		return 0, nil, err
+	}
+	if ownOnly && owner == "" {
+		return 0, nil, bad("own_only needs an owner")
 	}
 	if grant := readGrantHeader(r); grant != "" {
 		// Another person's sessions, listed: their titles and times, never
@@ -806,7 +819,9 @@ func (s *Server) listSessions(ctx context.Context, c Caller, r *http.Request) (i
 		return 0, nil, err
 	}
 	var list []session.Session
-	if owner != "" {
+	if ownOnly {
+		list, err = s.Sessions.ListOwnOnly(ctx, c.Tenant, agent, owner, limit)
+	} else if owner != "" {
 		list, err = s.Sessions.ListOwned(ctx, c.Tenant, agent, owner, limit)
 	} else {
 		list, err = s.Sessions.List(ctx, c.Tenant, agent, limit)
