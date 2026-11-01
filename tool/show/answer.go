@@ -59,8 +59,10 @@ type QuestionAnswer struct {
 //   - confirm: one of the options' values, as a string;
 //   - questions: {"<question>": {"value": …} | {"values": […]} | {"own": "…"}},
 //     every question answered, a value only among its options;
-//   - approval: "approved", "declined", or "failed: <why>" (the phone's
-//     approval didn't go through);
+//   - approval: "approved", "declined", "already approved: <why>" (nothing
+//     was signed now: the connection and its Card were approved before, with
+//     their own signature), or "failed: <why>" (the phone's approval didn't
+//     go through);
 //   - sign_in: "signed in", "not now", or "failed: <why>";
 //   - result: an Outcome, {"taf_id": …} | {"version": n} | {"failed": "<why>"}.
 func Answer(c Component, answer json.RawMessage) (Answered, error) {
@@ -84,6 +86,13 @@ func Answer(c Component, answer json.RawMessage) (Answered, error) {
 		}
 		return Answered{Answer: answer, Words: word + " · it didn't go through: " + why}, nil
 	}
+	already := func() (Answered, error) {
+		why := strings.TrimSpace(strings.TrimPrefix(s, "already approved:"))
+		if why == "" || utf8.RuneCountInString(why) > MaxOwn {
+			return Answered{}, errors.New(`"already approved: " is followed by why, at most 2000 characters`)
+		}
+		return Answered{Answer: answer, Words: "Already approved"}, nil
+	}
 	switch c.Type {
 	case "confirm":
 		i := slices.IndexFunc(c.Options, func(o Option) bool { return o.Value == s })
@@ -97,10 +106,12 @@ func Answer(c Component, answer json.RawMessage) (Answered, error) {
 			return Answered{Answer: answer, Words: "Approved"}, nil
 		case s == "declined":
 			return Answered{Answer: answer, Words: "Declined"}, nil
+		case strings.HasPrefix(s, "already approved:"):
+			return already()
 		case strings.HasPrefix(s, "failed:"):
 			return failed("Approve")
 		}
-		return Answered{}, errors.New(`an approval's answer is "approved", "declined" or "failed: <why>"`)
+		return Answered{}, errors.New(`an approval's answer is "approved", "declined", "already approved: <why>" or "failed: <why>"`)
 	default: // sign_in
 		switch {
 		case s == "signed in":

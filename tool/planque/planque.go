@@ -93,6 +93,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Refund a payment, Read a charge): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
+			"Every argument's path is a field the vendor's operation takes, read from its describing tool (stripe_api_details for that stripe_api_operation_id), never made up: " +
+			"to narrow a broad tool (stripe_api_write) to one operation, connect that describing tool first, with setup_reads, and add the write after the owner approved it. " +
+			"amount_argument names only the argument the operation takes for the money it moves (a refund's amount); a write that moves no money (answering a dispute, pausing a subscription) has none, and its Card limits its calls. " +
 			"resource_argument names the string argument the call acts on (the payment, charge or order), one the taf's read of it takes. " +
 			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read of the same request that says the currency: " +
 			"the read's name (not its vendor tool), its argument that takes that id, and where the currency is in its answer; KIFF refuses a call in another currency than the Card's. " +
