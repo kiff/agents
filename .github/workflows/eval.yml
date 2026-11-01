@@ -41,21 +41,26 @@ jobs:
         with:
           fetch-depth: 0
       - name: Unchanged since the last pass?
-        # A scheduled night measures nothing new when neither what it runs
-        # (eval/tafs.ref, under eval/) nor kiff/agents' code it exercises
-        # changed since the last run that passed on main: it says so and
-        # spends nothing. Its success carries that pass, with the same
-        # eval/tafs.ref, so kiff/tafs' Upgrade gate accepts it. A dispatch
-        # always runs.
+        # A scheduled night measures nothing new when the latest completed
+        # run of this workflow on main passed and nothing but docs changed
+        # since its commit (eval/tafs.ref included): it says so and spends
+        # nothing. Its success carries that pass, with the same
+        # eval/tafs.ref, so kiff/tafs' Upgrade gate accepts it. A latest run
+        # that failed, or was cancelled, is never skipped over: the night
+        # runs, so a red stays red. A dispatch always runs.
         id: unchanged
         if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          last=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/eval.yml/runs?branch=main&status=success&per_page=5" \
-            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0] | \"\\(.id) \\(.head_sha)\"")
-          id=${last% *}; sha=${last#* }
-          if [ -n "$sha" ] && git cat-file -e "$sha" 2>/dev/null && git diff --quiet "$sha" HEAD -- agent tool eval cmd/e2e; then
+          last=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/eval.yml/runs?branch=main&status=completed&per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0] | \"\\(.id) \\(.conclusion) \\(.head_sha)\"")
+          read -r id conclusion sha <<<"$last"
+          if [ "$conclusion" != success ] || [ -z "$sha" ] || ! git cat-file -e "$sha" 2>/dev/null; then
+            exit 0
+          fi
+          changed=$(git diff --name-only "$sha" HEAD | grep -v -E '^docs/|\.md$' || true)
+          if [ -z "$changed" ]; then
             echo "skipped: unchanged since run $id (${sha:0:12})"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
