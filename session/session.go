@@ -401,6 +401,10 @@ type Store interface {
 	// were), most recently updated first, at most limit. Never another
 	// owner's.
 	ListOwned(ctx context.Context, tenant, agent, owner string, limit int) ([]Session, error)
+	// ListOwnOnly is ListOwned without the sessions that have no owner (a
+	// taf's job runs and trials): the owner's own sessions alone, as a
+	// person's export of their own data reads them.
+	ListOwnOnly(ctx context.Context, tenant, agent, owner string, limit int) ([]Session, error)
 	// Hold marks an open run paused: the session doesn't expire until the run
 	// ends. Holding a held run again changes nothing; a run that isn't open
 	// can't be held (ErrEnded).
