@@ -92,6 +92,9 @@ type Taf struct {
 	Improves string `json:"improves,omitempty"`
 	// Note says what changed, in the owner's language (an improvement).
 	Note string `json:"note,omitempty"`
+	// Summary is one short line on what the taf does, in the owner's
+	// language: its job line once the taf, or this version, goes live.
+	Summary string `json:"summary,omitempty"`
 	// Notes are the taf's instructions from the owner for the new version,
 	// in full; empty keeps them as they are (an improvement).
 	Notes string `json:"notes,omitempty"`
@@ -164,8 +167,8 @@ func (Tool) Spec() model.ToolSpec {
 			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
 			"[questions <id>] then a JSON object from each question's id to {value}, {values} (multi) or {own} (the owner's own words); " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
-			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed; " +
-			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
+			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
+			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?, summary?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
 			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
 			"A result waits while the taf or its version is made for the owner; what came of it is the call's result: {taf_id} (set up), {version} (the new version) or {failed} (why not): then say why, and hand over again once it's fixed. " +
 			"The app keeps no words of its own on a card: a sign_in takes title, text, yes (the button that opens the vendor's page), no (e.g. Not now) and note; a result takes yes (the button that opens the taf). " +
@@ -188,6 +191,7 @@ func (Tool) Spec() model.ToolSpec {
 			`"improves":{"type":"string","description":"the tafs id of the taf this is the next version of"},` +
 			`"note":{"type":"string","description":"what changed, in the owner's language (an improvement)"},` +
 			`"notes":{"type":"string","description":"the taf's full new instructions from the owner (an improvement); omit to keep them"},` +
+			`"summary":{"type":"string","description":"one short line on what the taf does, in the owner's language: its job line once it goes live"},` +
 			`"unscheduled":{"type":"boolean","description":"a new taf whose tools can't find its work by themselves: no schedule, the owner hands it work in its chat"}},` +
 			`"required":["agent","name","job"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
@@ -381,6 +385,9 @@ func (c Component) check() error {
 			if err := text("taf.notes", c.Taf.Notes, false, MaxNotes); err != nil {
 				return err
 			}
+		}
+		if err := text("taf.summary", c.Taf.Summary, false, MaxLabel); err != nil {
+			return err
 		}
 		if err := text("text", c.Text, true, MaxText); err != nil {
 			return err
