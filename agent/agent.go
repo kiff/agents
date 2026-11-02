@@ -559,6 +559,22 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		specs = append(specs, s)
 	}
 	var waited []session.ToolTiming // the last turn's tool calls, for the next turn's Usage
+	// How the run's latest call to each tool ended, for tools that check
+	// what the model claims (show's plan steps). Written only between
+	// batches, so the calls of a batch read it without a lock.
+	latest := map[string]string{}
+	ctx = tool.WithOutcomes(ctx, func(name string) string {
+		if oc, ok := latest[name]; ok {
+			return oc
+		}
+		// The model may name a vendor tool by its operation alone.
+		for full, oc := range latest {
+			if strings.HasSuffix(full, "__"+name) {
+				return oc
+			}
+		}
+		return ""
+	})
 	for first := true; ; first = false {
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
@@ -616,6 +632,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		results, err := a.callTools(ctx, rec, byName, calls, emit)
 		if err != nil {
 			return out, msgs, err
+		}
+		for _, r := range results {
+			latest[r.Tool] = outcome(r, "")
 		}
 		blocks := make([]model.Block, len(results))
 		var held bool

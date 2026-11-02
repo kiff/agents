@@ -3,6 +3,7 @@ package show_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -109,6 +110,57 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		r := call(t, in)
 		if !r.IsError || r.Component != nil || !strings.Contains(r.Text, want) {
 			t.Errorf("%s: %+v, want an error with %q", in, r, want)
+		}
+	}
+}
+
+// A step that names its call is done only once the call went through
+// (agents#293): refused, held, not made or failed is refused, with why;
+// failed and skipped stay allowed, as does a call the run didn't make.
+func TestAStepIsDoneOnlyOnceItsCallWentThrough(t *testing.T) {
+	latest := map[string]string{
+		"kiff__desk__post_reply":  "refused by KIFF, not sent",
+		"planque_connect":         "done",
+		"kiff__desk__apply_label": "held by KIFF, approved by the owner, then sent once: done",
+		"search_tickets":          "failed",
+	}
+	ctx := tool.WithOutcomes(context.Background(), func(name string) string {
+		if oc, ok := latest[name]; ok {
+			return oc
+		}
+		for full, oc := range latest {
+			if strings.HasSuffix(full, "__"+name) {
+				return oc
+			}
+		}
+		return ""
+	})
+	plan := func(status, call string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"type":"steps","id":"plan","steps":[{"label":"Reply to the customer","status":%q,"call":%q}]}`, status, call))
+	}
+	for _, tt := range []struct {
+		status, call string
+		refused      bool
+	}{
+		{"done", "kiff__desk__post_reply", true},
+		{"done", "post_reply", true}, // by its operation alone
+		{"done", "search_tickets", true},
+		{"failed", "kiff__desk__post_reply", false},
+		{"skipped", "kiff__desk__post_reply", false},
+		{"done", "planque_connect", false},
+		{"done", "apply_label", false},  // approved by the owner, then sent
+		{"done", "fetch_ticket", false}, // not made in this run
+		{"done", "", false},
+	} {
+		r, err := (show.Tool{}).Call(ctx, plan(tt.status, tt.call))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.IsError != tt.refused {
+			t.Errorf("%s %q: refused=%v, %s", tt.status, tt.call, r.IsError, r.Text)
+		}
+		if tt.refused && !strings.Contains(r.Text, "Mark it failed or skipped") {
+			t.Errorf("%s %q: says %q", tt.status, tt.call, r.Text)
 		}
 	}
 }

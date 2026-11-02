@@ -1745,3 +1745,23 @@ func TestAnOwnToolsRefusalIsKept(t *testing.T) {
 		t.Fatalf("own refusals kept: %+v", got)
 	}
 }
+
+// The loop gives tools the run's call outcomes (agents#293): a plan step
+// that names a refused call can't be shown done; the model reads why.
+func TestAStepNamingARefusedCallIsntDone(t *testing.T) {
+	reply := &fakeTool{name: "desk_post_reply", access: tool.Write, gateway: true,
+		result: tool.Result{Text: "Outside the Card.", IsError: true, State: tool.StateRefused}}
+	m := &script{replies: []model.Reply{
+		use("c1", "desk_post_reply", `{}`),
+		use("c2", "show", `{"type":"steps","id":"plan","steps":[{"label":"Reply to the customer","status":"done","call":"desk_post_reply"}]}`),
+		say("The reply was refused."),
+	}}
+	_, r := start(t, session.KindChat)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, reply, show.New()), r, nil, "Answer ticket 7.", nil); err != nil {
+		t.Fatal(err)
+	}
+	last := m.reqs[2].Messages[len(m.reqs[2].Messages)-1].Blocks[0]
+	if !last.IsError || !strings.Contains(last.Result, "refused by KIFF") || !strings.Contains(last.Result, "Mark it failed or skipped") {
+		t.Fatalf("show's result %+v", last)
+	}
+}

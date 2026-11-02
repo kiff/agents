@@ -49,10 +49,13 @@ var (
 	tones      = []string{"info", "success", "warning", "error"}
 )
 
-// Step is one line of a plan.
+// Step is one line of a plan. Call, when set, names the tool call the step
+// waits on: a step whose call this run made and that was refused, held, not
+// made or failed can't be done (stepDone).
 type Step struct {
 	Label  string `json:"label"`
 	Status string `json:"status"`
+	Call   string `json:"call,omitempty"`
 }
 
 // Option is one answer to a confirm or a question.
@@ -161,7 +164,7 @@ func (Tool) Spec() model.ToolSpec {
 	return model.ToolSpec{
 		Name: Name,
 		Description: "Show the owner a component in the chat; the app draws it. Showing an id again replaces that component in place (to advance steps). " +
-			"steps {title, steps:[{label, status: pending|active|done|failed|skipped}]}; notice {tone: info|success|warning|error, title?, text}; " +
+			"steps {title, steps:[{label, status: pending|active|done|failed|skipped, call?}]}, where call names the tool a step waits on, and the step is done only once that call went through; notice {tone: info|success|warning|error, title?, text}; " +
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
 			"questions {text, questions:[{id, text, options:[{value, label, description?}], 2 to 5, multi?, note?}], 1 to 4}: several questions the owner answers together, when none depends on another's answer; " +
 			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
@@ -179,7 +182,8 @@ func (Tool) Spec() model.ToolSpec {
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
-			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]}},"required":["label","status"]}},` +
+			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +
+			`"call":{"type":"string","description":"the tool the step waits on, by name: done only once that call went through"}},"required":["label","status"]}},` +
 			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"}},"required":["value","label"]}},` +
 			`"questions":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"},"multi":{"type":"boolean"},` +
 			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}},"required":["value","label"]}},` +
@@ -204,9 +208,12 @@ func (Tool) Spec() model.ToolSpec {
 
 // Call checks the component and returns it to be recorded. A component that
 // doesn't fit is an error result naming what to fix.
-func (Tool) Call(_ context.Context, input json.RawMessage) (tool.Result, error) {
+func (Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
 	c, err := Parse(input)
 	if err != nil {
+		return tool.Result{Text: err.Error(), IsError: true}, nil
+	}
+	if err := stepsDone(c, tool.OutcomesFrom(ctx)); err != nil {
 		return tool.Result{Text: err.Error(), IsError: true}, nil
 	}
 	b, _ := json.Marshal(c)
@@ -428,6 +435,24 @@ func checkOptions(options []Option, described bool) error {
 		if err := text("an option's description", o.Description, false, MaxLabel); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// stepsDone refuses a step marked done whose named call this run made and
+// that didn't go through: refused or held by KIFF, not made, failed, or of
+// unknown effect. failed and skipped stay allowed, and a step that names no
+// call, or a call this run didn't make, is as the model says.
+func stepsDone(c Component, outcomes tool.Outcomes) error {
+	for _, s := range c.Steps {
+		if s.Status != "done" || s.Call == "" {
+			continue
+		}
+		oc := outcomes(s.Call)
+		if oc == "" || oc == "done" || strings.HasSuffix(oc, ": done") {
+			continue
+		}
+		return fmt.Errorf("steps %s: %q can't be done: its call %s was %s. Mark it failed or skipped, or make the call again and show the plan once it went through", c.ID, s.Label, s.Call, oc)
 	}
 	return nil
 }
