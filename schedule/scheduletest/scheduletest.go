@@ -6,6 +6,7 @@ package scheduletest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		want := Schedule("t1", "morning")
 		want.Missed, want.Busy = schedule.MissedSkip, schedule.BusySkip
 		put(t, s, want)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != want {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v (err %v)", got, err)
 		}
 	})
@@ -75,7 +76,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		want := Schedule("t1", "morning")
 		want.Input = strings.Repeat("<&>", schedule.MaxInput/3)
 		put(t, s, want)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != want {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v (err %v)\nwant %+v", got, err, want)
 		}
 	})
@@ -86,7 +87,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		put(t, s, sc)
 		sc.Cron, sc.Enabled, sc.TimeZone = "30 7 * * *", false, ""
 		put(t, s, sc)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != sc {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, sc) {
 			t.Fatalf("got %+v (err %v), want the replacement %+v", got, err, sc)
 		}
 	})
@@ -104,7 +105,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		theirs.Input = "Another tenant's job."
 		put(t, s, mine)
 		put(t, s, theirs)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != mine {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, mine) {
 			t.Fatalf("t1 got %+v (err %v), want its own", got, err)
 		}
 		if _, err := s.Get(ctx, "t3", "morning"); !errors.Is(err, schedule.ErrNotFound) {

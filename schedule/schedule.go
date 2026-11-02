@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	_ "time/tzdata" // zones load the same on any host, a bare Lambda image included
@@ -54,6 +55,10 @@ type Schedule struct {
 	// nothing.
 	FollowUp bool `json:"follow_up,omitempty"`
 	Version  int  `json:"version,omitempty"`
+	// Skip is the coming firings the owner skipped, by their due time: each
+	// starts nothing and is kept as skipped by the owner. At most MaxSkips;
+	// a skip well past its time is pruned when its schedule next fires.
+	Skip []time.Time `json:"skip,omitempty"`
 	// Input is what each run is asked.
 	Input string `json:"input"`
 	// Enabled is whether it fires.
@@ -154,6 +159,9 @@ func (s Schedule) Check() error {
 	if s.FollowUp && s.KindOf() != KindOnce {
 		return errors.New("schedule: a follow-up fires once")
 	}
+	if len(s.Skip) > MaxSkips {
+		return fmt.Errorf("schedule: at most %d coming firings are skipped", MaxSkips)
+	}
 	if _, err := s.Location(); err != nil {
 		return err
 	}
@@ -219,7 +227,7 @@ func (s Schedule) Next(t time.Time) time.Time {
 		return time.Time{}
 	}
 	next := c.Next(t, loc)
-	for s.KindOf() == KindMonthlyLastDay && !next.IsZero() && !lastDay(next) {
+	for !next.IsZero() && (s.KindOf() == KindMonthlyLastDay && !lastDay(next) || slices.ContainsFunc(s.Skip, next.Equal)) {
 		next = c.Next(next, loc)
 	}
 	return next
@@ -253,6 +261,9 @@ var (
 	ErrFollowUpLimit = fmt.Errorf("schedule: the agent has %d follow-ups waiting, the most it may", MaxFollowUps)
 	ErrFollowUpRange = fmt.Errorf("schedule: a follow-up fires in the future, within %d days", int(FollowUpWithin.Hours()/24))
 )
+
+// MaxSkips is how many coming firings a schedule may have skipped.
+const MaxSkips = 20
 
 // ErrNotFound means the tenant has no schedule with that ID.
 var ErrNotFound = errors.New("schedule: no such schedule")
@@ -293,6 +304,7 @@ const (
 	FiredWaiting  = "waiting"
 	FiredReplaced = "skipped_replaced" // a later firing took its place
 	FiredDropped  = "skipped_dropped"  // its schedule changed or went before the agent was free
+	FiredSkipped  = "skipped_by_owner" // the owner skipped this one coming firing
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -517,6 +529,17 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	}
 	f := Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: due}
 	now := sv.now()
+	if slices.ContainsFunc(s.Skip, due.Equal) {
+		// Kept until it is past any late or repeated delivery, then pruned:
+		// a skip used up on the first delivery would let a repeat run.
+		if kept := slices.DeleteFunc(slices.Clone(s.Skip), func(t time.Time) bool { return t.Before(now.Add(-2 * MissedWithin)) }); len(kept) != len(s.Skip) {
+			s.Skip = kept
+			if err := sv.Store.Put(ctx, s); err != nil {
+				return err
+			}
+		}
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredSkipped})
+	}
 	if s.FollowUp && sv.Version != nil {
 		v, err := sv.Version(ctx, tenant, s.Agent)
 		if err != nil {

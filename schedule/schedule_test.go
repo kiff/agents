@@ -3,6 +3,7 @@ package schedule_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -140,10 +141,10 @@ func TestPutStoresThenSets(t *testing.T) {
 	if err := f.sv.Put(ctx, s); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := f.store.Get(ctx, "t1", "morning"); err != nil || got != s {
+	if got, err := f.store.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, s) {
 		t.Fatalf("stored %+v (err %v)", got, err)
 	}
-	if f.sched.set[[2]string{"t1", "morning"}] != s {
+	if !reflect.DeepEqual(f.sched.set[[2]string{"t1", "morning"}], s) {
 		t.Fatal("not set to fire")
 	}
 }
@@ -182,11 +183,11 @@ func TestPutThatFailsToSetCanBeRetried(t *testing.T) {
 	}
 	// What is stored is the truth: the owner sees the schedule, and a retry
 	// sets it.
-	if got, err := f.store.Get(ctx, "t1", "morning"); err != nil || got != s {
+	if got, err := f.store.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, s) {
 		t.Fatalf("after a failed Set, stored %+v (err %v)", got, err)
 	}
 	f.sched.fail = nil
-	if err := f.sv.Put(ctx, s); err != nil || f.sched.set[[2]string{"t1", "morning"}] != s {
+	if err := f.sv.Put(ctx, s); err != nil || !reflect.DeepEqual(f.sched.set[[2]string{"t1", "morning"}], s) {
 		t.Fatalf("the retry: %v", err)
 	}
 }
@@ -264,7 +265,7 @@ func TestFireHealsWhatTheSchedulerGotWrong(t *testing.T) {
 	type check func(t *testing.T, f *fixture)
 	setAgain := func(t *testing.T, f *fixture) {
 		stored, _ := f.store.Get(ctx, "t1", "morning")
-		if f.sched.set[[2]string{"t1", "morning"}] != stored {
+		if !reflect.DeepEqual(f.sched.set[[2]string{"t1", "morning"}], stored) {
 			t.Fatal("the Scheduler wasn't set back to what is stored")
 		}
 	}
@@ -672,5 +673,42 @@ func TestFollowUpsAreBounded(t *testing.T) {
 	}
 	if left, _ := f.store.List(ctx, "t1"); len(left) != 0 {
 		t.Fatalf("left %+v", left)
+	}
+}
+
+// Skipping one coming time: that firing starts nothing, even
+// delivered twice, and is kept as skipped by the owner; the next one runs,
+// and Next shows the first one not skipped. A skip well past is pruned.
+func TestSkipOneComingTime(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "morning") // weekdays 09:00, Paris
+	tuesday := due.Add(24 * time.Hour)
+	s.Skip = []time.Time{due}
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Next(due.Add(-time.Hour)); !got.Equal(tuesday) {
+		t.Fatalf("next %v, want Tuesday's", got)
+	}
+	for _, d := range []time.Time{due, due, tuesday} { // Monday's delivered twice
+		if err := f.sv.Fire(ctx, "t1", "morning", d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.started) != 1 || !f.started[0].Due.Equal(tuesday) {
+		t.Fatalf("started %+v, want only Tuesday's", f.started)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "morning", 2); len(h) != 2 || h[1].Outcome != schedule.FiredSkipped {
+		t.Fatalf("history %+v", h)
+	}
+	f.now = time.Date(2026, 10, 26, 8, 0, 0, 0, time.UTC) // the next Monday, 09:00 in Paris after the clocks went back
+	stored, _ := f.store.Get(ctx, "t1", "morning")
+	stored.Skip = append(stored.Skip, f.now)
+	_ = f.store.Put(ctx, stored)
+	if err := f.sv.Fire(ctx, "t1", "morning", f.now); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); len(got.Skip) != 1 || !got.Skip[0].Equal(f.now) {
+		t.Fatalf("skips left %v, want only the coming one", got.Skip)
 	}
 }
