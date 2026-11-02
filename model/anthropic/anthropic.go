@@ -193,7 +193,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	if req.System != "" {
 		p.System = []sdk.TextBlockParam{{Text: req.System}}
 	}
-	unsent := unsentSearches(req)
+	unsent := unsentServer(req)
 	for _, msg := range req.Messages {
 		var blocks []sdk.ContentBlockParamUnion
 		for _, b := range msg.Blocks {
@@ -227,8 +227,8 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 				return p, fmt.Errorf("anthropic: unknown block kind %q", b.Kind)
 			}
 		}
-		if len(blocks) == 0 && len(msg.Blocks) > 0 { // only a search left out: the turns still alternate
-			blocks = append(blocks, sdk.NewTextBlock("[a tool search, no longer offered]"))
+		if len(blocks) == 0 && len(msg.Blocks) > 0 { // only a server tool left out: the turns still alternate
+			blocks = append(blocks, sdk.NewTextBlock("[a server tool, no longer offered]"))
 		}
 		if msg.Role == model.Assistant {
 			p.Messages = append(p.Messages, sdk.NewAssistantMessage(blocks...))
@@ -274,7 +274,20 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	}
 	if deferred { // the model finds a deferred tool with this search, which is never deferred
 		p.Tools = append(p.Tools, sdk.ToolUnionParam{OfToolSearchToolRegex20251119: &sdk.ToolSearchToolRegex20251119Param{
-			Type: sdk.ToolSearchToolRegex20251119TypeToolSearchToolRegex20251119}})
+			Type: sdk.ToolSearchToolRegex20251119TypeToolSearchToolRegex20251119}}) // named searchTool
+	}
+	if w := req.Web; w != nil {
+		// The versions without code execution: their results come back as
+		// plain search and fetch blocks, which the next turn sends back.
+		search := sdk.WebSearchTool20250305Param{AllowedDomains: w.Domains}
+		fetch := sdk.WebFetchTool20250910Param{AllowedDomains: w.Domains}
+		if w.MaxUses > 0 {
+			search.MaxUses, fetch.MaxUses = sdk.Int(int64(w.MaxUses)), sdk.Int(int64(w.MaxUses))
+		}
+		if w.MaxFetchTokens > 0 {
+			fetch.MaxContentTokens = sdk.Int(int64(w.MaxFetchTokens))
+		}
+		p.Tools = append(p.Tools, sdk.ToolUnionParam{OfWebSearchTool20250305: &search}, sdk.ToolUnionParam{OfWebFetchTool20250910: &fetch})
 	}
 	if req.NoToolUse && len(p.Tools) > 0 { // with no tools there's nothing to forbid, and the API refuses a choice alone
 		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
@@ -296,35 +309,48 @@ func offersSearch(req model.Request) bool {
 	return false
 }
 
-// unsentSearches are the ids of the tool searches in req's messages that
+// unsentServer are the ids of the server tool calls in req's messages that
 // can't go back as they came: both the call and its result are left out, as
-// the API refuses either alone. A search goes back only while the request
-// offers the search and every tool its result found. A run's tools can change
-// between turns (Setup's reads end once the owner has decided, and with them
-// its last deferred tool), and the API then refuses a result whose search
-// isn't offered (kiff/agents#293). Any server tool's call and its result go
-// back together and in order, or neither does: a result with no call before
-// it, or a call whose result never came, is left out with its other half
-// (a resumed run can lose one with a turn cut from its front).
-func unsentSearches(req model.Request) map[string]bool {
+// the API refuses either alone. A call goes back only while the request
+// offers its tool, and a tool search only while it also offers every tool
+// its result found. A run's tools can change between turns (Setup's reads
+// end once the owner has decided, and with them its last deferred tool; web
+// search is offered on connect and repair turns only), and the API then
+// refuses a result whose tool isn't offered (kiff/agents#293). Any server
+// tool's call and its result go back together and in order, or neither
+// does: a result with no call before it, or a call whose result never came,
+// is left out with its other half (a resumed run can lose one with a turn
+// cut from its front).
+func unsentServer(req model.Request) map[string]bool {
 	offered := map[string]bool{}
 	for _, t := range req.Tools {
 		offered[t.Name] = true
 	}
-	search := offersSearch(req)
+	server := map[string]bool{}
+	if offersSearch(req) {
+		server[searchTool] = true
+	}
+	if req.Web != nil {
+		server["web_search"], server["web_fetch"] = true, true
+	}
 	unsent := map[string]bool{}
 	called, answered := map[string]bool{}, map[string]bool{}
 	for _, m := range req.Messages {
 		for _, b := range m.Blocks {
-			if id, result, ok := serverPart(b); ok {
-				if result {
-					if !called[id] {
-						unsent[id] = true
-					}
-					answered[id] = true
-				} else {
-					called[id] = true
+			id, result, ok := serverPart(b)
+			if !ok {
+				continue
+			}
+			if result {
+				if !called[id] {
+					unsent[id] = true
 				}
+				answered[id] = true
+				continue
+			}
+			called[id] = true
+			if !server[serverName(b)] {
+				unsent[id] = true
 			}
 		}
 	}
@@ -335,12 +361,8 @@ func unsentSearches(req model.Request) map[string]bool {
 	}
 	for _, m := range req.Messages {
 		for _, b := range m.Blocks {
-			id, ok := searchID(b)
+			id, ok := searchResult(b)
 			if !ok {
-				continue
-			}
-			if !search {
-				unsent[id] = true
 				continue
 			}
 			var v struct {
@@ -362,6 +384,10 @@ func unsentSearches(req model.Request) map[string]bool {
 	}
 	return unsent
 }
+
+// searchTool is the name of the tool search toParams offers beside deferred
+// tools.
+const searchTool = "tool_search_tool_regex"
 
 // serverPart is the id of the server tool call b is part of, and whether b is
 // its result: a call carries its id, a result the id of the call it answers.
@@ -386,28 +412,29 @@ func serverPart(b model.Block) (id string, result, ok bool) {
 	return "", false, false
 }
 
-// searchID is the id of the tool search b is part of: a tool search's call
-// (its id) or its result (the call's id it answers).
-func searchID(b model.Block) (string, bool) {
+// serverName is the tool a server call b names.
+func serverName(b model.Block) string {
+	var v struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal([]byte(b.Data), &v)
+	return v.Name
+}
+
+// searchResult is the id of the tool search call b answers, when b is a
+// tool search's result.
+func searchResult(b model.Block) (string, bool) {
 	if b.Kind != model.Server {
 		return "", false
 	}
 	var v struct {
 		Type      string `json:"type"`
-		ID        string `json:"id"`
-		Name      string `json:"name"`
 		ToolUseID string `json:"tool_use_id"`
 	}
-	if json.Unmarshal([]byte(b.Data), &v) != nil {
+	if json.Unmarshal([]byte(b.Data), &v) != nil || v.Type != "tool_search_tool_result" {
 		return "", false
 	}
-	switch {
-	case v.Type == "server_tool_use" && strings.HasPrefix(v.Name, "tool_search_tool_"):
-		return v.ID, true
-	case v.Type == "tool_search_tool_result":
-		return v.ToolUseID, true
-	}
-	return "", false
+	return v.ToolUseID, true
 }
 
 // markCache sets up to three of the API's four cache breakpoints. The prompt
@@ -485,8 +512,8 @@ func fromMessage(msg sdk.Message) model.Reply {
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.Thinking, Text: b.Thinking, Signature: b.Signature})
 		case sdk.RedactedThinkingBlock:
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.RedactedThinking, Data: b.Data})
-		case sdk.ServerToolUseBlock, sdk.ToolSearchToolResultBlock:
-			// A tool search the API ran: the next turn needs it back, in place.
+		case sdk.ServerToolUseBlock, sdk.ToolSearchToolResultBlock, sdk.WebSearchToolResultBlock, sdk.WebFetchToolResultBlock:
+			// A server tool the API ran: the next turn needs it back, in place.
 			if raw, err := json.Marshal(c.ToParam()); err == nil {
 				r.Blocks = append(r.Blocks, model.Block{Kind: model.Server, Data: string(raw)})
 			}
