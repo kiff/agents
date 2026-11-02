@@ -127,6 +127,9 @@ type Agent struct {
 	// resumed says the next turn is the first after Continue: its timing
 	// says so (Resumed).
 	resumed bool
+	// resolved is the outcome of each held call Continue carries the run on
+	// with, by call id.
+	resolved map[string]string
 }
 
 // clock is a.Now, or the system clock.
@@ -433,7 +436,46 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		return Outcome{}, msgs, err
 	}
 	a.resumed = true
+	a.resolved = make(map[string]string, len(held))
+	for _, h := range held {
+		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
+	}
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Done: done}, emit)
+}
+
+// outcomesIn is how the run's calls in msgs, its own turns after history,
+// ended, by tool, the latest call last: what a continued run starts from, so
+// a held call the owner refused isn't shown done once the run goes on. A call
+// Continue resolved has its exact outcome; one from an earlier turn, failed
+// when its result is an error (a refused or failed held call's is), else done.
+func (a Agent) outcomesIn(msgs []model.Message) map[string]string {
+	latest := map[string]string{}
+	if a.history > len(msgs) {
+		return latest
+	}
+	tools := map[string]string{}
+	for _, m := range msgs[a.history:] {
+		for _, b := range m.Blocks {
+			switch b.Kind {
+			case model.ToolUse:
+				tools[b.CallID] = b.Tool
+			case model.ToolResult:
+				name, ok := tools[b.CallID]
+				if !ok {
+					continue
+				}
+				switch oc, exact := a.resolved[b.CallID]; {
+				case exact:
+					latest[name] = oc
+				case b.IsError:
+					latest[name] = OutcomeFailed
+				default:
+					latest[name] = OutcomeDone
+				}
+			}
+		}
+	}
+	return latest
 }
 
 // withoutThinking is a paused turn's reply as a continued run sends it: its
@@ -567,7 +609,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 	// How the run's latest call to each tool ended, for tools that check
 	// what the model claims (show's plan steps). Written only between
 	// batches, so the calls of a batch read it without a lock.
-	latest := map[string]string{}
+	latest := a.outcomesIn(msgs)
 	ctx = tool.WithOutcomes(ctx, func(name string) string {
 		if oc, ok := latest[name]; ok {
 			return oc
