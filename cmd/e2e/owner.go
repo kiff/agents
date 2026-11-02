@@ -249,7 +249,9 @@ func rawWords(g grant) string {
 		}
 		titled[title] = true
 	}
-	if u, err := url.Parse(g.Request.Server); err == nil && u.Host != "" && strings.Contains(text, u.Host) {
+	// An API-key grant's own words say where the key goes, host and all:
+	// planque's, not Setup's.
+	if u, err := url.Parse(g.Request.Server); err == nil && u.Host != "" && g.Request.Kind != "api_key" && strings.Contains(text, u.Host) {
 		return "the vendor's host " + u.Host
 	}
 	return ""

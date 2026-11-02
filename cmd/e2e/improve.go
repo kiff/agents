@@ -332,6 +332,7 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 	answered := map[string]bool{}
 	approvedGrant := ""
 	msg := first
+	t.cardAnswers = nil // the first chat's answers aren't this one's: each card here takes msg
 	var r runs.Run
 	for turn := 0; turn < t.cfg.maxTurns; turn++ {
 		t.logf("owner: %s", oneLine(msg))

@@ -294,9 +294,11 @@ type test struct {
 	people    []*someone
 	cloudTafs []string
 	shared    [][2]string
-	taf       string   // the taf's agent id, once handed over
-	said      said     // what Setup wrote, for -grade
-	tafSaid   []string // the taf's answers in the chat, checked with -taf
+	taf       string // the taf's agent id, once handed over
+	said      said   // what Setup wrote, for -grade
+	// cardAnswers is this turn's answer to each card shown, by its id.
+	cardAnswers map[string]string
+	tafSaid     []string // the taf's answers in the chat, checked with -taf
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
 	// result is Setup's result that waits for what came of the hand-over:
@@ -750,6 +752,10 @@ func answerQuestions(c component, own string) string {
 // msg is in the old "[type id] answer" form when it answers a card.
 func (t *test) reply(ctx context.Context, ch *chat.Chat, last runs.Run, msg string) (runs.Run, error) {
 	if last.Status == runs.Paused {
+		// Every card the run waits on is answered, each with its own answer
+		// (t.cardAnswers, by the card's id; msg for one with none), and the
+		// run goes on once: it can't while one is still open.
+		answeredAny := false
 		for _, q := range last.Requirements {
 			if !q.Card() || q.Resolved(time.Now()) {
 				continue
@@ -758,13 +764,20 @@ func (t *test) reply(ctx context.Context, ch *chat.Chat, last runs.Run, msg stri
 			if err != nil {
 				return last, err
 			}
-			result, err := cardAnswer(c, msg)
+			own := msg
+			if a := t.cardAnswers[c.ID]; a != "" {
+				own = a
+			}
+			result, err := cardAnswer(c, own)
 			if err != nil {
 				return last, err
 			}
 			if _, err := runs.AnswerCard(ctx, t.rn.Runs, t.tenant, last.ID, q.CallID, result, time.Now()); err != nil {
 				return last, fmt.Errorf("answering %s %s: %w", c.Type, c.ID, err)
 			}
+			answeredAny = true
+		}
+		if answeredAny {
 			return t.rn.Execute(ctx, t.tenant, last.ID, nil)
 		}
 	}
@@ -851,6 +864,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			}
 		}
 		msg = ""
+		// Each card this turn's answer goes to, by its id: Setup may wait on
+		// two at once (an approval beside its questions), each answered apart.
+		t.cardAnswers = map[string]string{}
 		for _, c := range shown {
 			key := c.Type + "/" + c.ID + "/" + c.Grant + "/" + c.Draft
 			if c.Grant != "" {
@@ -913,6 +929,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				return c.Taf.Agent, draftID, nil
 			}
 			answered[key] = msg
+			if slices.Contains(show.Answerable, c.Type) && msg != "" {
+				t.cardAnswers[c.ID] = msg
+			}
 		}
 		if msg == "" {
 			// The facts once, the first time Setup asks in words; then agreement.
