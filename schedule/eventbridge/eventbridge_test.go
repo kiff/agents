@@ -231,3 +231,25 @@ func must(b []byte, err error) []byte {
 }
 
 var _ schedule.Scheduler = (*eventbridge.Scheduler)(nil)
+
+// A once schedule is at() in its zone and deletes itself once it fires; a
+// last-day schedule fires daily at its time.
+func TestSetWritesEachKind(t *testing.T) {
+	f := newFake()
+	once := scheduletest.Schedule("t1", "followup")
+	once.Kind, once.Cron, once.At = schedule.KindOnce, "", time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	last := scheduletest.Schedule("t1", "close")
+	last.Kind, last.Cron = schedule.KindMonthlyLastDay, "0 18 * * *"
+	sc := eventbridge.New(f, group, target, role)
+	for _, s := range []schedule.Schedule{once, last} {
+		if err := sc.Set(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if in := f.get(t, "t1", "followup"); *in.ScheduleExpression != "at(2026-11-03T09:00:00)" || in.ActionAfterCompletion != types.ActionAfterCompletionDelete {
+		t.Fatalf("once: %s, after %s", *in.ScheduleExpression, in.ActionAfterCompletion)
+	}
+	if in := f.get(t, "t1", "close"); *in.ScheduleExpression != "cron(0 18 * * ? *)" || in.ActionAfterCompletion != types.ActionAfterCompletionNone {
+		t.Fatalf("last day: %s, after %s", *in.ScheduleExpression, in.ActionAfterCompletion)
+	}
+}

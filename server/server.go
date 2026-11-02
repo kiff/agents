@@ -1080,7 +1080,7 @@ type scheduleView struct {
 
 func (s *Server) view(sc schedule.Schedule) scheduleView {
 	// Its rules as they apply: an empty one is its default.
-	sc.Missed, sc.Busy = sc.MissedRule(), cmp.Or(sc.Busy, schedule.BusySkip)
+	sc.Kind, sc.Missed, sc.Busy = sc.KindOf(), sc.MissedRule(), cmp.Or(sc.Busy, schedule.BusySkip)
 	v := scheduleView{Schedule: sc}
 	if next := sc.Next(s.now()); !next.IsZero() {
 		next = next.UTC() // like every time the API returns

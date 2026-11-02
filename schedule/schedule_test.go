@@ -427,3 +427,100 @@ func TestARuleThatDoesntExistIsRefused(t *testing.T) {
 		t.Fatal("busy: queue taken")
 	}
 }
+
+// The kinds beside cron: once at an instant, and the month's
+// last day, which cron can't say.
+func TestKindsBesideCron(t *testing.T) {
+	once := scheduletest.Schedule("t1", "followup")
+	once.Kind, once.Cron, once.At = schedule.KindOnce, "", time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	last := scheduletest.Schedule("t1", "close")
+	last.Kind, last.Cron = schedule.KindMonthlyLastDay, "0 18 * * *"
+	for _, s := range []schedule.Schedule{once, last} {
+		if err := s.Check(); err != nil {
+			t.Fatalf("%s refused: %v", s.Kind, err)
+		}
+	}
+	bad := map[string]func(*schedule.Schedule){
+		"once with a cron":      func(s *schedule.Schedule) { *s = once; s.Cron = "0 9 * * *" },
+		"once with no time":     func(s *schedule.Schedule) { *s = once; s.At = time.Time{} },
+		"once at a second":      func(s *schedule.Schedule) { *s = once; s.At = s.At.Add(time.Second) },
+		"last day, not daily":   func(s *schedule.Schedule) { *s = last; s.Cron = "0 18 * * 1-5" },
+		"last day, twice a day": func(s *schedule.Schedule) { *s = last; s.Cron = "0 9,18 * * *" },
+		"a cron with a time":    func(s *schedule.Schedule) { s.At = once.At },
+		"a kind that isn't one": func(s *schedule.Schedule) { s.Kind = "hourly" },
+	}
+	for name, change := range bad {
+		s := scheduletest.Schedule("t1", "morning")
+		change(&s)
+		if err := s.Check(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	// Next: the instant once, nothing after it; the month's last day, 18:00 in Paris.
+	if got := once.Next(once.At.Add(-time.Hour)); !got.Equal(once.At) {
+		t.Errorf("once: next %v", got)
+	}
+	if got := once.Next(once.At); !got.IsZero() {
+		t.Errorf("once: fires again at %v", got)
+	}
+	paris, _ := time.LoadLocation("Europe/Paris")
+	for after, want := range map[time.Time]time.Time{
+		time.Date(2026, 11, 2, 12, 0, 0, 0, paris):  time.Date(2026, 11, 30, 18, 0, 0, 0, paris),
+		time.Date(2026, 11, 30, 19, 0, 0, 0, paris): time.Date(2026, 12, 31, 18, 0, 0, 0, paris),
+		time.Date(2027, 2, 1, 0, 0, 0, 0, paris):    time.Date(2027, 2, 28, 18, 0, 0, 0, paris),
+		time.Date(2028, 2, 1, 0, 0, 0, 0, paris):    time.Date(2028, 2, 29, 18, 0, 0, 0, paris),
+	} {
+		if got := last.Next(after); !got.Equal(want) {
+			t.Errorf("last day after %v: %v, want %v", after, got, want)
+		}
+	}
+}
+
+// The Scheduler fires a last-day schedule daily: only the last day's firing
+// runs, and the others are no mismatch to heal.
+func TestALastDayScheduleRunsOnlyOnTheLastDay(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "close")
+	s.Kind, s.Cron = schedule.KindMonthlyLastDay, "0 18 * * *"
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	paris, _ := time.LoadLocation("Europe/Paris")
+	for _, d := range []int{29, 30} {
+		if err := f.sv.Fire(ctx, "t1", "close", time.Date(2026, 11, d, 18, 0, 0, 0, paris)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.started) != 1 || !f.started[0].Due.Equal(time.Date(2026, 11, 30, 18, 0, 0, 0, paris)) {
+		t.Fatalf("started %+v, want only 30 November", f.started)
+	}
+}
+
+// A once schedule fires once and is gone: set no more, stored off with its
+// firing in the history. A repeated delivery starts nothing.
+func TestAOnceScheduleFiresOnceAndIsGone(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "followup")
+	s.Kind, s.Cron, s.At = schedule.KindOnce, "", due
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := f.sv.Fire(ctx, "t1", "followup", due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.started) != 1 {
+		t.Fatalf("started %d runs", len(f.started))
+	}
+	if got, err := f.store.Get(ctx, "t1", "followup"); err != nil || got.Enabled || !got.Next(due.Add(-time.Hour)).IsZero() {
+		t.Fatalf("stored %+v, %v; want it off", got, err)
+	}
+	if _, set := f.sched.set[[2]string{"t1", "followup"}]; set {
+		t.Fatal("still set")
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "followup", 10); len(h) != 1 || h[0].Outcome != schedule.FiredRun {
+		t.Fatalf("history %+v", h)
+	}
+}

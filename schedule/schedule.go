@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	_ "time/tzdata" // zones load the same on any host, a bare Lambda image included
 )
@@ -37,9 +38,16 @@ type Schedule struct {
 	ID     string `json:"id"`
 	// Agent is the agent each firing runs.
 	Agent string `json:"agent"`
+	// Kind is how it fires: KindCron (the default when empty), KindOnce or
+	// KindMonthlyLastDay.
+	Kind string `json:"kind,omitempty"`
 	// Cron is five-field POSIX cron, read in TimeZone (IANA; empty is UTC).
-	Cron     string `json:"cron"`
+	// KindMonthlyLastDay keeps its time of day here, as a daily cron
+	// ("M H * * *"); KindOnce has none.
+	Cron     string `json:"cron,omitempty"`
 	TimeZone string `json:"time_zone,omitempty"`
+	// At is when a KindOnce schedule fires, to the minute.
+	At time.Time `json:"at,omitzero"`
 	// Input is what each run is asked.
 	Input string `json:"input"`
 	// Enabled is whether it fires.
@@ -51,6 +59,22 @@ type Schedule struct {
 	Missed string `json:"missed,omitempty"`
 	Busy   string `json:"busy,omitempty"`
 }
+
+// How a schedule fires. The plain forms the dial shows (daily,
+// weekdays, chosen days, several times a day, every N minutes between set
+// hours) are KindCron, as cron says them exactly.
+const (
+	KindCron = "cron"
+	// KindOnce fires once, at At, and is gone after it fires.
+	KindOnce = "once"
+	// KindMonthlyLastDay fires on the month's last day at its Cron's time:
+	// cron can't say "the last day", so the Scheduler fires it daily and
+	// only the last day's firing runs.
+	KindMonthlyLastDay = "monthly_last_day"
+)
+
+// KindOf is the schedule's Kind, its default filled in.
+func (s Schedule) KindOf() string { return cmp.Or(s.Kind, KindCron) }
 
 // A schedule's rules for a firing that comes late, or while its last run is
 // still at work.
@@ -90,12 +114,31 @@ func (s Schedule) Check() error {
 	case s.Busy != "" && s.Busy != BusySkip:
 		return fmt.Errorf("schedule: busy is %q", BusySkip)
 	}
-	c, err := ParseCron(s.Cron)
-	if err != nil {
-		return err
-	}
-	if c.MinGap() < MinGap {
-		return fmt.Errorf("schedule: a schedule fires at most every %d minutes", int(MinGap.Minutes()))
+	switch s.KindOf() {
+	case KindCron:
+		c, err := ParseCron(s.Cron)
+		if err != nil {
+			return err
+		}
+		if c.MinGap() < MinGap {
+			return fmt.Errorf("schedule: a schedule fires at most every %d minutes", int(MinGap.Minutes()))
+		}
+		if !s.At.IsZero() {
+			return errors.New("schedule: only a once schedule has a time to fire at")
+		}
+	case KindMonthlyLastDay:
+		if !daily(s.Cron) {
+			return errors.New("schedule: a monthly last-day schedule keeps its time as a daily cron (\"M H * * *\")")
+		}
+		if !s.At.IsZero() {
+			return errors.New("schedule: only a once schedule has a time to fire at")
+		}
+	case KindOnce:
+		if s.Cron != "" || s.At.IsZero() || !s.At.Equal(s.At.Truncate(time.Minute)) {
+			return errors.New("schedule: a once schedule has a time to fire at, to the minute, and no cron")
+		}
+	default:
+		return fmt.Errorf("schedule: kind is %q, %q or %q", KindCron, KindOnce, KindMonthlyLastDay)
 	}
 	if _, err := s.Location(); err != nil {
 		return err
@@ -115,22 +158,57 @@ func (s Schedule) Location() (*time.Location, error) {
 	return loc, nil
 }
 
+// daily reports whether expr is a cron that fires once a day, every day.
+func daily(expr string) bool {
+	f := strings.Fields(expr)
+	if len(f) != 5 || f[2] != "*" || f[3] != "*" || f[4] != "*" {
+		return false
+	}
+	c, err := ParseCron(expr)
+	return err == nil && len(values(c.minute)) == 1 && len(values(c.hour)) == 1
+}
+
+// lastDay reports whether t is the last day of its month, on t's own clock.
+func lastDay(t time.Time) bool { return t.AddDate(0, 0, 1).Day() == 1 }
+
 // names reports whether the schedule, as stored, fires at due.
 func (s Schedule) names(due time.Time) bool {
+	if !s.Enabled {
+		return false
+	}
+	if s.KindOf() == KindOnce {
+		return due.Equal(s.At)
+	}
 	c, err1 := ParseCron(s.Cron)
 	loc, err2 := s.Location()
-	return s.Enabled && err1 == nil && err2 == nil && c.Matches(due.In(loc))
+	if err1 != nil || err2 != nil || !c.Matches(due.In(loc)) {
+		return false
+	}
+	return s.KindOf() != KindMonthlyLastDay || lastDay(due.In(loc))
 }
 
 // Next is the schedule's first firing after t, or the zero time when it is
 // off or never fires. It is for showing; the Scheduler decides the firings.
 func (s Schedule) Next(t time.Time) time.Time {
-	c, err1 := ParseCron(s.Cron)
-	loc, err2 := s.Location()
-	if !s.Enabled || err1 != nil || err2 != nil {
+	if !s.Enabled {
 		return time.Time{}
 	}
-	return c.Next(t, loc)
+	if s.KindOf() == KindOnce {
+		if s.At.After(t) {
+			return s.At
+		}
+		return time.Time{}
+	}
+	c, err1 := ParseCron(s.Cron)
+	loc, err2 := s.Location()
+	if err1 != nil || err2 != nil {
+		return time.Time{}
+	}
+	next := c.Next(t, loc)
+	for s.KindOf() == KindMonthlyLastDay && !next.IsZero() && !lastDay(next) {
+		next = c.Next(next, loc)
+	}
+	return next
 }
 
 func validID(id string) bool {
@@ -322,6 +400,9 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	if !live {
 		return sv.Delete(ctx, tenant, id)
 	}
+	if s.KindOf() == KindOnce && !s.Enabled {
+		return sv.Scheduler.Remove(ctx, tenant, id) // fired, or off: nothing to set again
+	}
 	if !s.names(due) {
 		return sv.Scheduler.Set(ctx, s)
 	}
@@ -332,7 +413,7 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	}
 	// Missed: later than a Scheduler's own delay, and past what the rule runs.
 	if late := now.Sub(due); late > MissedAfter && (s.MissedRule() == MissedSkip || late > MissedWithin) {
-		return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredMissed})
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredMissed})
 	}
 	if sv.Busy != nil {
 		busy, err := sv.Busy(ctx, f)
@@ -340,20 +421,29 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 			return err
 		}
 		if busy {
-			return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredBusy})
+			return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredBusy})
 		}
 	}
 	if err := sv.Start(ctx, f); err != nil {
 		return err
 	}
-	return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredRun, Run: f.Key()})
+	return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredRun, Run: f.Key()})
 }
 
-// keep adds fired to the schedule's history, when there is one.
-func (sv *Service) keep(ctx context.Context, f Firing, fired Fired) error {
-	if sv.History == nil {
-		return nil
+// keep adds fired to the schedule's history, when there is one. A once
+// schedule is then off for good, whatever came of its firing: the Scheduler
+// deleted its own after firing, and the stored one stays, off, so its
+// history does too.
+func (sv *Service) keep(ctx context.Context, s Schedule, f Firing, fired Fired) error {
+	if sv.History != nil {
+		fired.Due, fired.At = fired.Due.UTC(), fired.At.UTC()
+		if err := sv.History.Add(ctx, f.Tenant, f.Schedule, fired); err != nil {
+			return err
+		}
 	}
-	fired.Due, fired.At = fired.Due.UTC(), fired.At.UTC()
-	return sv.History.Add(ctx, f.Tenant, f.Schedule, fired)
+	if s.KindOf() == KindOnce {
+		s.Enabled = false
+		return sv.Store.Put(ctx, s)
+	}
+	return nil
 }

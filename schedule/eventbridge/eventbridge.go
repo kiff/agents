@@ -108,7 +108,7 @@ func ParseEvent(b []byte) (tenant, id string, due time.Time, err error) {
 // Set creates or replaces the EventBridge schedule for s, enabled or
 // disabled as s is.
 func (sc *Scheduler) Set(ctx context.Context, s schedule.Schedule) error {
-	c, err := schedule.ParseCron(s.Cron)
+	expr, err := expression(s)
 	if err != nil {
 		return err
 	}
@@ -128,11 +128,14 @@ func (sc *Scheduler) Set(ctx context.Context, s schedule.Schedule) error {
 	target := &types.Target{Arn: &sc.Target, RoleArn: &sc.Role, Input: &in,
 		RetryPolicy: &types.RetryPolicy{MaximumRetryAttempts: aws.Int32(maxAttempts), MaximumEventAgeInSeconds: aws.Int32(int32(maxAge.Seconds()))}}
 	window := &types.FlexibleTimeWindow{Mode: types.FlexibleTimeWindowModeOff}
-	expr := c.EventBridge()
+	after := types.ActionAfterCompletionNone
+	if s.KindOf() == schedule.KindOnce {
+		after = types.ActionAfterCompletionDelete // fires once, then deletes itself
+	}
 
 	update := func() error {
 		_, err := sc.api.UpdateSchedule(ctx, &sch.UpdateScheduleInput{Name: &name, GroupName: &sc.Group, ScheduleExpression: &expr,
-			ScheduleExpressionTimezone: &zone, State: state, FlexibleTimeWindow: window, Target: target})
+			ScheduleExpressionTimezone: &zone, State: state, FlexibleTimeWindow: window, Target: target, ActionAfterCompletion: after})
 		return err
 	}
 	err = update()
@@ -141,12 +144,30 @@ func (sc *Scheduler) Set(ctx context.Context, s schedule.Schedule) error {
 		return err
 	}
 	_, err = sc.api.CreateSchedule(ctx, &sch.CreateScheduleInput{Name: &name, GroupName: &sc.Group, ScheduleExpression: &expr,
-		ScheduleExpressionTimezone: &zone, State: state, FlexibleTimeWindow: window, Target: target})
+		ScheduleExpressionTimezone: &zone, State: state, FlexibleTimeWindow: window, Target: target, ActionAfterCompletion: after})
 	var conflict *types.ConflictException
 	if errors.As(err, &conflict) {
 		return update() // created meanwhile by another Set: replace it
 	}
 	return err
+}
+
+// expression is the schedule as EventBridge writes it: a cron, or at() for
+// a once schedule, in the schedule's time zone. A monthly last-day schedule
+// fires daily at its time; Service.Fire runs only the last day's firing.
+func expression(s schedule.Schedule) (string, error) {
+	if s.KindOf() == schedule.KindOnce {
+		loc, err := s.Location()
+		if err != nil {
+			return "", err
+		}
+		return "at(" + s.At.In(loc).Format("2006-01-02T15:04:05") + ")", nil
+	}
+	c, err := schedule.ParseCron(s.Cron)
+	if err != nil {
+		return "", err
+	}
+	return c.EventBridge(), nil
 }
 
 // Remove deletes the EventBridge schedule. One that isn't there is not an
