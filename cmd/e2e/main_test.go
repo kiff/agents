@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -459,5 +462,37 @@ func TestAJudgedFailsReasonIsInTheTranscript(t *testing.T) {
 	got := transcript.String()
 	if !strings.Contains(got, "FAIL asks for no id: message 2 asks the owner for a charge id") || !strings.Contains(got, long) {
 		t.Fatalf("the transcript: %q", got)
+	}
+}
+
+// An API-key grant is approved with the key: the phone signs the digest and
+// the key's SHA-256, and sends the key only in planque's header.
+func TestThePhoneGivesAnAPIKeyOutsideTheSignedBody(t *testing.T) {
+	var body, header string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body, header = string(b), r.Header.Get("Planque-Vendor-Key")
+		if r.URL.Path != "/v1/accounts/t1/grants/grt_1/key" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"listed"}`))
+	}))
+	defer srv.Close()
+	p := &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1", vendorKey: "dk_secret"}
+	var g grant
+	g.ID, g.Digest, g.Request.Kind = "grt_1", "abc", "api_key"
+	status, err := p.approveAndSignIn(context.Background(), g)
+	if err != nil || !strings.Contains(status, "listed") {
+		t.Fatalf("%q, %v", status, err)
+	}
+	sum := sha256.Sum256([]byte("dk_secret"))
+	if header != "dk_secret" || body != `{"digest":"abc","key_sha256":"`+hex.EncodeToString(sum[:])+`"}` || strings.Contains(body, "dk_secret") {
+		t.Fatalf("header %q, body %s", header, body)
+	}
+	p.vendorKey = ""
+	if _, err := p.approveAndSignIn(context.Background(), g); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY") {
+		t.Fatalf("no key: %v", err)
 	}
 }

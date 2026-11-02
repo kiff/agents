@@ -23,6 +23,8 @@
 //	E2E_SETUP_KEY       the setup agent's KIFF key (from -signin): an agent with no tools
 //	E2E_VENDOR          the vendor's MCP server (the fake vendor's /mcp)
 //	E2E_VENDOR_TOKEN    the fake vendor's /fake/calls token (the refund checks need it)
+//	E2E_DESK_KEY        the fake support desk's API key: the phone gives it when it
+//	                    approves an API-key grant, as an owner does (never Setup)
 //	E2E_PLANQUE         planque, https://planque.kiff.dev by default
 //	E2E_STRIPE_KEY      on demand: a Stripe test-mode key. The vendor is then
 //	                    Stripe's MCP server, a person signs in at Stripe
@@ -94,6 +96,7 @@ var opusPrice = model.Price{Input: 4_000_000, Output: 20_000_000, CacheRead: 200
 
 type config struct {
 	session, setupKey, vendor, vendorToken, planque string
+	deskKey                                         string
 	cloud                                           string // tafs cloud, for -people
 	stripeKey, signInFile                           string
 	phone                                           string
@@ -207,6 +210,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	}
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	cfg.vendor, cfg.vendorToken = env("E2E_VENDOR"), env("E2E_VENDOR_TOKEN")
+	if cfg.deskKey = env("E2E_DESK_KEY"); cfg.deskKey != "" {
+		stdout.hide(cfg.deskKey, "<the desk's key>")
+	}
 
 	if cfg.stripeKey = env("E2E_STRIPE_KEY"); cfg.stripeKey != "" {
 		// On demand, against Stripe in test mode: a person signs in. Its
@@ -329,6 +335,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	t.out.hide(t.tenant, "<the account>")
 	t.kiff = kiffSession(kiff.APIURL, t.cfg.session, t.tenant, pk, t.hc)
 	t.phone = newPhone(pk, t.cfg.planque, t.tenant, t.hc)
+	t.phone.vendorKey = t.cfg.deskKey
 	// planque asks KIFF whether this device signed (d=), as for the app.
 	if t.phone.device, err = thisDevice(ctx, t.kiff); err != nil {
 		return fmt.Errorf("the phone's device in KIFF: %w", err)
