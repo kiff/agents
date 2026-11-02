@@ -19,7 +19,7 @@ var ctx = context.Background()
 type setter struct{ set map[string]schedule.Schedule }
 
 func (s *setter) Set(_ context.Context, sc schedule.Schedule) error { s.set[sc.ID] = sc; return nil }
-func (s *setter) Remove(_ context.Context, _, id string) error     { delete(s.set, id); return nil }
+func (s *setter) Remove(_ context.Context, _, id string) error      { delete(s.set, id); return nil }
 
 func call(t *testing.T, tl *followup.Tool, c context.Context, in string) tool.Result {
 	t.Helper()
