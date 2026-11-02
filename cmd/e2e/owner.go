@@ -199,12 +199,15 @@ type grantTool struct {
 
 // grant is a grant as the phone reads it.
 type grant struct {
-	ID     string   `json:"id"`
-	Status string   `json:"status"`
-	Text   string   `json:"text"`
-	Digest string   `json:"digest"`
-	Tools  []string `json:"tools"`
-	Reason string   `json:"reason"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// SignedIn: planque holds the grant's sign-in, or its key: adding tools
+	// takes an approval alone, with no second sign-in or key.
+	SignedIn bool     `json:"signed_in"`
+	Text     string   `json:"text"`
+	Digest   string   `json:"digest"`
+	Tools    []string `json:"tools"`
+	Reason   string   `json:"reason"`
 	// Request is what the owner approved: the tools, as asked for.
 	Request struct {
 		Server string      `json:"server"`
@@ -293,7 +296,7 @@ func (p *phone) grant(ctx context.Context, id string) (grant, error) {
 // whose sign-in planque already holds (its tools set after connecting
 // first) connects on approval, with no sign-in. It returns the status.
 func (p *phone) approveAndSignIn(ctx context.Context, g grant) (string, error) {
-	if g.Request.Kind == "api_key" {
+	if g.Request.Kind == "api_key" && !g.SignedIn {
 		return p.giveKey(ctx, g)
 	}
 	a, err := p.planque.do(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/approve", map[string]string{"digest": g.Digest})

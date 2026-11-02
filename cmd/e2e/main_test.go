@@ -495,6 +495,13 @@ func TestThePhoneGivesAnAPIKeyOutsideTheSignedBody(t *testing.T) {
 	if _, err := p.approveAndSignIn(context.Background(), g); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY") {
 		t.Fatalf("no key: %v", err)
 	}
+	// Tools added to a grant that holds the key: an approval alone, no key again.
+	g.SignedIn = true
+	body, header = "", ""
+	p.approveAndSignIn(context.Background(), g)
+	if header != "" || strings.Contains(body, "key_sha256") {
+		t.Fatalf("the key was sent again: header %q, body %s", header, body)
+	}
 }
 
 // What Setup asks for the desk (kiff/agents#293): an API-key grant, every

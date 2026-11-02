@@ -197,7 +197,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	for _, msg := range req.Messages {
 		var blocks []sdk.ContentBlockParamUnion
 		for _, b := range msg.Blocks {
-			if id, ok := searchID(b); ok && unsent[id] {
+			if id, _, ok := serverPart(b); ok && unsent[id] {
 				continue
 			}
 			switch b.Kind {
@@ -302,7 +302,10 @@ func offersSearch(req model.Request) bool {
 // offers the search and every tool its result found. A run's tools can change
 // between turns (Setup's reads end once the owner has decided, and with them
 // its last deferred tool), and the API then refuses a result whose search
-// isn't offered (kiff/agents#293).
+// isn't offered (kiff/agents#293). Any server tool's call and its result go
+// back together and in order, or neither does: a result with no call before
+// it, or a call whose result never came, is left out with its other half
+// (a resumed run can lose one with a turn cut from its front).
 func unsentSearches(req model.Request) map[string]bool {
 	offered := map[string]bool{}
 	for _, t := range req.Tools {
@@ -310,6 +313,26 @@ func unsentSearches(req model.Request) map[string]bool {
 	}
 	search := offersSearch(req)
 	unsent := map[string]bool{}
+	called, answered := map[string]bool{}, map[string]bool{}
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			if id, result, ok := serverPart(b); ok {
+				if result {
+					if !called[id] {
+						unsent[id] = true
+					}
+					answered[id] = true
+				} else {
+					called[id] = true
+				}
+			}
+		}
+	}
+	for id := range called {
+		if !answered[id] {
+			unsent[id] = true
+		}
+	}
 	for _, m := range req.Messages {
 		for _, b := range m.Blocks {
 			id, ok := searchID(b)
@@ -338,6 +361,29 @@ func unsentSearches(req model.Request) map[string]bool {
 		}
 	}
 	return unsent
+}
+
+// serverPart is the id of the server tool call b is part of, and whether b is
+// its result: a call carries its id, a result the id of the call it answers.
+func serverPart(b model.Block) (id string, result, ok bool) {
+	if b.Kind != model.Server {
+		return "", false, false
+	}
+	var v struct {
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		ToolUseID string `json:"tool_use_id"`
+	}
+	if json.Unmarshal([]byte(b.Data), &v) != nil {
+		return "", false, false
+	}
+	switch {
+	case v.Type == "server_tool_use" && v.ID != "":
+		return v.ID, false, true
+	case v.ToolUseID != "":
+		return v.ToolUseID, true, true
+	}
+	return "", false, false
 }
 
 // searchID is the id of the tool search b is part of: a tool search's call
