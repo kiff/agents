@@ -19,6 +19,7 @@ import (
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/tool"
 )
 
 // runEvent is what a background invocation is sent: the run to execute. The
@@ -311,3 +312,35 @@ func agentAtWork(runs run.Runs) func(ctx context.Context, f schedule.Firing) (bo
 // busyLook is how many of an agent's newest runs agentAtWork reads: a run at
 // work is among the newest, since the tenant's runs going at once are capped.
 const busyLook = 20
+
+// probe makes a check's read: the agent's tool named c.Tool, called with
+// c.Arguments through its gateway, which records and counts it on the
+// agent's Card like any read. A tool that isn't a read, or a read KIFF
+// didn't allow, is an error the firing reports, never a run.
+func probe(ctx context.Context, b *registry.Builder, tenant, agent string, c schedule.Check) (string, error) {
+	a, _, err := b.Build(ctx, tenant, agent)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range a.Tools {
+		if t.Spec().Name != c.Tool {
+			continue
+		}
+		if t.Access() != tool.Read || !t.Gateway() {
+			return "", fmt.Errorf("lambda: the check's tool %s isn't a read through the gateway", c.Tool)
+		}
+		in := c.Arguments
+		if len(in) == 0 {
+			in = json.RawMessage(`{}`)
+		}
+		res, err := t.Call(ctx, in)
+		if err != nil {
+			return "", err
+		}
+		if res.IsError || res.State != "" {
+			return "", fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, res.State)
+		}
+		return res.Text, nil
+	}
+	return "", fmt.Errorf("lambda: the agent has no tool %s to check with", c.Tool)
+}

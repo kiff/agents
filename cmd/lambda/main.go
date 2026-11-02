@@ -258,6 +258,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			return d.Version, err
 		},
 	}
+	// A check of a connected app reads through the agent's own Card, with
+	// its own key, without the model: only a tool its gateway
+	// lists as a read.
+	schedules.Probe = func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+		return probe(ctx, rn.Builder, tenant, agent, c)
+	}
 	// A taf's own follow-ups, on the same schedules.
 	rn.Builder.FollowUp = func(tenant, agent string, version int) tool.Tool {
 		return followup.New(schedules, runs, tenant, agent, version)

@@ -55,6 +55,9 @@ type Schedule struct {
 	// nothing.
 	FollowUp bool `json:"follow_up,omitempty"`
 	Version  int  `json:"version,omitempty"`
+	// AppCheck, when set, makes each firing a check of a connected app: one
+	// read first, and a run only for what is new (Check).
+	AppCheck *Check `json:"check,omitempty"`
 	// Skip is the coming firings the owner skipped, by their due time: each
 	// starts nothing and is kept as skipped by the owner. At most MaxSkips;
 	// a skip well past its time is pruned when its schedule next fires.
@@ -158,6 +161,14 @@ func (s Schedule) Check() error {
 	}
 	if s.FollowUp && s.KindOf() != KindOnce {
 		return errors.New("schedule: a follow-up fires once")
+	}
+	if s.AppCheck != nil {
+		if s.FollowUp {
+			return errors.New("schedule: a follow-up checks nothing first")
+		}
+		if err := s.AppCheck.check(); err != nil {
+			return err
+		}
 	}
 	if len(s.Skip) > MaxSkips {
 		return fmt.Errorf("schedule: at most %d coming firings are skipped", MaxSkips)
@@ -305,6 +316,7 @@ const (
 	FiredReplaced = "skipped_replaced" // a later firing took its place
 	FiredDropped  = "skipped_dropped"  // its schedule changed or went before the agent was free
 	FiredSkipped  = "skipped_by_owner" // the owner skipped this one coming firing
+	FiredQuiet    = "quiet"            // its check found nothing new: no run
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -382,6 +394,10 @@ type Service struct {
 	// schedules of an agent Live says is gone, so Live is a consistent read
 	// of "the agent exists": never "is enabled", never a stale read.
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
+	// Probe makes a check's read through the agent's own Card, without the
+	// model, and returns its result. Without it, a schedule with a check
+	// starts nothing and is kept as skipped.
+	Probe func(ctx context.Context, tenant, agent string, c Check) (string, error)
 	// Version, when set, is the agent's live version: a follow-up set under
 	// another starts nothing, and is dropped.
 	Version func(ctx context.Context, tenant, agent string) (int, error)
@@ -574,10 +590,52 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 			return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredBusy})
 		}
 	}
+	return sv.start(ctx, s, f, now)
+}
+
+// start runs the firing: for a schedule with a check, only when the read
+// finds something new, with it in the run's input. The check's cursor moves
+// only once the run has started; a repeated delivery of the firing that
+// started it starts that run again (Firing.Key), not another read.
+func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Time) error {
+	if c := s.AppCheck; c != nil && !c.Due.Equal(f.Due) {
+		if sv.Probe == nil {
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredDropped})
+		}
+		result, err := sv.Probe(ctx, s.Tenant, s.Agent, *c)
+		if err != nil {
+			return err
+		}
+		items, last, err := c.newItems(result)
+		if err != nil {
+			return err
+		}
+		next := *c
+		next.Last = last
+		if len(items) == 0 {
+			if next.Last != c.Last { // the first check takes the cursor
+				s.AppCheck = &next
+				if err := sv.Store.Put(ctx, s); err != nil {
+					return err
+				}
+			}
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredQuiet})
+		}
+		f.Input = withItems(s.Input, items)
+		if err := sv.Start(ctx, f); err != nil {
+			return err
+		}
+		next.Due = f.Due
+		s.AppCheck = &next
+		if err := sv.Store.Put(ctx, s); err != nil {
+			return err
+		}
+		return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
+	}
 	if err := sv.Start(ctx, f); err != nil {
 		return err
 	}
-	return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredRun, Run: f.Key()})
+	return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
 }
 
 // Free runs the agent's waiting firing, if any, now that its run has ended.
@@ -621,10 +679,10 @@ func (sv *Service) Free(ctx context.Context, tenant, agent string) error {
 			return sv.putBack(ctx, w, nil)
 		}
 	}
-	if err := sv.Start(ctx, f); err != nil {
+	if err := sv.start(ctx, s, f, now); err != nil {
 		return sv.putBack(ctx, w, err)
 	}
-	return sv.keep(ctx, s, f, Fired{Due: w.Due, At: now, Outcome: FiredRun, Run: f.Key()})
+	return nil
 }
 
 // FreeAll frees up to limit agents with a waiting firing, for the sweep: a
