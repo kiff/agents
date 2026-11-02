@@ -580,6 +580,54 @@ func TestADeferredToolIsFoundBySearchAndTheSearchIsSentBack(t *testing.T) {
 	}
 }
 
+// A run's tools can change between turns: once its last deferred tool is
+// gone, no search is offered, and a search it ran earlier goes back as
+// neither its call nor its result (the API refuses a result whose search
+// isn't offered: kiff/agents#293). The same when the tool a search found is
+// gone. A turn left with nothing keeps a line, so the turns still alternate.
+func TestASearchGoesBackOnlyWhileItIsOffered(t *testing.T) {
+	m, sent := serve(t, stream)
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	call := model.Block{Kind: model.Server, Data: `{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_regex","input":{"pattern":"tafs_"},"caller":{"type":"direct"}}`}
+	result := model.Block{Kind: model.Server, Data: `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"tafs_state"}]}}`}
+	msgs := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "What do my tafs wait on?"}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "Looking."}, call, result, {Kind: model.ToolUse, CallID: "toolu_9", Tool: "tafs_state", Input: json.RawMessage(`{}`)}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "toolu_9", Result: "{}"}}},
+		{Role: model.Assistant, Blocks: []model.Block{call, result}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "And now?"}}},
+	}
+	content := func() string {
+		var out []string
+		for _, msg := range (*sent)["messages"].([]any) {
+			b, _ := json.Marshal(msg.(map[string]any)["content"])
+			out = append(out, string(b))
+		}
+		return strings.Join(out, "\n")
+	}
+	for name, tools := range map[string][]model.ToolSpec{
+		"no deferred tool":    {{Name: "kiff_status", InputSchema: schema}, {Name: "tafs_state", InputSchema: schema}},
+		"the found tool gone": {{Name: "kiff_status", InputSchema: schema}, {Name: "tafs_other", InputSchema: schema, Defer: true}},
+	} {
+		if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools, Messages: msgs}, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := content()
+		if strings.Contains(got, "srvtoolu_1") || !strings.Contains(got, `"text":"Looking."`) || !strings.Contains(got, "toolu_9") ||
+			!strings.Contains(got, "[a tool search, no longer offered]") || len((*sent)["messages"].([]any)) != len(msgs) {
+			t.Fatalf("%s: sent %s", name, got)
+		}
+	}
+	// Still offered, with the tool it found: the search goes back as it came.
+	tools := []model.ToolSpec{{Name: "kiff_status", InputSchema: schema}, {Name: "tafs_state", InputSchema: schema, Defer: true}}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools, Messages: msgs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := content(); strings.Count(got, `"id":"srvtoolu_1"`) != 2 || strings.Count(got, `"tool_use_id":"srvtoolu_1"`) != 2 || strings.Contains(got, "no longer offered") {
+		t.Fatalf("offered: sent %s", got)
+	}
+}
+
 // Without a deferred tool, no search is offered.
 func TestNoDeferredToolNoSearch(t *testing.T) {
 	m, sent := serve(t, stream)

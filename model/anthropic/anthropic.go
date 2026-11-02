@@ -193,9 +193,13 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	if req.System != "" {
 		p.System = []sdk.TextBlockParam{{Text: req.System}}
 	}
+	unsent := unsentSearches(req)
 	for _, msg := range req.Messages {
 		var blocks []sdk.ContentBlockParamUnion
 		for _, b := range msg.Blocks {
+			if id, ok := searchID(b); ok && unsent[id] {
+				continue
+			}
 			switch b.Kind {
 			case model.Text:
 				blocks = append(blocks, sdk.NewTextBlock(b.Text))
@@ -222,6 +226,9 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 			default:
 				return p, fmt.Errorf("anthropic: unknown block kind %q", b.Kind)
 			}
+		}
+		if len(blocks) == 0 && len(msg.Blocks) > 0 { // only a search left out: the turns still alternate
+			blocks = append(blocks, sdk.NewTextBlock("[a tool search, no longer offered]"))
 		}
 		if msg.Role == model.Assistant {
 			p.Messages = append(p.Messages, sdk.NewAssistantMessage(blocks...))
@@ -276,6 +283,85 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		markCache(&p, req.CacheLong, req.HistoryEnd)
 	}
 	return p, nil
+}
+
+// offersSearch: req offers a deferred tool, so toParams offers the tool search
+// beside it.
+func offersSearch(req model.Request) bool {
+	for _, t := range req.Tools {
+		if t.Defer {
+			return true
+		}
+	}
+	return false
+}
+
+// unsentSearches are the ids of the tool searches in req's messages that
+// can't go back as they came: both the call and its result are left out, as
+// the API refuses either alone. A search goes back only while the request
+// offers the search and every tool its result found. A run's tools can change
+// between turns (Setup's reads end once the owner has decided, and with them
+// its last deferred tool), and the API then refuses a result whose search
+// isn't offered (kiff/agents#293).
+func unsentSearches(req model.Request) map[string]bool {
+	offered := map[string]bool{}
+	for _, t := range req.Tools {
+		offered[t.Name] = true
+	}
+	search := offersSearch(req)
+	unsent := map[string]bool{}
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			id, ok := searchID(b)
+			if !ok {
+				continue
+			}
+			if !search {
+				unsent[id] = true
+				continue
+			}
+			var v struct {
+				Content struct {
+					References []struct {
+						ToolName string `json:"tool_name"`
+					} `json:"tool_references"`
+				} `json:"content"`
+			}
+			if json.Unmarshal([]byte(b.Data), &v) != nil {
+				continue
+			}
+			for _, r := range v.Content.References {
+				if !offered[r.ToolName] {
+					unsent[id] = true
+				}
+			}
+		}
+	}
+	return unsent
+}
+
+// searchID is the id of the tool search b is part of: a tool search's call
+// (its id) or its result (the call's id it answers).
+func searchID(b model.Block) (string, bool) {
+	if b.Kind != model.Server {
+		return "", false
+	}
+	var v struct {
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		ToolUseID string `json:"tool_use_id"`
+	}
+	if json.Unmarshal([]byte(b.Data), &v) != nil {
+		return "", false
+	}
+	switch {
+	case v.Type == "server_tool_use" && strings.HasPrefix(v.Name, "tool_search_tool_"):
+		return v.ID, true
+	case v.Type == "tool_search_tool_result":
+		return v.ToolUseID, true
+	}
+	return "", false
 }
 
 // markCache sets up to three of the API's four cache breakpoints. The prompt
