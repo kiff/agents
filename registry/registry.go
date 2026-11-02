@@ -129,6 +129,9 @@ type Definition struct {
 	// text one more turn to write its closing message (agent.CloseInText),
 	// as Setup's chat needs. Off for an agent whose quiet runs end silently.
 	CloseInText bool `json:"close_in_text,omitempty"`
+	// FollowUps gives the agent the follow_up tool: its own one-off
+	// follow-ups, bounded by the server. Off unless set.
+	FollowUps bool `json:"follow_ups,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -325,6 +328,10 @@ func Digest(d Definition) (string, error) {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
 }
+
+// ErrNoFollowUps means a definition asks for follow-ups the server doesn't
+// offer.
+var ErrNoFollowUps = errors.New("registry: this server doesn't offer follow-ups")
 
 // ErrNoVersion is a version the agent doesn't have.
 var ErrNoVersion = errors.New("registry: no such version")
@@ -584,6 +591,9 @@ type Builder struct {
 	// Workspace, when set, returns the workspace tool for one run of an
 	// agent whose definition asks for one.
 	Workspace func(tenant, run string) tool.Tool
+	// FollowUp, when set, returns the follow-up tool for an agent whose
+	// definition asks for one, at its version.
+	FollowUp func(tenant, agent string, version int) tool.Tool
 	// Drafts, when set, returns the draft tool for an agent whose KIFF key
 	// is key.
 	Drafts func(tenant, key string) tool.Tool
@@ -651,6 +661,12 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	}
 	if d.Show {
 		tools = append(tools, show.New())
+	}
+	if d.FollowUps {
+		if b.FollowUp == nil {
+			return agent.Agent{}, d, ErrNoFollowUps
+		}
+		tools = append(tools, b.FollowUp(tenant, id, d.Version))
 	}
 	if d.Drafts {
 		if b.Drafts == nil {

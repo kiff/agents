@@ -95,6 +95,7 @@ import (
 	blobs3 "github.com/kiff/agents/store/s3"
 	"github.com/kiff/agents/tool"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
+	"github.com/kiff/agents/tool/followup"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
 	"github.com/kiff/agents/tool/planque"
@@ -256,6 +257,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			d, err := agents.Get(ctx, tenant, agent)
 			return d.Version, err
 		},
+	}
+	// A taf's own follow-ups, on the same schedules.
+	rn.Builder.FollowUp = func(tenant, agent string, version int) tool.Tool {
+		return followup.New(schedules, runs, tenant, agent, version)
 	}
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
