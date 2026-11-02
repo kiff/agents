@@ -208,6 +208,7 @@ type grant struct {
 	// Request is what the owner approved: the tools, as asked for.
 	Request struct {
 		Server string      `json:"server"`
+		Agent  string      `json:"agent"`
 		Kind   string      `json:"kind"`
 		Tools  []grantTool `json:"tools"`
 	} `json:"request"`

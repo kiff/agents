@@ -109,6 +109,7 @@ type config struct {
 	maxCost                                         int64
 	keep                                            bool
 	improve                                         bool // the improve case, after the taf
+	desk                                            bool // the second vendor: a desk by its key, Setup's connection only
 	people                                          bool // step 9's people on a shared taf, instead of the taf's own checks
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
@@ -158,6 +159,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	maxCost := fs.Float64("max-cost", 3, "the most the whole test may spend on the model, in US dollars")
 	fs.BoolVar(&cfg.people, "people", false, "step 9 (kiff/tafs#294) instead of the taf's own checks: tafs cloud starts Setup's taf, it is shared with Support, "+
 		"and Maria and Luis (E2E_MARIA_*, E2E_LUIS_*) each see only their own use of it")
+	fs.BoolVar(&cfg.desk, "desk", false, "the second vendor (kiff/agents#293): Setup connects the fake vendor's support desk, a REST API by its key "+
+		"(E2E_DESK_KEY), not MCP; checked once the desk's tools are connected, with no taf after")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
@@ -381,6 +384,14 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	t.setupTimings(ctx) // also after a failed chat: a slow one is worth reading
 	if err != nil {
 		return err
+	}
+	if t.cfg.desk {
+		t.logf("the desk is connected by its key, scoped to its workspace, with no money argument on its writes")
+		fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
+		if t.cfg.judge != nil {
+			return t.grade(ctx, tafID)
+		}
+		return nil
 	}
 	// tafs cloud makes the taf and answers the result with its id: Setup goes
 	// on from that, and what it says then is graded with the rest.
@@ -801,6 +812,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	}
 	// What the owner answers when Setup asks in words rather than with a choice.
 	facts := o.facts
+	if t.cfg.desk {
+		msg, facts = o.deskAsk(deskOf(t.cfg.vendor)), o.deskFacts
+	}
 	answered := map[string]string{}
 	toldFacts := false
 	approvedGrant := ""
@@ -875,6 +889,13 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 				if c.Draft != "" {
 					draftID = c.Draft
+				}
+				if t.cfg.desk && approvedGrant != "" {
+					// The desk's case ends once its tools are connected: what Setup
+					// asked for is what's checked.
+					if g, err := t.phone.grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
+						return g.Request.Agent, "", deskChecks(g)
+					}
 				}
 				msg = fmt.Sprintf("[%s %s] approved, signed in", c.Type, c.ID)
 			case "result":
@@ -1071,7 +1092,11 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			}
 		}
 	}
-	checks, err := gradeSetup(ctx, t.cfg.judge, owners[t.cfg.owner], t.said, tafAgent, m)
+	o := owners[t.cfg.owner]
+	if t.cfg.desk {
+		o.taf = "Desk" // the name the desk's owner gives (deskAsk)
+	}
+	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}
@@ -2033,6 +2058,49 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 			return err
 		}
 		t.said.messages = append(t.said.messages, msgs...)
+	}
+	return nil
+}
+
+// deskOf is the fake vendor's desk, from its MCP server's address (…/mcp).
+func deskOf(vendor string) string {
+	return strings.TrimSuffix(strings.TrimRight(vendor, "/"), "/mcp") + "/desk"
+}
+
+// deskWorkspace is the one workspace the fake desk has, and the owner names.
+const deskWorkspace = "ws_demo"
+
+// deskChecks is what Setup must have asked for the desk (kiff/agents#293):
+// an API-key grant; every tool pinned to the workspace; at least one write,
+// none with an amount, each naming what it acts on; the reads marked
+// read-only.
+func deskChecks(g grant) error {
+	if g.Request.Kind != "api_key" {
+		return fmt.Errorf("the desk's grant is %q, not an API-key grant", g.Request.Kind)
+	}
+	writes := 0
+	for _, tl := range g.Request.Tools {
+		pinned := false
+		for k, v := range tl.Fixed {
+			if strings.Contains(strings.ToLower(k), "workspace") && v == deskWorkspace {
+				pinned = true
+			}
+		}
+		switch {
+		case !pinned:
+			return fmt.Errorf("%s isn't pinned to the workspace %s: %v", tl.Tool, deskWorkspace, tl.Fixed)
+		case tl.AmountArg != "":
+			return fmt.Errorf("%s names an amount (%s): the desk moves no money", tl.Tool, tl.AmountArg)
+		case tl.ReadOnly:
+			continue
+		}
+		writes++
+		if tl.ResourceArg == "" {
+			return fmt.Errorf("%s changes things but names nothing it acts on", tl.Tool)
+		}
+	}
+	if writes == 0 {
+		return errors.New("the desk's grant has no write: a taf could only read")
 	}
 	return nil
 }

@@ -114,6 +114,24 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md
+      - name: Setup on the second vendor, a desk by its key
+        # The same Setup on a vendor that isn't payments and has no MCP server
+        # (kiff/agents#293): the fake vendor's support desk, by its REST API and
+        # a key the test phone gives as it approves. Graded like the first, and
+        # checked once the desk's tools are connected: an API-key grant, every
+        # tool pinned to the workspace, writes that name what they act on and
+        # carry no amount, reads marked read-only. A Setup rule passes on both
+        # vendors or fails the night.
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -transcript desk.md
       # Main's role writes under reports/; a branch's (an eval/tafs-<sha>
       # measure, a PR's branch) only under reports/branches/<branch>/, so a
       # check that fails there can be read too (infra/aws.sh). Only a pushed
@@ -131,7 +149,7 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
           fi
-          for f in report.md results.json setup.md; do
+          for f in report.md results.json setup.md desk.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"

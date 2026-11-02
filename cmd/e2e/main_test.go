@@ -496,3 +496,40 @@ func TestThePhoneGivesAnAPIKeyOutsideTheSignedBody(t *testing.T) {
 		t.Fatalf("no key: %v", err)
 	}
 }
+
+// What Setup asks for the desk (kiff/agents#293): an API-key grant, every
+// tool pinned to the workspace, writes that name what they act on and no
+// amount, reads marked read-only.
+func TestTheDeskChecks(t *testing.T) {
+	if got := deskOf("https://fake.example/mcp/"); got != "https://fake.example/desk" {
+		t.Fatalf("deskOf = %s", got)
+	}
+	good := func() grant {
+		var g grant
+		g.Request.Kind = "api_key"
+		ws := map[string]any{"workspace": deskWorkspace}
+		g.Request.Tools = []grantTool{
+			{Tool: "searchTickets", ReadOnly: true, Fixed: ws},
+			{Tool: "postReply", ResourceArg: "ticket", Fixed: ws},
+			{Tool: "applyLabel", ResourceArg: "ticket", Fixed: ws},
+		}
+		return g
+	}
+	if err := deskChecks(good()); err != nil {
+		t.Fatal(err)
+	}
+	for name, spoil := range map[string]func(*grant){
+		"an MCP grant":       func(g *grant) { g.Request.Kind = "" },
+		"an unpinned read":   func(g *grant) { g.Request.Tools[0].Fixed = nil },
+		"another workspace":  func(g *grant) { g.Request.Tools[1].Fixed = map[string]any{"workspace": "ws_other"} },
+		"an amount":          func(g *grant) { g.Request.Tools[1].AmountArg = "amount" },
+		"a write on nothing": func(g *grant) { g.Request.Tools[2].ResourceArg = "" },
+		"reads only":         func(g *grant) { g.Request.Tools = g.Request.Tools[:1] },
+	} {
+		g := good()
+		spoil(&g)
+		if deskChecks(g) == nil {
+			t.Errorf("%s passed", name)
+		}
+	}
+}
