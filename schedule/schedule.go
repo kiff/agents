@@ -48,6 +48,12 @@ type Schedule struct {
 	TimeZone string `json:"time_zone,omitempty"`
 	// At is when a KindOnce schedule fires, to the minute.
 	At time.Time `json:"at,omitzero"`
+	// FollowUp marks a once schedule the agent set itself,
+	// within the bounds Service.FollowUp keeps, and Version the agent's
+	// version it was set under: a firing under another version starts
+	// nothing.
+	FollowUp bool `json:"follow_up,omitempty"`
+	Version  int  `json:"version,omitempty"`
 	// Input is what each run is asked.
 	Input string `json:"input"`
 	// Enabled is whether it fires.
@@ -145,6 +151,9 @@ func (s Schedule) Check() error {
 	default:
 		return fmt.Errorf("schedule: kind is %q, %q or %q", KindCron, KindOnce, KindMonthlyLastDay)
 	}
+	if s.FollowUp && s.KindOf() != KindOnce {
+		return errors.New("schedule: a follow-up fires once")
+	}
 	if _, err := s.Location(); err != nil {
 		return err
 	}
@@ -227,6 +236,23 @@ func validID(id string) bool {
 	}
 	return true
 }
+
+// A follow-up's bounds. The server keeps them, never the
+// model's words.
+const (
+	// MaxFollowUps is how many follow-ups an agent may have waiting to fire.
+	MaxFollowUps = 3
+	// FollowUpWithin is how far ahead a follow-up may be set: one that
+	// hasn't fired by then never does.
+	FollowUpWithin = 7 * 24 * time.Hour
+)
+
+// Why a follow-up is refused.
+var (
+	ErrFollowUpChain = errors.New("schedule: a follow-up's run can't set another follow-up")
+	ErrFollowUpLimit = fmt.Errorf("schedule: the agent has %d follow-ups waiting, the most it may", MaxFollowUps)
+	ErrFollowUpRange = fmt.Errorf("schedule: a follow-up fires in the future, within %d days", int(FollowUpWithin.Hours()/24))
+)
 
 // ErrNotFound means the tenant has no schedule with that ID.
 var ErrNotFound = errors.New("schedule: no such schedule")
@@ -344,6 +370,9 @@ type Service struct {
 	// schedules of an agent Live says is gone, so Live is a consistent read
 	// of "the agent exists": never "is enabled", never a stale read.
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
+	// Version, when set, is the agent's live version: a follow-up set under
+	// another starts nothing, and is dropped.
+	Version func(ctx context.Context, tenant, agent string) (int, error)
 	// Start starts a background run for the firing, once per Key.
 	Start func(ctx context.Context, f Firing) error
 	// Busy reports whether the schedule's last run, other than the firing's
@@ -377,6 +406,53 @@ func (sv *Service) Put(ctx context.Context, s Schedule) error {
 		return err
 	}
 	return sv.Scheduler.Set(ctx, s)
+}
+
+// FollowUp stores and sets s as a follow-up its agent set itself, from a
+// run: once, in the future and within FollowUpWithin, at most MaxFollowUps
+// waiting per agent. fromFollowUp is whether that run was itself started by
+// a follow-up: a chain could become recurring work nobody confirmed, so it
+// is refused.
+func (sv *Service) FollowUp(ctx context.Context, s Schedule, fromFollowUp bool) error {
+	if fromFollowUp {
+		return ErrFollowUpChain
+	}
+	s.Kind, s.FollowUp, s.Enabled = KindOnce, true, true
+	if now := sv.now(); !s.At.After(now) || s.At.After(now.Add(FollowUpWithin)) {
+		return ErrFollowUpRange
+	}
+	all, err := sv.Store.List(ctx, s.Tenant)
+	if err != nil {
+		return err
+	}
+	open := 0
+	for _, o := range all {
+		if o.FollowUp && o.Enabled && o.Agent == s.Agent && o.ID != s.ID {
+			open++
+		}
+	}
+	if open >= MaxFollowUps {
+		return ErrFollowUpLimit
+	}
+	return sv.Put(ctx, s)
+}
+
+// CancelFollowUps deletes the agent's follow-ups that wait to fire: its
+// version switched, it was paused or halted, or its Card was revoked. Safe
+// to repeat.
+func (sv *Service) CancelFollowUps(ctx context.Context, tenant, agent string) error {
+	all, err := sv.Store.List(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	for _, s := range all {
+		if s.FollowUp && s.Agent == agent {
+			if err := sv.Delete(ctx, tenant, s.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Delete stops the schedule, then forgets it. Safe to repeat.
@@ -441,6 +517,15 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	}
 	f := Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: due}
 	now := sv.now()
+	if s.FollowUp && sv.Version != nil {
+		v, err := sv.Version(ctx, tenant, s.Agent)
+		if err != nil {
+			return err
+		}
+		if v != s.Version {
+			return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredDropped})
+		}
+	}
 	// Missed: later than a Scheduler's own delay, and past what the rule runs.
 	if late := now.Sub(due); late > MissedAfter && (s.MissedRule() == MissedSkip || late > MissedWithin) {
 		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredMissed})

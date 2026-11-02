@@ -618,3 +618,59 @@ func TestLatestWithoutAStoreSkips(t *testing.T) {
 		t.Fatalf("history %+v", h)
 	}
 }
+
+// A follow-up the agent sets itself is bounded by the server:
+// once, within seven days, at most three waiting, never from a follow-up's
+// own run; a version switch drops it, and cancelling deletes them all.
+func TestFollowUpsAreBounded(t *testing.T) {
+	f := newFixture()
+	f.now = due
+	version := 4
+	f.sv.Version = func(context.Context, string, string) (int, error) { return version, nil }
+	up := func(id string, at time.Time) schedule.Schedule {
+		s := scheduletest.Schedule("t1", id)
+		s.Cron, s.At, s.Version = "", at, 4
+		return s
+	}
+	tomorrow := due.Add(24 * time.Hour)
+	if err := f.sv.FollowUp(ctx, up("again", tomorrow), true); !errors.Is(err, schedule.ErrFollowUpChain) {
+		t.Fatalf("from a follow-up's run: %v", err)
+	}
+	for _, at := range []time.Time{due, due.Add(-time.Hour), due.Add(schedule.FollowUpWithin + time.Hour)} {
+		if err := f.sv.FollowUp(ctx, up("range", at), false); !errors.Is(err, schedule.ErrFollowUpRange) {
+			t.Errorf("at %v: %v", at, err)
+		}
+	}
+	for i, id := range []string{"a", "b", "c"} {
+		if err := f.sv.FollowUp(ctx, up(id, tomorrow.Add(time.Duration(i)*time.Hour)), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := f.store.Get(ctx, "t1", "a"); !got.FollowUp || got.KindOf() != schedule.KindOnce || !got.Enabled {
+		t.Fatalf("stored %+v", got)
+	}
+	if err := f.sv.FollowUp(ctx, up("d", tomorrow), false); !errors.Is(err, schedule.ErrFollowUpLimit) {
+		t.Fatalf("a fourth: %v", err)
+	}
+	if err := f.sv.FollowUp(ctx, up("a", tomorrow.Add(5*time.Hour)), false); err != nil { // moving one isn't a fourth
+		t.Fatalf("moving one: %v", err)
+	}
+	// Set under version 4; the agent is on 5 when it fires: nothing starts.
+	version = 5
+	f.now = tomorrow.Add(time.Hour)
+	if err := f.sv.Fire(ctx, "t1", "b", tomorrow.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 0 {
+		t.Fatalf("started %+v under another version", f.started)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "b", 1); len(h) != 1 || h[0].Outcome != schedule.FiredDropped {
+		t.Fatalf("history %+v", h)
+	}
+	if err := f.sv.CancelFollowUps(ctx, "t1", "payouts"); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := f.store.List(ctx, "t1"); len(left) != 0 {
+		t.Fatalf("left %+v", left)
+	}
+}

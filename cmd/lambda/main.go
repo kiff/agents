@@ -251,6 +251,11 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			}
 			return err == nil, err
 		},
+		// A follow-up fires only under the version it was set under.
+		Version: func(ctx context.Context, tenant, agent string) (int, error) {
+			d, err := agents.Get(ctx, tenant, agent)
+			return d.Version, err
+		},
 	}
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
