@@ -142,6 +142,15 @@ func TestJudgeWithoutVerdict(t *testing.T) {
 	}
 }
 
+// A judge that reconsiders answers twice: its last verdict counts.
+func TestJudgeTakesItsLastVerdict(t *testing.T) {
+	text := `{"pass": false, "why": "first"}` + "\n\nReconsidering: {braces} in prose.\n\n" + `{"pass": true, "why": "settled"}`
+	g, err := (&eval.Judge{Model: &fakeModel{text: text}}).Ask(context.Background(), "r", "t")
+	if err != nil || !g.Pass || g.Why != "settled" {
+		t.Errorf("got %+v, %v; want the last verdict", g, err)
+	}
+}
+
 func TestJudgeCostIsKeptApart(t *testing.T) {
 	j := &eval.Judge{Model: &fakeModel{text: `{"pass": true}`}, Price: model.Price{Input: 1}}
 	asks := eval.Check{Name: "j", Grade: func(ctx context.Context, _ eval.Run, j *eval.Judge) (eval.Grade, error) {

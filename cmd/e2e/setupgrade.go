@@ -212,6 +212,9 @@ type modes struct {
 	// unchecked are the tools that move money without naming what they act
 	// on, or the read that says their currency.
 	unchecked []string
+	// none is a vendor with no test or live (the desk, -desk): there is
+	// nothing for Setup to ask.
+	none bool
 }
 
 // uncheckedMoney are a grant's tools that move money without naming what
@@ -255,7 +258,8 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in
 	// a component (a confirm can ask too).
 	g, err = j.AskMajority(ctx, "None of these texts (messages, and the titles, texts and options of what was shown) asks the owner to give, "+
-		"type or choose an id, an identifier, an agent name for a system, a key, a token or JSON. Naming one the agent chose itself is fine.",
+		"type or choose an id, an identifier, an agent name for a system, a key, a token or JSON. Naming one the agent chose itself is fine, "+
+		"and so is telling the owner they give a vendor's key on their phone as they approve the connection: that is where a key is given, never the chat.",
 		numbered(s.texts()))
 	if err != nil {
 		return nil, err
@@ -327,7 +331,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	// Nothing is read from the owner's account before they approve the
 	// tools (kiff/planque#23), so Setup asks.
-	if asked {
+	if asked || m.none {
 		add("asks test or live", eval.Grade{Pass: true})
 	} else {
 		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap"})

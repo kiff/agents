@@ -59,18 +59,23 @@ func (j *Judge) Ask(ctx context.Context, rule, text string) (Grade, error) {
 		}
 	}
 	s := out.String()
-	start, end := strings.Index(s, "{"), strings.LastIndex(s, "}")
-	if start < 0 || end < start {
-		return Grade{}, fmt.Errorf("%w: %q", ErrVerdict, s)
+	// A judge that reconsiders answers more than once: its last verdict is
+	// the one it settled on.
+	for end := len(s); end > 0; {
+		start := strings.LastIndex(s[:end], "{")
+		if start < 0 {
+			break
+		}
+		var v struct {
+			Pass *bool  `json:"pass"`
+			Why  string `json:"why"`
+		}
+		if err := json.NewDecoder(strings.NewReader(s[start:])).Decode(&v); err == nil && v.Pass != nil {
+			return Grade{Pass: *v.Pass, Why: v.Why}, nil
+		}
+		end = start
 	}
-	var v struct {
-		Pass *bool  `json:"pass"`
-		Why  string `json:"why"`
-	}
-	if err := json.Unmarshal([]byte(s[start:end+1]), &v); err != nil || v.Pass == nil {
-		return Grade{}, fmt.Errorf("%w: %q", ErrVerdict, s)
-	}
-	return Grade{Pass: *v.Pass, Why: v.Why}, nil
+	return Grade{}, fmt.Errorf("%w: %q", ErrVerdict, s)
 }
 
 // Votes is how many times AskMajority asks.
