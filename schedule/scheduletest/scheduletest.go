@@ -155,3 +155,37 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		}
 	})
 }
+
+// RunWaitings runs every check against the schedule.Waitings stores
+// newStore returns, one per check.
+func RunWaitings(t *testing.T, newStore func(t *testing.T) schedule.Waitings) {
+	ctx := context.Background()
+	due := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	w := func(tenant, agent, id string, d time.Duration) schedule.Waiting {
+		return schedule.Waiting{Tenant: tenant, Agent: agent, Schedule: id, Due: due.Add(d)}
+	}
+	t.Run("one per agent, the latest", func(t *testing.T) {
+		st := newStore(t)
+		if _, replaced, err := st.Swap(ctx, w("t1", "refunds", "morning", 0)); err != nil || replaced {
+			t.Fatalf("first: replaced %v, %v", replaced, err)
+		}
+		prev, replaced, err := st.Swap(ctx, w("t1", "refunds", "inbox", time.Minute))
+		if err != nil || !replaced || prev != w("t1", "refunds", "morning", 0) {
+			t.Fatalf("second: replaced %+v (%v), %v", prev, replaced, err)
+		}
+		if _, _, err := st.Swap(ctx, w("t2", "refunds", "morning", 0)); err != nil { // another tenant's agent: its own place
+			t.Fatal(err)
+		}
+		got, ok, err := st.Take(ctx, "t1", "refunds")
+		if err != nil || !ok || !got.Due.Equal(due.Add(time.Minute)) || got.Schedule != "inbox" {
+			t.Fatalf("took %+v (%v), %v", got, ok, err)
+		}
+		if _, ok, err := st.Take(ctx, "t1", "refunds"); err != nil || ok {
+			t.Fatalf("taken twice: %v, %v", ok, err)
+		}
+		all, err := st.List(ctx, 10)
+		if err != nil || len(all) != 1 || all[0].Tenant != "t2" {
+			t.Fatalf("listed %+v, %v", all, err)
+		}
+	})
+}

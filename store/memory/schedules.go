@@ -89,3 +89,45 @@ func (m *Schedules) Delete(_ context.Context, tenant, id string) error {
 	delete(m.fired, [2]string{tenant, id})
 	return nil
 }
+
+// Waitings is a schedule.Waitings held in memory.
+type Waitings struct {
+	mu sync.Mutex
+	by map[[2]string]schedule.Waiting // by tenant, agent
+}
+
+// NewWaitings returns an empty store of waiting firings.
+func NewWaitings() *Waitings { return &Waitings{by: map[[2]string]schedule.Waiting{}} }
+
+var _ schedule.Waitings = (*Waitings)(nil)
+
+func (m *Waitings) Swap(_ context.Context, w schedule.Waiting) (schedule.Waiting, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := [2]string{w.Tenant, w.Agent}
+	prev, ok := m.by[k]
+	m.by[k] = w
+	return prev, ok, nil
+}
+
+func (m *Waitings) Take(_ context.Context, tenant, agent string) (schedule.Waiting, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := [2]string{tenant, agent}
+	w, ok := m.by[k]
+	delete(m.by, k)
+	return w, ok, nil
+}
+
+func (m *Waitings) List(_ context.Context, limit int) ([]schedule.Waiting, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []schedule.Waiting
+	for _, w := range m.by {
+		out = append(out, w)
+	}
+	slices.SortFunc(out, func(x, y schedule.Waiting) int {
+		return cmp.Or(cmp.Compare(x.Tenant, y.Tenant), cmp.Compare(x.Agent, y.Agent))
+	})
+	return out[:min(limit, len(out))], nil
+}

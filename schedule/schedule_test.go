@@ -524,3 +524,97 @@ func TestAOnceScheduleFiresOnceAndIsGone(t *testing.T) {
 		t.Fatalf("history %+v", h)
 	}
 }
+
+// busy: latest: two schedules firing on a busy agent leave one
+// waiting firing, the later; it runs once the agent is free, read against
+// its schedule as it is then.
+func TestABusyAgentKeepsTheLatestFiring(t *testing.T) {
+	f := newFixture()
+	f.sv.Waitings = memory.NewWaitings()
+	morning, inbox := scheduletest.Schedule("t1", "morning"), scheduletest.Schedule("t1", "inbox")
+	inbox.Cron = "15 9 * * 1-5"
+	for _, s := range []*schedule.Schedule{&morning, &inbox} {
+		s.Busy = schedule.BusyLatest
+		if err := f.sv.Put(ctx, *s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.busy = true
+	later := due.Add(15 * time.Minute)
+	for _, fire := range []struct {
+		id  string
+		due time.Time
+	}{{"morning", due}, {"inbox", later}, {"inbox", later}} { // the last, a repeated delivery
+		if err := f.sv.Fire(ctx, "t1", fire.id, fire.due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.started) != 0 {
+		t.Fatalf("started %+v on a busy agent", f.started)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "morning", 1); len(h) != 1 || h[0].Outcome != schedule.FiredReplaced {
+		t.Fatalf("morning's firing: %+v, want replaced", h)
+	}
+
+	// Still busy: it keeps waiting.
+	if err := f.sv.Free(ctx, "t1", "payouts"); err != nil || len(f.started) != 0 {
+		t.Fatalf("free while busy: started %+v, %v", f.started, err)
+	}
+	f.busy = false
+	if err := f.sv.Free(ctx, "t1", "payouts"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 1 || f.started[0].Schedule != "inbox" || !f.started[0].Due.Equal(later) {
+		t.Fatalf("started %+v, want inbox's firing", f.started)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "inbox", 1); len(h) != 1 || h[0].Outcome != schedule.FiredRun {
+		t.Fatalf("inbox's firing: %+v, want run", h)
+	}
+	if err := f.sv.Free(ctx, "t1", "payouts"); err != nil || len(f.started) != 1 {
+		t.Fatalf("freed twice: started %d, %v", len(f.started), err)
+	}
+}
+
+// A waiting firing whose schedule was paused, removed or changed before the
+// agent was free starts nothing.
+func TestAWaitingFiringIsDroppedWithItsSchedule(t *testing.T) {
+	for name, change := range map[string]func(*fixture, schedule.Schedule){
+		"paused":    func(f *fixture, s schedule.Schedule) { s.Enabled = false; _ = f.sv.Put(ctx, s) },
+		"removed":   func(f *fixture, s schedule.Schedule) { _ = f.sv.Delete(ctx, s.Tenant, s.ID) },
+		"moved":     func(f *fixture, s schedule.Schedule) { s.Cron = "0 10 * * 1-5"; _ = f.sv.Put(ctx, s) },
+		"now skips": func(f *fixture, s schedule.Schedule) { s.Busy = schedule.BusySkip; _ = f.sv.Put(ctx, s) },
+	} {
+		f := newFixture()
+		f.sv.Waitings = memory.NewWaitings()
+		s := scheduletest.Schedule("t1", "morning")
+		s.Busy = schedule.BusyLatest
+		_ = f.sv.Put(ctx, s)
+		f.busy = true
+		if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil {
+			t.Fatal(err)
+		}
+		change(f, s)
+		f.busy = false
+		if err := f.sv.Free(ctx, "t1", "payouts"); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.started) != 0 {
+			t.Errorf("%s: started %+v", name, f.started)
+		}
+	}
+}
+
+// Without a store for waiting firings, latest skips as skip does.
+func TestLatestWithoutAStoreSkips(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "morning")
+	s.Busy = schedule.BusyLatest
+	_ = f.sv.Put(ctx, s)
+	f.busy = true
+	if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "morning", 1); len(h) != 1 || h[0].Outcome != schedule.FiredBusy {
+		t.Fatalf("history %+v", h)
+	}
+}
