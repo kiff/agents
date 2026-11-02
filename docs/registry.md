@@ -37,6 +37,12 @@ of its eight kinds):
 
 - `history_tokens` bounds what the earlier runs' messages take (estimated, four
   bytes a token). In a chat, what no longer fits is summarised, not dropped.
+- `max_tool_result_bytes` bounds what one tool result puts in the model's
+  context, after a result that is wholly JSON is compacted: 0 or left out is
+  32 KB, up to 256 KB. A longer result is cut with a note to call again with a
+  filter or a smaller limit. The turn that reads a result writes all of it to
+  the cache, so a broad search paging through long answers costs more each
+  turn than the thread does.
 - `keep.kept_read`, `{ "Keep": 3, "Retention": <idle>, "Max": <at most> }`
   (`UntilIdle`), keeps what a chat read for its next messages, sealed. Left
   out, nothing is kept.

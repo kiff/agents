@@ -10,15 +10,15 @@ import (
 )
 
 func TestALongToolResultIsCutAndSaysSo(t *testing.T) {
-	long := strings.Repeat("é", MaxToolResult) // 2 bytes a rune: twice the cap
-	got := capResult(long, MaxToolResult)
+	long := strings.Repeat("é", DefaultMaxToolResult) // 2 bytes a rune: twice the cap
+	got := capResult(long, DefaultMaxToolResult)
 	if !utf8.ValidString(got) {
 		t.Fatal("cut inside a rune")
 	}
-	if !strings.HasPrefix(got, long[:MaxToolResult]) || !strings.Contains(got, "cut at 128 KB of 256 KB") || !strings.Contains(got, "Call again for less") {
+	if !strings.HasPrefix(got, long[:DefaultMaxToolResult]) || !strings.Contains(got, "cut at 32 KB of 64 KB") || !strings.Contains(got, "Call again for less") {
 		t.Fatalf("got …%q", got[len(got)-200:])
 	}
-	if short := "ok"; capResult(short, MaxToolResult) != short {
+	if short := "ok"; capResult(short, DefaultMaxToolResult) != short {
 		t.Fatal("a short result was changed")
 	}
 }
@@ -52,5 +52,35 @@ func TestReadResultsAreClearedTogether(t *testing.T) {
 	// more is read.
 	if again := clearRead(got, 48<<10); again[5].Blocks[0].Result != "ch_1" {
 		t.Fatal("cleared again with nothing new read")
+	}
+}
+
+// A vendor's indented JSON reaches the model compacted, values untouched;
+// anything that isn't wholly JSON stays as it is.
+func TestJSONResultsAreCompacted(t *testing.T) {
+	indented := "{\n  \"data\": [\n    {\"id\": \"ch_1\", \"description\": \"two  spaces\\n kept\"}\n  ],\n  \"has_more\": true\n}\n"
+	if got, want := compactJSON(indented), `{"data":[{"id":"ch_1","description":"two  spaces\n kept"}],"has_more":true}`; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	for _, text := range []string{"Refunded ch_1.", "{ not json", "[1, 2] and more", "", "42"} {
+		if got := compactJSON(text); got != text {
+			t.Fatalf("%q changed to %q", text, got)
+		}
+	}
+}
+
+// The definition's bound applies after compaction; 0 is the default.
+func TestTheDefinitionBoundsOneResult(t *testing.T) {
+	if (Agent{}).maxToolResult() != DefaultMaxToolResult || (Agent{MaxToolResult: 4 << 10}).maxToolResult() != 4<<10 {
+		t.Fatal("the bound isn't the definition's, or the default")
+	}
+	items := make([]string, 400)
+	for i := range items {
+		items[i] = fmt.Sprintf("{\n    \"id\": \"ch_%03d\",\n    \"amount\": 15000\n  }", i)
+	}
+	page := "{\n  \"data\": [\n  " + strings.Join(items, ",\n  ") + "\n  ]\n}"
+	got := capResult(compactJSON(page), 4<<10)
+	if !strings.HasPrefix(got, `{"data":[{"id":"ch_000","amount":15000},`) || !strings.Contains(got, "cut at 4 KB of") || !strings.Contains(got, "with a filter or a smaller limit") {
+		t.Fatalf("got %q…", got[:120])
 	}
 }

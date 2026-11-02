@@ -23,7 +23,10 @@ import (
 type Run struct {
 	Session session.Session
 	Status  run.Status
-	Events  []session.Event
+	// Stop is why a run stopped (agent.Stop: answered, paused, cost_cap,
+	// turn_cap, ...); empty where the source doesn't say.
+	Stop   string
+	Events []session.Event
 }
 
 // Grade is one check's verdict on a run. A skipped check isn't counted in the

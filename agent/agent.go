@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,6 +66,11 @@ type Agent struct {
 	MaxCost int64
 	// MaxTurns bounds the model turns of one run; 0 means DefaultMaxTurns.
 	MaxTurns int
+	// MaxToolResult bounds what one tool result puts in the model's
+	// context, in bytes, after JSON is compacted; 0 means
+	// DefaultMaxToolResult. A longer result is cut with a note to call
+	// again for less.
+	MaxToolResult int
 
 	// Cancel, when set, says whether the run was asked to stop. The loop asks
 	// at each checkpoint, before a model turn (so after each tool batch), and
@@ -1060,7 +1066,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				results[i].batch = len(calls)
 				return
 			}
-			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c)}
+			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c, a.maxToolResult())}
 			results[i].took, results[i].batch = time.Since(began), len(calls)
 		}()
 	}
@@ -1117,7 +1123,7 @@ func shows(t tool.Tool) bool {
 
 // call runs one tool. A missing tool or a failed call is an error result the
 // model reads; it never ends the run.
-func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
+func call(ctx context.Context, t tool.Tool, c model.Block, max int) tool.Result {
 	if t == nil {
 		return tool.Result{Text: fmt.Sprintf("there is no tool named %q", c.Tool), IsError: true}
 	}
@@ -1125,14 +1131,38 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 	if err != nil {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}
-	r.Text = capResult(r.Text, MaxToolResult)
+	r.Text = capResult(compactJSON(r.Text), max)
 	return r
 }
 
-// MaxToolResult bounds what one tool result puts in the model's context, in
-// bytes: a ceiling for a runaway export only. A result is read whole, then
-// cleared (clearRead), so it isn't carried turn after turn.
-const MaxToolResult = 128 << 10
+// DefaultMaxToolResult bounds what one tool result puts in the model's
+// context, in bytes, when the definition sets no bound (Agent.MaxToolResult).
+// A result is read whole, then cleared (clearRead), but the turn that reads
+// it writes all of it to the cache: a broad search that pages through
+// 60 KB answers cost more each turn than the thread did (kiff/tafs#423).
+const DefaultMaxToolResult = 32 << 10
+
+func (a Agent) maxToolResult() int {
+	if a.MaxToolResult > 0 {
+		return a.MaxToolResult
+	}
+	return DefaultMaxToolResult
+}
+
+// compactJSON is text without the whitespace between JSON tokens when the
+// whole text is JSON, as a vendor's indented answer often is; anything
+// else, as it is. The values are untouched.
+func compactJSON(text string) string {
+	t := strings.TrimSpace(text)
+	if t == "" || (t[0] != '{' && t[0] != '[') || !json.Valid([]byte(t)) {
+		return text
+	}
+	var b bytes.Buffer
+	if err := json.Compact(&b, []byte(t)); err != nil {
+		return text
+	}
+	return b.String()
+}
 
 // capResult is text cut to at most n bytes, on a rune, telling the model
 // how much it got and to ask again for less.
