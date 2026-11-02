@@ -71,6 +71,11 @@ type Agent struct {
 	// DefaultMaxToolResult. A longer result is cut with a note to call
 	// again for less.
 	MaxToolResult int
+	// CloseInText gives a run that would end right after its tool results,
+	// with no text, one more turn to write it (CloseNudge): its closing
+	// message no longer depends on the model remembering to. Off for an
+	// agent whose quiet runs end silently.
+	CloseInText bool
 
 	// Cancel, when set, says whether the run was asked to stop. The loop asks
 	// at each checkpoint, before a model turn (so after each tool batch), and
@@ -575,6 +580,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		return ""
 	})
+	nudged := false // CloseInText's one more turn, at most once a run
 	for first := true; ; first = false {
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
@@ -604,13 +610,26 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			out.Stop, out.Refusal = Refused, reply.Refusal
 			return out, msgs, nil
 		}
-		msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 		var calls []model.Block
 		for _, b := range reply.Blocks {
 			if b.Kind == model.ToolUse {
 				calls = append(calls, b)
 			}
 		}
+		if len(calls) == 0 && out.Text == "" && a.CloseInText && !nudged && afterTools(msgs) && reply.Stop != model.MaxTokens {
+			// Ended on its tool results with nothing said: one more turn,
+			// asked for the closing message. An empty reply isn't kept.
+			nudged = true
+			if hasContent(reply.Blocks) {
+				msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
+				msgs = append(msgs, model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: CloseNudge}}})
+			} else {
+				last := &msgs[len(msgs)-1]
+				last.Blocks = append(slices.Clone(last.Blocks), model.Block{Kind: model.Text, Text: CloseNudge})
+			}
+			continue
+		}
+		msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 		if err := a.say(rec, out.Text, len(calls) == 0); err != nil {
 			return out, msgs, err
 		}
@@ -935,6 +954,26 @@ func serverBlock(b model.Block) (id string, result, ok bool) {
 		return v.ID, false, true
 	}
 	return "", false, false
+}
+
+// CloseNudge is what a CloseInText agent is told when it ended a run on its
+// tool results without a word.
+const CloseNudge = "[tafs] Your turn ended after your tool results without a message to the owner. Write your closing message now, as text, with no tool call."
+
+// afterTools reports whether msgs end with tool results: the turn the model
+// just took answered them.
+func afterTools(msgs []model.Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	return last.Role == model.User && slices.ContainsFunc(last.Blocks, func(b model.Block) bool { return b.Kind == model.ToolResult })
+}
+
+// hasContent reports whether a reply has more than thinking: one with only
+// thinking, or nothing, isn't kept, and the turn after it is asked again.
+func hasContent(blocks []model.Block) bool {
+	return slices.ContainsFunc(blocks, func(b model.Block) bool { return b.Kind != model.Thinking && b.Kind != model.RedactedThinking })
 }
 
 // jsonSize is how many bytes msgs take as JSON, as a store keeps them.

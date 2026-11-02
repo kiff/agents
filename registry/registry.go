@@ -125,6 +125,10 @@ type Definition struct {
 	// out of the cached prefix, so a conversation's cache doesn't start
 	// over when they appear (#197).
 	DeferVendorTools bool `json:"defer_vendor_tools,omitempty"`
+	// CloseInText gives a run that would end on its tool results with no
+	// text one more turn to write its closing message (agent.CloseInText),
+	// as Setup's chat needs. Off for an agent whose quiet runs end silently.
+	CloseInText bool `json:"close_in_text,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -674,7 +678,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
-		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult}
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}
