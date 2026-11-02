@@ -82,6 +82,35 @@ func TestRequestAndStatus(t *testing.T) {
 	}
 }
 
+// A REST vendor without an MCP server is asked for by its key: planque gets
+// an api_key grant with the description, base and where the key goes, and
+// no server. Never both, and never neither.
+func TestARESTVendorIsAskedForByKey(t *testing.T) {
+	srv, seen := fake(t, true)
+	tl := planque.New(srv.URL+"/", "tnt_1", "k_setup", nil)
+	api := `{"url":"https://desk.example/openapi.json","base":"https://desk.example/v1","auth":{"in":"header","name":"X-Desk-Key"}}`
+	text, isErr := call(t, tl, `{"action":"request","api":`+api+`,"agent":"support-k7q3x9xz","tools":[]}`)
+	if isErr || !strings.Contains(text, `"id":"grt_1"`) {
+		t.Fatalf("request: %s %v", text, isErr)
+	}
+	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"support-k7q3x9xz","api":` + api + `,"kind":"api_key","tools":[]}`
+	if (*seen)[0] != want {
+		t.Fatalf("sent %s\nwant %s", (*seen)[0], want)
+	}
+	for _, in := range []string{
+		`{"action":"request","api":` + api + `,"server":"https://mcp.example","agent":"a","tools":[]}`,
+		`{"action":"request","agent":"a","tools":[]}`,
+		`{"action":"request","api":null,"agent":"a","tools":[]}`,
+	} {
+		if text, isErr := call(t, tl, in); !isErr || !strings.Contains(text, "not both") {
+			t.Errorf("%s: %s %v", in, text, isErr)
+		}
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("malformed asks reached planque: %v", *seen)
+	}
+}
+
 // What planque refuses, the model reads; a malformed ask never leaves.
 func TestRefusalsAreReadable(t *testing.T) {
 	srv, seen := fake(t, false)

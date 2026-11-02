@@ -88,21 +88,24 @@ func (t *Tool) Spec() model.ToolSpec {
 			"(id, agent, server, status, created, tools); add to the one for that vendor rather than requesting another. " +
 			"grants with no agent lists every connection you asked for on the account, each with its agent: when you no longer have a taf's agent id " +
 			"or a grant's id, find it there, never ask for a new connection or the owner to sign in again. " +
-			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL (e.g. https://mcp.stripe.com), " +
-			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. refunds): the tool makes the agent's id from it, with a random part so it is new, " +
+			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL. " +
+			"A vendor with a REST API and no MCP server is reached by its key instead: request {api: {url, base, auth: {in, name}}, agent, tools}, " +
+			"where url is the vendor's published OpenAPI description (JSON), base the URL its operations' paths start from, and auth where the key goes " +
+			"(in: header or query, name: the header or parameter the vendor's docs name). The owner gives the key on their phone, with the approval, straight to planque; never ask for it. " +
+			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. support): the tool makes the agent's id from it, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
-			"title says what the tool does, in the owner's words and language, on one line (e.g. Refund a payment, Read a charge): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
+			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
-			"Every argument's path is a field the vendor's operation takes, read from its describing tool (stripe_api_details for that stripe_api_operation_id), never made up: " +
-			"to narrow a broad tool (stripe_api_write) to one operation, connect that describing tool first, with setup_reads, and add the write after the owner approved it. " +
-			"amount_argument names only the argument the operation takes for the money it moves (a refund's amount); a write that moves no money (answering a dispute, pausing a subscription) has none, and its Card limits its calls. " +
-			"resource_argument names the string argument the call acts on (the payment, charge or order), one the taf's read of it takes. " +
-			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read of the same request that says the currency: " +
-			"the read's name (not its vendor tool), its argument that takes that id, and where the currency is in its answer; KIFF refuses a call in another currency than the Card's. " +
-			`e.g. {"tool":"create_refund","title":"Refund a payment","amount_argument":"amount","amount_unit":"EUR","amount_scale":2,"resource_argument":"charge",` +
-			`"unit_lookup":{"tool":"get_charge","argument":"charge","path":"currency"},` +
-			`"arguments":{"charge":{"path":"charge","type":"string","required":true},"amount":{"path":"amount","type":"integer","required":true}}} ` +
-			"makes the amount and the charge required, so no refund leaves them out. " +
+			"Every argument's path is a field the vendor's operation takes, read from the vendor's own description of it (its OpenAPI description, or the vendor tool that describes an operation's fields), never made up: " +
+			"to narrow a broad tool (one that takes an operation's name and its parameters) to one operation, connect the describing tool first, with setup_reads, and add the write after the owner approved it. " +
+			"amount_argument names only the argument the operation takes for the money it moves, in its own units; a write that moves no money (posting a reply, moving a meeting, sharing a file) has none, and its Card limits its calls. " +
+			"resource_argument names the string argument the call acts on (the ticket, the event, the payment), one the taf's read of it takes. " +
+			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read that says its unit: " +
+			"the read's name (not its vendor tool), its argument that takes the same id, and where the unit is in its answer; KIFF refuses a call in another unit than the Card's. " +
+			"When the vendor has both test and live, the grant says which the sign-in acts in; set up in test first when the owner has it. " +
+			`e.g. {"tool":"post_reply","title":"Reply to a ticket","resource_argument":"ticket","fixed_arguments":{"workspace":"w_1"},` +
+			`"arguments":{"ticket":{"path":"ticket","type":"string","required":true},"body":{"path":"body","type":"string","required":true}}} ` +
+			"pins the workspace and makes the ticket and the reply required, so no reply leaves them out or goes elsewhere. " +
 			"Each answer is the grant's id, status and the text the owner will read (each tool by its title; its exact terms are under Details). Asking grants nothing: show an approval with the grant id. " +
 			"setup_reads: true, on a read-only tool, lets you read it yourself once the owner approved it: read {grant, tool, arguments}, with the name the grant lists. " +
 			"Use it for a vendor's tool that lists an operation's fields, so you name each argument's path from the vendor, never by guess. " +
@@ -111,6 +114,9 @@ func (t *Tool) Spec() model.ToolSpec {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
+			`"api":{"type":"object","description":"a REST vendor reached by its key, instead of server (request)","properties":{` +
+			`"url":{"type":"string","description":"the vendor's OpenAPI description (JSON)"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
+			`"auth":{"type":"object","properties":{"in":{"type":"string","enum":["header","query"]},"name":{"type":"string"}},"required":["in","name"]}},"required":["url","base","auth"]},` +
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
@@ -127,6 +133,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	var in struct {
 		Action string          `json:"action"`
 		Server string          `json:"server"`
+		API    json.RawMessage `json:"api"`
 		Agent  string          `json:"agent"`
 		Name   string          `json:"name"`
 		Tools  json.RawMessage `json:"tools"`
@@ -157,8 +164,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		}
 		return tool.Result{Text: string(raw)}, nil
 	case "request":
-		if in.Server == "" || (in.Agent == "") == (in.Name == "") {
-			return tool.Result{Text: "request needs server, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first", IsError: true}, nil
+		byKey := len(in.API) > 0 && string(in.API) != "null"
+		if (in.Server == "") == !byKey || (in.Agent == "") == (in.Name == "") {
+			return tool.Result{Text: "request needs server (an MCP server) or api (a REST vendor by its key), not both, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first", IsError: true}, nil
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" {
@@ -170,7 +178,13 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if in.Name != "" {
 			agent = AgentID(in.Name)
 		}
-		body, _ := json.Marshal(map[string]any{"server": in.Server, "agent": agent, "tools": tools})
+		ask := map[string]any{"server": in.Server, "agent": agent, "tools": tools}
+		if byKey {
+			// planque reads the description into a snapshot the owner approves,
+			// and takes the key from the owner's phone (kiff/planque#64).
+			ask = map[string]any{"kind": "api_key", "api": in.API, "agent": agent, "tools": tools}
+		}
+		body, _ := json.Marshal(ask)
 		res, err := t.grant(ctx, http.MethodPost, path, body)
 		if err != nil || res.IsError {
 			return res, err

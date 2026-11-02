@@ -85,7 +85,7 @@ type Question struct {
 type Taf struct {
 	Agent string `json:"agent"`
 	Name  string `json:"name"`
-	Job   string `json:"job"` // one of tafs' jobs, such as refunds
+	Job   string `json:"job"` // one of tafs' jobs, such as refunds or access
 	// Draft is the taf's KIFF draft: for a new taf, the one the owner
 	// confirmed in the second approval; for an improvement, the revision of
 	// its Cards, which the owner confirms only when they switch to the
@@ -170,7 +170,7 @@ func (Tool) Spec() model.ToolSpec {
 			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
 			"[questions <id>] then a JSON object from each question's id to {value}, {values} (multi) or {own} (the owner's own words); " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
-			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
+			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds or access) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
 			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?, summary?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
 			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
 			"A result waits while the taf or its version is made for the owner; what came of it is the call's result: {taf_id} (set up), {version} (the new version) or {failed} (why not): then say why, and hand over again once it's fixed. " +
@@ -189,9 +189,9 @@ func (Tool) Spec() model.ToolSpec {
 			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}},"required":["value","label"]}},` +
 			`"note":{"type":"string"}},"required":["id","text","options"]}},` +
 			`"grant":{"type":"string","description":"planque's grant id"},"draft":{"type":"string","description":"KIFF's agent draft id"},` +
-			`"service":{"type":"string","description":"the vendor's host, e.g. mcp.stripe.com"},` +
+			`"service":{"type":"string","description":"the vendor's host: its MCP server's, or its API's base"},` +
 			`"taf":{"type":"object","properties":{"agent":{"type":"string"},"name":{"type":"string"},` +
-			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds"},"draft":{"type":"string","description":"the taf's KIFF draft id: confirmed by the owner for a new taf; an improvement's Card revision, confirmed at the switch"},` +
+			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds or access"},"draft":{"type":"string","description":"the taf's KIFF draft id: confirmed by the owner for a new taf; an improvement's Card revision, confirmed at the switch"},` +
 			`"improves":{"type":"string","description":"the tafs id of the taf this is the next version of"},` +
 			`"note":{"type":"string","description":"what changed, in the owner's language (an improvement)"},` +
 			`"notes":{"type":"string","description":"the taf's full new instructions from the owner (an improvement); omit to keep them"},` +
@@ -350,7 +350,7 @@ func (c Component) check() error {
 			return fmt.Errorf("grant is planque's grant id")
 		}
 		if !refPattern.MatchString(c.Service) {
-			return fmt.Errorf("service is the vendor's host, such as mcp.stripe.com")
+			return fmt.Errorf("service is the vendor's host: its MCP server's, or its API's base")
 		}
 	case "approval":
 		if !refPattern.MatchString(c.Grant) {
@@ -367,7 +367,7 @@ func (c Component) check() error {
 			return err
 		}
 		if !idPattern.MatchString(c.Taf.Job) {
-			return fmt.Errorf("taf.job is one of tafs' jobs, such as refunds")
+			return fmt.Errorf("taf.job is one of tafs' jobs, such as refunds or access")
 		}
 		if c.Taf.Improves == "" {
 			if !refPattern.MatchString(c.Taf.Draft) {
