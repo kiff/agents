@@ -350,3 +350,24 @@ func TestAQuestionsCardIsAnsweredAndGraded(t *testing.T) {
 		t.Fatalf("texts %v", texts)
 	}
 }
+
+// A vendor with no test or live (the desk) has nothing for Setup to ask.
+func TestNoModeToAskOfTheDesk(t *testing.T) {
+	var s said
+	s.messages = []string{"Next, approve the connection to your help desk and give its key on your phone."}
+	j := &eval.Judge{Model: &verdicts{}, ModelID: "judge"}
+	for _, m := range []struct {
+		modes
+		pass bool
+	}{{modes{}, false}, {modes{none: true}, true}} {
+		checks, err := gradeSetup(context.Background(), j, owners["en"], s, "taf-desk-x7k3", m.modes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range checks {
+			if c.Name == "asks test or live" && c.Pass != m.pass {
+				t.Errorf("none %v: asks test or live pass %v, want %v", m.none, c.Pass, m.pass)
+			}
+		}
+	}
+}

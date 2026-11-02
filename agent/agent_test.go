@@ -1745,3 +1745,84 @@ func TestAnOwnToolsRefusalIsKept(t *testing.T) {
 		t.Fatalf("own refusals kept: %+v", got)
 	}
 }
+
+// The loop gives tools the run's call outcomes (agents#293): a plan step
+// that names a refused call can't be shown done; the model reads why.
+func TestAStepNamingARefusedCallIsntDone(t *testing.T) {
+	reply := &fakeTool{name: "desk_post_reply", access: tool.Write, gateway: true,
+		result: tool.Result{Text: "Outside the Card.", IsError: true, State: tool.StateRefused}}
+	m := &script{replies: []model.Reply{
+		use("c1", "desk_post_reply", `{}`),
+		use("c2", "show", `{"type":"steps","id":"plan","steps":[{"label":"Reply to the customer","status":"done","call":"desk_post_reply"}]}`),
+		say("The reply was refused."),
+	}}
+	_, r := start(t, session.KindChat)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, reply, show.New()), r, nil, "Answer ticket 7.", nil); err != nil {
+		t.Fatal(err)
+	}
+	last := m.reqs[2].Messages[len(m.reqs[2].Messages)-1].Blocks[0]
+	if !last.IsError || !strings.Contains(last.Result, "refused by KIFF") || !strings.Contains(last.Result, "Mark it failed or skipped") {
+		t.Fatalf("show's result %+v", last)
+	}
+}
+
+// probeTool records how the run says its latest call to each of names ended
+// (show's plan steps read the same), each time it's called.
+type probeTool struct {
+	names []string
+	seen  []map[string]string
+}
+
+func (p *probeTool) Spec() model.ToolSpec {
+	return model.ToolSpec{Name: "probe", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (p *probeTool) Access() tool.Access { return tool.Own }
+func (p *probeTool) Gateway() bool       { return false }
+func (p *probeTool) Call(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
+	got := map[string]string{}
+	for _, n := range p.names {
+		got[n] = tool.OutcomesFrom(ctx)(n)
+	}
+	p.seen = append(p.seen, got)
+	return tool.Result{Text: "ok"}, nil
+}
+
+// A held call the owner refused stays not done once the run goes on (review
+// on #296): a continued run starts from its calls' outcomes, the resolved
+// held ones exactly, so the first show after a resume can't mark it done.
+func TestAContinuedRunKnowsHowItsHeldCallsEnded(t *testing.T) {
+	for name, tc := range map[string]struct {
+		held []agent.ToolResultBody
+		want string
+	}{
+		"refused":  {[]agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "The owner refused it. It was not sent.", IsError: true, State: tool.StateRefused}}}, agent.OutcomeRefused},
+		"approved": {approved(), agent.OutcomeDone},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := memory.New()
+			rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			probe := &probeTool{names: []string{"stripe_get", "stripe_refund"}}
+			m := &script{replies: []model.Reply{use("c1", "stripe_get", `{}`), use("c2", "stripe_refund", `{}`), say("Waiting for you."),
+				use("c3", "probe", `{}`), say("Done.")}}
+			a := newAgent(m, lookupTool(), heldRefund(), probe)
+			stored, s := paused(t, store, rec, a)
+			ctx := context.Background()
+			r, err := rec.Resume(ctx, s, stored.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := agent.Continue(ctx, a, r, nil, stored, tc.held, nil); err != nil {
+				t.Fatal(err)
+			}
+			if len(probe.seen) != 1 {
+				t.Fatalf("probed %d times", len(probe.seen))
+			}
+			if got := probe.seen[0]; got["stripe_refund"] != tc.want || got["stripe_get"] != agent.OutcomeDone {
+				t.Fatalf("outcomes after the resume: %v", got)
+			}
+		})
+	}
+}

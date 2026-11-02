@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,6 +66,11 @@ type Agent struct {
 	MaxCost int64
 	// MaxTurns bounds the model turns of one run; 0 means DefaultMaxTurns.
 	MaxTurns int
+	// MaxToolResult bounds what one tool result puts in the model's
+	// context, in bytes, after JSON is compacted; 0 means
+	// DefaultMaxToolResult. A longer result is cut with a note to call
+	// again for less.
+	MaxToolResult int
 
 	// Cancel, when set, says whether the run was asked to stop. The loop asks
 	// at each checkpoint, before a model turn (so after each tool batch), and
@@ -116,6 +122,9 @@ type Agent struct {
 	// resumed says the next turn is the first after Continue: its timing
 	// says so (Resumed).
 	resumed bool
+	// resolved is the outcome of each held call Continue carries the run on
+	// with, by call id.
+	resolved map[string]string
 }
 
 // clock is a.Now, or the system clock.
@@ -422,7 +431,46 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		return Outcome{}, msgs, err
 	}
 	a.resumed = true
+	a.resolved = make(map[string]string, len(held))
+	for _, h := range held {
+		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
+	}
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Done: done}, emit)
+}
+
+// outcomesIn is how the run's calls in msgs, its own turns after history,
+// ended, by tool, the latest call last: what a continued run starts from, so
+// a held call the owner refused isn't shown done once the run goes on. A call
+// Continue resolved has its exact outcome; one from an earlier turn, failed
+// when its result is an error (a refused or failed held call's is), else done.
+func (a Agent) outcomesIn(msgs []model.Message) map[string]string {
+	latest := map[string]string{}
+	if a.history > len(msgs) {
+		return latest
+	}
+	tools := map[string]string{}
+	for _, m := range msgs[a.history:] {
+		for _, b := range m.Blocks {
+			switch b.Kind {
+			case model.ToolUse:
+				tools[b.CallID] = b.Tool
+			case model.ToolResult:
+				name, ok := tools[b.CallID]
+				if !ok {
+					continue
+				}
+				switch oc, exact := a.resolved[b.CallID]; {
+				case exact:
+					latest[name] = oc
+				case b.IsError:
+					latest[name] = OutcomeFailed
+				default:
+					latest[name] = OutcomeDone
+				}
+			}
+		}
+	}
+	return latest
 }
 
 // withoutThinking is a paused turn's reply as a continued run sends it: its
@@ -553,6 +601,22 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		specs = append(specs, s)
 	}
 	var waited []session.ToolTiming // the last turn's tool calls, for the next turn's Usage
+	// How the run's latest call to each tool ended, for tools that check
+	// what the model claims (show's plan steps). Written only between
+	// batches, so the calls of a batch read it without a lock.
+	latest := a.outcomesIn(msgs)
+	ctx = tool.WithOutcomes(ctx, func(name string) string {
+		if oc, ok := latest[name]; ok {
+			return oc
+		}
+		// The model may name a vendor tool by its operation alone.
+		for full, oc := range latest {
+			if strings.HasSuffix(full, "__"+name) {
+				return oc
+			}
+		}
+		return ""
+	})
 	for first := true; ; first = false {
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
@@ -610,6 +674,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		results, err := a.callTools(ctx, rec, byName, calls, emit)
 		if err != nil {
 			return out, msgs, err
+		}
+		for _, r := range results {
+			latest[r.Tool] = outcome(r, "")
 		}
 		blocks := make([]model.Block, len(results))
 		var held bool
@@ -1060,7 +1127,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 				results[i].batch = len(calls)
 				return
 			}
-			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c)}
+			results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: call(ctx, byName[c.Tool], c, a.maxToolResult())}
 			results[i].took, results[i].batch = time.Since(began), len(calls)
 		}()
 	}
@@ -1117,7 +1184,7 @@ func shows(t tool.Tool) bool {
 
 // call runs one tool. A missing tool or a failed call is an error result the
 // model reads; it never ends the run.
-func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
+func call(ctx context.Context, t tool.Tool, c model.Block, max int) tool.Result {
 	if t == nil {
 		return tool.Result{Text: fmt.Sprintf("there is no tool named %q", c.Tool), IsError: true}
 	}
@@ -1125,14 +1192,38 @@ func call(ctx context.Context, t tool.Tool, c model.Block) tool.Result {
 	if err != nil {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}
-	r.Text = capResult(r.Text, MaxToolResult)
+	r.Text = capResult(compactJSON(r.Text), max)
 	return r
 }
 
-// MaxToolResult bounds what one tool result puts in the model's context, in
-// bytes: a ceiling for a runaway export only. A result is read whole, then
-// cleared (clearRead), so it isn't carried turn after turn.
-const MaxToolResult = 128 << 10
+// DefaultMaxToolResult bounds what one tool result puts in the model's
+// context, in bytes, when the definition sets no bound (Agent.MaxToolResult).
+// A result is read whole, then cleared (clearRead), but the turn that reads
+// it writes all of it to the cache: a broad search that pages through
+// 60 KB answers cost more each turn than the thread did (kiff/tafs#423).
+const DefaultMaxToolResult = 32 << 10
+
+func (a Agent) maxToolResult() int {
+	if a.MaxToolResult > 0 {
+		return a.MaxToolResult
+	}
+	return DefaultMaxToolResult
+}
+
+// compactJSON is text without the whitespace between JSON tokens when the
+// whole text is JSON, as a vendor's indented answer often is; anything
+// else, as it is. The values are untouched.
+func compactJSON(text string) string {
+	t := strings.TrimSpace(text)
+	if t == "" || (t[0] != '{' && t[0] != '[') || !json.Valid([]byte(t)) {
+		return text
+	}
+	var b bytes.Buffer
+	if err := json.Compact(&b, []byte(t)); err != nil {
+		return text
+	}
+	return b.String()
+}
 
 // capResult is text cut to at most n bytes, on a rune, telling the model
 // how much it got and to ask again for less.

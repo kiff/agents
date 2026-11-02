@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -459,5 +462,81 @@ func TestAJudgedFailsReasonIsInTheTranscript(t *testing.T) {
 	got := transcript.String()
 	if !strings.Contains(got, "FAIL asks for no id: message 2 asks the owner for a charge id") || !strings.Contains(got, long) {
 		t.Fatalf("the transcript: %q", got)
+	}
+}
+
+// An API-key grant is approved with the key: the phone signs the digest and
+// the key's SHA-256, and sends the key only in planque's header.
+func TestThePhoneGivesAnAPIKeyOutsideTheSignedBody(t *testing.T) {
+	var body, header string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body, header = string(b), r.Header.Get("Planque-Vendor-Key")
+		if r.URL.Path != "/v1/accounts/t1/grants/grt_1/key" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"listed"}`))
+	}))
+	defer srv.Close()
+	p := &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1", vendorKey: "dk_secret"}
+	var g grant
+	g.ID, g.Digest, g.Request.Kind = "grt_1", "abc", "api_key"
+	status, err := p.approveAndSignIn(context.Background(), g)
+	if err != nil || !strings.Contains(status, "listed") {
+		t.Fatalf("%q, %v", status, err)
+	}
+	sum := sha256.Sum256([]byte("dk_secret"))
+	if header != "dk_secret" || body != `{"digest":"abc","key_sha256":"`+hex.EncodeToString(sum[:])+`"}` || strings.Contains(body, "dk_secret") {
+		t.Fatalf("header %q, body %s", header, body)
+	}
+	p.vendorKey = ""
+	if _, err := p.approveAndSignIn(context.Background(), g); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY") {
+		t.Fatalf("no key: %v", err)
+	}
+	// Tools added to a grant that holds the key: an approval alone, no key again.
+	g.SignedIn = true
+	body, header = "", ""
+	p.approveAndSignIn(context.Background(), g)
+	if header != "" || strings.Contains(body, "key_sha256") {
+		t.Fatalf("the key was sent again: header %q, body %s", header, body)
+	}
+}
+
+// What Setup asks for the desk (kiff/agents#293): an API-key grant, every
+// tool pinned to the workspace, writes that name what they act on and no
+// amount, reads marked read-only.
+func TestTheDeskChecks(t *testing.T) {
+	if got := deskOf("https://fake.example/mcp/"); got != "https://fake.example/desk" {
+		t.Fatalf("deskOf = %s", got)
+	}
+	good := func() grant {
+		var g grant
+		g.Request.Kind = "api_key"
+		ws := map[string]any{"workspace": deskWorkspace}
+		g.Request.Tools = []grantTool{
+			{Tool: "searchTickets", ReadOnly: true, Fixed: ws},
+			{Tool: "postReply", ResourceArg: "ticket", Fixed: ws},
+			{Tool: "applyLabel", ResourceArg: "ticket", Fixed: ws},
+		}
+		return g
+	}
+	if err := deskChecks(good()); err != nil {
+		t.Fatal(err)
+	}
+	for name, spoil := range map[string]func(*grant){
+		"an MCP grant":       func(g *grant) { g.Request.Kind = "" },
+		"an unpinned read":   func(g *grant) { g.Request.Tools[0].Fixed = nil },
+		"another workspace":  func(g *grant) { g.Request.Tools[1].Fixed = map[string]any{"workspace": "ws_other"} },
+		"an amount":          func(g *grant) { g.Request.Tools[1].AmountArg = "amount" },
+		"a write on nothing": func(g *grant) { g.Request.Tools[2].ResourceArg = "" },
+		"reads only":         func(g *grant) { g.Request.Tools = g.Request.Tools[:1] },
+	} {
+		g := good()
+		spoil(&g)
+		if deskChecks(g) == nil {
+			t.Errorf("%s passed", name)
+		}
 	}
 }

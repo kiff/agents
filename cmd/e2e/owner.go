@@ -46,6 +46,12 @@ func (a answer) err() error {
 }
 
 func (c *client) do(ctx context.Context, method, path string, body any) (answer, error) {
+	return c.doWith(ctx, method, path, body, nil)
+}
+
+// doWith is do, with headers set outside the signed body: an API key goes
+// to planque this way, the body carrying only its SHA-256.
+func (c *client) doWith(ctx context.Context, method, path string, body any, header http.Header) (answer, error) {
 	var b []byte
 	if body != nil {
 		var err error
@@ -58,6 +64,9 @@ func (c *client) do(ctx context.Context, method, path string, body any) (answer,
 		return answer{}, err
 	}
 	req.Header.Set("Accept", "application/json")
+	for k, v := range header {
+		req.Header[k] = v
+	}
 	if b != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -97,6 +106,8 @@ type phone struct {
 	// signIn completes the vendor's sign-in and returns the code from the
 	// app's link: on its own at the fake vendor, by a person at Stripe.
 	signIn func(ctx context.Context, link string) (string, error)
+	// vendorKey is the key an API-key grant's approval gives (E2E_DESK_KEY).
+	vendorKey string
 }
 
 // parsePhone reads a base64 PKCS#8 P-256 key: the test's stable phone, so
@@ -188,15 +199,20 @@ type grantTool struct {
 
 // grant is a grant as the phone reads it.
 type grant struct {
-	ID     string   `json:"id"`
-	Status string   `json:"status"`
-	Text   string   `json:"text"`
-	Digest string   `json:"digest"`
-	Tools  []string `json:"tools"`
-	Reason string   `json:"reason"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// SignedIn: planque holds the grant's sign-in, or its key: adding tools
+	// takes an approval alone, with no second sign-in or key.
+	SignedIn bool     `json:"signed_in"`
+	Text     string   `json:"text"`
+	Digest   string   `json:"digest"`
+	Tools    []string `json:"tools"`
+	Reason   string   `json:"reason"`
 	// Request is what the owner approved: the tools, as asked for.
 	Request struct {
 		Server string      `json:"server"`
+		Agent  string      `json:"agent"`
+		Kind   string      `json:"kind"`
 		Tools  []grantTool `json:"tools"`
 	} `json:"request"`
 	// Events is the grant's record, such as "read list_accounts at …" when
@@ -236,7 +252,9 @@ func rawWords(g grant) string {
 		}
 		titled[title] = true
 	}
-	if u, err := url.Parse(g.Request.Server); err == nil && u.Host != "" && strings.Contains(text, u.Host) {
+	// An API-key grant's own words say where the key goes, host and all:
+	// planque's, not Setup's.
+	if u, err := url.Parse(g.Request.Server); err == nil && u.Host != "" && g.Request.Kind != "api_key" && strings.Contains(text, u.Host) {
 		return "the vendor's host " + u.Host
 	}
 	return ""
@@ -278,6 +296,9 @@ func (p *phone) grant(ctx context.Context, id string) (grant, error) {
 // whose sign-in planque already holds (its tools set after connecting
 // first) connects on approval, with no sign-in. It returns the status.
 func (p *phone) approveAndSignIn(ctx context.Context, g grant) (string, error) {
+	if g.Request.Kind == "api_key" && !g.SignedIn {
+		return p.giveKey(ctx, g)
+	}
 	a, err := p.planque.do(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/approve", map[string]string{"digest": g.Digest})
 	if err != nil {
 		return "", err
@@ -349,4 +370,32 @@ func (p *phone) disconnect(ctx context.Context, id string) error {
 		return err
 	}
 	return a.err()
+}
+
+// giveKey approves an API-key grant as the owner's phone does: it signs the
+// grant's digest and the key's SHA-256, and sends the key itself in
+// planque's Planque-Vendor-Key header, never in the signed body. The key is
+// the test vendor's (E2E_DESK_KEY).
+func (p *phone) giveKey(ctx context.Context, g grant) (string, error) {
+	if p.vendorKey == "" {
+		return "", errors.New("an API-key grant needs E2E_DESK_KEY, the test vendor's key")
+	}
+	sum := sha256.Sum256([]byte(p.vendorKey))
+	a, err := p.planque.doWith(ctx, http.MethodPost, p.accountPath()+"/grants/"+url.PathEscape(g.ID)+"/key",
+		map[string]string{"digest": g.Digest, "key_sha256": hex.EncodeToString(sum[:])},
+		http.Header{"Planque-Vendor-Key": {p.vendorKey}})
+	if err != nil {
+		return "", err
+	}
+	if err := a.err(); err != nil {
+		return "", fmt.Errorf("key: %w", err)
+	}
+	switch st, _ := a.Body["status"].(string); st {
+	case "connected":
+		return "the key given on the phone: connected", nil
+	case "listed":
+		return "the key given on the phone: listed (the vendor's operations, for Setup to choose from)", nil
+	default:
+		return "", fmt.Errorf("after the key the grant is %q", st)
+	}
 }

@@ -86,6 +86,9 @@ type Definition struct {
 	MaxCost int64 `json:"max_cost_micro_usd"`
 	// MaxTurns bounds the model turns of a run; 0 means agent.DefaultMaxTurns.
 	MaxTurns int `json:"max_turns,omitempty"`
+	// MaxToolResult bounds what one tool result puts in the model's context,
+	// in bytes, after JSON is compacted; 0 means agent.DefaultMaxToolResult.
+	MaxToolResult int `json:"max_tool_result_bytes,omitempty"`
 	// History is how many of the session's finished runs the model gets
 	// before a new one.
 	History int `json:"history"`
@@ -364,6 +367,8 @@ func (d Definition) Check() error {
 		return errors.New("registry: a run needs a cost cap")
 	case d.MaxTurns < 0 || d.History < 0 || d.HistoryTokens < 0:
 		return errors.New("registry: max turns and history are never negative")
+	case d.MaxToolResult < 0 || d.MaxToolResult > MaxToolResultCeiling:
+		return fmt.Errorf("registry: max_tool_result_bytes is 0 (the default) up to %d", MaxToolResultCeiling)
 	}
 	if u, err := url.Parse(d.Gateway); err != nil || u.Scheme != "https" || u.Host == "" {
 		return errors.New("registry: the gateway is an https URL")
@@ -669,9 +674,13 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	}
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
-		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns}
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}
 	return a, d, nil
 }
+
+// MaxToolResultCeiling is the most a definition may let one tool result
+// put in the model's context: a runaway export stays bounded.
+const MaxToolResultCeiling = 256 << 10

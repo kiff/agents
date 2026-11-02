@@ -628,6 +628,45 @@ func TestASearchGoesBackOnlyWhileItIsOffered(t *testing.T) {
 	}
 }
 
+// A server tool's call and result go back together and in order, or neither
+// does (kiff/agents#293): a resumed run that lost a call with a turn cut from
+// its front sent its result alone, and the API refused it ("Each
+// tool_search_tool_result block must have a corresponding server_tool_use
+// block before it"). A call whose result never came is left out too.
+func TestAServerResultGoesBackOnlyAfterItsCall(t *testing.T) {
+	m, sent := serve(t, stream)
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	tools := []model.ToolSpec{{Name: "kiff_status", InputSchema: schema}, {Name: "tafs_state", InputSchema: schema, Defer: true}}
+	call := func(id string) model.Block {
+		return model.Block{Kind: model.Server, Data: `{"type":"server_tool_use","id":"` + id + `","name":"tool_search_tool_regex","input":{"pattern":"tafs_"}}`}
+	}
+	result := func(id string) model.Block {
+		return model.Block{Kind: model.Server, Data: `{"type":"tool_search_tool_result","tool_use_id":"` + id + `","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"tafs_state"}]}}`}
+	}
+	msgs := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Go on."}}},
+		{Role: model.Assistant, Blocks: []model.Block{result("srvtoolu_lost"), {Kind: model.Text, Text: "Found it."}, call("srvtoolu_ok"), result("srvtoolu_ok")}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "And?"}}},
+		{Role: model.Assistant, Blocks: []model.Block{call("srvtoolu_open"), {Kind: model.Text, Text: "Searching."}, call("srvtoolu_late"), result("srvtoolu_late")}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Now?"}}},
+	}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools, Messages: msgs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal((*sent)["messages"])
+	got := string(b)
+	for _, gone := range []string{"srvtoolu_lost", "srvtoolu_open"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("%s went back without its other half: %s", gone, got)
+		}
+	}
+	for _, kept := range []string{`"id":"srvtoolu_ok"`, `"tool_use_id":"srvtoolu_ok"`, `"id":"srvtoolu_late"`, `"tool_use_id":"srvtoolu_late"`, "Found it.", "Searching."} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%s was left out: %s", kept, got)
+		}
+	}
+}
+
 // Without a deferred tool, no search is offered.
 func TestNoDeferredToolNoSearch(t *testing.T) {
 	m, sent := serve(t, stream)

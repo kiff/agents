@@ -11,6 +11,7 @@ import (
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
 
@@ -321,9 +322,9 @@ func TestChargebacks(t *testing.T) {
 	}
 }
 
-func TestAllCasesHaveSevenChecks(t *testing.T) {
+func TestAllCasesHaveEightChecks(t *testing.T) {
 	for _, c := range cases.All() {
-		if len(c.Checks) != 7 || c.Items == 0 || c.Input == "" || !c.Smoke {
+		if len(c.Checks) != 8 || c.Items == 0 || c.Input == "" || !c.Smoke {
 			t.Errorf("%s: %d checks, %d items", c.Name, len(c.Checks), c.Items)
 		}
 	}
@@ -433,4 +434,29 @@ func (r ruled) Turn(_ context.Context, req model.Request, _ func(string)) (model
 		pass = !strings.Contains(text, "checked the payment first")
 	}
 	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: fmt.Sprintf(`{"pass": %v, "why": "judged"}`, pass)}}}, nil
+}
+
+// A run passes "finishes within its caps" when it answered or KIFF held a
+// call; a cap that stopped it fails; a source that doesn't say is skipped.
+func TestABroadSearchFinishesWithinItsCaps(t *testing.T) {
+	check := cases.Chargebacks.Case().Checks[7]
+	if check.Name != "finishes within its caps" {
+		t.Fatalf("check 8 is %q", check.Name)
+	}
+	for _, tt := range []struct {
+		status        run.Status
+		stop          string
+		pass, skipped bool
+	}{
+		{run.Completed, "answered", true, false},
+		{run.Paused, "", true, false},
+		{run.Completed, "cost_cap", false, false},
+		{run.Completed, "turn_cap", false, false},
+		{run.Completed, "", false, true},
+	} {
+		g, err := check.Grade(context.Background(), eval.Run{Status: tt.status, Stop: tt.stop}, nil)
+		if err != nil || g.Pass != tt.pass || g.Skipped != tt.skipped {
+			t.Errorf("%s %q: %+v, %v", tt.status, tt.stop, g, err)
+		}
+	}
 }
