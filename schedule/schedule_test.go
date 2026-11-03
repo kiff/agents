@@ -918,7 +918,9 @@ func TestACheckHandsOverOnlyWhatTheInputHolds(t *testing.T) {
 	})
 	t.Run("an item changed since it went is still the same one", func(t *testing.T) {
 		f, result := setup(t, text(schedule.MaxInput-1300))
-		item := func(id, extra string) string { return `{"id":"` + id + `","created":1,"text":"` + text(1000) + `"` + extra + `}` }
+		item := func(id, extra string) string {
+			return `{"id":"` + id + `","created":1,"text":"` + text(1000) + `"` + extra + `}`
+		}
 		*result = `{"data":[` + item("one", "") + `,` + item("two", "") + `]}`
 		fire(t, f, 0)
 		if len(f.started) != 1 || !strings.Contains(f.started[0].Input, `"id":"one"`) || cursor(f).Partial == nil {

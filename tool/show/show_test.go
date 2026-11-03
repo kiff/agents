@@ -45,6 +45,8 @@ func TestEveryComponentIsShown(t *testing.T) {
 		`{"type":"result","id":"v3","taf":{"agent":"refunds-k3f9","name":"Refunds","job":"refunds","improves":"taf-0123456789abcdef0123","note":"Asks before refunds over 50 EUR."},"text":"Ready as version 3."}`,
 		`{"type":"result","id":"v4","taf":{"agent":"refunds-k3f9","name":"Refunds","job":"refunds","improves":"taf-0123456789abcdef0123","note":"Offers a free month first.","summary":"Offers a free month to customers who cancel."},"text":"Ready as version 4."}`,
 		`{"type":"result","id":"new","taf":{"agent":"refunds","name":"Refunds","job":"refunds","draft":"drf_01","summary":"Answers refund requests within its Card."},"text":"Refunds is ready."}`,
+		// The dial version Coach drafted: the app draws it from tafs cloud's words.
+		`{"type":"knob","id":"dial-v8","taf_id":"taf-0123456789abcdef0123","version":8}`,
 	} {
 		r := call(t, in)
 		if r.IsError || r.Component == nil {
@@ -94,6 +96,9 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1"},"text":"done"}`:                                                       "taf.note",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","unscheduled":true},"text":"done"}`:                         "for a new taf",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","draft":"drf_1","summary":"` + strings.Repeat("s", show.MaxLabel+1) + `"},"text":"done"}`: "taf.summary",
+		`{"type":"knob","id":"d","version":8}`:                                                                                                                             "taf_id is",
+		`{"type":"knob","id":"d","taf_id":"taf-1"}`:                                                                                                                        "version is",
+		`{"type":"knob","id":"d","taf_id":"taf-1","version":8,"text":"Runs at 9"}`:                                                                                         `has no field "text"`,
 		`{"type":"questions","id":"q","text":"?","questions":[]}`:                                                                                                          "1 to 4 questions",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"q0","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q1","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q2","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q3","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q4","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`: "1 to 4 questions",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                                                                                                                                                                                        "different",
