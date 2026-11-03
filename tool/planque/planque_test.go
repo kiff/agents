@@ -184,7 +184,8 @@ func TestConnectFirstThenCatalogThenTools(t *testing.T) {
 
 // A vendor's catalog is bounded before the model reads it: long
 // descriptions are cut, and the arguments that don't fit are left out,
-// each marked shortened; one tool can still be read in full.
+// each marked shortened; every tool is still listed, the note says so, and
+// one tool can still be read in full.
 func TestALargeCatalogIsBounded(t *testing.T) {
 	long := strings.Repeat("d", 5000)
 	schema := `{"type":"object","properties":{"p":{"type":"string","description":"` + strings.Repeat("s", 4000) + `"}}}`
@@ -200,7 +201,8 @@ func TestALargeCatalogIsBounded(t *testing.T) {
 
 	text, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1"}`)
 	var c struct {
-		Truncated bool `json:"truncated"`
+		Truncated bool   `json:"truncated"`
+		Note      string `json:"note"`
 		Tools     []struct {
 			Name        string          `json:"name"`
 			Description string          `json:"description"`
@@ -211,8 +213,11 @@ func TestALargeCatalogIsBounded(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &c); isErr || err != nil {
 		t.Fatalf("catalog: %v %.200s", err, text)
 	}
-	if len(text) > planque.MaxCatalog || !c.Truncated || len(c.Tools) != 60 {
+	if len(text) > planque.MaxCatalog || c.Truncated || len(c.Tools) != 60 {
 		t.Fatalf("catalog of %d bytes, truncated %v, %d tools", len(text), c.Truncated, len(c.Tools))
+	}
+	if !strings.HasPrefix(c.Note, "Every tool is listed (60).") || !strings.Contains(c.Note, "catalog {grant, tool}") {
+		t.Fatalf("note: %q", c.Note)
 	}
 	if n := len([]rune(c.Tools[0].Description)); n > planque.MaxDescription+1 || !c.Tools[0].Shortened {
 		t.Fatalf("a description of %d characters", n)
@@ -227,6 +232,53 @@ func TestALargeCatalogIsBounded(t *testing.T) {
 	}
 	if _, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1","tool":"tool_x"}`); !isErr {
 		t.Fatal("a tool the catalog doesn't have")
+	}
+}
+
+// A catalog too large even for names and short descriptions keeps every
+// tool's name: the last tools lose their words, never their name, so the
+// model can still ask for any of them in full (the v21 Coach check, where a
+// vendor's many tools hid the one that finds a page).
+func TestEveryToolKeepsItsName(t *testing.T) {
+	desc := strings.Repeat("w", 300)
+	var tools []string
+	for i := range 1500 {
+		tools = append(tools, `{"name":"vendor_tool_number_`+strconv.Itoa(i)+`","description":"`+desc+`","input_schema":{"type":"object"}}`)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.vendor.test","tools":[` + strings.Join(tools, ",") + `]}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+
+	text, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1"}`)
+	var c struct {
+		Truncated bool   `json:"truncated"`
+		Note      string `json:"note"`
+		Tools     []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Shortened   bool   `json:"shortened"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(text), &c); isErr || err != nil {
+		t.Fatalf("catalog: %v %.200s", err, text)
+	}
+	if len(text) > planque.MaxCatalog || c.Truncated || len(c.Tools) != 1500 {
+		t.Fatalf("catalog of %d bytes, truncated %v, %d of 1500 tools", len(text), c.Truncated, len(c.Tools))
+	}
+	if last := c.Tools[1499]; last.Name != "vendor_tool_number_1499" || last.Description != "" || !last.Shortened {
+		t.Fatalf("the last tool: %+v", last)
+	}
+	if first := c.Tools[0]; first.Description == "" {
+		t.Fatal("the first tools lost their words before the last")
+	}
+	if !strings.HasPrefix(c.Note, "Every tool is listed (1500).") {
+		t.Fatalf("note: %q", c.Note)
+	}
+	text, isErr = call(t, tl, `{"action":"catalog","grant":"grt_1","tool":"vendor_tool_number_1499"}`)
+	if isErr || !strings.Contains(text, desc) {
+		t.Fatalf("the last tool in full: %.200s", text)
 	}
 }
 

@@ -50,12 +50,13 @@ Turning off each guard fails its test.
 - **`status {grant}`:** `GET …/grants/{id}`. It is `pending`, `approved`, `signed_in`, `connected`, `failed` (with a reason) or `disconnected`.
 - **What the model reads:** the grant's `id`, `status`, `text` (what the owner will read), `tools` and `reason`; not its digest, request or audience.
 - **Refusals:** planque's errors come back as readable results, for example `409` before the owner's phone is enrolled. A malformed ask, or a grant id with `/`, `?` or `#`, never leaves the tool.
+- **Catalog discovery:** `catalog {grant}` follows vendor pages, keeping names before descriptions or arguments. A reply stays under 100 KiB; `shortened` marks omitted details, while `truncated` means the list is incomplete. `catalog {grant, tool}` searches for that tool's full description and arguments. Each call follows at most 20 pages, accepts at most 16 MiB per page and retains at most 16 MiB before bounding the reply. When more tools remain, `next_cursor` resumes with `catalog {grant, cursor: next_cursor}` (or with `tool` to continue a search), including when the limit falls inside a vendor page. Vendor errors, skipped entries and repeated cursors never become a false claim that every tool was listed or a tool is absent.
 - **Access:** asking grants nothing, so it is an `Own` tool; the agent never sees a vendor token.
 
 **Opt-in per definition: `planque`.** A definition names planque's URL (https, no path). The server allows it exactly, as it does gateways (`AGENTS_PLANQUES` on Lambda; none by default), and checks it before the agent's key is looked up, so a key is never sent to a planque the server doesn't allow.
 
 **Tests:**
-- `tool/planque`: `TestRequestAndStatus`, `TestRefusalsAreReadable`;
+- `tool/planque`: `TestRequestAndStatus`, `TestRefusalsAreReadable`, `TestALargeCatalogIsBounded`, `TestEveryToolKeepsItsName`; `TestCatalogFollowsVendorPages`, `TestCatalogResumesInsideVendorPage`, `TestCatalogResumesAfterPageLimit`, `TestCatalogAcceptsWireLargerThanModelReply`, `TestCatalogRejectsBrokenPagination` and `TestCatalogHandlesWireFailures` guard discovery and its limits;
 - `registry`: `TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque`, and `TestCheckRefuses` for an http planque and a planque with a path.
 
 Turning off each guard fails its test: the allowlist, the URL check, the agent's own key, the trimmed view, the grant id's path, and readable refusals.
