@@ -988,3 +988,12 @@ func TestACheckIsChecked(t *testing.T) {
 		}
 	}
 }
+
+// A server run without schedules (an eval, a test rig) still switches a
+// version or halts an agent: there are no follow-ups to cancel.
+func TestCancelFollowUpsWithoutSchedules(t *testing.T) {
+	var sv *schedule.Service
+	if err := sv.CancelFollowUps(context.Background(), "t1", "rae"); err != nil {
+		t.Fatalf("CancelFollowUps on no schedules = %v; want nil", err)
+	}
+}
