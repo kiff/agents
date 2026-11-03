@@ -486,8 +486,11 @@ func OpenFollowUp(o, s Schedule) bool {
 
 // CancelFollowUps deletes the agent's follow-ups that wait to fire: its
 // version switched, it was paused or halted, or its Card was revoked. Safe
-// to repeat.
+// to repeat. A server run without schedules has none to cancel.
 func (sv *Service) CancelFollowUps(ctx context.Context, tenant, agent string) error {
+	if sv == nil {
+		return nil
+	}
 	all, err := sv.Store.List(ctx, tenant)
 	if err != nil {
 		return err
