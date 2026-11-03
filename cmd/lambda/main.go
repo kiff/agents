@@ -95,6 +95,7 @@ import (
 	blobs3 "github.com/kiff/agents/store/s3"
 	"github.com/kiff/agents/tool"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
+	"github.com/kiff/agents/tool/followup"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
 	"github.com/kiff/agents/tool/planque"
@@ -237,8 +238,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Store: scheduleStore,
 		// Each firing is kept in its schedule's history: run, or skipped as
 		// missed or busy (schedule.Schedule's rules).
-		History:   scheduleStore,
-		Busy:      lastRunAtWork(runs),
+		History: scheduleStore,
+		Busy:    agentAtWork(runs),
+		// busy: latest keeps one firing per agent waiting until it is free.
+		Waitings:  dynamodb.NewWaitings(db, table),
 		Scheduler: eventbridge.New(sch.NewFromConfig(cfg), group, target, role),
 		// The registry's Get is a consistent read, as Fire needs: it deletes
 		// the schedules of an agent Live reports gone.
@@ -249,6 +252,21 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			}
 			return err == nil, err
 		},
+		// A follow-up fires only under the version it was set under.
+		Version: func(ctx context.Context, tenant, agent string) (int, error) {
+			d, err := agents.Get(ctx, tenant, agent)
+			return d.Version, err
+		},
+	}
+	// A check of a connected app reads through the agent's own Card, with
+	// its own key, without the model: only a tool its gateway
+	// lists as a read.
+	schedules.Probe = func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+		return probe(ctx, rn.Builder, tenant, agent, c)
+	}
+	// A taf's own follow-ups, on the same schedules.
+	rn.Builder.FollowUp = func(tenant, agent string, version int) tool.Tool {
+		return followup.New(schedules, runs, tenant, agent, version)
 	}
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{

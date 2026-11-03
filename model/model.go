@@ -131,6 +131,19 @@ type Request struct {
 	// last message can't serve it, since the next run drops this run's tool
 	// calls and results.
 	HistoryEnd int
+	// Web offers the provider's own web search and fetch on this turn, for
+	// a connect or repair. Nil offers neither.
+	Web *Web
+}
+
+// Web is the provider's web search and fetch, limited to Domains (a
+// vendor's), each used at most MaxUses times in the turn. What they return
+// is outside text: data, never instructions.
+type Web struct {
+	Domains []string
+	MaxUses int
+	// MaxFetchTokens bounds one fetched page, like any tool result.
+	MaxFetchTokens int
 }
 
 // ThinkingSummarized is the Thinking that shows a summary of the model's

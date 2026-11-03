@@ -614,7 +614,7 @@ func TestASearchGoesBackOnlyWhileItIsOffered(t *testing.T) {
 		}
 		got := content()
 		if strings.Contains(got, "srvtoolu_1") || !strings.Contains(got, `"text":"Looking."`) || !strings.Contains(got, "toolu_9") ||
-			!strings.Contains(got, "[a tool search, no longer offered]") || len((*sent)["messages"].([]any)) != len(msgs) {
+			!strings.Contains(got, "[a server tool, no longer offered]") || len((*sent)["messages"].([]any)) != len(msgs) {
 			t.Fatalf("%s: sent %s", name, got)
 		}
 	}
@@ -874,5 +874,44 @@ func TestAttachedFilesGoInline(t *testing.T) {
 		`{"text":"[old.png: attached earlier, no longer in view; the owner can send it again]","type":"text"}]`
 	if got := string(b); got != want {
 		t.Fatalf("sent %s\nwant %s", got, want)
+	}
+}
+
+// Any server tool goes back only while its tool is offered: a
+// web search from a connect turn is left out, call and result, on a turn
+// that offers no web tools, and goes back as it came on one that does. A
+// request with Web offers search and fetch on the vendor's domains only.
+func TestAWebSearchGoesBackOnlyWhileTheWebIsOffered(t *testing.T) {
+	m, sent := serve(t, stream)
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	tools := []model.ToolSpec{{Name: "kiff_status", InputSchema: schema}}
+	call := model.Block{Kind: model.Server, Data: `{"type":"server_tool_use","id":"srvtoolu_w","name":"web_search","input":{"query":"desk api docs"}}`}
+	result := model.Block{Kind: model.Server, Data: `{"type":"web_search_tool_result","tool_use_id":"srvtoolu_w","content":[{"type":"web_search_result","url":"https://docs.example.com/api","title":"API","encrypted_content":"e"}]}`}
+	msgs := []model.Message{
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Connect our desk."}}},
+		{Role: model.Assistant, Blocks: []model.Block{call, result, {Kind: model.Text, Text: "Found its API."}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Go on."}}},
+	}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools, Messages: msgs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal((*sent)["messages"])
+	if got := string(b); strings.Contains(got, "srvtoolu_w") || !strings.Contains(got, "Found its API.") {
+		t.Fatalf("no web offered: sent %s", got)
+	}
+	web := &model.Web{Domains: []string{"docs.example.com"}, MaxUses: 3, MaxFetchTokens: 8000}
+	if _, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512, Tools: tools, Messages: msgs, Web: web}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = json.Marshal((*sent)["messages"])
+	if got := string(b); strings.Count(got, "srvtoolu_w") != 2 {
+		t.Fatalf("web offered: sent %s", got)
+	}
+	b, _ = json.Marshal((*sent)["tools"])
+	got := string(b)
+	for _, want := range []string{`"type":"web_search_20250305"`, `"type":"web_fetch_20250910"`, `"allowed_domains":["docs.example.com"]`, `"max_uses":3`, `"max_content_tokens":8000`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tools lack %s: %s", want, got)
+		}
 	}
 }

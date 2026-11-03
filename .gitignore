@@ -1,2 +1,4 @@
 # A go build of cmd/e2e at the root (its binary carries local paths).
 /e2e
+# A go build of cmd/lambda at the root.
+/lambda

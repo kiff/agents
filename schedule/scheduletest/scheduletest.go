@@ -6,7 +6,10 @@ package scheduletest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,12 +32,68 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		}
 	}
 
+	t.Run("FollowUpsAreCappedTogether", func(t *testing.T) {
+		s := newStore(t)
+		put(t, s, Schedule("t1", "morning")) // not a follow-up: doesn't count
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		set, other := 0, []error{}
+		for i := range 6 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				f := Schedule("t1", fmt.Sprintf("fu-%d", i))
+				f.FollowUp, f.Kind, f.Cron = true, schedule.KindOnce, ""
+				err := s.PutFollowUp(ctx, f, 3)
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err == nil:
+					set++
+				case !errors.Is(err, schedule.ErrFollowUpLimit):
+					other = append(other, err) // contention, which the caller retries
+				}
+			}()
+		}
+		wg.Wait()
+		all, err := s.List(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		open := 0
+		for _, o := range all {
+			if o.FollowUp && o.Enabled {
+				open++
+			}
+		}
+		if set > 3 || open != set {
+			t.Fatalf("%d follow-ups set, %d stored, past the limit of 3 (other errors %v)", set, open, other)
+		}
+		for i := 0; open < 3; i++ { // the rest, one at a time
+			f := Schedule("t1", fmt.Sprintf("more-%d", i))
+			f.FollowUp, f.Kind, f.Cron = true, schedule.KindOnce, ""
+			if err := s.PutFollowUp(ctx, f, 3); err != nil {
+				t.Fatal(err)
+			}
+			open++
+		}
+		f := Schedule("t1", "one-too-many")
+		f.FollowUp, f.Kind, f.Cron = true, schedule.KindOnce, ""
+		if err := s.PutFollowUp(ctx, f, 3); !errors.Is(err, schedule.ErrFollowUpLimit) {
+			t.Fatalf("a fourth: %v", err)
+		}
+		f.Agent = "refunds" // another agent's: its own three
+		if err := s.PutFollowUp(ctx, f, 3); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("TheRulesAreKept", func(t *testing.T) {
 		s := newStore(t)
 		want := Schedule("t1", "morning")
 		want.Missed, want.Busy = schedule.MissedSkip, schedule.BusySkip
 		put(t, s, want)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != want {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v (err %v)", got, err)
 		}
 	})
@@ -75,7 +134,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		want := Schedule("t1", "morning")
 		want.Input = strings.Repeat("<&>", schedule.MaxInput/3)
 		put(t, s, want)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != want {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v (err %v)\nwant %+v", got, err, want)
 		}
 	})
@@ -86,7 +145,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		put(t, s, sc)
 		sc.Cron, sc.Enabled, sc.TimeZone = "30 7 * * *", false, ""
 		put(t, s, sc)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != sc {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, sc) {
 			t.Fatalf("got %+v (err %v), want the replacement %+v", got, err, sc)
 		}
 	})
@@ -104,7 +163,7 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		theirs.Input = "Another tenant's job."
 		put(t, s, mine)
 		put(t, s, theirs)
-		if got, err := s.Get(ctx, "t1", "morning"); err != nil || got != mine {
+		if got, err := s.Get(ctx, "t1", "morning"); err != nil || !reflect.DeepEqual(got, mine) {
 			t.Fatalf("t1 got %+v (err %v), want its own", got, err)
 		}
 		if _, err := s.Get(ctx, "t3", "morning"); !errors.Is(err, schedule.ErrNotFound) {
@@ -152,6 +211,56 @@ func Run(t *testing.T, newStore func(t *testing.T) schedule.Schedules) {
 		}
 		if _, err := s.Get(ctx, "t1", "morning"); !errors.Is(err, schedule.ErrNotFound) {
 			t.Fatalf("got %v after delete, want ErrNotFound", err)
+		}
+	})
+}
+
+// RunWaitings runs every check against the schedule.Waitings stores
+// newStore returns, one per check.
+func RunWaitings(t *testing.T, newStore func(t *testing.T) schedule.Waitings) {
+	ctx := context.Background()
+	due := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	w := func(tenant, agent, id string, d time.Duration) schedule.Waiting {
+		return schedule.Waiting{Tenant: tenant, Agent: agent, Schedule: id, Due: due.Add(d)}
+	}
+	t.Run("a firing that comes late doesn't replace a later one", func(t *testing.T) {
+		st := newStore(t)
+		if _, _, err := st.Swap(ctx, w("t1", "refunds", "inbox", 15*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := st.Swap(ctx, w("t1", "refunds", "morning", 0)); !errors.Is(err, schedule.ErrNewerWaiting) {
+			t.Fatalf("an older firing: %v", err)
+		}
+		if _, replaced, err := st.Swap(ctx, w("t1", "refunds", "inbox", 15*time.Minute)); err != nil || !replaced { // the same, again
+			t.Fatalf("a repeated delivery: replaced %v, %v", replaced, err)
+		}
+		got, ok, err := st.Take(ctx, "t1", "refunds")
+		if err != nil || !ok || got.Schedule != "inbox" {
+			t.Fatalf("took %+v (%v), %v", got, ok, err)
+		}
+	})
+	t.Run("one per agent, the latest", func(t *testing.T) {
+		st := newStore(t)
+		if _, replaced, err := st.Swap(ctx, w("t1", "refunds", "morning", 0)); err != nil || replaced {
+			t.Fatalf("first: replaced %v, %v", replaced, err)
+		}
+		prev, replaced, err := st.Swap(ctx, w("t1", "refunds", "inbox", time.Minute))
+		if err != nil || !replaced || prev != w("t1", "refunds", "morning", 0) {
+			t.Fatalf("second: replaced %+v (%v), %v", prev, replaced, err)
+		}
+		if _, _, err := st.Swap(ctx, w("t2", "refunds", "morning", 0)); err != nil { // another tenant's agent: its own place
+			t.Fatal(err)
+		}
+		got, ok, err := st.Take(ctx, "t1", "refunds")
+		if err != nil || !ok || !got.Due.Equal(due.Add(time.Minute)) || got.Schedule != "inbox" {
+			t.Fatalf("took %+v (%v), %v", got, ok, err)
+		}
+		if _, ok, err := st.Take(ctx, "t1", "refunds"); err != nil || ok {
+			t.Fatalf("taken twice: %v, %v", ok, err)
+		}
+		all, err := st.List(ctx, 10)
+		if err != nil || len(all) != 1 || all[0].Tenant != "t2" {
+			t.Fatalf("listed %+v, %v", all, err)
 		}
 	})
 }

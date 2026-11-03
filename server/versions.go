@@ -181,6 +181,10 @@ func (s *Server) switchVersion(ctx context.Context, c Caller, r *http.Request) (
 			return 0, nil, err
 		}
 	}
+	// A follow-up is bound to the version it was set under.
+	if err := s.Schedules.CancelFollowUps(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
 	return http.StatusOK, map[string]int{"live": n}, nil
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/tool"
 )
 
 // runEvent is what a background invocation is sent: the run to execute. The
@@ -75,6 +76,12 @@ func (f *function) execute(ctx context.Context, tenant, id string) error {
 		return errors.New("lambda: a run event names no run")
 	}
 	r, err := f.runner.Execute(ctx, tenant, id, nil)
+	if r.Agent != "" && !r.Active() && f.schedules != nil {
+		// Its agent may be free now: a firing kept waiting for it runs.
+		if err := f.schedules.Free(ctx, tenant, r.Agent); err != nil {
+			f.log.ErrorContext(ctx, "freeing the agent's waiting firing", "tenant", tenant, "agent", r.Agent, "err", err)
+		}
+	}
 	switch {
 	case err == nil:
 		f.log.InfoContext(ctx, "run", "tenant", tenant, "run", id, "status", r.Status, "stop", r.Stop)
@@ -159,6 +166,13 @@ func (f *function) sweep(ctx context.Context) error {
 	}
 	if n > 0 {
 		f.log.InfoContext(ctx, "sweep", "ended", n)
+	}
+	// A waiting firing whose agent's run ended where nobody freed it (a
+	// chat, a run this sweep ended) runs now; one still busy keeps waiting.
+	if f.schedules != nil {
+		if err := f.schedules.FreeAll(ctx, sweepLimit); err != nil {
+			f.log.ErrorContext(ctx, "freeing waiting firings", "err", err)
+		}
 	}
 	// Attached files go when due: an upload no message named within an
 	// hour, and a file whose message has gone (kiff/tafs#209). What's left
@@ -275,13 +289,14 @@ func noteAgain(runs run.Runs) func(ctx context.Context, r run.Run) error {
 	return nil
 }
 
-// lastRunAtWork reports whether a schedule's last run, other than the
-// firing's own (a repeated delivery), is still at work: PENDING or RUNNING. A
-// run paused for its owner isn't at work, and doesn't keep the next firing
-// from running.
-func lastRunAtWork(runs run.Runs) func(ctx context.Context, f schedule.Firing) (bool, error) {
+// agentAtWork reports whether the firing's agent is still at work on a run
+// other than the firing's own (a repeated delivery): PENDING or RUNNING,
+// whatever started it (busy reads the taf, not one trigger). A
+// run paused for its owner isn't at work, and doesn't keep the firing from
+// running.
+func agentAtWork(runs run.Runs) func(ctx context.Context, f schedule.Firing) (bool, error) {
 	return func(ctx context.Context, f schedule.Firing) (bool, error) {
-		recent, err := runs.ListSource(ctx, f.Tenant, run.BySchedule, f.Schedule, 5)
+		recent, err := runs.List(ctx, f.Tenant, f.Agent, busyLook)
 		if err != nil {
 			return false, err
 		}
@@ -292,4 +307,40 @@ func lastRunAtWork(runs run.Runs) func(ctx context.Context, f schedule.Firing) (
 		}
 		return false, nil
 	}
+}
+
+// busyLook is how many of an agent's newest runs agentAtWork reads: a run at
+// work is among the newest, since the tenant's runs going at once are capped.
+const busyLook = 20
+
+// probe makes a check's read: the agent's tool named c.Tool, called with
+// c.Arguments through its gateway, which records and counts it on the
+// agent's Card like any read. A tool that isn't a read, or a read KIFF
+// didn't allow, is an error the firing reports, never a run.
+func probe(ctx context.Context, b *registry.Builder, tenant, agent string, c schedule.Check) (string, error) {
+	a, _, err := b.Build(ctx, tenant, agent)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range a.Tools {
+		if t.Spec().Name != c.Tool {
+			continue
+		}
+		if t.Access() != tool.Read || !t.Gateway() {
+			return "", fmt.Errorf("lambda: the check's tool %s isn't a read through the gateway", c.Tool)
+		}
+		in := c.Arguments
+		if len(in) == 0 {
+			in = json.RawMessage(`{}`)
+		}
+		res, err := t.Call(ctx, in)
+		if err != nil {
+			return "", err
+		}
+		if res.IsError || res.State != "" {
+			return "", fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, res.State)
+		}
+		return res.Text, nil
+	}
+	return "", fmt.Errorf("lambda: the agent has no tool %s to check with", c.Tool)
 }

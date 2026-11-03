@@ -333,3 +333,38 @@ func TestAWithdrawalReachesItsRoute(t *testing.T) {
 		}
 	}
 }
+
+// gwTool is a gateway tool for probe's test.
+type gwTool struct {
+	name   string
+	access tool.Access
+	in     json.RawMessage
+}
+
+func (g *gwTool) Spec() model.ToolSpec { return model.ToolSpec{Name: g.name} }
+func (g *gwTool) Access() tool.Access  { return g.access }
+func (g *gwTool) Gateway() bool        { return true }
+func (g *gwTool) Call(_ context.Context, in json.RawMessage) (tool.Result, error) {
+	g.in = in
+	return tool.Result{Text: `{"data":[]}`}, nil
+}
+
+// A check reads through the agent's own gateway tools, and only with a read.
+func TestProbeReadsThroughTheAgentsGateway(t *testing.T) {
+	agents := memory.NewAgents()
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	list := &gwTool{name: "gmail__list", access: tool.Read}
+	send := &gwTool{name: "gmail__send", access: tool.Write}
+	b := &registry.Builder{Agents: agents, Secrets: keys{}, Model: &replies{}, Gateways: []string{"https://gateway.test/mcp"},
+		Connect: func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{list, send}, nil }}
+	got, err := probe(ctx, b, "t1", "payouts", schedule.Check{Tool: "gmail__list", Arguments: json.RawMessage(`{"q":"refund"}`), Cursor: "c"})
+	if err != nil || got != `{"data":[]}` || string(list.in) != `{"q":"refund"}` {
+		t.Fatalf("read %q (%v), sent %s", got, err, list.in)
+	}
+	if _, err := probe(ctx, b, "t1", "payouts", schedule.Check{Tool: "gmail__send", Cursor: "c"}); err == nil || send.in != nil {
+		t.Fatal("a check wrote")
+	}
+	if _, err := probe(ctx, b, "t1", "payouts", schedule.Check{Tool: "nope", Cursor: "c"}); err == nil {
+		t.Fatal("a tool the agent hasn't")
+	}
+}

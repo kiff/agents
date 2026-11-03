@@ -1766,6 +1766,51 @@ func TestAStepNamingARefusedCallIsntDone(t *testing.T) {
 	}
 }
 
+// CloseInText: a run that ends on its tool results with nothing said gets
+// one more turn, asked for its closing message, once; an empty reply isn't
+// kept. Without it, the run ends as it did.
+func TestCloseInTextAsksOnceForTheClosingMessage(t *testing.T) {
+	lookup := &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "{}"}}
+	silent := model.Reply{Stop: model.EndTurn, Usage: model.Usage{InputTokens: 1000, OutputTokens: 10}}
+
+	m := &script{replies: []model.Reply{use("c1", "lookup", `{}`), silent, say("The taf is set up.")}}
+	_, r := start(t, session.KindChat)
+	a := newAgent(m, lookup)
+	a.CloseInText = true
+	out, _, err := agent.Run(context.Background(), a, r, nil, "Set it up.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Answered || out.Text != "The taf is set up." || len(m.reqs) != 3 {
+		t.Fatalf("stop %s, text %q, %d turns", out.Stop, out.Text, len(m.reqs))
+	}
+	last := m.reqs[2].Messages[len(m.reqs[2].Messages)-1]
+	if last.Role != model.User || last.Blocks[len(last.Blocks)-1].Text != agent.CloseNudge || last.Blocks[0].Kind != model.ToolResult {
+		t.Fatalf("the third turn was sent %+v", last)
+	}
+	for _, msg := range m.reqs[2].Messages {
+		if msg.Role == model.Assistant && len(msg.Blocks) == 0 {
+			t.Fatal("an empty reply went back")
+		}
+	}
+
+	// Silent twice: asked once only.
+	m = &script{replies: []model.Reply{use("c1", "lookup", `{}`), silent, silent}}
+	_, r = start(t, session.KindChat)
+	a = newAgent(m, lookup)
+	a.CloseInText = true
+	if out, _, err = agent.Run(context.Background(), a, r, nil, "Set it up.", nil); err != nil || out.Stop != agent.Answered || len(m.reqs) != 3 {
+		t.Fatalf("stop %s, %d turns, %v", out.Stop, len(m.reqs), err)
+	}
+
+	// Off: the run ends on the silent turn.
+	m = &script{replies: []model.Reply{use("c1", "lookup", `{}`), silent}}
+	_, r = start(t, session.KindChat)
+	if out, _, err = agent.Run(context.Background(), newAgent(m, lookup), r, nil, "Check.", nil); err != nil || len(m.reqs) != 2 {
+		t.Fatalf("off: %d turns, %v", len(m.reqs), err)
+	}
+}
+
 // probeTool records how the run says its latest call to each of names ended
 // (show's plan steps read the same), each time it's called.
 type probeTool struct {

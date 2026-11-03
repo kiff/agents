@@ -40,7 +40,7 @@ const (
 )
 
 // Types are the components the app draws.
-var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result"}
+var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result", "knob"}
 
 var (
 	idPattern  = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
@@ -134,6 +134,11 @@ type Component struct {
 	Yes  string `json:"yes,omitempty"`
 	No   string `json:"no,omitempty"`
 	Note string `json:"note,omitempty"`
+	// TafID and Version are a dial card's (knob): the taf's tafs id and the
+	// dial version Coach drafted for it. Its words are tafs cloud's, read by
+	// the app from the taf's dial, never the agent's.
+	TafID   string `json:"taf_id,omitempty"`
+	Version int    `json:"version,omitempty"`
 }
 
 // fields lists the fields each type may carry, besides type and id.
@@ -145,6 +150,7 @@ var fields = map[string][]string{
 	"approval":  {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
 	"sign_in":   {"grant", "service", "title", "text", "yes", "no", "note"},
 	"result":    {"taf", "text", "tools", "yes"},
+	"knob":      {"taf_id", "version"}, // no agent words: the app draws the dial's draft as tafs cloud words it
 }
 
 // Tool shows components.
@@ -170,7 +176,8 @@ func (Tool) Spec() model.ToolSpec {
 			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
 			"[questions <id>] then a JSON object from each question's id to {value}, {values} (multi) or {own} (the owner's own words); " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
-			"sign_in {grant, service}: the owner signs in at the vendor again; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds or access) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
+			"sign_in {grant, service}: the owner signs in at the vendor again; " +
+			"knob {taf_id, version}: the dial version you drafted for a taf (taf_dial's answer), which the app draws from tafs cloud's words, with the switch to it; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds or access) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
 			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?, summary?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
 			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
 			"A result waits while the taf or its version is made for the owner; what came of it is the call's result: {taf_id} (set up), {version} (the new version) or {failed} (why not): then say why, and hand over again once it's fixed. " +
@@ -178,7 +185,7 @@ func (Tool) Spec() model.ToolSpec {
 			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result"]},` +
+			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result","knob"]},` +
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
@@ -201,7 +208,9 @@ func (Tool) Spec() model.ToolSpec {
 			`"tools":{"type":"array","items":{"type":"string"}},` +
 			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
 			`"no":{"type":"string","description":"the other button's label (sign_in)"},` +
-			`"note":{"type":"string","description":"the line under the buttons (sign_in)"}},` +
+			`"note":{"type":"string","description":"the line under the buttons (sign_in)"},` +
+			`"taf_id":{"type":"string","description":"the taf's tafs id (knob)"},` +
+			`"version":{"type":"integer","description":"the dial version taf_dial made (knob)"}},` +
 			`"required":["type","id"]}`),
 	}
 }
@@ -358,6 +367,13 @@ func (c Component) check() error {
 		}
 		if c.Draft != "" && !refPattern.MatchString(c.Draft) {
 			return fmt.Errorf("draft is KIFF's agent draft id")
+		}
+	case "knob":
+		if !refPattern.MatchString(c.TafID) {
+			return fmt.Errorf("taf_id is the taf's tafs id")
+		}
+		if c.Version < 1 {
+			return fmt.Errorf("version is the dial version taf_dial made")
 		}
 	case "result":
 		if c.Taf == nil || !refPattern.MatchString(c.Taf.Agent) {

@@ -97,6 +97,10 @@ func (s *Server) halt(ctx context.Context, c Caller, r *http.Request) (int, any,
 		if err != nil {
 			return 0, nil, fmt.Errorf("cancelling the runs of %s: %w", a, err)
 		}
+		// Nothing from before a halt runs: its follow-ups go too.
+		if err := s.Schedules.CancelFollowUps(ctx, c.Tenant, a); err != nil {
+			return 0, nil, fmt.Errorf("cancelling the follow-ups of %s: %w", a, err)
+		}
 	}
 	own, all, err := s.halts(ctx, c.Tenant, id)
 	if err != nil {

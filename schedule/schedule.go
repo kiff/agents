@@ -16,6 +16,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
+	"strings"
 	"time"
 	_ "time/tzdata" // zones load the same on any host, a bare Lambda image included
 )
@@ -37,20 +40,56 @@ type Schedule struct {
 	ID     string `json:"id"`
 	// Agent is the agent each firing runs.
 	Agent string `json:"agent"`
+	// Kind is how it fires: KindCron (the default when empty), KindOnce or
+	// KindMonthlyLastDay.
+	Kind string `json:"kind,omitempty"`
 	// Cron is five-field POSIX cron, read in TimeZone (IANA; empty is UTC).
-	Cron     string `json:"cron"`
+	// KindMonthlyLastDay keeps its time of day here, as a daily cron
+	// ("M H * * *"); KindOnce has none.
+	Cron     string `json:"cron,omitempty"`
 	TimeZone string `json:"time_zone,omitempty"`
+	// At is when a KindOnce schedule fires, to the minute.
+	At time.Time `json:"at,omitzero"`
+	// FollowUp marks a once schedule the agent set itself,
+	// within the bounds Service.FollowUp keeps, and Version the agent's
+	// version it was set under: a firing under another version starts
+	// nothing.
+	FollowUp bool `json:"follow_up,omitempty"`
+	Version  int  `json:"version,omitempty"`
+	// AppCheck, when set, makes each firing a check of a connected app: one
+	// read first, and a run only for what is new (Check).
+	AppCheck *Check `json:"check,omitempty"`
+	// Skip is the coming firings the owner skipped, by their due time: each
+	// starts nothing and is kept as skipped by the owner. At most MaxSkips;
+	// a skip well past its time is pruned when its schedule next fires.
+	Skip []time.Time `json:"skip,omitempty"`
 	// Input is what each run is asked.
 	Input string `json:"input"`
 	// Enabled is whether it fires.
 	Enabled bool `json:"enabled"`
 	// Missed is what a firing that comes late does (MissedWithinHour, the
 	// default when empty, or MissedSkip); Busy, one that comes while the
-	// schedule's last run is still at work (BusySkip, the default and only
-	// rule).
+	// agent is still at work, whatever started it (BusySkip, the default,
+	// or BusyLatest).
 	Missed string `json:"missed,omitempty"`
 	Busy   string `json:"busy,omitempty"`
 }
+
+// How a schedule fires. The plain forms the dial shows (daily,
+// weekdays, chosen days, several times a day, every N minutes between set
+// hours) are KindCron, as cron says them exactly.
+const (
+	KindCron = "cron"
+	// KindOnce fires once, at At, and is gone after it fires.
+	KindOnce = "once"
+	// KindMonthlyLastDay fires on the month's last day at its Cron's time:
+	// cron can't say "the last day", so the Scheduler fires it daily and
+	// only the last day's firing runs.
+	KindMonthlyLastDay = "monthly_last_day"
+)
+
+// KindOf is the schedule's Kind, its default filled in.
+func (s Schedule) KindOf() string { return cmp.Or(s.Kind, KindCron) }
 
 // A schedule's rules for a firing that comes late, or while its last run is
 // still at work.
@@ -60,9 +99,14 @@ const (
 	MissedWithinHour = "within_1h"
 	// MissedSkip skips every missed firing.
 	MissedSkip = "skip"
-	// BusySkip skips a firing that comes while the schedule's last run is
-	// still at work (PENDING or RUNNING; one paused for its owner isn't).
+	// BusySkip skips a firing that comes while the agent is still at work
+	// (a run PENDING or RUNNING; one paused for its owner isn't).
 	BusySkip = "skip"
+	// BusyLatest keeps it waiting instead, as the agent's one waiting
+	// firing: a later one, from any of its schedules, replaces it. It runs
+	// once the agent is free (Service.Free), so a burst isn't lost and two
+	// firings never run the agent side by side.
+	BusyLatest = "latest"
 )
 
 // MissedAfter is how late a firing may come and still be on time: a
@@ -87,15 +131,48 @@ func (s Schedule) Check() error {
 		return fmt.Errorf("schedule: the input is 1 to %d bytes", MaxInput)
 	case s.Missed != "" && s.Missed != MissedWithinHour && s.Missed != MissedSkip:
 		return fmt.Errorf("schedule: missed is %q or %q", MissedWithinHour, MissedSkip)
-	case s.Busy != "" && s.Busy != BusySkip:
-		return fmt.Errorf("schedule: busy is %q", BusySkip)
+	case s.Busy != "" && s.Busy != BusySkip && s.Busy != BusyLatest:
+		return fmt.Errorf("schedule: busy is %q or %q", BusySkip, BusyLatest)
 	}
-	c, err := ParseCron(s.Cron)
-	if err != nil {
-		return err
+	switch s.KindOf() {
+	case KindCron:
+		c, err := ParseCron(s.Cron)
+		if err != nil {
+			return err
+		}
+		if c.MinGap() < MinGap {
+			return fmt.Errorf("schedule: a schedule fires at most every %d minutes", int(MinGap.Minutes()))
+		}
+		if !s.At.IsZero() {
+			return errors.New("schedule: only a once schedule has a time to fire at")
+		}
+	case KindMonthlyLastDay:
+		if !daily(s.Cron) {
+			return errors.New("schedule: a monthly last-day schedule keeps its time as a daily cron (\"M H * * *\")")
+		}
+		if !s.At.IsZero() {
+			return errors.New("schedule: only a once schedule has a time to fire at")
+		}
+	case KindOnce:
+		if s.Cron != "" || s.At.IsZero() || !s.At.Equal(s.At.Truncate(time.Minute)) {
+			return errors.New("schedule: a once schedule has a time to fire at, to the minute, and no cron")
+		}
+	default:
+		return fmt.Errorf("schedule: kind is %q, %q or %q", KindCron, KindOnce, KindMonthlyLastDay)
 	}
-	if c.MinGap() < MinGap {
-		return fmt.Errorf("schedule: a schedule fires at most every %d minutes", int(MinGap.Minutes()))
+	if s.FollowUp && s.KindOf() != KindOnce {
+		return errors.New("schedule: a follow-up fires once")
+	}
+	if s.AppCheck != nil {
+		if s.FollowUp {
+			return errors.New("schedule: a follow-up checks nothing first")
+		}
+		if err := s.AppCheck.check(); err != nil {
+			return err
+		}
+	}
+	if len(s.Skip) > MaxSkips {
+		return fmt.Errorf("schedule: at most %d coming firings are skipped", MaxSkips)
 	}
 	if _, err := s.Location(); err != nil {
 		return err
@@ -115,22 +192,57 @@ func (s Schedule) Location() (*time.Location, error) {
 	return loc, nil
 }
 
+// daily reports whether expr is a cron that fires once a day, every day.
+func daily(expr string) bool {
+	f := strings.Fields(expr)
+	if len(f) != 5 || f[2] != "*" || f[3] != "*" || f[4] != "*" {
+		return false
+	}
+	c, err := ParseCron(expr)
+	return err == nil && len(values(c.minute)) == 1 && len(values(c.hour)) == 1
+}
+
+// lastDay reports whether t is the last day of its month, on t's own clock.
+func lastDay(t time.Time) bool { return t.AddDate(0, 0, 1).Day() == 1 }
+
 // names reports whether the schedule, as stored, fires at due.
 func (s Schedule) names(due time.Time) bool {
+	if !s.Enabled {
+		return false
+	}
+	if s.KindOf() == KindOnce {
+		return due.Equal(s.At)
+	}
 	c, err1 := ParseCron(s.Cron)
 	loc, err2 := s.Location()
-	return s.Enabled && err1 == nil && err2 == nil && c.Matches(due.In(loc))
+	if err1 != nil || err2 != nil || !c.Matches(due.In(loc)) {
+		return false
+	}
+	return s.KindOf() != KindMonthlyLastDay || lastDay(due.In(loc))
 }
 
 // Next is the schedule's first firing after t, or the zero time when it is
 // off or never fires. It is for showing; the Scheduler decides the firings.
 func (s Schedule) Next(t time.Time) time.Time {
-	c, err1 := ParseCron(s.Cron)
-	loc, err2 := s.Location()
-	if !s.Enabled || err1 != nil || err2 != nil {
+	if !s.Enabled {
 		return time.Time{}
 	}
-	return c.Next(t, loc)
+	if s.KindOf() == KindOnce {
+		if s.At.After(t) {
+			return s.At
+		}
+		return time.Time{}
+	}
+	c, err1 := ParseCron(s.Cron)
+	loc, err2 := s.Location()
+	if err1 != nil || err2 != nil {
+		return time.Time{}
+	}
+	next := c.Next(t, loc)
+	for !next.IsZero() && (s.KindOf() == KindMonthlyLastDay && !lastDay(next) || slices.ContainsFunc(s.Skip, next.Equal)) {
+		next = c.Next(next, loc)
+	}
+	return next
 }
 
 func validID(id string) bool {
@@ -144,6 +256,28 @@ func validID(id string) bool {
 	}
 	return true
 }
+
+// A follow-up's bounds. The server keeps them, never the
+// model's words.
+const (
+	// MaxFollowUps is how many follow-ups an agent may have waiting to fire.
+	MaxFollowUps = 3
+	// FollowUpWithin is how far ahead a follow-up may be set: one that
+	// hasn't fired by then never does.
+	FollowUpWithin = 7 * 24 * time.Hour
+)
+
+// Why a follow-up is refused.
+var (
+	ErrFollowUpChain = errors.New("schedule: a follow-up's run can't set another follow-up")
+	// ErrNewerWaiting: a firing due later already waits for the agent.
+	ErrNewerWaiting  = errors.New("schedule: a later firing already waits for the agent")
+	ErrFollowUpLimit = fmt.Errorf("schedule: the agent has %d follow-ups waiting, the most it may", MaxFollowUps)
+	ErrFollowUpRange = fmt.Errorf("schedule: a follow-up fires in the future, within %d days", int(FollowUpWithin.Hours()/24))
+)
+
+// MaxSkips is how many coming firings a schedule may have skipped.
+const MaxSkips = 20
 
 // ErrNotFound means the tenant has no schedule with that ID.
 var ErrNotFound = errors.New("schedule: no such schedule")
@@ -162,6 +296,11 @@ type Schedules interface {
 	// Delete removes the tenant's schedule; one that isn't there is not an
 	// error.
 	Delete(ctx context.Context, tenant, id string) error
+	// PutFollowUp stores s, a follow-up its agent set, only while the agent
+	// has fewer than max other enabled follow-ups: counted and stored in one
+	// step, so concurrent calls can't pass the limit together.
+	// ErrFollowUpLimit otherwise.
+	PutFollowUp(ctx context.Context, s Schedule, max int) error
 }
 
 // Fired is one firing as a schedule's history keeps it: when it was due, when
@@ -179,7 +318,38 @@ const (
 	FiredRun    = "run"
 	FiredMissed = "skipped_missed"
 	FiredBusy   = "skipped_busy"
+	// FiredWaiting waits for the agent to be free (BusyLatest); it becomes
+	// FiredRun when it runs, or FiredReplaced, FiredDropped.
+	FiredWaiting  = "waiting"
+	FiredReplaced = "skipped_replaced" // a later firing took its place
+	FiredDropped  = "skipped_dropped"  // its schedule changed or went before the agent was free
+	FiredSkipped  = "skipped_by_owner" // the owner skipped this one coming firing
+	FiredQuiet    = "quiet"            // its check found nothing new: no run
+	// FiredTooLarge: its check found only items too large for a run's
+	// input: no run, and they aren't read again.
+	FiredTooLarge = "skipped_too_large"
 )
+
+// Waiting is the agent's one firing waiting for it to be free.
+type Waiting struct {
+	Tenant   string    `json:"tenant"`
+	Agent    string    `json:"agent"`
+	Schedule string    `json:"schedule"`
+	Due      time.Time `json:"due"`
+}
+
+// Waitings keeps each agent's one waiting firing.
+type Waitings interface {
+	// Swap makes w its agent's waiting firing, and returns the one it
+	// replaced, if any. One due later stays, compared in the same step, as
+	// deliveries come in any order: ErrNewerWaiting, and w doesn't wait.
+	Swap(ctx context.Context, w Waiting) (prev Waiting, replaced bool, err error)
+	// Take removes the agent's waiting firing and returns it, if any.
+	Take(ctx context.Context, tenant, agent string) (Waiting, bool, error)
+	// List returns up to limit waiting firings, across tenants, for the
+	// sweep that frees agents whose runs ended without a word.
+	List(ctx context.Context, limit int) ([]Waiting, error)
+}
 
 // MaxHistory is how many firings a schedule's history keeps, newest first.
 const MaxHistory = 100
@@ -236,6 +406,13 @@ type Service struct {
 	// schedules of an agent Live says is gone, so Live is a consistent read
 	// of "the agent exists": never "is enabled", never a stale read.
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
+	// Probe makes a check's read through the agent's own Card, without the
+	// model, and returns its result. Without it, a schedule with a check
+	// starts nothing and is kept as skipped.
+	Probe func(ctx context.Context, tenant, agent string, c Check) (string, error)
+	// Version, when set, is the agent's live version: a follow-up set under
+	// another starts nothing, and is dropped.
+	Version func(ctx context.Context, tenant, agent string) (int, error)
 	// Start starts a background run for the firing, once per Key.
 	Start func(ctx context.Context, f Firing) error
 	// Busy reports whether the schedule's last run, other than the firing's
@@ -244,6 +421,9 @@ type Service struct {
 	Busy func(ctx context.Context, f Firing) (bool, error)
 	// History, when set, keeps each firing: run, or skipped and why.
 	History History
+	// Waitings keeps the firings BusyLatest holds; without it, BusyLatest
+	// skips as BusySkip does.
+	Waitings Waitings
 	// Now is the clock a firing's lateness is read by; nil is time.Now.
 	Now func() time.Time
 }
@@ -266,6 +446,60 @@ func (sv *Service) Put(ctx context.Context, s Schedule) error {
 		return err
 	}
 	return sv.Scheduler.Set(ctx, s)
+}
+
+// FollowUp stores and sets s as a follow-up its agent set itself, from a
+// run: once, in the future and within FollowUpWithin, at most MaxFollowUps
+// waiting per agent. fromFollowUp is whether that run was itself started by
+// a follow-up: a chain could become recurring work nobody confirmed, so it
+// is refused.
+func (sv *Service) FollowUp(ctx context.Context, s Schedule, fromFollowUp bool) error {
+	if fromFollowUp {
+		return ErrFollowUpChain
+	}
+	s.Kind, s.FollowUp, s.Enabled = KindOnce, true, true
+	if now := sv.now(); !s.At.After(now) || s.At.After(now.Add(FollowUpWithin)) {
+		return ErrFollowUpRange
+	}
+	if err := s.Check(); err != nil {
+		return err
+	}
+	live, err := sv.Live(ctx, s.Tenant, s.Agent)
+	if err != nil {
+		return err
+	}
+	if !live {
+		return ErrNoAgent
+	}
+	// The limit is the store's to keep: two runs' calls can come at once.
+	if err := sv.Store.PutFollowUp(ctx, s, MaxFollowUps); err != nil {
+		return err
+	}
+	return sv.Scheduler.Set(ctx, s)
+}
+
+// OpenFollowUp reports whether o counts toward its agent's follow-ups
+// waiting, beside s: an enabled follow-up of the same agent, not s itself.
+func OpenFollowUp(o, s Schedule) bool {
+	return o.FollowUp && o.Enabled && o.Agent == s.Agent && o.ID != s.ID
+}
+
+// CancelFollowUps deletes the agent's follow-ups that wait to fire: its
+// version switched, it was paused or halted, or its Card was revoked. Safe
+// to repeat.
+func (sv *Service) CancelFollowUps(ctx context.Context, tenant, agent string) error {
+	all, err := sv.Store.List(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	for _, s := range all {
+		if s.FollowUp && s.Agent == agent {
+			if err := sv.Delete(ctx, tenant, s.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Delete stops the schedule, then forgets it. Safe to repeat.
@@ -322,38 +556,224 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	if !live {
 		return sv.Delete(ctx, tenant, id)
 	}
+	if s.KindOf() == KindOnce && !s.Enabled {
+		return sv.Scheduler.Remove(ctx, tenant, id) // fired, or off: nothing to set again
+	}
 	if !s.names(due) {
 		return sv.Scheduler.Set(ctx, s)
 	}
 	f := Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: due}
-	now := time.Now()
-	if sv.Now != nil {
-		now = sv.Now()
+	now := sv.now()
+	if slices.ContainsFunc(s.Skip, due.Equal) {
+		// Kept until it is past any late or repeated delivery, then pruned:
+		// a skip used up on the first delivery would let a repeat run.
+		if kept := slices.DeleteFunc(slices.Clone(s.Skip), func(t time.Time) bool { return t.Before(now.Add(-2 * MissedWithin)) }); len(kept) != len(s.Skip) {
+			s.Skip = kept
+			if err := sv.Store.Put(ctx, s); err != nil {
+				return err
+			}
+		}
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredSkipped})
+	}
+	if s.FollowUp && sv.Version != nil {
+		v, err := sv.Version(ctx, tenant, s.Agent)
+		if err != nil {
+			return err
+		}
+		if v != s.Version {
+			return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredDropped})
+		}
 	}
 	// Missed: later than a Scheduler's own delay, and past what the rule runs.
 	if late := now.Sub(due); late > MissedAfter && (s.MissedRule() == MissedSkip || late > MissedWithin) {
-		return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredMissed})
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredMissed})
 	}
 	if sv.Busy != nil {
 		busy, err := sv.Busy(ctx, f)
 		if err != nil {
 			return err
 		}
-		if busy {
-			return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredBusy})
+		if busy && s.Busy == BusyLatest && sv.Waitings != nil {
+			prev, replaced, err := sv.Waitings.Swap(ctx, Waiting{Tenant: tenant, Agent: s.Agent, Schedule: id, Due: due})
+			if errors.Is(err, ErrNewerWaiting) { // came late: the later firing waits in its place
+				return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredReplaced})
+			}
+			if err != nil {
+				return err
+			}
+			if replaced && !(prev.Schedule == id && prev.Due.Equal(due)) { // a repeated delivery replaces itself
+				if err := sv.keepOf(ctx, prev, FiredReplaced, now); err != nil {
+					return err
+				}
+			}
+			return sv.keepAs(ctx, f, Fired{Due: due, At: now, Outcome: FiredWaiting})
 		}
+		if busy {
+			return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredBusy})
+		}
+	}
+	return sv.start(ctx, s, f, now)
+}
+
+// start runs the firing: for a schedule with a check, only when the read
+// finds something new, with it in the run's input. The check's cursor moves
+// only once the run has started; a repeated delivery of the firing that
+// started it starts that run again (Firing.Key), not another read.
+func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Time) error {
+	if c := s.AppCheck; c != nil && !c.Due.Equal(f.Due) {
+		if sv.Probe == nil {
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredDropped})
+		}
+		result, err := sv.Probe(ctx, s.Tenant, s.Agent, *c)
+		if err != nil {
+			return err
+		}
+		input, next, n, tooLarge, err := c.batch(s.Input, result)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			if !reflect.DeepEqual(next, *c) { // the first check takes the cursor; a too-large item is passed
+				s.AppCheck = &next
+				if err := sv.Store.Put(ctx, s); err != nil {
+					return err
+				}
+			}
+			outcome := FiredQuiet
+			if tooLarge > 0 {
+				outcome = FiredTooLarge
+			}
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: outcome})
+		}
+		f.Input = input
+		if err := sv.Start(ctx, f); err != nil {
+			return err
+		}
+		next.Due = f.Due
+		s.AppCheck = &next
+		if err := sv.Store.Put(ctx, s); err != nil {
+			return err
+		}
+		return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
 	}
 	if err := sv.Start(ctx, f); err != nil {
 		return err
 	}
-	return sv.keep(ctx, f, Fired{Due: due, At: now, Outcome: FiredRun, Run: f.Key()})
+	return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
 }
 
-// keep adds fired to the schedule's history, when there is one.
-func (sv *Service) keep(ctx context.Context, f Firing, fired Fired) error {
+// Free runs the agent's waiting firing, if any, now that its run has ended.
+// The firing is read against its schedule as it is now: a schedule changed
+// so it no longer names that firing, switched off, removed, or no longer
+// BusyLatest drops it, and so does an agent gone. An agent busy again keeps
+// it waiting. Safe to call for any agent, at any time.
+func (sv *Service) Free(ctx context.Context, tenant, agent string) error {
+	if sv.Waitings == nil {
+		return nil
+	}
+	w, ok, err := sv.Waitings.Take(ctx, tenant, agent)
+	if err != nil || !ok {
+		return err
+	}
+	now := sv.now()
+	s, err := sv.Store.Get(ctx, tenant, w.Schedule)
+	if errors.Is(err, ErrNotFound) {
+		return nil // gone, with its history
+	}
+	if err != nil {
+		return sv.putBack(ctx, w, err)
+	}
+	if s.Agent != agent || s.Busy != BusyLatest || !s.names(w.Due) {
+		return sv.keepOf(ctx, w, FiredDropped, now)
+	}
+	live, err := sv.Live(ctx, tenant, agent)
+	if err != nil {
+		return sv.putBack(ctx, w, err)
+	}
+	if !live {
+		return sv.Delete(ctx, tenant, w.Schedule)
+	}
+	f := Firing{Tenant: tenant, Schedule: w.Schedule, Agent: agent, Input: s.Input, Due: w.Due}
+	if sv.Busy != nil {
+		busy, err := sv.Busy(ctx, f)
+		if err != nil {
+			return sv.putBack(ctx, w, err)
+		}
+		if busy { // another run began meanwhile: it waits for that one
+			return sv.putBack(ctx, w, nil)
+		}
+	}
+	if err := sv.start(ctx, s, f, now); err != nil {
+		return sv.putBack(ctx, w, err)
+	}
+	return nil
+}
+
+// FreeAll frees up to limit agents with a waiting firing, for the sweep: a
+// run can end where nobody calls Free (an HTTP chat, the sweep itself).
+func (sv *Service) FreeAll(ctx context.Context, limit int) error {
+	if sv.Waitings == nil {
+		return nil
+	}
+	all, err := sv.Waitings.List(ctx, limit)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, w := range all {
+		errs = append(errs, sv.Free(ctx, w.Tenant, w.Agent))
+	}
+	return errors.Join(errs...)
+}
+
+// putBack makes w its agent's waiting firing again, unless a later one took
+// the place meanwhile, and returns cause.
+func (sv *Service) putBack(ctx context.Context, w Waiting, cause error) error {
+	prev, replaced, err := sv.Waitings.Swap(ctx, w)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if replaced && prev.Due.After(w.Due) { // the later one stays
+		if _, _, err := sv.Waitings.Swap(ctx, prev); err != nil {
+			return errors.Join(cause, err)
+		}
+		return errors.Join(cause, sv.keepOf(ctx, w, FiredReplaced, sv.now()))
+	}
+	return cause
+}
+
+func (sv *Service) now() time.Time {
+	if sv.Now != nil {
+		return sv.Now()
+	}
+	return time.Now()
+}
+
+// keepOf keeps what came of a waiting firing in its schedule's history.
+func (sv *Service) keepOf(ctx context.Context, w Waiting, outcome string, at time.Time) error {
+	return sv.keepAs(ctx, Firing{Tenant: w.Tenant, Schedule: w.Schedule}, Fired{Due: w.Due, At: at, Outcome: outcome})
+}
+
+// keepAs adds fired to the history, and nothing else.
+func (sv *Service) keepAs(ctx context.Context, f Firing, fired Fired) error {
 	if sv.History == nil {
 		return nil
 	}
 	fired.Due, fired.At = fired.Due.UTC(), fired.At.UTC()
 	return sv.History.Add(ctx, f.Tenant, f.Schedule, fired)
+}
+
+// keep adds fired to the schedule's history, when there is one. A once
+// schedule is then off for good, whatever came of its firing: the Scheduler
+// deleted its own after firing, and the stored one stays, off, so its
+// history does too.
+func (sv *Service) keep(ctx context.Context, s Schedule, f Firing, fired Fired) error {
+	if err := sv.keepAs(ctx, f, fired); err != nil {
+		return err
+	}
+	if s.KindOf() == KindOnce {
+		s.Enabled = false
+		return sv.Store.Put(ctx, s)
+	}
+	return nil
 }
