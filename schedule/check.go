@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -47,8 +48,11 @@ func (c Check) check() error {
 }
 
 // newItems reads a check's result: the items past c.Last, oldest first by
-// their position, at most MaxCheckItems, and the cursor's new value. With
-// no Last yet, nothing is new and the cursor is taken.
+// their cursor, as many as one run takes (MaxCheckItems, and what fits its
+// input), and the cursor's new value: the last item handed over, so an item
+// left for later is read again by the next check, never skipped. Items with
+// the same cursor go together, as the next check reads only past it. With no
+// Last yet, nothing is new and the cursor is taken.
 func (c Check) newItems(result string) (items []json.RawMessage, last string, err error) {
 	var root any
 	if err := json.Unmarshal([]byte(result), &root); err != nil {
@@ -68,6 +72,11 @@ func (c Check) newItems(result string) (items []json.RawMessage, last string, er
 	if !ok {
 		return nil, "", fmt.Errorf("schedule: the check's read has no list at %q", c.Items)
 	}
+	type item struct {
+		cur string
+		raw json.RawMessage
+	}
+	var fresh []item
 	last = c.Last
 	for _, it := range arr {
 		m, ok := it.(map[string]any)
@@ -79,16 +88,53 @@ func (c Check) newItems(result string) (items []json.RawMessage, last string, er
 			continue
 		}
 		cur := cursorText(v)
-		if c.Last != "" && after(cur, c.Last) && len(items) < MaxCheckItems {
+		if c.Last == "" {
+			if last == "" || after(cur, last) {
+				last = cur
+			}
+			continue
+		}
+		if after(cur, c.Last) {
 			raw, _ := json.Marshal(it)
-			items = append(items, raw)
+			fresh = append(fresh, item{cur, raw})
 		}
-		if last == "" || after(cur, last) {
-			last = cur
+	}
+	// Oldest first, whatever order the app lists them in.
+	sort.SliceStable(fresh, func(i, j int) bool { return after(fresh[j].cur, fresh[i].cur) })
+	n, size := 0, 0
+	for n < len(fresh) && n < MaxCheckItems && size+len(fresh[n].raw)+1 <= maxItemsInput {
+		size += len(fresh[n].raw) + 1
+		n++
+	}
+	// Never split a cursor's items: back off to before the group, or, when the
+	// group is all there is room for, take it whole.
+	if n > 0 && n < len(fresh) && fresh[n].cur == fresh[n-1].cur {
+		start := n - 1
+		for start > 0 && fresh[start-1].cur == fresh[n-1].cur {
+			start--
 		}
+		if start > 0 {
+			n = start
+		} else {
+			for n < len(fresh) && fresh[n].cur == fresh[0].cur {
+				n++
+			}
+		}
+	}
+	if n == 0 && len(fresh) > 0 {
+		n = 1 // one item too large for the input still goes, cut by withItems
+	}
+	for _, it := range fresh[:n] {
+		items = append(items, it.raw)
+	}
+	if n > 0 {
+		last = fresh[n-1].cur
 	}
 	return items, last, nil
 }
+
+// maxItemsInput is the room the items have in a run's input, after its own.
+const maxItemsInput = MaxInput - 2000
 
 func cursorText(v any) string {
 	switch x := v.(type) {

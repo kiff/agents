@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -792,6 +793,72 @@ func TestACheckRunsOnlyForWhatIsNew(t *testing.T) {
 	fire(at(45))
 	if n := len(f.started); n != 3 || !strings.Contains(f.started[2].Input, "m4") {
 		t.Fatalf("after the failure: %+v", f.started)
+	}
+}
+
+// A check hands a run at most MaxCheckItems, oldest first, and its cursor
+// moves only past those: the rest come with the next check (review on
+// #297: the 51st item was skipped for good). Items with the same cursor go
+// together.
+func TestACheckLeavesNothingBehind(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "0"}
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	page := func(created ...int) string {
+		var items []string
+		for i := len(created) - 1; i >= 0; i-- { // newest first, as many apps list
+			items = append(items, fmt.Sprintf(`{"id":"m%d","created":%d}`, created[i], created[i]))
+		}
+		return `{"data":[` + strings.Join(items, ",") + `]}`
+	}
+	var all []int
+	for i := 1; i <= schedule.MaxCheckItems+1; i++ {
+		all = append(all, i)
+	}
+	result := page(all...)
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return result, nil }
+	at := func(m int) time.Time { return time.Date(2026, 11, 3, 9, m, 0, 0, time.UTC) }
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 1 || !strings.Contains(f.started[0].Input, `"id":"m1"`) || !strings.Contains(f.started[0].Input, `"id":"m50"`) ||
+		strings.Contains(f.started[0].Input, `"id":"m51"`) {
+		t.Fatalf("first: %+v", f.started)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.AppCheck.Last != "50" {
+		t.Fatalf("cursor %q after the first 50", got.AppCheck.Last)
+	}
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(15)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 2 || !strings.Contains(f.started[1].Input, `"id":"m51"`) {
+		t.Fatalf("the 51st: %+v", f.started)
+	}
+
+	// 49 items, then three with the same cursor: the three wait together.
+	var tied []string
+	for i := 1; i <= schedule.MaxCheckItems-1; i++ {
+		tied = append(tied, fmt.Sprintf(`{"id":"t%d","created":%d}`, i, 100+i))
+	}
+	for i := range 3 {
+		tied = append(tied, fmt.Sprintf(`{"id":"same%d","created":200}`, i))
+	}
+	result = `{"data":[` + strings.Join(tied, ",") + `]}`
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(30)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 3 || strings.Contains(f.started[2].Input, "same") {
+		t.Fatalf("a tie split: %+v", f.started[2].Input)
+	}
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(45)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 4 || strings.Count(f.started[3].Input, `"id":"same`) != 3 {
+		t.Fatalf("the tied three: %+v", f.started)
 	}
 }
 

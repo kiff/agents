@@ -269,6 +269,8 @@ const (
 // Why a follow-up is refused.
 var (
 	ErrFollowUpChain = errors.New("schedule: a follow-up's run can't set another follow-up")
+	// ErrNewerWaiting: a firing due later already waits for the agent.
+	ErrNewerWaiting  = errors.New("schedule: a later firing already waits for the agent")
 	ErrFollowUpLimit = fmt.Errorf("schedule: the agent has %d follow-ups waiting, the most it may", MaxFollowUps)
 	ErrFollowUpRange = fmt.Errorf("schedule: a follow-up fires in the future, within %d days", int(FollowUpWithin.Hours()/24))
 )
@@ -293,6 +295,11 @@ type Schedules interface {
 	// Delete removes the tenant's schedule; one that isn't there is not an
 	// error.
 	Delete(ctx context.Context, tenant, id string) error
+	// PutFollowUp stores s, a follow-up its agent set, only while the agent
+	// has fewer than max other enabled follow-ups: counted and stored in one
+	// step, so concurrent calls can't pass the limit together.
+	// ErrFollowUpLimit otherwise.
+	PutFollowUp(ctx context.Context, s Schedule, max int) error
 }
 
 // Fired is one firing as a schedule's history keeps it: when it was due, when
@@ -330,7 +337,8 @@ type Waiting struct {
 // Waitings keeps each agent's one waiting firing.
 type Waitings interface {
 	// Swap makes w its agent's waiting firing, and returns the one it
-	// replaced, if any.
+	// replaced, if any. One due later stays, compared in the same step, as
+	// deliveries come in any order: ErrNewerWaiting, and w doesn't wait.
 	Swap(ctx context.Context, w Waiting) (prev Waiting, replaced bool, err error)
 	// Take removes the agent's waiting firing and returns it, if any.
 	Take(ctx context.Context, tenant, agent string) (Waiting, bool, error)
@@ -449,20 +457,27 @@ func (sv *Service) FollowUp(ctx context.Context, s Schedule, fromFollowUp bool) 
 	if now := sv.now(); !s.At.After(now) || s.At.After(now.Add(FollowUpWithin)) {
 		return ErrFollowUpRange
 	}
-	all, err := sv.Store.List(ctx, s.Tenant)
+	if err := s.Check(); err != nil {
+		return err
+	}
+	live, err := sv.Live(ctx, s.Tenant, s.Agent)
 	if err != nil {
 		return err
 	}
-	open := 0
-	for _, o := range all {
-		if o.FollowUp && o.Enabled && o.Agent == s.Agent && o.ID != s.ID {
-			open++
-		}
+	if !live {
+		return ErrNoAgent
 	}
-	if open >= MaxFollowUps {
-		return ErrFollowUpLimit
+	// The limit is the store's to keep: two runs' calls can come at once.
+	if err := sv.Store.PutFollowUp(ctx, s, MaxFollowUps); err != nil {
+		return err
 	}
-	return sv.Put(ctx, s)
+	return sv.Scheduler.Set(ctx, s)
+}
+
+// OpenFollowUp reports whether o counts toward its agent's follow-ups
+// waiting, beside s: an enabled follow-up of the same agent, not s itself.
+func OpenFollowUp(o, s Schedule) bool {
+	return o.FollowUp && o.Enabled && o.Agent == s.Agent && o.ID != s.ID
 }
 
 // CancelFollowUps deletes the agent's follow-ups that wait to fire: its
@@ -576,6 +591,9 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 		}
 		if busy && s.Busy == BusyLatest && sv.Waitings != nil {
 			prev, replaced, err := sv.Waitings.Swap(ctx, Waiting{Tenant: tenant, Agent: s.Agent, Schedule: id, Due: due})
+			if errors.Is(err, ErrNewerWaiting) { // came late: the later firing waits in its place
+				return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredReplaced})
+			}
 			if err != nil {
 				return err
 			}

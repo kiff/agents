@@ -3,7 +3,9 @@ package dynamodb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,6 +20,7 @@ import (
 //
 //	schedule  pk=C|tenant         sk=id         the Schedule, as JSON in "sched"
 //	firing    pk=SF|tenant|id     sk=due (ns)   a Fired, as JSON in "fired", kept FiredKept
+//	guard     pk=CF|tenant        sk=agent      "v", bumped with each follow-up the agent sets
 type Schedules struct {
 	db    API
 	table string
@@ -129,6 +132,63 @@ func (st *Schedules) List(ctx context.Context, tenant string) ([]schedule.Schedu
 		}
 		in.ExclusiveStartKey = page.LastEvaluatedKey
 	}
+}
+
+// followUpTries bounds how often PutFollowUp reads again when another
+// follow-up of the agent was set between its read and its write.
+const followUpTries = 5
+
+// PutFollowUp counts the agent's open follow-ups and stores s in one step:
+// the write bumps the agent's guard from the version read, together with s,
+// so a follow-up set concurrently makes it read and count again.
+func (st *Schedules) PutFollowUp(ctx context.Context, sc schedule.Schedule, max int) error {
+	b, err := json.Marshal(sc)
+	if err != nil {
+		return err
+	}
+	guard := pkey(key("CF", sc.Tenant), sc.Agent)
+	for range followUpTries {
+		got, err := st.db.GetItem(ctx, &ddb.GetItemInput{TableName: &st.table, Key: guard, ConsistentRead: aws.Bool(true)})
+		if err != nil {
+			return err
+		}
+		var v int64
+		if a, ok := got.Item["v"].(*types.AttributeValueMemberN); ok {
+			if v, err = strconv.ParseInt(a.Value, 10, 64); err != nil {
+				return fmt.Errorf("dynamodb: a follow-up guard: %w", err)
+			}
+		}
+		all, err := st.List(ctx, sc.Tenant)
+		if err != nil {
+			return err
+		}
+		open := 0
+		for _, o := range all {
+			if schedule.OpenFollowUp(o, sc) {
+				open++
+			}
+		}
+		if open >= max {
+			return schedule.ErrFollowUpLimit
+		}
+		item := pkey(schedulesPK(sc.Tenant), sc.ID)
+		item["sched"] = &types.AttributeValueMemberS{Value: string(b)}
+		cond, vals := "#v = :v", map[string]types.AttributeValue{":v": n(v), ":n": n(v + 1)}
+		if v == 0 {
+			cond = "attribute_not_exists(#v) OR #v = :v"
+		}
+		_, err = st.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
+			{Update: &types.Update{TableName: &st.table, Key: guard, UpdateExpression: aws.String("SET #v = :n"),
+				ConditionExpression: aws.String(cond), ExpressionAttributeNames: map[string]string{"#v": "v"}, ExpressionAttributeValues: vals}},
+			{Put: &types.Put{TableName: &st.table, Item: item}},
+		}})
+		var cancelled *types.TransactionCanceledException
+		if errors.As(err, &cancelled) && len(cancelled.CancellationReasons) > 0 && aws.ToString(cancelled.CancellationReasons[0].Code) == "ConditionalCheckFailed" {
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("dynamodb: the agent's follow-ups changed %d times while one was set; try again", followUpTries)
 }
 
 func (st *Schedules) Delete(ctx context.Context, tenant, id string) error {

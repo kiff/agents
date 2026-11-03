@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,7 +17,7 @@ import (
 // waiting firing, all in one partition the sweep reads. There are few: one
 // per busy agent, at most.
 //
-//	waiting  pk=SW  sk=tenant|agent  the Waiting, as JSON in "waiting"
+//	waiting  pk=SW  sk=tenant|agent  the Waiting, as JSON in "waiting", its due (ns) in "due"
 type Waitings struct {
 	db    API
 	table string
@@ -31,7 +32,8 @@ const waitingsPK = "SW"
 
 func waitingSK(tenant, agent string) string { return key("W", tenant, agent) }
 
-// Swap puts w in its agent's place and returns what was there.
+// Swap puts w in its agent's place and returns what was there, unless what
+// is there is due later: the condition compares their due times in the write.
 func (st *Waitings) Swap(ctx context.Context, w schedule.Waiting) (schedule.Waiting, bool, error) {
 	b, err := json.Marshal(w)
 	if err != nil {
@@ -39,7 +41,15 @@ func (st *Waitings) Swap(ctx context.Context, w schedule.Waiting) (schedule.Wait
 	}
 	item := pkey(waitingsPK, waitingSK(w.Tenant, w.Agent))
 	item["waiting"] = s(string(b))
-	out, err := st.db.PutItem(ctx, &ddb.PutItemInput{TableName: &st.table, Item: item, ReturnValues: types.ReturnValueAllOld})
+	item["due"] = n(w.Due.UnixNano())
+	out, err := st.db.PutItem(ctx, &ddb.PutItemInput{TableName: &st.table, Item: item, ReturnValues: types.ReturnValueAllOld,
+		ConditionExpression:       aws.String("attribute_not_exists(#due) OR #due <= :due"),
+		ExpressionAttributeNames:  map[string]string{"#due": "due"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":due": n(w.Due.UnixNano())}})
+	var failed *types.ConditionalCheckFailedException
+	if errors.As(err, &failed) {
+		return schedule.Waiting{}, false, schedule.ErrNewerWaiting
+	}
 	if err != nil {
 		return schedule.Waiting{}, false, err
 	}

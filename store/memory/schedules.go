@@ -59,6 +59,22 @@ func (m *Schedules) Put(_ context.Context, s schedule.Schedule) error {
 	return nil
 }
 
+func (m *Schedules) PutFollowUp(_ context.Context, s schedule.Schedule, max int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	open := 0
+	for k, o := range m.byID {
+		if k[0] == s.Tenant && schedule.OpenFollowUp(o, s) {
+			open++
+		}
+	}
+	if open >= max {
+		return schedule.ErrFollowUpLimit
+	}
+	m.byID[[2]string{s.Tenant, s.ID}] = s
+	return nil
+}
+
 func (m *Schedules) Get(_ context.Context, tenant, id string) (schedule.Schedule, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -106,6 +122,9 @@ func (m *Waitings) Swap(_ context.Context, w schedule.Waiting) (schedule.Waiting
 	defer m.mu.Unlock()
 	k := [2]string{w.Tenant, w.Agent}
 	prev, ok := m.by[k]
+	if ok && prev.Due.After(w.Due) {
+		return schedule.Waiting{}, false, schedule.ErrNewerWaiting
+	}
 	m.by[k] = w
 	return prev, ok, nil
 }
