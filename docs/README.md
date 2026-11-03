@@ -9,7 +9,9 @@ issue's page in the same PR: what it adds, the tests that guard it, and what
 is left.
 
 As of `main` at 9c1ba7e (2026-10-16). By example: [runs.md](runs.md) (runs,
-the runner, chat and evals) and [registry.md](registry.md).
+the runner, chat and evals), [registry.md](registry.md) and
+[schedules.md](schedules.md) (kinds, missed and busy firings, app checks and
+follow-ups).
 
 | Issue | Step | Status | Page |
 |---|---|---|---|
