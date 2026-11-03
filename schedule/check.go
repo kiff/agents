@@ -29,6 +29,11 @@ type Check struct {
 	// ("created"): an item whose field is past it is new. Numbers compare
 	// as numbers, anything else as text.
 	Cursor string `json:"cursor"`
+	// ID is the field that names an item for good ("id" when empty), what
+	// the check keeps of a cursor value's items already handed over: an
+	// item the app changes since (read, replied to) is still the same one.
+	// An item without it is known by its content.
+	ID string `json:"id,omitempty"`
 	// Last is the cursor's value at the last check, kept by the service;
 	// empty until the first check, which only takes it.
 	Last string `json:"last,omitempty"`
@@ -36,7 +41,7 @@ type Check struct {
 	// delivery starts that run again rather than reading anew.
 	Due time.Time `json:"due,omitzero"`
 	// Partial is the cursor value whose items one run couldn't all take:
-	// those already handed over (or too large for any run), by their digest.
+	// those already handed over (or too large for any run), by identity.
 	// The next check hands over the rest before moving past it.
 	Partial *Partial `json:"partial,omitempty"`
 }
@@ -118,8 +123,7 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 			continue
 		}
 		raw, _ := json.Marshal(it)
-		sum := sha256.Sum256(raw)
-		d := hex.EncodeToString(sum[:12])
+		d := c.identity(m, raw)
 		if !after(cur, c.Last) || (c.Partial != nil && cur == c.Partial.Cursor && seen[d]) {
 			continue
 		}
@@ -192,6 +196,20 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 		fmt.Fprintf(&b, tooLargeNote, tooLarge)
 	}
 	return strings.TrimSpace(b.String()), next, n, tooLarge, nil
+}
+
+// identity is what names an item across reads: its ID field's value, or,
+// without one, a digest of its content.
+func (c Check) identity(m map[string]any, raw json.RawMessage) string {
+	field := c.ID
+	if field == "" {
+		field = "id"
+	}
+	if v, ok := m[field]; ok && v != nil {
+		return "id:" + cursorText(v)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:12])
 }
 
 // seenOf is what p kept for cursor, if p is that cursor's.
