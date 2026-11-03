@@ -81,7 +81,7 @@ func (t *Tool) Spec() model.ToolSpec {
 		Description: "Ask planque for access to a vendor account for a taf, and follow the request. planque keeps the vendor's sign-in; you never see a token. " +
 			"To look before you choose: request {server, agent} with no tools connects first. Once the owner approved and signed in, the grant is listed, " +
 			"and catalog {grant} shows the vendor's tools (name, description, arguments, read_only) and the account the sign-in acts in; nothing is called. " +
-			"A large catalog is shortened (truncated: true): catalog {grant, tool} shows one tool in full. " +
+			"Every tool is listed by name. In a large catalog some tools are shortened (shortened: true: arguments or description left out); catalog {grant, tool} shows one in full, so ask for the ones you need. " +
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"On a connected grant, tools {grant, tools} adds the tools sent (only those to add) to what it has: the owner approves the addition once, " +
 			"with no sign-in, and its tools keep working meanwhile. So a taf has one connection per vendor: grants {agent} lists the connections you asked for a taf's agent " +
@@ -374,6 +374,9 @@ func (t *Tool) catalog(ctx context.Context, path, only string) (tool.Result, err
 		Account   string        `json:"account,omitempty"`
 		Tools     []catalogTool `json:"tools"`
 		Truncated bool          `json:"truncated,omitempty"`
+		// Note says, in words, how complete the list is, so a shortened
+		// catalog isn't read as a list cut off.
+		Note string `json:"note,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil || c.Grant == "" {
 		return tool.Result{}, fmt.Errorf("planque: an answer that isn't a catalog")
@@ -385,7 +388,10 @@ func (t *Tool) catalog(ctx context.Context, path, only string) (tool.Result, err
 		}
 		c.Tools = c.Tools[i : i+1]
 	} else {
-		c.Tools, c.Truncated = bound(c.Tools)
+		var shortened, left int
+		c.Tools, shortened, left = bound(c.Tools)
+		c.Truncated = c.Truncated || left > 0
+		c.Note = catalogNote(len(c.Tools), shortened, left, c.Truncated)
 	}
 	b, _ := json.Marshal(c)
 	if len(b) > MaxCatalog {
@@ -394,16 +400,17 @@ func (t *Tool) catalog(ctx context.Context, path, only string) (tool.Result, err
 	return tool.Result{Text: string(b)}, nil
 }
 
-// bound keeps the catalog under MaxCatalog: each description is cut,
-// every tool keeps its name and description, and the arguments go to the
-// tools they fit, in the vendor's order. Past that, descriptions are cut
-// shorter, then the last tools are left out.
-func bound(tools []catalogTool) ([]catalogTool, bool) {
-	cut := false
-	shorten := func(limit int) {
-		for i := range tools {
+// bound keeps the catalog under MaxCatalog: each description is cut, and
+// the arguments go to the tools they fit, in the vendor's order. Past
+// that, descriptions are cut shorter, then the last tools keep their name
+// alone. Every tool keeps its name, so the model can ask for any of them in
+// full; only names past MaxCatalog themselves are left out. It answers the
+// tools, how many of them are shortened, and how many are left out.
+func bound(tools []catalogTool) ([]catalogTool, int, int) {
+	shorten := func(from, limit int) {
+		for i := from; i < len(tools); i++ {
 			if r := []rune(tools[i].Description); len(r) > limit {
-				tools[i].Description, tools[i].Shortened, cut = string(r[:limit])+"…", true, true
+				tools[i].Description, tools[i].Shortened = string(r[:limit])+"…", true
 			}
 		}
 	}
@@ -412,7 +419,7 @@ func bound(tools []catalogTool) ([]catalogTool, bool) {
 		b, _ := json.Marshal(t)
 		return len(b) + 1
 	}
-	room := MaxCatalog - 1024 // the catalog's own fields
+	room := MaxCatalog - 1024 // the catalog's own fields and note
 	base := func() int {
 		n := 0
 		for _, t := range tools {
@@ -420,22 +427,48 @@ func bound(tools []catalogTool) ([]catalogTool, bool) {
 		}
 		return n
 	}
-	shorten(MaxDescription)
+	shorten(0, MaxDescription)
 	if base() > room {
-		shorten(200)
+		shorten(0, 200)
 	}
-	for base() > room && len(tools) > 1 {
-		tools, cut = tools[:len(tools)-1], true
-	}
-	left := room - base()
-	for i := range tools {
-		if n := len(tools[i].InputSchema) + len(`,"input_schema":`); n <= left {
-			left -= n
-		} else if tools[i].InputSchema != nil {
-			tools[i].InputSchema, tools[i].Shortened, cut = nil, true, true
+	// The last tools lose their description, one at a time, before any loses its name.
+	for i := len(tools) - 1; i >= 0 && base() > room; i-- {
+		if tools[i].Description != "" {
+			tools[i].Description, tools[i].Shortened = "", true
 		}
 	}
-	return tools, cut
+	left := 0
+	for base() > room && len(tools) > 1 {
+		tools, left = tools[:len(tools)-1], left+1
+	}
+	free := room - base()
+	for i := range tools {
+		if n := len(tools[i].InputSchema) + len(`,"input_schema":`); n <= free {
+			free -= n
+		} else if tools[i].InputSchema != nil {
+			tools[i].InputSchema, tools[i].Shortened = nil, true
+		}
+	}
+	shortened := 0
+	for _, t := range tools {
+		if t.Shortened {
+			shortened++
+		}
+	}
+	return tools, shortened, left
+}
+
+// catalogNote says how complete a bounded catalog is, in the words the
+// model acts on: what is listed, and how to read a shortened tool whole.
+func catalogNote(listed, shortened, left int, truncated bool) string {
+	switch {
+	case left > 0 || truncated:
+		return fmt.Sprintf("%d tools are listed; the vendor has more that didn't fit. %d listed tools are shortened: catalog {grant, tool} shows one in full.", listed, shortened)
+	case shortened > 0:
+		return fmt.Sprintf("Every tool is listed (%d). %d are shortened, with arguments or description left out: catalog {grant, tool} shows one in full.", listed, shortened)
+	default:
+		return ""
+	}
 }
 
 func deref(r *tool.Result) tool.Result {
