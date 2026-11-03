@@ -862,6 +862,100 @@ func TestACheckLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+// A check's cursor moves only past items the run's input holds in full, its
+// own input counted (review on #297). A cursor value with more items than
+// one run takes is handed over in parts, each item once; an item too large
+// for any run's input is said, and not read again.
+func TestACheckHandsOverOnlyWhatTheInputHolds(t *testing.T) {
+	at := func(m int) time.Time { return time.Date(2026, 11, 3, 9, m, 0, 0, time.UTC) }
+	setup := func(t *testing.T, input string) (*fixture, *string) {
+		t.Helper()
+		f := newFixture()
+		s := scheduletest.Schedule("t1", "inbox")
+		s.Cron, s.Input = "*/15 * * * *", input
+		s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "0"}
+		if err := f.sv.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		result := new(string)
+		f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return *result, nil }
+		return f, result
+	}
+	fire := func(t *testing.T, f *fixture, m int) {
+		t.Helper()
+		if err := f.sv.Fire(ctx, "t1", "inbox", at(m)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cursor := func(f *fixture) schedule.Check {
+		got, _ := f.store.Get(ctx, "t1", "inbox")
+		return *got.AppCheck
+	}
+	text := func(n int) string { return strings.Repeat("x", n) }
+
+	t.Run("its own input leaves no room", func(t *testing.T) {
+		f, result := setup(t, text(schedule.MaxInput-150))
+		*result = `{"data":[{"id":"m1","created":1,"text":"` + text(300) + `"}]}`
+		fire(t, f, 0)
+		// This schedule's runs can never hold it: said, not passed in silence.
+		h, _ := f.history.Firings(ctx, "t1", "inbox", 1)
+		if len(f.started) != 0 || len(h) != 1 || h[0].Outcome != schedule.FiredTooLarge {
+			t.Fatalf("started %d, history %+v", len(f.started), h)
+		}
+	})
+	t.Run("one item larger than any input", func(t *testing.T) {
+		f, result := setup(t, "Answer each.")
+		*result = `{"data":[{"id":"big","created":1,"text":"` + text(schedule.MaxInput) + `"},{"id":"m2","created":2}]}`
+		fire(t, f, 0)
+		h, _ := f.history.Firings(ctx, "t1", "inbox", 1)
+		if len(f.started) != 0 || len(h) != 1 || h[0].Outcome != schedule.FiredTooLarge || cursor(f).Last != "1" {
+			t.Fatalf("started %d, history %+v, cursor %+v", len(f.started), h, cursor(f))
+		}
+		fire(t, f, 15) // passed for good; the next item comes
+		if len(f.started) != 1 || !strings.Contains(f.started[0].Input, `"id":"m2"`) || strings.Contains(f.started[0].Input, "big") {
+			t.Fatalf("after it: %+v", f.started)
+		}
+	})
+	t.Run("55 items of one cursor, 1000 bytes each", func(t *testing.T) {
+		f, result := setup(t, "Answer each.")
+		var items []string
+		for i := range 55 {
+			items = append(items, fmt.Sprintf(`{"id":"s%02d","created":1,"text":"%s"}`, i, text(1000)))
+		}
+		*result = `{"data":[` + strings.Join(items, ",") + `]}`
+		got := map[string]int{}
+		for m := 0; m < 60 && len(got) < 55; m += 15 {
+			before := len(f.started)
+			fire(t, f, m)
+			if len(f.started) != before+1 {
+				t.Fatalf("firing %d started nothing; cursor %+v", m, cursor(f))
+			}
+			in := f.started[len(f.started)-1].Input
+			if len(in) > schedule.MaxInput {
+				t.Fatalf("input %d bytes", len(in))
+			}
+			for i := range 55 {
+				if strings.Contains(in, fmt.Sprintf(`"id":"s%02d"`, i)) {
+					got[fmt.Sprintf("s%02d", i)]++
+				}
+			}
+		}
+		for id, n := range got {
+			if n != 1 {
+				t.Fatalf("%s handed over %d times", id, n)
+			}
+		}
+		if len(got) != 55 || cursor(f).Last != "1" || cursor(f).Partial != nil {
+			t.Fatalf("%d of 55 handed over, cursor %+v", len(got), cursor(f))
+		}
+		before := len(f.started)
+		fire(t, f, 60)
+		if len(f.started) != before {
+			t.Fatal("the same items again")
+		}
+	})
+}
+
 func TestACheckIsChecked(t *testing.T) {
 	for name, c := range map[string]*schedule.Check{
 		"no tool":        {Cursor: "created"},

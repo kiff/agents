@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -324,6 +325,9 @@ const (
 	FiredDropped  = "skipped_dropped"  // its schedule changed or went before the agent was free
 	FiredSkipped  = "skipped_by_owner" // the owner skipped this one coming firing
 	FiredQuiet    = "quiet"            // its check found nothing new: no run
+	// FiredTooLarge: its check found only items too large for a run's
+	// input: no run, and they aren't read again.
+	FiredTooLarge = "skipped_too_large"
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -624,22 +628,24 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 		if err != nil {
 			return err
 		}
-		items, last, err := c.newItems(result)
+		input, next, n, tooLarge, err := c.batch(s.Input, result)
 		if err != nil {
 			return err
 		}
-		next := *c
-		next.Last = last
-		if len(items) == 0 {
-			if next.Last != c.Last { // the first check takes the cursor
+		if n == 0 {
+			if !reflect.DeepEqual(next, *c) { // the first check takes the cursor; a too-large item is passed
 				s.AppCheck = &next
 				if err := sv.Store.Put(ctx, s); err != nil {
 					return err
 				}
 			}
-			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredQuiet})
+			outcome := FiredQuiet
+			if tooLarge > 0 {
+				outcome = FiredTooLarge
+			}
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: outcome})
 		}
-		f.Input = withItems(s.Input, items)
+		f.Input = input
 		if err := sv.Start(ctx, f); err != nil {
 			return err
 		}
