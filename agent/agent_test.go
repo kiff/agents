@@ -1811,6 +1811,48 @@ func TestCloseInTextAsksOnceForTheClosingMessage(t *testing.T) {
 	}
 }
 
+// CloseInText at the turn limit: a run that reaches it on its tool results
+// gets one turn more, offered no tool use, to say what came of it; it still
+// stops TurnCap. Off, or under the limit, nothing changes.
+func TestCloseInTextClosesARunAtItsTurnLimit(t *testing.T) {
+	lookup := &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "{}"}}
+
+	m := &script{replies: []model.Reply{use("c1", "lookup", `{}`), use("c2", "lookup", `{}`), say("I set up the Card; the alert is left.")}}
+	_, r := start(t, session.KindChat)
+	a := newAgent(m, lookup)
+	a.CloseInText, a.MaxTurns = true, 2
+	out, msgs, err := agent.Run(context.Background(), a, r, nil, "Set it up.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.TurnCap || out.Text != "I set up the Card; the alert is left." || len(m.reqs) != 3 {
+		t.Fatalf("stop %s, text %q, %d turns", out.Stop, out.Text, len(m.reqs))
+	}
+	asked := m.reqs[2]
+	if !asked.NoToolUse || asked.Messages[len(asked.Messages)-1].Blocks[len(asked.Messages[len(asked.Messages)-1].Blocks)-1].Text != agent.CapNudge {
+		t.Fatalf("the closing turn was asked %+v", asked.Messages[len(asked.Messages)-1])
+	}
+	if last := msgs[len(msgs)-1]; last.Role != model.Assistant {
+		t.Fatalf("the conversation ends with %s", last.Role)
+	}
+	for _, msg := range msgs {
+		for _, b := range msg.Blocks {
+			if b.Text == agent.CapNudge {
+				t.Fatal("the note was kept in the conversation")
+			}
+		}
+	}
+
+	// Off: the run stops at the limit, nothing said.
+	m = &script{replies: []model.Reply{use("c1", "lookup", `{}`), use("c2", "lookup", `{}`)}}
+	_, r = start(t, session.KindChat)
+	a = newAgent(m, lookup)
+	a.MaxTurns = 2
+	if out, _, err = agent.Run(context.Background(), a, r, nil, "Check.", nil); err != nil || out.Stop != agent.TurnCap || len(m.reqs) != 2 {
+		t.Fatalf("off: stop %s, %d turns, %v", out.Stop, len(m.reqs), err)
+	}
+}
+
 // probeTool records how the run says its latest call to each of names ended
 // (show's plan steps read the same), each time it's called.
 type probeTool struct {

@@ -627,6 +627,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
 				out.Stop = stop
+				if stop == TurnCap && a.CloseInText && afterTools(msgs) {
+					return a.closeAtCap(ctx, rec, msgs, specs, out, emit)
+				}
 				return out, msgs, nil
 			}
 			if a.Cancel != nil {
@@ -1001,6 +1004,27 @@ func serverBlock(b model.Block) (id string, result, ok bool) {
 // CloseNudge is what a CloseInText agent is told when it ended a run on its
 // tool results without a word.
 const CloseNudge = "[tafs] Your turn ended after your tool results without a message to the owner. Write your closing message now, as text, with no tool call."
+
+// CapNudge is what a CloseInText agent is told when its run reached the turn
+// limit on its tool results: one turn more, with no tool, to say what came of
+// it.
+const CapNudge = "[tafs] This run has reached its turn limit. Write your closing message to the owner now, as text, with no tool call: what you did, and what is left."
+
+// closeAtCap gives a CloseInText run that reached its turn limit on its tool
+// results its closing message: one turn, offered no tool use, told why. The
+// note isn't kept in the conversation, as a pause's isn't; an empty reply
+// isn't kept either. The run still stops TurnCap.
+func (a Agent) closeAtCap(ctx context.Context, rec *session.Recording, msgs []model.Message, specs []model.ToolSpec, out Outcome, emit func(Event)) (Outcome, []model.Message, error) {
+	asked := slices.Clone(msgs)
+	last := &asked[len(asked)-1]
+	last.Blocks = append(slices.Clone(last.Blocks), model.Block{Kind: model.Text, Text: CapNudge})
+	reply, err := a.turn(ctx, rec, asked, specs, true, nil, &out, emit)
+	if err != nil || reply.Stop == model.Refused || !hasContent(reply.Blocks) {
+		return out, msgs, err
+	}
+	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
+	return out, msgs, a.say(rec, out.Text, true)
+}
 
 // afterTools reports whether msgs end with tool results: the turn the model
 // just took answered them.
