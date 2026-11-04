@@ -38,7 +38,7 @@ happens and streamed to the caller.
 | `answered` | The agent answered and called nothing more |
 | `paused` | KIFF holds at least one call for the owner; the run waits for it |
 | `cost_cap` | The run reached its cost cap |
-| `turn_cap` | The run reached its turn limit (`DefaultMaxTurns` is 50) |
+| `turn_cap` | The run reached its turn limit (`DefaultMaxTurns` is 50). With `close_in_text`, a run that reaches it on its tool results gets one turn more, with no tool, for its closing message |
 | `max_token` | The model ran out of room mid-answer |
 | `cancelled` | The run was asked to stop, and stopped at a checkpoint |
 
