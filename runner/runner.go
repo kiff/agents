@@ -996,8 +996,8 @@ func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.
 }
 
 // addedSkills is the agent's Reload: the bodies of the skills the session
-// gained since loaded, in the definition's order, as text to follow the
-// instructions. A read that fails leaves the turn as it was: the next
+// gained since loaded, in the order they were added, as text to follow the
+// instructions, each addition after the last. A read that fails leaves the turn as it was: the next
 // turn reads again.
 func (x *execution) addedSkills(d registry.Definition, loaded []string) func(ctx context.Context) (string, error) {
 	have := slices.Clone(loaded)
@@ -1015,7 +1015,7 @@ func (x *execution) addedSkills(d registry.Definition, loaded []string) func(ctx
 		if len(added) == 0 {
 			return "", nil
 		}
-		return registry.SessionSkillText(ctx, x.rn.Builder.Skills, x.tenant, d, added)
+		return registry.AddedSkillText(ctx, x.rn.Builder.Skills, x.tenant, d, added)
 	}
 }
 
