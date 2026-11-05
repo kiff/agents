@@ -622,3 +622,40 @@ func TestADotSegmentIsNeverSent(t *testing.T) {
 		t.Fatalf("sent to planque: %v", seen)
 	}
 }
+
+// A managed app's tools go with the profile Coach drafted, as planque
+// takes them; without one, the tools alone, as before. A profile that isn't
+// an object never reaches planque.
+func TestToolsCarryAManagedAppsProfile(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, r.Method+" "+r.URL.Path+" "+string(b))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"grt_9","status":"pending","text":"Connect Agent Mail…","request":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	profile := `{"v":"kiff.profile.v1","vendor":"Agent Mail","transport":"rest","pin":{"kind":"none"},"source":"drafted","test_proven":false,"operations":[{"tool":"send_reminder","title":"Send a reminder email","kind":"write","effect":"sends","shape":"single"}]}`
+	tools := `[{"tool":"connector_8cd3","name":"send_reminder","title":"Send a reminder email"}]`
+	if text, isErr := call(t, tl, `{"action":"tools","grant":"grt_9","tools":`+tools+`,"profile":`+profile+`}`); isErr {
+		t.Fatalf("tools with a profile: %s", text)
+	}
+	var sent struct {
+		Tools   json.RawMessage `json:"tools"`
+		Profile json.RawMessage `json:"profile"`
+	}
+	if len(bodies) != 1 || !strings.HasPrefix(bodies[0], "POST /v1/accounts/tnt_1/grants/grt_9/tools ") ||
+		json.Unmarshal([]byte(strings.SplitN(bodies[0], " ", 3)[2]), &sent) != nil || string(sent.Profile) != profile || string(sent.Tools) != tools {
+		t.Fatalf("sent: %v", bodies)
+	}
+	if _, isErr := call(t, tl, `{"action":"tools","grant":"grt_9","tools":`+tools+`}`); isErr || strings.Contains(bodies[1], `"profile"`) {
+		t.Fatalf("tools alone: %v", bodies)
+	}
+	if _, isErr := call(t, tl, `{"action":"tools","grant":"grt_9","tools":`+tools+`,"profile":"a profile"}`); !isErr || len(bodies) != 2 {
+		t.Fatalf("a profile that isn't an object reached planque: %v", bodies)
+	}
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "tools {grant, tools, profile}") || !strings.Contains(string(spec.InputSchema), `"profile"`) {
+		t.Fatal("the words don't say how to send a managed app's tools")
+	}
+}
