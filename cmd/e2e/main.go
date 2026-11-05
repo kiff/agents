@@ -1092,9 +1092,10 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (message
 // ejecuciones de Reembolsos…"), when tool calls follow it and the run then
 // writes again: the owner sees it on the live line, as a progress note, never
 // as a message of its own (kiff/tafs' core rule). A text its calls follow and
-// that the run never writes after ("Falta que apruebes la conexión…", then the
-// card the run waits on) is the run's message, as tafs cloud shows it. The
-// agent records a turn's text before its calls.
+// that the run doesn't write after before a card, a pause or its end ("Falta
+// que apruebes la conexión…", then the call the run waits on) is the run's
+// message, as tafs cloud shows it. The agent records a turn's text before its
+// calls, and marks the first turn after a pause (TurnTiming.Resumed).
 func splitLines(events []session.Event, runID string) (messages, lines []string) {
 	pending := ""       // the latest text, nothing after it yet
 	var called []string // texts calls followed, the run not having written since
@@ -1119,6 +1120,19 @@ func splitLines(events []session.Event, runID string) (messages, lines []string)
 				called = append(called, pending)
 			}
 			pending = ""
+		case session.Component:
+			// A card shown before the run writes again: what its calls followed introduced it.
+			messages = append(messages, called...)
+			called = nil
+		case session.Usage:
+			// The first turn after a pause: the run waited on the owner after them, so they were its messages.
+			var b struct {
+				Timing *session.TurnTiming `json:"timing"`
+			}
+			if json.Unmarshal(e.Body, &b) == nil && b.Timing != nil && b.Timing.Resumed {
+				messages = append(messages, called...)
+				called = nil
+			}
 		}
 	}
 	messages = append(messages, called...) // nothing written after them: the run's messages

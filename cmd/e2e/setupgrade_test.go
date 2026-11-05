@@ -458,8 +458,17 @@ func TestATextTheRunWaitsOnIsAMessage(t *testing.T) {
 		text("Reviso los límites…"), show, ev(session.Component, map[string]string{"type": "steps"}),
 		text("Falta que apruebes la conexión."), show,
 	}, "r1")
-	if !slices.Equal(lines, []string{"Miro la cuenta…", "Reviso los límites…"}) || !slices.Equal(messages, []string{"Falta que apruebes la conexión."}) {
-		t.Fatalf("messages %q, lines %q", messages, lines)
+	if !slices.Equal(lines, []string{"Miro la cuenta…"}) || !slices.Equal(messages, []string{"Reviso los límites…", "Falta que apruebes la conexión."}) {
+		t.Fatalf("a card before the next text: messages %q, lines %q", messages, lines)
+	}
+	// The run waits on the owner, then goes on and writes again: the text it waited on stays its message.
+	resumed := ev(session.Usage, map[string]any{"timing": map[string]any{"ms": 900, "resumed": true}})
+	messages, lines = splitLines([]session.Event{
+		text("Falta que lo apruebes."), ev(session.ToolCall, map[string]string{"call_id": "c2", "tool": "planque"}),
+		resumed, text("Conectado. Ya puede reembolsar."),
+	}, "r1")
+	if lines != nil || !slices.Equal(messages, []string{"Falta que lo apruebes.", "Conectado. Ya puede reembolsar."}) {
+		t.Fatalf("after a pause: messages %q, lines %q", messages, lines)
 	}
 }
 
