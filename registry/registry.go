@@ -465,11 +465,34 @@ func (d Definition) CheckSessionSkills(skills []string) error {
 // every conversation that loaded the same set; each as "# Skill: <name>"
 // and its body. Only skills the definition names are read.
 func SessionSkillText(ctx context.Context, store skill.Store, tenant string, d Definition, skills []string) (string, error) {
-	var out strings.Builder
+	var refs []skill.Ref
 	for _, r := range d.Skills {
-		if !slices.Contains(skills, r.String()) {
-			continue
+		if slices.Contains(skills, r.String()) {
+			refs = append(refs, r)
 		}
+	}
+	return skillText(ctx, store, tenant, refs)
+}
+
+// AddedSkillText is SessionSkillText for skills added mid-conversation: in
+// the order they were added (the session's), never the definition's, so
+// each addition is appended after the last and the cached prefix holds
+// (agentgabo's note on #312). Only skills the definition names are read.
+func AddedSkillText(ctx context.Context, store skill.Store, tenant string, d Definition, added []string) (string, error) {
+	var refs []skill.Ref
+	for _, s := range added {
+		for _, r := range d.Skills {
+			if r.String() == s {
+				refs = append(refs, r)
+			}
+		}
+	}
+	return skillText(ctx, store, tenant, refs)
+}
+
+func skillText(ctx context.Context, store skill.Store, tenant string, refs []skill.Ref) (string, error) {
+	var out strings.Builder
+	for _, r := range refs {
 		p, err := store.Get(ctx, tenant, r.Name, r.Version)
 		if err != nil {
 			return "", fmt.Errorf("skill %s: %w", r, err)

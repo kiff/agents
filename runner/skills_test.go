@@ -140,3 +140,36 @@ func TestASkillAddedMidConversationTakesEffectFromTheNextTurn(t *testing.T) {
 		t.Fatalf("the tool's answer carried something else: %q", last.Result)
 	}
 }
+
+// Skills added at different times come in the order they were added, not
+// the definition's, so each addition is appended after the last and the
+// cached prefix holds (agentgabo's note on #312). Here the definition
+// orders cards before wakes; wakes is added first.
+func TestSkillsAddedMidConversationKeepTheOrderTheyWereAddedIn(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), use("c2", "stripe_refund", `{}`), say("Done."))
+	withSkills(t, f)
+	f.refund.result = tool.Result{Text: "refunded"}
+	adds := []string{"wakes@1", "cards@1"}
+	f.refund.onCall = func() {
+		add := adds[0]
+		adds = adds[1:]
+		if _, err := f.store.AddSkills(ctx, "t1", f.get(f.runs0().ID).Session, []string{add}); err != nil {
+			t.Error(err)
+		}
+	}
+	r := f.start(server.Start{Input: "go"})
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.model.requests()
+	if len(reqs) != 3 {
+		t.Fatalf("%d turns", len(reqs))
+	}
+	first, second, third := reqs[0].System, reqs[1].System, reqs[2].System
+	if !strings.HasPrefix(second, first) || !strings.HasSuffix(second, "# Skill: wakes\nThe wakes procedure: step one, step two.") {
+		t.Fatalf("the second turn's context:\n%s", second)
+	}
+	if !strings.HasPrefix(third, second) || !strings.HasSuffix(third, "# Skill: cards\nThe cards procedure: step one, step two.") {
+		t.Fatalf("the third turn's context isn't the second with cards appended:\n%s", third)
+	}
+}
