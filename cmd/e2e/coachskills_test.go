@@ -180,6 +180,34 @@ func TestAPinnedModeIsReported(t *testing.T) {
 	if claim("This moves real money now.", pinned) == "" {
 		t.Fatal("real money, against a vendor that reports test, wasn't a claim")
 	}
+	// Once test is reported, the prescribed second sentence with "modo real" in its next
+	// step is still no claim; live said as fact is (Eval 42125870057).
+	after := said{messages: []string{"Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a modo real."}}
+	if c := modeClaim(after, pinned); c != "" {
+		t.Fatalf("a next step to live mode read as a claim: %q", c)
+	}
+	if modeClaim(said{messages: []string{"Tu cuenta ya está en modo real."}}, pinned) == "" {
+		t.Fatal("live mode stated as fact, after test was reported, wasn't a claim")
+	}
+	// The same claims, said once test is reported: a supposition or a step that opens the
+	// sentence never drops the claim after it (qa-kiff and agentgabo on #335).
+	for _, text := range []string{
+		"Cuando revisé la conexión, tu cuenta estaba en modo real.",
+		"When I checked, your account was in live mode.",
+		"Once connected, your Stripe is in live mode.",
+		"Before anything else: your account is in live mode.",
+		"If you ask me, your Stripe is in live mode.",
+		"Si te soy sincero, tu cuenta está en modo real.",
+		"Whether you like it or not, the account is in live mode.",
+		"Before you go on, your Stripe is in live mode.",
+		"Antes de seguir: tu cuenta está en modo real.",
+		"If you're wondering, your Stripe is in live mode.",
+		"Si te lo preguntas, tu cuenta está en modo real.",
+	} {
+		if modeClaim(said{messages: []string{text}}, pinned) == "" {
+			t.Errorf("after test was reported, not a claim: %q", text)
+		}
+	}
 	desk := said{messages: []string{"Desk in test mode."}}
 	if modeClaim(desk, modes{none: true}) == "" {
 		t.Fatal("a mode stated for the desk, which reports none, wasn't a claim")
@@ -225,6 +253,20 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Tu Stripe está en vivo. Cada llamada va fijada en modo de prueba.",
 		"I pinned every call to test mode, since Stripe is in test mode.",
 		"Stripe is test or live: it's test.",
+		// A claim, then a supposition: it still states it (agentgabo on #325).
+		"Your Stripe is live, if you want to know.",
+		// A supposition or a step that opens the sentence, then the claim (qa-kiff and agentgabo on #335).
+		"Cuando revisé la conexión, tu cuenta estaba en modo real.",
+		"When I checked, your account was in live mode.",
+		"Once connected, your Stripe is in live mode.",
+		"Before anything else: your account is in live mode.",
+		"If you ask me, your Stripe is in live mode.",
+		"Si te soy sincero, tu cuenta está en modo real.",
+		"Whether you like it or not, the account is in live mode.",
+		"Before you go on, your Stripe is in live mode.",
+		"Antes de seguir: tu cuenta está en modo real.",
+		"If you're wondering, your Stripe is in live mode.",
+		"Si te lo preguntas, tu cuenta está en modo real.",
 		// A "no" that doesn't deny the money.
 		"No te preocupes, esto mueve dinero real.",
 	} {
@@ -254,6 +296,9 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Every call is pinned to test mode, and nothing real moves.",
 		"Every call is pinned to test mode: nothing real moves.",
 		"Every call is pinned to test mode, so it doesn't move real money.",
+		// The prescribed second sentence, with "mode" in its next step (Eval 42125870057).
+		"Cada llamada va fijada en modo de prueba, como elegiste. Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a modo real.",
+		calls + " Whether the account itself is test or live, check it before going to live mode.",
 		// The active voice (agentgabo on #325).
 		"I pinned every call to test mode, as you chose.",
 		"Fijé cada llamada en modo de prueba, como elegiste.",
