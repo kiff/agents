@@ -189,6 +189,25 @@ func TestAPinnedModeIsReported(t *testing.T) {
 	if modeClaim(said{messages: []string{"Tu cuenta ya está en modo real."}}, pinned) == "" {
 		t.Fatal("live mode stated as fact, after test was reported, wasn't a claim")
 	}
+	// The same claims, said once test is reported: a supposition or a step that opens the
+	// sentence never drops the claim after it (qa-kiff and agentgabo on #335).
+	for _, text := range []string{
+		"Cuando revisé la conexión, tu cuenta estaba en modo real.",
+		"When I checked, your account was in live mode.",
+		"Once connected, your Stripe is in live mode.",
+		"Before anything else: your account is in live mode.",
+		"If you ask me, your Stripe is in live mode.",
+		"Si te soy sincero, tu cuenta está en modo real.",
+		"Whether you like it or not, the account is in live mode.",
+		"Before you go on, your Stripe is in live mode.",
+		"Antes de seguir: tu cuenta está en modo real.",
+		"If you're wondering, your Stripe is in live mode.",
+		"Si te lo preguntas, tu cuenta está en modo real.",
+	} {
+		if modeClaim(said{messages: []string{text}}, pinned) == "" {
+			t.Errorf("after test was reported, not a claim: %q", text)
+		}
+	}
 	desk := said{messages: []string{"Desk in test mode."}}
 	if modeClaim(desk, modes{none: true}) == "" {
 		t.Fatal("a mode stated for the desk, which reports none, wasn't a claim")
@@ -236,6 +255,18 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Stripe is test or live: it's test.",
 		// A claim, then a supposition: it still states it (agentgabo on #325).
 		"Your Stripe is live, if you want to know.",
+		// A supposition or a step that opens the sentence, then the claim (qa-kiff and agentgabo on #335).
+		"Cuando revisé la conexión, tu cuenta estaba en modo real.",
+		"When I checked, your account was in live mode.",
+		"Once connected, your Stripe is in live mode.",
+		"Before anything else: your account is in live mode.",
+		"If you ask me, your Stripe is in live mode.",
+		"Si te soy sincero, tu cuenta está en modo real.",
+		"Whether you like it or not, the account is in live mode.",
+		"Before you go on, your Stripe is in live mode.",
+		"Antes de seguir: tu cuenta está en modo real.",
+		"If you're wondering, your Stripe is in live mode.",
+		"Si te lo preguntas, tu cuenta está en modo real.",
 		// A "no" that doesn't deny the money.
 		"No te preocupes, esto mueve dinero real.",
 	} {

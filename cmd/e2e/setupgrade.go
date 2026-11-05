@@ -672,16 +672,30 @@ var isMode = regexp.MustCompile(`(?i)(?:\b(?:is|are|was|were)|'s|'re)\s+(?:now\s
 var conditional = regexp.MustCompile(`(?i)^\W*(?:whether|if|si)\b`)
 var orOther = regexp.MustCompile(`(?i)^\s+(?:or|o)\s`)
 
-// asStated is what a sentence states: "" when it asks or supposes ("Whether
-// the account itself is test or live…", "Si la cuenta…"), and otherwise the
-// sentence without its next step ("…, before going to live mode", "…antes de
-// pasar a modo real"). Coach's prescribed second sentence says both, in any
-// wording (agentgabo on Eval 42125870057).
+// asStated is what a sentence states. An opening supposition ("Whether the
+// account itself is test or live,", "Si la cuenta…,") is dropped up to its first
+// comma or colon, and the rest is read; with nothing after it, nothing is
+// stated. A next step ("…, before going to live mode", "…antes de pasar a modo
+// real") is dropped only when something comes before it and it names neither
+// the vendor nor the account. So "If you're wondering, your Stripe is in live
+// mode." and "Before you go on, your Stripe is in live mode." still state it
+// (agentgabo on Eval 42125870057; qa-kiff and agentgabo on #335).
 func asStated(sentence string) string {
 	if conditional.MatchString(sentence) {
-		return ""
+		i := strings.IndexAny(sentence, ",:;")
+		if i < 0 {
+			return ""
+		}
+		sentence = sentence[i+1:]
 	}
-	return nextStep.ReplaceAllString(sentence, "")
+	loc := nextStep.FindStringIndex(sentence)
+	if loc == nil || strings.TrimSpace(sentence[:loc[0]]) == "" {
+		return sentence
+	}
+	if step := sentence[loc[0]:]; vendorWord.MatchString(step) || accountWord.MatchString(step) {
+		return sentence
+	}
+	return sentence[:loc[0]]
 }
 
 // statesMode is the first of texts with a sentence that states a mode
