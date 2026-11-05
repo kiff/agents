@@ -82,6 +82,11 @@ func (t *test) hasIt(ctx context.Context, sessionID, want, what string) error {
 var statedModes = []string{"test mode", "modo de prueba", "no real money", "sin dinero real", "live mode", "modo real", "real money", "dinero real"}
 var statedLive = []string{"live mode", "modo real", "real money", "dinero real"}
 
+// negatedBefore ends what precedes a mode's words when they're denied: "no",
+// "sin" or "ni", or a "n't", up to two words before ("moves no real money",
+// "sin mover dinero real", "y no mueve dinero real", "doesn't move real money").
+var negatedBefore = regexp.MustCompile(`(?:\b(?:no|sin|ni)|n't)\s+(?:\pL+\s+){0,2}$`)
+
 // claimsMode is the first of Setup's texts that states a mode the connection
 // doesn't report, "" when none: with reportsTest, a live mode or real money
 // (not "no real money"); with none reported, any mode.
@@ -95,7 +100,7 @@ func claimsMode(texts []string, reportsTest bool) string {
 		for _, w := range words {
 			for i := strings.Index(l, w); i >= 0; {
 				before := l[:i]
-				negated := strings.HasSuffix(before, "no ") || strings.HasSuffix(before, "sin ")
+				negated := negatedBefore.MatchString(before)
 				if !negated || !reportsTest {
 					return t
 				}

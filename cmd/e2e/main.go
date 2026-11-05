@@ -1156,6 +1156,7 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	// The modes Setup pinned, in the grants this run connected, and whether it
 	// read what the sign-in covers.
 	var m modes
+	acting, pinnedTest := 0, 0 // the tools that act, and those pinned to test, over every grant
 	for _, id := range t.grants {
 		g, err := t.phone.grant(ctx, id)
 		if err != nil {
@@ -1163,14 +1164,22 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		}
 		m.unchecked = append(m.unchecked, uncheckedMoney(g.Request.Tools)...)
 		for _, tool := range g.Request.Tools {
-			switch pinnedMode(tool.Fixed) {
+			mode := pinnedMode(tool.Fixed)
+			switch mode {
 			case "live":
 				m.live = append(m.live, tool.Tool)
 			case "test":
 				m.test = true
 			}
+			if !tool.ReadOnly && !tool.SetupReads {
+				acting++
+				if mode == "test" {
+					pinnedTest++
+				}
+			}
 		}
 	}
+	m.allTest = acting > 0 && pinnedTest == acting
 	o := owners[t.cfg.owner]
 	if t.cfg.desk {
 		o.taf = "Desk"        // the name the desk's owner gives (deskAsk)

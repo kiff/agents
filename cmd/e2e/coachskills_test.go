@@ -152,3 +152,114 @@ func TestOwnJobIsTheDraftedJob(t *testing.T) {
 		}
 	}
 }
+
+// A mode Setup pinned on every call that acts (fixed arguments, as the owner
+// chose) is what the calls do: before any read, the sentence Coach's rule
+// prescribes (tafs#542) is no claim; any other that names a mode is, the
+// account's or the vendor's above all; unpinned, both are; live is always a
+// claim against the fake vendor's test (Eval 42089365321; agentgabo, qa-kiff
+// and the PM on #325).
+func TestAPinnedModeIsReported(t *testing.T) {
+	pinned := modes{test: true, allTest: true}
+	claim := func(text string, m modes) string {
+		return modeClaim(said{messages: []string{text}, beforeTest: []string{text}}, m)
+	}
+	calls := "Every call is pinned to test mode, as you chose."
+	if c := claim(calls, pinned); c != "" {
+		t.Fatalf("a test mode pinned on every call read as a claim: %q", c)
+	}
+	if claim(calls, modes{test: true}) == "" {
+		t.Fatal("with only some tools pinned, \"every call is pinned\" wasn't a claim")
+	}
+	if claim(calls, modes{}) == "" {
+		t.Fatal("a test mode said before any read, with nothing pinned, wasn't a claim")
+	}
+	if claim(calls, modes{test: true, allTest: true, live: []string{"refund"}}) == "" {
+		t.Fatal("with a tool pinned live, test said early wasn't a claim")
+	}
+	if claim("This moves real money now.", pinned) == "" {
+		t.Fatal("real money, against a vendor that reports test, wasn't a claim")
+	}
+	desk := said{messages: []string{"Desk in test mode."}}
+	if modeClaim(desk, modes{none: true}) == "" {
+		t.Fatal("a mode stated for the desk, which reports none, wasn't a claim")
+	}
+	// The mode question offers "Modo real" as an option: the owner's choice,
+	// no claim. The account's mode in a message is (qa-kiff on #331).
+	question := said{order: []string{"q"}, cards: map[string]component{"q": {Type: "questions", Questions: []question{{Text: "¿En qué modo?", Options: []option{{Label: "Modo de prueba"}, {Label: "Modo real"}}}}}}}
+	if c := modeClaim(question, pinned); c != "" {
+		t.Fatalf("an option the owner may choose read as a claim: %q", c)
+	}
+	if claim("Tu cuenta está en modo real.", pinned) == "" {
+		t.Fatal("the account's live mode in a message wasn't a claim")
+	}
+	for _, text := range []string{
+		// The account's or the vendor's mode, next to the calls', in any verb.
+		"Tu cuenta de Stripe está en modo de prueba.",
+		calls + " Tu cuenta de Stripe está en modo de prueba.",
+		"Every call is pinned to test, and your Stripe is in test mode.",
+		"Every call is pinned to test mode: Stripe is in test mode for you.",
+		"Your Stripe is in test mode! Every call is pinned to it.",
+		"Stripe está en modo de prueba; cada llamada va fijada.",
+		"Every call is pinned to test, since Stripe runs in test mode.",
+		"Every call is pinned to test mode, and Stripe's in test mode too.",
+		"Every call is fixed to test mode, the Stripe connection being test mode.",
+		"Cada llamada va fijada en modo de prueba porque Stripe funciona en modo de prueba.",
+		"Every call is pinned to test because Stripe is in test mode.",
+		"Cada llamada va fijada, porque Stripe está en modo de prueba.",
+		"Every call is pinned, since Stripe works in test mode.",
+		"Every call is pinned, and Stripe answers in test.",
+		"Every call is pinned to test mode; your Stripe too.",
+		"Every call is pinned to test, as is your Stripe.",
+		"Every call is pinned to test mode, matching your test keys.",
+		// Not the prescribed sentence: a mode said of the calls otherwise.
+		"Every call is in test mode, as you chose.",
+		// The vendor's mode before the calls, or in a "when" (qa-kiff on #325).
+		"Your Stripe is in test mode, and every call is pinned to test mode.",
+		"Since Stripe is in test mode, every call is pinned to test mode.",
+		"Como tu Stripe está en modo de prueba, cada llamada va fijada en modo de prueba.",
+		"Every call is pinned to test mode, as it was when your Stripe was in test mode.",
+		"Every call is pinned to test mode because, when you connected it, Stripe was in test mode.",
+		"Cada llamada va fijada en modo de prueba, porque cuando conectaste Stripe estaba en modo de prueba.",
+		"Stripe is live. Every call is pinned to test mode.",
+		"Tu Stripe está en vivo. Cada llamada va fijada en modo de prueba.",
+		"I pinned every call to test mode, since Stripe is in test mode.",
+		"Stripe is test or live: it's test.",
+		// A "no" that doesn't deny the money.
+		"No te preocupes, esto mueve dinero real.",
+	} {
+		if claim(text, pinned) == "" {
+			t.Errorf("not a claim: %q", text)
+		}
+	}
+	for _, text := range []string{
+		// The prescribed sentence, in English and Spanish, with where the calls
+		// go, a next step, or the money a test call doesn't move.
+		calls,
+		calls + " Whether the account itself is test or live, check it before going live.",
+		"Cada llamada va fijada en modo de prueba, como elegiste.",
+		"Cada llamada va fijada en modo de prueba, como elegiste. Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a real.",
+		"Todas las llamadas van fijadas en modo de prueba.",
+		"Every Stripe call is pinned to test mode, as you chose.",
+		"Every call to your Stripe is pinned to test mode, as you chose.",
+		"Cada llamada a Stripe va fijada en modo de prueba, como elegiste.",
+		"Cada llamada a tu Stripe va fijada en modo de prueba, como elegiste.",
+		"Las llamadas de su taf van fijadas en modo de prueba.",
+		"Every call is pinned to test and moves no real money.",
+		"Every call is pinned to test mode until you switch it to live.",
+		"Every call is pinned to test mode until you choose live.",
+		"Cada llamada va fijada en modo de prueba hasta que elijas pasar a real.",
+		"Cada llamada va fijada en modo de prueba, sin mover dinero real.",
+		"Cada llamada va fijada en modo de prueba y no mueve dinero real.",
+		"Every call is pinned to test mode, and nothing real moves.",
+		"Every call is pinned to test mode: nothing real moves.",
+		"Every call is pinned to test mode, so it doesn't move real money.",
+		// The active voice (agentgabo on #325).
+		"I pinned every call to test mode, as you chose.",
+		"Fijé cada llamada en modo de prueba, como elegiste.",
+	} {
+		if c := claim(text, pinned); c != "" {
+			t.Errorf("the pinned calls read as a claim: %q", text)
+		}
+	}
+}
