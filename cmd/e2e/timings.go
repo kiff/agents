@@ -66,6 +66,17 @@ type wordsClock struct {
 	model.Model
 	mu    sync.Mutex
 	texts []time.Time
+	// setup is Setup's instructions, which its turns' system prompt starts
+	// with, and notes its progress notes: lines, graded with what it wrote.
+	setup string
+	notes []string
+}
+
+// setupNotes is every progress note Setup wrote, in order.
+func (w *wordsClock) setupNotes() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.notes)
 }
 
 func (w *wordsClock) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
@@ -79,8 +90,14 @@ func (w *wordsClock) Turn(ctx context.Context, req model.Request, onText func(st
 		}
 	}
 	onUpdate := req.OnUpdate
+	setup := w.setup != "" && strings.HasPrefix(req.System, w.setup)
 	req.OnUpdate = func(note string) {
 		words(note)
+		if setup {
+			w.mu.Lock()
+			w.notes = append(w.notes, note)
+			w.mu.Unlock()
+		}
 		if onUpdate != nil {
 			onUpdate(note)
 		}

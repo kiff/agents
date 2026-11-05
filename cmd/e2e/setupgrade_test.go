@@ -413,3 +413,54 @@ func TestAModeOfferedAsAnOptionIsNoClaim(t *testing.T) {
 		t.Fatalf("the question's own text left what's read before test: %v", before)
 	}
 }
+
+// A turn's text its tool calls follow is a line, not a message: the owner
+// sees it on the live line. Text that ends a turn, another run's and a blank
+// one are what they were.
+func TestPreToolTextIsALine(t *testing.T) {
+	ev := func(run string, kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: run, Kind: kind, Body: b}
+	}
+	text := func(s string) session.Event { return ev("r1", session.AgentMessage, map[string]string{"text": s}) }
+	call := ev("r1", session.ToolCall, map[string]string{"call_id": "c1", "tool": "planque"})
+	events := []session.Event{
+		text("Miro las últimas ejecuciones de Reembolsos…"), ev("r1", session.Usage, map[string]int{"ms": 1}), call,
+		ev("r1", session.ToolResult, map[string]string{"call_id": "c1"}),
+		text("   "), call,
+		ev("r2", session.AgentMessage, map[string]string{"text": "Another run's."}), call,
+		text("Reembolsos está lista. Falta que apruebes la conexión."),
+	}
+	messages, lines := splitLines(events, "r1")
+	if !slices.Equal(messages, []string{"Reembolsos está lista. Falta que apruebes la conexión."}) ||
+		!slices.Equal(lines, []string{"Miro las últimas ejecuciones de Reembolsos…"}) {
+		t.Fatalf("messages %q, lines %q", messages, lines)
+	}
+}
+
+// Each line is one short line, as Setup's rule asks: none passes; a line
+// break or one past MaxLine characters fails, named.
+func TestLinesAreOneShortLine(t *testing.T) {
+	if g := shortLines(nil); !g.Pass {
+		t.Fatalf("no lines: %+v", g)
+	}
+	if g := shortLines([]string{"Miro las últimas ejecuciones de Reembolsos…", strings.Repeat("ñ", MaxLine)}); !g.Pass {
+		t.Fatalf("short lines: %+v", g)
+	}
+	g := shortLines([]string{"Reviso.", "Miro esto.\nY luego aquello.", strings.Repeat("a", MaxLine+1)})
+	if g.Pass || !strings.Contains(g.Why, "line 2") || !strings.Contains(g.Why, "line 3") || strings.Contains(g.Why, "line 1") {
+		t.Fatalf("long lines: %+v", g)
+	}
+}
+
+// Lines are Setup's words, read for its language, ids, planque and a mode,
+// never judged as messages.
+func TestLinesAreReadButNotJudgedAsMessages(t *testing.T) {
+	s := said{messages: []string{"Listo."}, lines: []string{"Miro la cuenta…"}}
+	if got := s.texts(); !slices.Contains(got, "Miro la cuenta…") {
+		t.Fatalf("texts %q", got)
+	}
+	if got := s.statements(); !slices.Contains(got, "Miro la cuenta…") {
+		t.Fatalf("statements %q", got)
+	}
+}
