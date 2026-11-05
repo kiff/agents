@@ -1088,41 +1088,43 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (message
 }
 
 // splitLines parts what an agent wrote in one run into its messages and its
-// lines. A turn's text that its tool calls follow is a line, what it's doing
-// now ("Miro las últimas ejecuciones de Reembolsos…"), not a message: the
-// owner sees it on the live line, as a progress note, never as a message of
-// its own (kiff/tafs' core rule). The agent records a turn's text before its
-// calls, so a text whose next text or call in the run is a call is a line.
+// lines. A turn's text is a line, what it's doing now ("Miro las últimas
+// ejecuciones de Reembolsos…"), when tool calls follow it and the run then
+// writes again: the owner sees it on the live line, as a progress note, never
+// as a message of its own (kiff/tafs' core rule). A text its calls follow and
+// that the run never writes after ("Falta que apruebes la conexión…", then the
+// card the run waits on) is the run's message, as tafs cloud shows it. The
+// agent records a turn's text before its calls.
 func splitLines(events []session.Event, runID string) (messages, lines []string) {
-	pending := ""
-	flush := func(asLine bool) {
-		if strings.TrimSpace(pending) == "" {
-			pending = ""
-			return
-		}
-		if asLine {
-			lines = append(lines, pending)
-		} else {
-			messages = append(messages, pending)
-		}
-		pending = ""
-	}
+	pending := ""       // the latest text, nothing after it yet
+	var called []string // texts calls followed, the run not having written since
 	for _, e := range events {
 		if e.Run != runID {
 			continue
 		}
 		switch e.Kind {
 		case session.AgentMessage, session.Report:
-			flush(false)
+			lines = append(lines, called...) // the run wrote again: they were lines
+			called = nil
+			if strings.TrimSpace(pending) != "" {
+				messages = append(messages, pending)
+			}
+			pending = ""
 			var b agent.TextBody
 			if json.Unmarshal(e.Body, &b) == nil {
 				pending = b.Text
 			}
 		case session.ToolCall:
-			flush(true)
+			if strings.TrimSpace(pending) != "" {
+				called = append(called, pending)
+			}
+			pending = ""
 		}
 	}
-	flush(false)
+	messages = append(messages, called...) // nothing written after them: the run's messages
+	if strings.TrimSpace(pending) != "" {
+		messages = append(messages, pending)
+	}
 	return messages, lines
 }
 

@@ -438,6 +438,31 @@ func TestPreToolTextIsALine(t *testing.T) {
 	}
 }
 
+// A text its calls follow, that the run never writes after, is the run's
+// message: "Falta que apruebes la conexión…" and the card it waits on (the
+// confirming Eval, 6 Nov). A text the run writes after makes the earlier one
+// a line, whatever came between.
+func TestATextTheRunWaitsOnIsAMessage(t *testing.T) {
+	ev := func(kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: "r1", Kind: kind, Body: b}
+	}
+	text := func(s string) session.Event { return ev(session.AgentMessage, map[string]string{"text": s}) }
+	show := ev(session.ToolCall, map[string]string{"call_id": "c1", "tool": "show"})
+	messages, lines := splitLines([]session.Event{text("Falta que apruebes la conexión con tu proveedor de pagos."), show}, "r1")
+	if !slices.Equal(messages, []string{"Falta que apruebes la conexión con tu proveedor de pagos."}) || lines != nil {
+		t.Fatalf("waited on: messages %q, lines %q", messages, lines)
+	}
+	messages, lines = splitLines([]session.Event{
+		text("Miro la cuenta…"), show, ev(session.ToolResult, map[string]string{"call_id": "c1"}),
+		text("Reviso los límites…"), show, ev(session.Component, map[string]string{"type": "steps"}),
+		text("Falta que apruebes la conexión."), show,
+	}, "r1")
+	if !slices.Equal(lines, []string{"Miro la cuenta…", "Reviso los límites…"}) || !slices.Equal(messages, []string{"Falta que apruebes la conexión."}) {
+		t.Fatalf("messages %q, lines %q", messages, lines)
+	}
+}
+
 // Each line is one short line, as Setup's rule asks: none passes; a line
 // break or one past MaxLine characters fails, named.
 func TestLinesAreOneShortLine(t *testing.T) {
