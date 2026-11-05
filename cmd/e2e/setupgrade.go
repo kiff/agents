@@ -588,7 +588,7 @@ func choice(text string, options []option) string {
 // calls do. Only that sentence, matched on its fixed parts: any other that
 // names a mode before the first read is a claim (agentgabo on #325).
 func modeClaim(s said, m modes) string {
-	if claim := claimsMode(s.statements(), !m.none); claim != "" || m.none {
+	if claim := statesMode(s.statements(), !m.none); claim != "" || m.none {
 		return claim
 	}
 	pinned := m.allTest && len(m.live) == 0
@@ -665,20 +665,46 @@ func pinnedCalls(sentence string) (clean, found bool) {
 var inMode = regexp.MustCompile(`(?i)\b(?:in|en)\s+(?:test|live|sandbox|prueba)\b`)
 var isMode = regexp.MustCompile(`(?i)(?:\b(?:is|are|was|were)|'s|'re)\s+(?:now\s+)?(?:live|test|sandbox)\b|\b(?:está|están|estaba|estaban)\s+(?:ya\s+)?en\s+(?:vivo|real|producción)\b|\b(?:es|son|era)\s+de\s+prueba\b`)
 
-// conditional is a sentence that asks or supposes ("Whether the account
+// conditional is a sentence that opens by asking or supposing ("Whether the account
 // itself is test or live, check it", "Si la cuenta es de prueba o real…"),
 // and orOther a mode offered with its other ("test or live"): neither states
 // what something is.
-var conditional = regexp.MustCompile(`(?i)\b(?:whether|if|si)\b`)
+var conditional = regexp.MustCompile(`(?i)^\W*(?:whether|if|si)\b`)
 var orOther = regexp.MustCompile(`(?i)^\s+(?:or|o)\s`)
+
+// asStated is what a sentence states: "" when it asks or supposes ("Whether
+// the account itself is test or live…", "Si la cuenta…"), and otherwise the
+// sentence without its next step ("…, before going to live mode", "…antes de
+// pasar a modo real"). Coach's prescribed second sentence says both, in any
+// wording (agentgabo on Eval 42125870057).
+func asStated(sentence string) string {
+	if conditional.MatchString(sentence) {
+		return ""
+	}
+	return nextStep.ReplaceAllString(sentence, "")
+}
+
+// statesMode is the first of texts with a sentence that states a mode
+// claimsMode counts, as it states it (asStated); "" when none.
+func statesMode(texts []string, reportsTest bool) string {
+	for _, text := range texts {
+		for _, sentence := range sentences(text) {
+			if s := asStated(sentence); s != "" && claimsMode([]string{s}, reportsTest) != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
 
 // namesMode reports whether a sentence states a mode as fact.
 func namesMode(sentence string) bool {
+	sentence = asStated(sentence)
+	if sentence == "" {
+		return false
+	}
 	if claimsMode([]string{sentence}, false) != "" || inMode.MatchString(sentence) {
 		return true
-	}
-	if conditional.MatchString(sentence) {
-		return false
 	}
 	for _, m := range isMode.FindAllStringIndex(sentence, -1) {
 		if !orOther.MatchString(sentence[m[1]:]) {
