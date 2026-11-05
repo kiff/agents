@@ -64,7 +64,8 @@ type Agent struct {
 	// MaxCost is the most a run may cost, in millionths of a US dollar. A run
 	// that reaches it stops before its next model turn.
 	MaxCost int64
-	// MaxTurns bounds the model turns of one run; 0 means DefaultMaxTurns.
+	// MaxTurns bounds the model turns of one run between pauses (from its
+	// start, or since it last went on after one); 0 means DefaultMaxTurns.
 	MaxTurns int
 	// MaxToolResult bounds what one tool result puts in the model's
 	// context, in bytes, after JSON is compacted; 0 means
@@ -295,9 +296,13 @@ const (
 )
 
 // Outcome is how a run stopped. Cost and Turns count the whole run, across
-// its pauses.
+// its pauses; the turn cap counts only the turns since it last went on
+// after a pause (since), so a long Setup that the owner answers card by
+// card never stops on turns its owner's answers spread out.
 type Outcome struct {
-	Stop Stop `json:"stop"`
+	// since is Turns when the run last went on after a pause.
+	since int
+	Stop  Stop `json:"stop"`
 	// Text is the agent's last answer; for a paused run, what it waits for.
 	Text string `json:"text"`
 	// Refusal is the category a Refused run's turn was declined for, or ""
@@ -459,7 +464,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	for _, h := range held {
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Done: done}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done}, emit)
 }
 
 // outcomesIn is how the run's calls in msgs, its own turns after history,
@@ -1095,7 +1100,7 @@ func (a Agent) capped(out Outcome) Stop {
 	switch {
 	case out.Cost >= a.MaxCost:
 		return CostCap
-	case out.Turns >= maxTurns:
+	case out.Turns-out.since >= maxTurns:
 		return TurnCap
 	}
 	return ""
