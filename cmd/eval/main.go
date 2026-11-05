@@ -362,6 +362,9 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err != nil {
 		return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
 	}
+	// After the run, however it ended, even when its record can't be read:
+	// after withdrawHeld, so this lists only what that couldn't reach.
+	defer rt.clearPending(s.Name, "after the run")
 	// The runner detaches a run from its caller's context, as a server run
 	// outlives its request; an interrupt here asks the run to stop instead,
 	// and it does at its next checkpoint.
@@ -381,7 +384,6 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 		fmt.Fprintf(rt.log, "eval: %s: the run failed, graded as it stopped: %v\n", s.Name, rt.say(err))
 	}
 	rt.withdrawHeld(s.Name, r.ID)
-	rt.clearPending(s.Name, "after the run")
 	return eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
 }
 
