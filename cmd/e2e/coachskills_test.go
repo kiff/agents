@@ -107,3 +107,23 @@ func TestModeCountsAsReportedOnlyAfterAToolSaidSo(t *testing.T) {
 		t.Fatal("another run's read counted")
 	}
 }
+
+// A new taf's result carries the job Setup drafted with the owner (kiff/tafs#476): an
+// empty or custom job with a kickoff, instructions optional; a named job isn't one.
+func TestOwnJobIsTheDraftedJob(t *testing.T) {
+	for _, tc := range []struct {
+		job, kickoff string
+		want         bool
+	}{
+		{"", "Work the refund queue.", true},
+		{"custom", "Work the refund queue.", true},
+		{"", "", false},
+		{"custom", "", false},
+		{"refunds", "Work the refund queue.", false},
+		{"billpay", "", false},
+	} {
+		if got := ownJob(tc.job, tc.kickoff); got != tc.want {
+			t.Fatalf("%+v: %v", tc, got)
+		}
+	}
+}

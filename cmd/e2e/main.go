@@ -697,6 +697,9 @@ type component struct {
 		Improves string `json:"improves"`
 		Note     string `json:"note"`
 		Notes    string `json:"notes"`
+		// A new taf's job of its own (kiff/tafs#476): what each run is asked, and how it works.
+		Kickoff      string `json:"kickoff"`
+		Instructions string `json:"instructions"`
 	} `json:"taf"`
 	Title string `json:"title"`
 	Text  string `json:"text"`
@@ -931,8 +934,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 				t.out.hide(c.Taf.Agent, "<the taf>")
 				// What tafs cloud starts the taf from (POST /v1/tafs, from_setup).
-				if c.Taf.Draft != draftID || c.Taf.Job != "refunds" {
-					return "", "", fmt.Errorf("the result names job %q and draft %q; want refunds and the draft the owner confirmed", c.Taf.Job, c.Taf.Draft)
+				if c.Taf.Draft != draftID || !ownJob(c.Taf.Job, c.Taf.Kickoff) {
+					return "", "", fmt.Errorf("the result names job %q (kickoff %t) and draft %q; want the job Setup drafted and the draft the owner confirmed",
+						c.Taf.Job, c.Taf.Kickoff != "", c.Taf.Draft)
 				}
 				return c.Taf.Agent, draftID, nil
 			}
