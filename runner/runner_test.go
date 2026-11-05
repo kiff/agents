@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,6 +46,16 @@ func (s *script) Turn(ctx context.Context, req model.Request, onText func(string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reqs = append(s.reqs, req)
+	// As a model's API would: every message has a role and content, and the
+	// roles alternate. A request shaped otherwise is a bug in what built it.
+	for i, m := range req.Messages {
+		switch {
+		case m.Role == "" || len(m.Blocks) == 0:
+			return model.Reply{}, fmt.Errorf("script: message %d has no role or no content (%+v)", i, m)
+		case i > 0 && req.Messages[i-1].Role == m.Role:
+			return model.Reply{}, fmt.Errorf("script: messages %d and %d are both %s", i-1, i, m.Role)
+		}
+	}
 	if len(s.reqs) > len(s.replies) {
 		return model.Reply{}, errors.New("script: no more replies")
 	}

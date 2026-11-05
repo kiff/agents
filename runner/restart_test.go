@@ -89,11 +89,21 @@ func TestARunKilledBeforeItActedIsRestartedFromItsStart(t *testing.T) {
 	if s.calls != 2 {
 		t.Fatalf("the look-up was made %d times, want once per attempt", s.calls)
 	}
-	// The model was asked again from the owner's input, as the first time.
+	// The model was asked again from the owner's input, as the first time: a
+	// request a model's API takes, every message with a role and content,
+	// roles alternating, with no trace of the empty turn it was stored on.
 	reqs := f.model.requests()
-	last := reqs[len(reqs)-1].Messages
-	if got := texts(last); !slices.Contains(got, "user: is order 42 paid?") {
+	restarted := reqs[1].Messages
+	if got := texts(restarted); !slices.Contains(got, "user: is order 42 paid?") {
 		t.Fatalf("the restarted turn saw %q", got)
+	}
+	for i, m := range restarted {
+		if m.Role == "" || len(m.Blocks) == 0 || (i > 0 && restarted[i-1].Role == m.Role) {
+			t.Fatalf("the restarted request's message %d: %+v", i, m)
+		}
+	}
+	if restarted[0].Role != model.User || restarted[len(restarted)-1].Role != model.User {
+		t.Fatalf("the restarted request begins and ends with the owner, not %s … %s", restarted[0].Role, restarted[len(restarted)-1].Role)
 	}
 	// The owner's message is on the record once, and the run's cost is its restarted turns'.
 	_, events, err := f.store.ReadRun(ctx, "t1", r.Session, r.ID)
