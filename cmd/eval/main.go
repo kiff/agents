@@ -164,8 +164,6 @@ const evalKeep = 24 * time.Hour
 
 // runtime runs cases on this runtime, kept in memory.
 type runtime struct {
-	// speed overrides the definitions' speed (-speed); "" keeps theirs.
-	speed    string
 	agents   *memory.Agents
 	skills   *memory.Skills // the packages -skills loaded, which definitions may name (#101)
 	sessions *memory.Store
@@ -280,10 +278,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		}
 		d.Model, d.Price, d.Effort, d.MaxTokens, d.MaxTurns, d.History, d.HistoryTokens, d.Instructions = t.Model, t.Price, t.Effort, t.MaxTokens, t.MaxTurns, t.History, t.HistoryTokens, t.Instructions
 		d.Speed, d.PriceFast = t.Speed, t.PriceFast // measured as it runs: fast where someone waits
-		if rt.speed != "" {
-			d.Speed = rt.speed // -speed: a run that must not cost the fast output
-		}
-		d.Skills = t.Skills // read from -skills: a skill it names that isn't there fails the build
+		d.Skills = t.Skills                         // read from -skills: a skill it names that isn't there fails the build
 		d.DeferredTools, d.DeferVendorTools = t.DeferredTools, t.DeferVendorTools
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
@@ -459,7 +454,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	seedEach := fs.Bool("seed", false, "-run: seed the case in Stripe test mode (STRIPE_API_KEY) before each of its runs, instead of -ids")
 	reportPath := fs.String("report", "", "write a Markdown report here: the configuration, each case over its runs, and each run's checks")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
-	speed := fs.String("speed", "", "-run -definitions: run every definition at this speed, standard or fast, whatever it says; empty keeps the definition's")
 	skillsDir := fs.String("skills", "", "-run: a directory of skills, <name>/<version>/SKILL.md each, that the definitions may name (#101)")
 	public := fs.Bool("public", false, "the log is public (CI): print each run's score, cost and failed checks' names only, with no ids or reasons, and no results on stdout; -out and -report hold the rest")
 	if err := fs.Parse(args); err != nil {
@@ -520,10 +514,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			}
 			rt = newRuntime(newModel(key), kiffKey, base, "", "", stderr)
 			rt.defs = *defsDir
-			if *speed != "" && *speed != registry.SpeedStandard && *speed != registry.SpeedFast {
-				return fmt.Errorf("-speed %q: standard or fast", *speed)
-			}
-			rt.speed = *speed
 			rt.source = *defsDir
 			var src struct{ Repo, Commit string }
 			if readJSON(filepath.Join(*defsDir, "source.json"), &src) == nil && src.Repo != "" && len(src.Commit) >= 12 {

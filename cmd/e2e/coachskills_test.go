@@ -3,8 +3,6 @@ package main
 import (
 	"io"
 	"testing"
-
-	"github.com/kiff/agents/registry"
 )
 
 // A conversation opens with the skills tafs cloud would name for its entry
@@ -52,18 +50,5 @@ func TestClaimsModeReadsOnlyFacts(t *testing.T) {
 		if c := claimsMode([]string{"fine", claim}); c != claim {
 			t.Fatalf("%q not read as a claim: %q", claim, c)
 		}
-	}
-}
-
-// -speed runs a definition at the speed given, whatever it says; none keeps its own.
-func TestAtSpeedOverridesTheDefinition(t *testing.T) {
-	d := registry.Definition{Speed: registry.SpeedFast}
-	atSpeed(&d, "")
-	if d.Speed != registry.SpeedFast {
-		t.Fatalf("no -speed changed it: %q", d.Speed)
-	}
-	atSpeed(&d, registry.SpeedStandard)
-	if d.Speed != registry.SpeedStandard {
-		t.Fatalf("-speed standard: %q", d.Speed)
 	}
 }
