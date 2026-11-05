@@ -114,7 +114,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Before connecting anything, when the owner names no app: search {q} finds tools across every app the catalog can connect, by a few words from the job " +
 			"(\"overdue invoice\", \"send reminder email\"; two or three short searches beat one long one), each tool with its app (entry, app_title) and the app's state: " +
 			"available, or needs_setup (not connectable until an operator sets it up: say so, and offer another app). apps narrows a search to the apps named (their app slugs). " +
-			"Propose the apps to the owner, then connect the chosen ones with request, using the entry's app as the catalog names it. " +
+			"Propose the apps to the owner, then connect each chosen one with request {entry} (the entry search gave, such as connector:composio:gmail, never a URL) and name or agent, with no tools: " +
+			"once the owner signed in, pick its tools with catalog {grant} and ask for them with tools {grant, tools}. " +
 			"events {entry} lists an app's events, what can wake a taf, before connecting (the entry from search); events {grant} once connected. " +
 			"Pick an event as you pick an action, and draft it into the taf's dial; the owner approves its exact filters. " +
 			"A grant with on_demand: true is an app whose sign-in was set up on the owner's pick, not reviewed by an operator: draft every tool of it that changes data or moves money to ask the owner each time (0 a day, held), reads open, and say so in the rules. " +
@@ -133,7 +134,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
 			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), or in a connected grant's catalog (catalog)"},` +
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
-			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail, whose events to list before connecting (events); or grant, once connected"},` +
+			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected)"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"}},` +
 			`"required":["action"]}`),
 	}
@@ -181,8 +182,36 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		return tool.Result{Text: string(raw)}, nil
 	case "request":
 		byKey := len(in.API) > 0 && string(in.API) != "null"
-		if (in.Server == "") == !byKey || (in.Agent == "") == (in.Name == "") {
-			return tool.Result{Text: "request needs server (an MCP server) or api (a REST vendor by its key), not both, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first", IsError: true}, nil
+		ways := 0
+		for _, set := range []bool{in.Server != "", byKey, in.Entry != ""} {
+			if set {
+				ways++
+			}
+		}
+		if ways != 1 || (in.Agent == "") == (in.Name == "") {
+			return tool.Result{Text: "request needs one of server (an MCP server), api (a REST vendor by its key) or entry (an app from search, such as connector:composio:gmail), not both, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first or name an entry", IsError: true}, nil
+		}
+		if in.Entry != "" {
+			// An app from search is connected by its catalog entry: planque
+			// sets up its sign-in, and its tools are listed once the owner
+			// signed in, to be asked for then with tools {grant, tools}.
+			if !pathSafe(in.Entry) {
+				return tool.Result{Text: "entry is a catalog entry as search gives it, such as connector:composio:gmail", IsError: true}, nil
+			}
+			agent := in.Agent
+			if in.Name != "" {
+				agent = AgentID(in.Name)
+			}
+			body, _ := json.Marshal(map[string]any{"agent": agent})
+			res, err := t.grant(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
+			if err != nil || res.IsError {
+				return res, err
+			}
+			var g grantView
+			_ = json.Unmarshal([]byte(res.Text), &g)
+			g.Agent = agent
+			b, _ := json.Marshal(g)
+			return tool.Result{Text: string(b)}, nil
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" {
