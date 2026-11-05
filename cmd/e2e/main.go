@@ -834,10 +834,18 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 		msg, facts = o.deskAsk(deskOf(t.cfg.vendor)), o.deskFacts
 	}
 	answered := map[string]string{}
-	toldFacts := false
+	toldFacts, factsMarked := false, false
 	approvedGrant := ""
 	var r runs.Run
 	for turn := 0; turn < t.cfg.maxTurns; turn++ {
+		if toldFacts && !factsMarked && ch.Session != "" {
+			// The owner gives their limits in this reply: what Setup wrote so far,
+			// its question for them included, is before; the limit check reads after.
+			if err := t.markFacts(ctx, ch.Session); err != nil {
+				return "", "", err
+			}
+			factsMarked = true
+		}
 		t.logf("owner: %s", msg)
 		r, err = t.reply(ctx, ch, r, msg)
 		if err != nil {
@@ -1124,6 +1132,13 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		o.taf = "Desk"        // the name the desk's owner gives (deskAsk)
 		o.facts = o.deskFacts // the limits the desk's owner gives, graded as theirs
 		m.none = true         // the desk has no test or live
+	}
+	if t.said.factsMarked && t.setupSession != "" {
+		_, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession)
+		if err != nil {
+			return err
+		}
+		t.said.afterFacts = textsAfter(events, t.said.factsAt)
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {
