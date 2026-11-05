@@ -114,8 +114,8 @@ func claimsMode(texts []string, reportsTest bool) string {
 // vendor object with livemode false, or an accounts read with mode test.
 var reportsTest = regexp.MustCompile(`"livemode"\s*:\s*false|"mode"\s*:\s*"test"`)
 
-// beforeTestReport walks a run's events in order: what Setup wrote (its
-// messages and the cards it showed) while no tool result in the
+// beforeTestReport walks a run's events in order: what Setup stated (its
+// messages and its cards' statements, never the options a card offers) while no tool result in the
 // conversation had reported test mode, and whether one has by the run's end.
 // reported is the conversation's state before the run.
 func beforeTestReport(events []session.Event, runID string, reported bool) ([]string, bool) {
@@ -138,7 +138,7 @@ func beforeTestReport(events []session.Event, runID string, reported bool) ([]st
 		case session.Component:
 			var c component
 			if !reported && json.Unmarshal(e.Body, &c) == nil {
-				before = append(before, cardTexts(c)...)
+				before = append(before, cardStatements(c)...)
 			}
 		}
 	}
