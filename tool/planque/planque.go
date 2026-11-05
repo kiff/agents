@@ -71,7 +71,7 @@ func (t *Tool) Reads(input json.RawMessage) bool {
 		Action string `json:"action"`
 	}
 	_ = json.Unmarshal(input, &in)
-	return in.Action == "status" || in.Action == "catalog" || in.Action == "read" || in.Action == "grants"
+	return in.Action == "status" || in.Action == "catalog" || in.Action == "read" || in.Action == "grants" || in.Action == "search" || in.Action == "events"
 }
 
 func (t *Tool) Spec() model.ToolSpec {
@@ -109,9 +109,15 @@ func (t *Tool) Spec() model.ToolSpec {
 			"setup_reads: true, on a read-only tool, lets you read it yourself once the owner approved it: read {grant, tool, arguments}, with the name the grant lists. " +
 			"Use it for a vendor's tool that lists an operation's fields, so you name each argument's path from the vendor, never by guess. " +
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
-			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough.",
+			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough. " +
+			"Before connecting anything, when the owner names no app: search {q} finds tools across every app the catalog can connect, by a few words from the job " +
+			"(\"overdue invoice\", \"send reminder email\"; two or three short searches beat one long one), each tool with its app (entry, app_title) and the app's state: " +
+			"available, or needs_setup (not connectable until an operator sets it up: say so, and offer another app). apps narrows a search to the apps named (their app slugs). " +
+			"Propose the apps to the owner, then connect the chosen ones with request, using the entry's app as the catalog names it. " +
+			"events {entry} lists an app's events, what can wake a taf, before connecting (the entry from search); events {grant} once connected. " +
+			"Pick an event as you pick an action, and draft it into the taf's dial; the owner approves its exact filters.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants","search","events"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"api":{"type":"object","description":"a REST vendor reached by its key, instead of server (request)","properties":{` +
 			`"url":{"type":"string","description":"the vendor's OpenAPI description (JSON)"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
@@ -121,7 +127,10 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
-			`"cursor":{"type":"string","description":"the previous catalog answer's next_cursor, to continue listing or searching (catalog)"},` +
+			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
+			`"q":{"type":"string","description":"a few words from the job to find tools by, across apps (search)"},` +
+			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
+			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail, whose events to list before connecting (events); or grant, once connected"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"}},` +
 			`"required":["action"]}`),
 	}
@@ -141,6 +150,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Tool   string          `json:"tool"`
 		Cursor string          `json:"cursor"`
 		Args   json.RawMessage `json:"arguments"`
+		Q      string          `json:"q"`
+		Apps   []string        `json:"apps"`
+		Entry  string          `json:"entry"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.Result{Text: "the input must be {action, …}", IsError: true}, nil
@@ -195,6 +207,60 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		g.Agent = agent
 		b, _ := json.Marshal(g)
 		return tool.Result{Text: string(b)}, nil
+	case "search":
+		// Tools across apps by words, each with its app as it stands, before
+		// any connection (kiff/planque#87): planque's own search, as the agent.
+		q := strings.TrimSpace(in.Q)
+		if q == "" || len(q) > 200 {
+			return tool.Result{Text: "search needs q, a few words from the job, at most 200 characters", IsError: true}, nil
+		}
+		if len(in.Apps) > 20 {
+			return tool.Result{Text: "search takes at most 20 apps", IsError: true}, nil
+		}
+		for _, a := range in.Apps {
+			if a == "" || strings.ContainsAny(a, "/?#,& ") {
+				return tool.Result{Text: "apps are app slugs as the catalog names them, such as gmail", IsError: true}, nil
+			}
+		}
+		params := url.Values{"q": {q}}
+		if len(in.Apps) > 0 {
+			params.Set("apps", strings.Join(in.Apps, ","))
+		}
+		if in.Cursor != "" {
+			params.Set("cursor", in.Cursor)
+		}
+		raw, refused, err := t.do(ctx, http.MethodGet, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/tools?"+params.Encode(), nil)
+		if err != nil || refused != nil {
+			return deref(refused), err
+		}
+		return tool.Result{Text: string(raw)}, nil
+	case "events":
+		// An app's events, before connecting (by its catalog entry) or once
+		// connected (by the grant), so an event is picked as an action is.
+		if (in.Entry == "") == (in.Grant == "") {
+			return tool.Result{Text: "events needs entry (an app's catalog entry, from search) or grant (a connection), not both", IsError: true}, nil
+		}
+		at := "/v1/accounts/" + url.PathEscape(t.tenant)
+		switch {
+		case in.Entry != "":
+			if strings.ContainsAny(in.Entry, "/?#") {
+				return tool.Result{Text: "entry is a catalog entry as search gives it, such as connector:composio:gmail", IsError: true}, nil
+			}
+			at += "/catalog/" + url.PathEscape(in.Entry) + "/events"
+		default:
+			if strings.ContainsAny(in.Grant, "/?#") {
+				return tool.Result{Text: "events needs the grant's id", IsError: true}, nil
+			}
+			at += "/grants/" + url.PathEscape(in.Grant) + "/events"
+		}
+		if in.Cursor != "" {
+			at += "?cursor=" + url.QueryEscape(in.Cursor)
+		}
+		raw, refused, err := t.do(ctx, http.MethodGet, at, nil)
+		if err != nil || refused != nil {
+			return deref(refused), err
+		}
+		return tool.Result{Text: string(raw)}, nil
 	case "status", "catalog", "tools", "read":
 		if in.Grant == "" || strings.ContainsAny(in.Grant, "/?#") {
 			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
@@ -230,7 +296,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
-	return tool.Result{Text: "action is request, status, catalog, tools, read or grants", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog, tools, read, grants, search or events", IsError: true}, nil
 }
 
 // MaxStated is how many of a session's grants State looks up: the latest.

@@ -354,7 +354,7 @@ func TestThereIsNoDescribe(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = append(seen, r.URL.Path) }))
 	t.Cleanup(srv.Close)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog, tools, read or grants") {
+	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog, tools, read, grants, search or events") {
 		t.Fatalf("describe: %s", text)
 	}
 	if len(seen) != 0 {
@@ -439,5 +439,69 @@ func TestGrantsListsATafsConnections(t *testing.T) {
 	if spec := tl.Spec(); !strings.Contains(spec.Description, "On a connected grant, tools {grant, tools} adds the tools sent") ||
 		!strings.Contains(spec.Description, "one connection per vendor") || !strings.Contains(spec.Description, "grants with no agent lists every connection") {
 		t.Fatalf("the description doesn't say how to add: %s", spec.Description)
+	}
+}
+
+// Before connecting anything, search finds tools across apps by words, with
+// the agent's key, and events lists an app's events by its catalog entry,
+// then by its grant once connected (kiff/planque#87). A malformed ask never
+// leaves the tool.
+func TestSearchAndEventsBeforeConnecting(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.RequestURI()+" "+r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/accounts/tnt_1/catalog/tools":
+			w.Write([]byte(`{"tools":[{"entry":"connector:composio:quickbooks","app":"quickbooks","app_title":"QuickBooks","app_state":"available","slug":"QUICKBOOKS_LIST_INVOICES","name":"List invoices","read_only":true},{"entry":"connector:composio:own","app":"own","app_title":"Own app","app_state":"needs_setup","slug":"OWN_SEND","name":"Send"}],"provider":"composio","next_cursor":"p2","skipped":1}`))
+		case "/v1/accounts/tnt_1/catalog/connector:composio:quickbooks/events", "/v1/accounts/tnt_1/grants/grt_1/events":
+			w.Write([]byte(`{"events":[{"slug":"QUICKBOOKS_NEW_INVOICE","name":"New invoice","version":"20261101_00","config":{"type":"object"},"door":false}],"next_cursor":""}`))
+		default:
+			w.WriteHeader(404)
+			w.Write([]byte(`{"error":"no such route"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	text, isErr := call(t, tl, `{"action":"search","q":" overdue invoice ","apps":["quickbooks","own"]}`)
+	if isErr || !strings.Contains(text, `"app_state":"needs_setup"`) || !strings.Contains(text, `"QUICKBOOKS_LIST_INVOICES"`) || !strings.Contains(text, `"next_cursor":"p2"`) {
+		t.Fatalf("search: %s", text)
+	}
+	if len(seen) != 1 || seen[0] != "GET /v1/accounts/tnt_1/catalog/tools?apps=quickbooks%2Cown&q=overdue+invoice Bearer k_setup" {
+		t.Fatalf("asked: %v", seen)
+	}
+	if text, isErr := call(t, tl, `{"action":"search","q":"invoice","cursor":"p2"}`); isErr || !strings.HasSuffix(seen[len(seen)-1], "/catalog/tools?cursor=p2&q=invoice Bearer k_setup") {
+		t.Fatalf("a search continued: %s %v", text, seen)
+	}
+	for _, bad := range []string{`{"action":"search"}`, `{"action":"search","q":"   "}`, `{"action":"search","q":"x","apps":["a/b"]}`, `{"action":"search","q":"x","apps":["a b"]}`} {
+		if _, isErr := call(t, tl, bad); !isErr {
+			t.Errorf("not refused: %s", bad)
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("a malformed search reached planque: %v", seen)
+	}
+	// Events by the catalog entry, before any connection, then by the grant.
+	text, isErr = call(t, tl, `{"action":"events","entry":"connector:composio:quickbooks"}`)
+	if isErr || !strings.Contains(text, `"QUICKBOOKS_NEW_INVOICE"`) || seen[len(seen)-1] != "GET /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/events Bearer k_setup" {
+		t.Fatalf("events by entry: %s %v", text, seen)
+	}
+	if text, isErr := call(t, tl, `{"action":"events","grant":"grt_1","cursor":"p2"}`); isErr || seen[len(seen)-1] != "GET /v1/accounts/tnt_1/grants/grt_1/events?cursor=p2 Bearer k_setup" {
+		t.Fatalf("events by grant: %s %v", text, seen)
+	}
+	for _, bad := range []string{`{"action":"events"}`, `{"action":"events","entry":"a","grant":"b"}`, `{"action":"events","entry":"../x"}`, `{"action":"events","grant":"g?x"}`} {
+		if _, isErr := call(t, tl, bad); !isErr {
+			t.Errorf("not refused: %s", bad)
+		}
+	}
+	if len(seen) != 4 {
+		t.Fatalf("a malformed events ask reached planque: %v", seen)
+	}
+	// Both only read; the model is told when to use them.
+	if !tl.Reads(json.RawMessage(`{"action":"search","q":"x"}`)) || !tl.Reads(json.RawMessage(`{"action":"events","grant":"g"}`)) {
+		t.Fatal("search and events read")
+	}
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "search {q} finds tools across every app") || !strings.Contains(spec.Description, "events {entry} lists an app's events") || !strings.Contains(string(spec.InputSchema), `"search","events"`) {
+		t.Fatalf("the description doesn't say how to search: %s", spec.Description)
 	}
 }
