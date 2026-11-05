@@ -565,23 +565,41 @@ func modeClaim(s said, m modes) string {
 // callWords are what a sentence about the mode pinned on the calls says.
 var callWords = []string{"pinned", "fixed", "every call", "each call", "all calls", "cada llamada", "todas las llamadas", "fijad", "fijé", "fijamos", "fijo "}
 
-// ownerWords name the owner's own account or vendor ("your Stripe", "tu
-// cuenta"): a clause that says them speaks of what the owner has, not of the
-// calls (qa-kiff on #325).
-var ownerWords = []string{"account", "cuenta", "your ", "tu ", "tus ", "su ", "sus "}
+// accountWords name the owner's account: a clause that says them speaks of
+// the account's mode, not the calls' (agentgabo on #325).
+var accountWords = []string{"account", "cuenta"}
 
-// stateWords say what something is in ("Stripe is in test mode"), and
-// callState the same said of the calls, which is what they do.
+// modeWord is a mode named once; noMoney is "no real money", which says what
+// a test call doesn't move rather than naming a second mode.
+var modeWord = regexp.MustCompile(`\b(test|live|prueba|real|sandbox)\b`)
+var noMoney = regexp.MustCompile(`\b(no real money|sin dinero real)\b`)
+
+// vendorWords are the vendor, by the fake's name, or its connection. As the
+// calls' object ("every call to your Stripe", "cada llamada a Stripe", "Stripe
+// calls") they name where the calls go; anywhere else, what the vendor is.
+var vendorWords = regexp.MustCompile(`\b(stripe|connection|conexión)\b`)
+var callsTo = regexp.MustCompile(`\b(calls?|llamadas?)\s+(to|on|for|a|de|en|para)\s+((your|the|this|tu|su|la|esta)\s+)?(stripe|connection|conexión)\b|\b(stripe)\s+(calls?)\b`)
+
+// stateWords say what something is in ("it is in test mode"), and callState
+// the same said of the calls, which is what they do.
 var stateWords = []string{" is in ", " are in ", " está en ", " esta en ", " están en ", " estan en "}
 var callState = []string{"call is in ", "calls are in ", "llamada está en ", "llamada esta en ", "llamadas están en ", "llamadas estan en "}
 
-// aboutTheCalls reports whether a clause speaks of the calls' pinned mode,
-// and not of the account's or the vendor's: it names the calls, and neither
-// what the owner has nor a state of something else ("…, because Stripe is in
-// test mode").
+// aboutTheCalls reports whether a clause speaks of the calls' pinned mode
+// alone: it names the calls and a mode once, and neither the account, nor the
+// vendor or its connection other than as where the calls go, nor a state of
+// something else. A mode said twice in a clause is said of two things
+// ("…, and your Stripe is in test mode"), so it's no longer only the calls'
+// (qa-kiff on #325).
 func aboutTheCalls(clause string) bool {
 	l := " " + strings.ToLower(clause) + " "
-	if containsAny(l, ownerWords) || !containsAny(l, callWords) {
+	if containsAny(l, accountWords) || !containsAny(l, callWords) {
+		return false
+	}
+	if len(modeWord.FindAllString(noMoney.ReplaceAllString(l, ""), -1)) > 1 {
+		return false
+	}
+	if vendorWords.MatchString(callsTo.ReplaceAllString(l, "call")) {
 		return false
 	}
 	for _, w := range callState {
