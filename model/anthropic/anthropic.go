@@ -42,6 +42,15 @@ const FastBeta = "fast-mode-2026-02-01"
 // the run's calls have already gone (kiff/tafs, the 859 device test).
 const BindingBeta = "thinking-binding-controls-2026-08-01"
 
+// UpdatesBeta lets a request ask for the model's progress notes between tool
+// calls, with its reasoning hidden (model.ThinkingUpdates): thinking display
+// "updates". Without it the API refuses that display.
+const UpdatesBeta = "thinking-display-updates-2026-08-18"
+
+// interrupted is the note the API puts where a turn that stopped short left
+// work unfinished. It says nothing to someone waiting, so it isn't shown.
+const interrupted = "This part of the response was interrupted before it finished."
+
 // Turn streams one turn and returns it whole. A fast turn the API turns
 // away for its fast limits (a 429, or overloaded) before anything streamed
 // runs again at once at standard speed, so someone waiting gets an answer,
@@ -84,6 +93,10 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 		betas = append(betas, BindingBeta)
 		opts = append(opts, option.WithJSONSet("thinking.block_binding.prefix_mismatch_behavior", "drop_block"))
 	}
+	updates := req.Thinking == model.ThinkingUpdates
+	if updates {
+		betas = append(betas, UpdatesBeta)
+	}
 	if req.Fast {
 		betas = append(betas, FastBeta)
 		opts = append(opts, option.WithJSONSet("speed", "fast"), option.WithMaxRetries(0))
@@ -97,13 +110,25 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 	var msg sdk.Message
 	var first time.Duration
 	thinking := 0
+	// Under updates, every thinking block with text is one progress note,
+	// shown whole when its block ends; an empty one shows nothing.
+	var note strings.Builder
 	for stream.Next() {
 		ev := stream.Current()
 		if err := msg.Accumulate(ev); err != nil {
 			return model.Reply{}, first != 0, fmt.Errorf("anthropic: %w", err)
 		}
-		d, ok := ev.AsAny().(sdk.ContentBlockDeltaEvent)
-		if !ok {
+		var d sdk.ContentBlockDeltaEvent
+		switch e := ev.AsAny().(type) {
+		case sdk.ContentBlockDeltaEvent:
+			d = e
+		case sdk.ContentBlockStopEvent:
+			if s := strings.TrimSpace(note.String()); s != "" && s != interrupted && req.OnUpdate != nil {
+				req.OnUpdate(s)
+			}
+			note.Reset()
+			continue
+		default:
 			continue
 		}
 		if first == 0 {
@@ -112,7 +137,9 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 		switch t := d.Delta.AsAny().(type) {
 		case sdk.ThinkingDelta:
 			thinking += len(t.Thinking)
-			if req.Thinking != "" && req.OnThinking != nil && t.Thinking != "" {
+			if updates {
+				note.WriteString(t.Thinking)
+			} else if req.Thinking != "" && req.OnThinking != nil && t.Thinking != "" {
 				req.OnThinking(t.Thinking)
 			}
 		case sdk.TextDelta:
@@ -186,9 +213,14 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 	if req.Effort != "" {
 		p.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffort(req.Effort)}
 	}
-	if req.Thinking == model.ThinkingSummarized {
+	switch req.Thinking {
+	case model.ThinkingSummarized:
 		// Adaptive, as the model runs with no thinking set, with its summary shown.
 		p.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{Display: sdk.ThinkingConfigAdaptiveDisplaySummarized}}
+	case model.ThinkingUpdates:
+		// Adaptive, with only the progress notes shown (UpdatesBeta). The SDK
+		// names this display on its beta types only; the value is the same.
+		p.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{Display: sdk.ThinkingConfigAdaptiveDisplay(sdk.BetaThinkingConfigAdaptiveDisplayUpdates)}}
 	}
 	if req.System != "" {
 		p.System = []sdk.TextBlockParam{{Text: req.System}}

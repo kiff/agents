@@ -299,6 +299,10 @@ type test struct {
 	// cardAnswers is this turn's answer to each card shown, by its id.
 	cardAnswers map[string]string
 	tafSaid     []string // the taf's answers in the chat, checked with -taf
+	// words times each model turn's first text, and sent is when the owner
+	// sent each message: the waits for words in the setup chat.
+	words *wordsClock
+	sent  []time.Time
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
 	// result is Setup's result that waits for what came of the hand-over:
@@ -376,6 +380,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	setup, err := t.setupDefinition()
 	if err != nil {
 		return err
+	}
+	if t.words != nil {
+		t.words.setup = setup.Instructions // Setup's progress notes are graded as its lines
 	}
 	if err := t.agents.Put(ctx, setup); err != nil {
 		return err
@@ -508,8 +515,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 		t.logf("loaded %d skills", len(ps))
 	}
 	claims := &drafts.Service{Store: t.keys, Keys: t.keys, KIFF: draftsapi.New(kiff.APIURL, t.hc)}
+	t.words = &wordsClock{Model: m}
 	t.rn = &runner.Runner{Runs: memory.NewRuns(), Sessions: t.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
-		Agents: t.agents, Secrets: keyring{t.keys}, Model: m, Gateways: []string{kiff.URL}, Skills: skills,
+		Agents: t.agents, Secrets: keyring{t.keys}, Model: t.words, Gateways: []string{kiff.URL}, Skills: skills,
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
@@ -758,6 +766,7 @@ func answerQuestions(c component, own string) string {
 // they wrote instead), or else a message that starts the chat's next run.
 // msg is in the old "[type id] answer" form when it answers a card.
 func (t *test) reply(ctx context.Context, ch *chat.Chat, last runs.Run, msg string) (runs.Run, error) {
+	t.sent = append(t.sent, time.Now()) // the owner's message: their wait for words starts here
 	if last.Status == runs.Paused {
 		// Every card the run waits on is answered, each with its own answer
 		// (t.cardAnswers, by the card's id; msg for one with none), and the
@@ -865,11 +874,12 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			t.logf("agent: %s", oneLine(text))
 		}
 		if t.cfg.judge != nil {
-			msgs, err := t.messagesOf(ctx, ch.Session, r.ID)
+			msgs, lines, err := t.messagesOf(ctx, ch.Session, r.ID)
 			if err != nil {
 				return "", "", err
 			}
 			t.said.messages = append(t.said.messages, msgs...)
+			t.said.lines = append(t.said.lines, lines...)
 			if err := t.noteTestReport(ctx, ch.Session, r.ID); err != nil {
 				return "", "", err
 			}
@@ -1066,24 +1076,54 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 	return shown, text, nil
 }
 
-// messagesOf is every message the agent wrote in one run, in order: what
-// -grade reads (latest keeps only the last).
-func (t *test) messagesOf(ctx context.Context, sessionID, runID string) ([]string, error) {
+// messagesOf is what the agent wrote in one run, in order, as -grade reads
+// it (latest keeps only the last message): its messages, and its lines.
+func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (messages, lines []string, err error) {
 	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []string
+	messages, lines = splitLines(events, runID)
+	return messages, lines, nil
+}
+
+// splitLines parts what an agent wrote in one run into its messages and its
+// lines. A turn's text that its tool calls follow is a line, what it's doing
+// now ("Miro las últimas ejecuciones de Reembolsos…"), not a message: the
+// owner sees it on the live line, as a progress note, never as a message of
+// its own (kiff/tafs' core rule). The agent records a turn's text before its
+// calls, so a text whose next text or call in the run is a call is a line.
+func splitLines(events []session.Event, runID string) (messages, lines []string) {
+	pending := ""
+	flush := func(asLine bool) {
+		if strings.TrimSpace(pending) == "" {
+			pending = ""
+			return
+		}
+		if asLine {
+			lines = append(lines, pending)
+		} else {
+			messages = append(messages, pending)
+		}
+		pending = ""
+	}
 	for _, e := range events {
-		if e.Run != runID || (e.Kind != session.AgentMessage && e.Kind != session.Report) {
+		if e.Run != runID {
 			continue
 		}
-		var b agent.TextBody
-		if json.Unmarshal(e.Body, &b) == nil && strings.TrimSpace(b.Text) != "" {
-			out = append(out, b.Text)
+		switch e.Kind {
+		case session.AgentMessage, session.Report:
+			flush(false)
+			var b agent.TextBody
+			if json.Unmarshal(e.Body, &b) == nil {
+				pending = b.Text
+			}
+		case session.ToolCall:
+			flush(true)
 		}
 	}
-	return out, nil
+	flush(false)
+	return messages, lines
 }
 
 // refusedReadsOf are the tools planque refused, in a run of the setup agent,
@@ -1152,6 +1192,9 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 			return err
 		}
 		t.said.afterFacts = textsAfter(events, t.said.factsAt)
+	}
+	if t.words != nil {
+		t.said.lines = append(t.said.lines, t.words.setupNotes()...) // a line that came as a note, graded the same
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {
@@ -2110,11 +2153,12 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 		t.logf("agent: %s", oneLine(text))
 	}
 	if t.cfg.judge != nil {
-		msgs, err := t.messagesOf(ctx, w.session, w.run)
+		msgs, lines, err := t.messagesOf(ctx, w.session, w.run)
 		if err != nil {
 			return err
 		}
 		t.said.messages = append(t.said.messages, msgs...)
+		t.said.lines = append(t.said.lines, lines...)
 	}
 	return nil
 }

@@ -103,13 +103,22 @@ type Request struct {
 	Effort string
 	// Thinking ThinkingSummarized asks the provider for a summary of the
 	// model's thinking as it is written, passed to OnThinking, so someone
-	// waiting sees what the model considers. Empty leaves the thinking hidden,
-	// the provider's default. It changes what is shown, not what is billed.
+	// waiting sees what the model considers. ThinkingUpdates keeps the
+	// reasoning hidden and asks only for the short progress notes the model
+	// writes between tool calls, passed to OnUpdate. Empty leaves the
+	// thinking hidden, the provider's default. It changes what is shown, not
+	// what is billed.
 	Thinking string
-	// OnThinking, with Thinking set, receives the thinking summary as it is
-	// written. It is for showing only: the Reply's blocks keep the thinking
-	// as the provider returned it, which the next turn sends back unchanged.
+	// OnThinking, with Thinking ThinkingSummarized, receives the thinking
+	// summary as it is written. It is for showing only: the Reply's blocks
+	// keep the thinking as the provider returned it, which the next turn sends
+	// back unchanged.
 	OnThinking func(string) `json:"-"`
+	// OnUpdate, with Thinking ThinkingUpdates, receives each progress note
+	// whole, once its block ends: what the model is doing now, written for
+	// the person waiting ("Checking your last refunds…"), before the tool
+	// call it introduces. It is for showing only, like OnThinking.
+	OnUpdate func(string) `json:"-"`
 	// Fast asks for the provider's fast output, at its higher price, for a
 	// turn someone waits on. A provider that can't serve it fast right now
 	// (its own, lower limits) runs the turn at standard speed: Reply.Fast
@@ -149,6 +158,13 @@ type Web struct {
 // ThinkingSummarized is the Thinking that shows a summary of the model's
 // thinking as it goes.
 const ThinkingSummarized = "summarized"
+
+// ThinkingUpdates is the Thinking that shows only the model's progress notes
+// between tool calls, never its reasoning. On the models that write them
+// (Claude Opus 5.5, Sonnet 5.5, Fable 5 and 5.1, Mythos 5.1), text written
+// before a tool call comes back as such a note, not as text: under any other
+// Thinking it is hidden, or mixed with the reasoning's summary.
+const ThinkingUpdates = "updates"
 
 // Efforts are the effort levels a Request may name, lowest first.
 var Efforts = []string{"low", "medium", "high", "xhigh", "max"}

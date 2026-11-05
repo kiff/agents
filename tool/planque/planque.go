@@ -85,9 +85,13 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"On a connected grant, tools {grant, tools} adds the tools sent (only those to add) to what it has: the owner approves the addition once, " +
 			"with no sign-in, and its tools keep working meanwhile. So a taf has one connection per vendor: grants {agent} lists the connections you asked for a taf's agent " +
-			"(id, agent, server, status, created, tools); add to the one for that vendor rather than requesting another. " +
+			"(id, agent, vendor, server, status, created, kind, tools); add to the one for that vendor rather than requesting another. " +
 			"grants with no agent lists every connection you asked for on the account, each with its agent: when you no longer have a taf's agent id " +
 			"or a grant's id, find it there, never ask for a new connection or the owner to sign in again. " +
+			"Each grant's kind is how it reaches its vendor: vendor_sign_in (the vendor's own server, signed in on the vendor's page: request {server} asks for the same), " +
+			"provider (a provider's app: request {entry} with its entry; its mode and mode_words say live, test, or not known yet, treated as live), " +
+			"key (a REST key: request {api} with its api) or browser. Before proposing an app for a vendor the account already connects, " +
+			"read grants with no agent: the same kind is the one to offer first. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL. " +
 			"A vendor with a REST API and no MCP server is reached by its key instead: request {api: {url, base, auth: {in, name}}, agent, tools}, " +
 			"where url is the vendor's published OpenAPI description (JSON), base the URL its operations' paths start from, and auth where the key goes " +
@@ -377,21 +381,28 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 		return "", nil
 	}
 	path := "/v1/accounts/" + url.PathEscape(t.tenant) + "/grants/"
-	var b strings.Builder
-	b.WriteString("planque's grants in this conversation, as planque says now (status {grant} gives the same):\n")
-	for _, id := range grants {
+	// Each grant is read at once, not one after another: a run's start waits
+	// for the slowest, not their sum. The lines keep the grants' order.
+	lines := make([]string, len(grants))
+	tool.Each(len(grants), MaxStated, func(i int) {
+		id := grants[i]
 		if !pathSafe(id) {
-			continue
+			return
 		}
 		res, err := t.grant(ctx, http.MethodGet, path+url.PathEscape(id), nil)
 		switch {
 		case err != nil:
-			fmt.Fprintf(&b, "- %s: planque didn't answer now\n", id)
+			lines[i] = fmt.Sprintf("- %s: planque didn't answer now\n", id)
 		case res.IsError:
-			fmt.Fprintf(&b, "- %s: %s\n", id, res.Text)
+			lines[i] = fmt.Sprintf("- %s: %s\n", id, res.Text)
 		default:
-			fmt.Fprintf(&b, "- %s\n", res.Text)
+			lines[i] = fmt.Sprintf("- %s\n", res.Text)
 		}
+	})
+	var b strings.Builder
+	b.WriteString("planque's grants in this conversation, as planque says now (status {grant} gives the same):\n")
+	for _, l := range lines {
+		b.WriteString(l)
 	}
 	return b.String(), nil
 }

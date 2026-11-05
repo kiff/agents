@@ -92,9 +92,14 @@ var owners = map[string]owner{
 // said is what Setup wrote in the conversation, in order.
 type said struct {
 	messages []string
-	cards    map[string]component // by id, its latest version
-	order    []string             // card ids, as first shown
-	plans    map[string][]string  // a steps card's labels, as first shown, by id
+	// lines are what Setup wrote before its tool calls, what it's doing now:
+	// a turn's text its calls follow, or a progress note. Graded as Setup's
+	// words (language, ids, planque, a mode), never as messages: the owner
+	// sees them on the live line.
+	lines []string
+	cards map[string]component // by id, its latest version
+	order []string             // card ids, as first shown
+	plans map[string][]string  // a steps card's labels, as first shown, by id
 	// writesAsReads are tools Setup asked planque for as read-only that the
 	// vendor doesn't mark so, which planque refused (kiff/agents#139).
 	writesAsReads []string
@@ -142,12 +147,44 @@ func (s *said) card(c component) {
 }
 
 // texts is every piece of text Setup showed the owner, numbered: its
-// messages, then each card's title, text, button words, note and option
-// labels.
+// messages and lines, then each card's title, text, button words, note and
+// option labels.
 func (s *said) texts() []string {
-	out := append([]string(nil), s.messages...)
+	out := append(append([]string(nil), s.messages...), s.lines...)
 	for _, id := range s.order {
 		out = append(out, cardTexts(s.cards[id])...)
+	}
+	return out
+}
+
+// statements are what Setup stated: its messages, its lines and each card's
+// statements (cardStatements), never the options it offered the owner.
+func (s *said) statements() []string {
+	out := append(append([]string(nil), s.messages...), s.lines...)
+	for _, id := range s.order {
+		out = append(out, cardStatements(s.cards[id])...)
+	}
+	return out
+}
+
+// cardStatements is what a card states: its title, text, note, steps and
+// each question's text and note. Never the options it offers the owner to
+// choose from, nor its button words: an option is the owner's choice, not
+// Setup's claim ("Modo real", the mode question's second option, says
+// nothing about the account).
+func cardStatements(c component) []string {
+	var out []string
+	for _, t := range append([]string{c.Title, c.Text, c.Note}, labels(c)...) {
+		if strings.TrimSpace(t) != "" {
+			out = append(out, t)
+		}
+	}
+	for _, q := range c.Questions {
+		for _, t := range []string{q.Text, q.Note} {
+			if strings.TrimSpace(t) != "" {
+				out = append(out, t)
+			}
+		}
 	}
 	return out
 }
@@ -271,11 +308,13 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	add("in the owner's language", g)
 
-	// 2. Concise, as judged for what each message had to say.
+	// 2. Concise, as judged for what each message had to say. Its lines
+	// aren't messages: a message opens with the outcome, never with one.
 	if g, err = j.AskMajority(ctx, Concise, numbered(s.messages)); err != nil {
 		return nil, err
 	}
 	add("concise", g)
+	add("says what it's doing in one short line", shortLines(s.lines))
 
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in
 	// a component (a confirm can ask too).
@@ -365,6 +404,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	// 8b. Setup states only the mode the connection reports (kiff/tafs#525's core rule,
 	// after recipe 3 on the owner's phone): the fake vendor reports test, the desk none.
+	// Only what Setup stated: a question's options are the owner's choice.
 	if claim := modeClaim(s, m); claim != "" {
 		add("states only the mode the connection reports", eval.Grade{Why: "a mode the connection doesn't report, stated as fact: " + oneLine(claim)})
 	} else {
@@ -539,22 +579,30 @@ func choice(text string, options []option) string {
 
 // modeClaim is the first text where Setup states a mode the connection
 // doesn't report, "" when none (kiff/tafs#525's core rule). The fake vendor
-// reports test; the desk reports none (m.none). Test is reported once a tool
-// result said so (said.beforeTest holds what came before). When every tool
-// that acts is pinned to test, as the owner chose, a clause before that
-// about the calls (pinned, fixed, every call) is what the calls do; one that
-// names the account's or the vendor's own mode is still a claim, even joined
-// to it (agentgabo and qa-kiff on #325).
+// reports test; the desk reports none (m.none). Only what Setup stated
+// counts: a question's options are the owner's choice. Test is reported once
+// a tool result said so (said.beforeTest holds what came before), so before
+// it any mode is a claim, with one exception: when every tool that acts is
+// pinned to test, as the owner chose, the sentence Coach's rule prescribes
+// (tafs#542: "Every call is pinned to test mode, as you chose.") is what the
+// calls do. Only that sentence, matched on its fixed parts: any other that
+// names a mode before the first read is a claim (agentgabo on #325).
 func modeClaim(s said, m modes) string {
-	if claim := claimsMode(s.texts(), !m.none); claim != "" || m.none {
+	if claim := claimsMode(s.statements(), !m.none); claim != "" || m.none {
 		return claim
 	}
+	pinned := m.allTest && len(m.live) == 0
 	for _, text := range s.beforeTest {
-		for _, clause := range clauses(text) {
-			if m.allTest && len(m.live) == 0 && aboutTheCalls(clause) {
-				continue
+		for _, sentence := range sentences(text) {
+			if pinned {
+				if clean, found := pinnedCalls(sentence); found {
+					if clean {
+						continue
+					}
+					return text
+				}
 			}
-			if claimsMode([]string{clause}, false) != "" {
+			if namesMode(sentence) {
 				return text
 			}
 		}
@@ -562,66 +610,84 @@ func modeClaim(s said, m modes) string {
 	return ""
 }
 
-// callWords are what a sentence about the mode pinned on the calls says.
-var callWords = []string{"pinned", "fixed", "every call", "each call", "all calls", "cada llamada", "todas las llamadas", "fijad", "fijé", "fijamos", "fijo "}
+// callsPinned is the prescribed sentence's fixed parts: the calls ("every
+// call", "every Stripe call", "cada llamada", "las llamadas"), then pinned
+// or fixed ("fijada"), then to test ("to test mode", "en modo de prueba").
+var callsPinned = regexp.MustCompile(`(?i)\b(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\b(?:pinned|fixed|fijad[ao]s?)\s+(?:to|in|on|at|en|a)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
 
-// accountWords name the owner's account: a clause that says them speaks of
-// the account's mode, not the calls' (agentgabo on #325).
-var accountWords = []string{"account", "cuenta"}
+// nextStep is what comes after, not what is ("until you switch it to live",
+// "hasta que elijas pasar a real"), and noMoney what a test call doesn't
+// move ("no real money", "sin mover dinero real", "nothing real moves").
+var nextStep = regexp.MustCompile(`(?i)\b(?:until|before|once|when|hasta que|antes de|cuando)\b.*$`)
+var noMoney = regexp.MustCompile(`(?i)\b(?:no|sin|ni)\s+(?:\pL+\s+){0,2}(?:real money|dinero real)\b|n't\s+move\s+(?:any\s+)?real money\b|\b(?:nothing|nada)\s+real\b`)
 
-// modeWord is a mode named once; noMoney is "no real money", which says what
-// a test call doesn't move rather than naming a second mode.
-var modeWord = regexp.MustCompile(`\b(test|live|prueba|real|sandbox)\b`)
-var noMoney = regexp.MustCompile(`\b(no real money|sin dinero real)\b`)
+// modeWord is any mode named, vendorWord the vendor (by the fake's name) or
+// its connection, accountWord the owner's account.
+var modeWord = regexp.MustCompile(`(?i)\b(?:test|live|prueba|real|sandbox)\b`)
+var vendorWord = regexp.MustCompile(`(?i)\b(?:stripe|connection|conexi\x{f3}n)\b`)
+var accountWord = regexp.MustCompile(`(?i)\b(?:account|cuenta)\b`)
 
-// vendorWords are the vendor, by the fake's name, or its connection. As the
-// calls' object ("every call to your Stripe", "cada llamada a Stripe", "Stripe
-// calls") they name where the calls go; anywhere else, what the vendor is.
-var vendorWords = regexp.MustCompile(`\b(stripe|connection|conexión)\b`)
-var callsTo = regexp.MustCompile(`\b(calls?|llamadas?)\s+(to|on|for|a|de|en|para)\s+((your|the|this|tu|su|la|esta)\s+)?(stripe|connection|conexión)\b|\b(stripe)\s+(calls?)\b`)
-
-// stateWords say what something is in ("it is in test mode"), and callState
-// the same said of the calls, which is what they do.
-var stateWords = []string{" is in ", " are in ", " está en ", " esta en ", " están en ", " estan en "}
-var callState = []string{"call is in ", "calls are in ", "llamada está en ", "llamada esta en ", "llamadas están en ", "llamadas estan en "}
-
-// aboutTheCalls reports whether a clause speaks of the calls' pinned mode
-// alone: it names the calls and a mode once, and neither the account, nor the
-// vendor or its connection other than as where the calls go, nor a state of
-// something else. A mode said twice in a clause is said of two things
-// ("…, and your Stripe is in test mode"), so it's no longer only the calls'
-// (qa-kiff on #325).
-func aboutTheCalls(clause string) bool {
-	l := " " + strings.ToLower(clause) + " "
-	if containsAny(l, accountWords) || !containsAny(l, callWords) {
-		return false
+// pinnedCalls reports whether a sentence has the prescribed sentence's fixed
+// parts (found), and whether it says nothing else of a mode (clean): between
+// the calls and "pinned" only where they go, and after it no mode, vendor or
+// account, but for a next step or the money a test call doesn't move. So
+// "…, and your Stripe is in test mode", "…; your Stripe too" and "…, as is
+// your Stripe" are claims.
+func pinnedCalls(sentence string) (clean, found bool) {
+	loc := callsPinned.FindStringSubmatchIndex(sentence)
+	if loc == nil {
+		return false, false
 	}
-	if len(modeWord.FindAllString(noMoney.ReplaceAllString(l, ""), -1)) > 1 {
-		return false
+	between := sentence[loc[2]:loc[3]]
+	if modeWord.MatchString(between) || accountWord.MatchString(between) {
+		return false, true
 	}
-	if vendorWords.MatchString(callsTo.ReplaceAllString(l, "call")) {
-		return false
-	}
-	for _, w := range callState {
-		l = strings.ReplaceAll(l, w, "call ")
-	}
-	return !containsAny(l, stateWords)
+	rest := noMoney.ReplaceAllString(nextStep.ReplaceAllString(sentence[loc[1]:], ""), "")
+	return !modeWord.MatchString(rest) && !vendorWord.MatchString(rest) && !accountWord.MatchString(rest), true
 }
 
-// clauseEnd ends a clause: a sentence's end, an exclamation or question, a
-// semicolon or a colon.
-var clauseEnd = regexp.MustCompile(`[.!?;:](\s+|$)`)
+// inMode is a mode said as where something is ("Stripe answers in test"),
+// which claimsMode's phrases ("test mode") miss.
+var inMode = regexp.MustCompile(`(?i)\b(?:in|en)\s+(?:test|live|sandbox|prueba)\b`)
 
-// clauses splits a text into its clauses, so that a statement about the
-// account or the vendor next to one about the calls is graded on its own.
-func clauses(text string) []string {
+// namesMode reports whether a sentence states a mode as fact.
+func namesMode(sentence string) bool {
+	return claimsMode([]string{sentence}, false) != "" || inMode.MatchString(sentence)
+}
+
+// sentenceEnd ends a sentence: a full stop, an exclamation or a question.
+var sentenceEnd = regexp.MustCompile(`[.!?](\s+|$)`)
+
+// sentences splits a text into its sentences and lines.
+func sentences(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
-		for _, part := range clauseEnd.Split(line, -1) {
+		for _, part := range sentenceEnd.Split(line, -1) {
 			if strings.TrimSpace(part) != "" {
 				out = append(out, strings.TrimSpace(part))
 			}
 		}
 	}
 	return out
+}
+
+// MaxLine is the most a line before a tool call may be, in characters: one
+// short line, as Setup's rule asks. tafs cloud shows one this long on the live
+// line (its MAX_NOTE); a longer text before a tool call stays a message there.
+const MaxLine = 90
+
+// shortLines passes when each of Setup's lines is one short line: no line
+// break, at most MaxLine characters. Setup writing none passes.
+func shortLines(lines []string) eval.Grade {
+	var long []string
+	for i, l := range lines {
+		l = strings.TrimSpace(l)
+		if strings.Contains(l, "\n") || len([]rune(l)) > MaxLine {
+			long = append(long, fmt.Sprintf("line %d (%d characters): %q", i+1, len([]rune(l)), oneLine(l)))
+		}
+	}
+	if len(long) > 0 {
+		return eval.Grade{Why: "not one short line: " + strings.Join(long, "; ")}
+	}
+	return eval.Grade{Pass: true}
 }

@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/planque"
@@ -17,11 +20,18 @@ import (
 
 // fake answers as planque does (contract 2): a grant view for the agent's
 // own key, a 409 before the owner's phone is enrolled.
+// seenMu guards what a fake saw: State reads grants at once, so its
+// handlers append at the same time. A test that reads seen after concurrent
+// calls holds it too.
+var seenMu sync.Mutex
+
 func fake(t *testing.T, enrolled bool) (*httptest.Server, *[]string) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		seenMu.Lock()
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization")+" "+string(body))
+		seenMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Header.Get("Authorization") != "Bearer k_setup":
@@ -396,14 +406,26 @@ func TestStateSaysWhereEachShownGrantStands(t *testing.T) {
 	if strings.Index(text, "grt_9") > strings.Index(text, "grt_1") {
 		t.Fatalf("the grants aren't in the order last shown: %q", text)
 	}
-	for _, s := range *seen {
+	seenMu.Lock()
+	asked := slices.Clone(*seen)
+	*seen = nil
+	seenMu.Unlock()
+	// The grants are read at once, so in any order: sorted, the two distinct grants, each once.
+	slices.Sort(asked)
+	if len(asked) != 2 || !strings.Contains(asked[0], "/grants/grt_1 ") || !strings.Contains(asked[1], "/grants/grt_9 ") {
+		t.Fatalf("State asked %v", asked)
+	}
+	for _, s := range asked {
 		if !strings.HasPrefix(s, "GET ") || !strings.Contains(s, "Bearer k_setup") {
 			t.Fatalf("State made %q", s)
 		}
 	}
-	*seen = nil
-	if text, _ := tl.State(context.Background(), shown[1:2]); text != "" || len(*seen) != 0 {
-		t.Fatalf("with no grant shown, State said %q and asked planque %d times", text, len(*seen))
+	text, _ = tl.State(context.Background(), shown[1:2])
+	seenMu.Lock()
+	n := len(*seen)
+	seenMu.Unlock()
+	if text != "" || n != 0 {
+		t.Fatalf("with no grant shown, State said %q and asked planque %d times", text, n)
 	}
 }
 
@@ -657,5 +679,50 @@ func TestToolsCarryAManagedAppsProfile(t *testing.T) {
 	}
 	if spec := tl.Spec(); !strings.Contains(spec.Description, "tools {grant, tools, profile}") || !strings.Contains(string(spec.InputSchema), `"profile"`) {
 		t.Fatal("the words don't say how to send a managed app's tools")
+	}
+}
+
+// The description says how each grant reaches its vendor, and to read the
+// account's connections before proposing an app for a vendor it already
+// connects, so a new taf is offered the same kind first.
+func TestTheDescriptionSaysEachConnectionsKind(t *testing.T) {
+	d := planque.New("http://planque.invalid", "tnt_1", "k_setup", nil).Spec().Description
+	for _, want := range []string{"vendor_sign_in", "provider", "key (a REST key", "mode_words",
+		"read grants with no agent: the same kind is the one to offer first"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("the description doesn't say %q: %s", want, d)
+		}
+	}
+}
+
+// A run's start waits for the slowest grant read, not their sum: each grant on
+// screen is read at once, and the lines keep the grants' order.
+func TestStateReadsTheGrantsAtOnce(t *testing.T) {
+	const delay = 150 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		w.Write([]byte(`{"id":"` + id + `","status":"connected"}`))
+	}))
+	t.Cleanup(srv.Close)
+	var shown []json.RawMessage
+	for i := range planque.MaxStated {
+		shown = append(shown, json.RawMessage(`{"type":"approval","grant":"grt_`+strconv.Itoa(i)+`"}`))
+	}
+	began := time.Now()
+	text, err := planque.New(srv.URL, "tnt_1", "k_setup", nil).State(context.Background(), shown)
+	took := time.Since(began)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%d grants at %v each: %v (one after another: %v)", planque.MaxStated, delay, took.Round(time.Millisecond), delay*planque.MaxStated)
+	if took > 3*delay {
+		t.Fatalf("%d grants took %v, one after another", planque.MaxStated, took)
+	}
+	for i := range planque.MaxStated {
+		at := strings.Index(text, `"grt_`+strconv.Itoa(i)+`"`)
+		if at < 0 || (i > 0 && at < strings.Index(text, `"grt_`+strconv.Itoa(i-1)+`"`)) {
+			t.Fatalf("grant %d missing or out of order: %s", i, text)
+		}
 	}
 }

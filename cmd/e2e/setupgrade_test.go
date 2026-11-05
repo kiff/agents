@@ -10,6 +10,7 @@ import (
 
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/session"
 )
 
 // verdicts is a judge model that passes or fails each rule by a word in it,
@@ -369,5 +370,97 @@ func TestNoModeToAskOfTheDesk(t *testing.T) {
 				t.Errorf("none %v: asks test or live pass %v, want %v", m.none, c.Pass, m.pass)
 			}
 		}
+	}
+}
+
+// A question's options are the owner's choice, not Setup's claim: the mode
+// question offering "Modo real" states no mode, whether in the whole chat or
+// before test was reported; "Tu cuenta está en modo real" in a message, or
+// in a card's own text, still does (the opus-low Eval, 5 Nov).
+func TestAModeOfferedAsAnOptionIsNoClaim(t *testing.T) {
+	ask := component{Type: "questions", ID: "modo"}
+	ask.Questions = []question{{ID: "modo", Text: "¿En qué modo empieza?",
+		Options: []option{{Value: "test", Label: "Modo de prueba", Description: "Recomendado para empezar"}, {Value: "live", Label: "Modo real"}}}}
+	confirm := component{Type: "confirm", ID: "mode", Title: "Test or live?", Yes: "Live mode", No: "Test mode"}
+	confirm.Options = []option{{Value: "live", Label: "Live mode (real money)"}}
+	s := said{cards: map[string]component{"modo": ask, "mode": confirm}, order: []string{"modo", "mode"}}
+	if c := claimsMode(s.statements(), true); c != "" {
+		t.Fatalf("a mode offered as an option read as a claim: %q", c)
+	}
+	// The options are still in the texts other checks read (the language, no ids).
+	if !slices.Contains(s.texts(), "Modo real") {
+		t.Fatal("the options left the texts the other checks read")
+	}
+	// Said, it is a claim: in a message, or as a card's own text.
+	s.messages = []string{"Tu cuenta está en modo real."}
+	if c := claimsMode(s.statements(), true); c == "" {
+		t.Fatal("the account's mode, stated in a message, wasn't a claim")
+	}
+	s.messages = nil
+	said := component{Type: "result", ID: "done", Text: "Reembolsos funciona en modo real."}
+	s.cards["done"], s.order = said, append(s.order, "done")
+	if c := claimsMode(s.statements(), true); c == "" {
+		t.Fatal("a card's own text stating the mode wasn't a claim")
+	}
+
+	// Before test was reported: the same, from the session's events.
+	body, _ := json.Marshal(ask)
+	before, _ := beforeTestReport([]session.Event{{Run: "r1", Kind: session.Component, Body: body}}, "r1", false)
+	if c := claimsMode(before, false); c != "" {
+		t.Fatalf("the mode question, before test was reported, read as a claim: %q (%v)", c, before)
+	}
+	if !slices.Contains(before, "¿En qué modo empieza?") {
+		t.Fatalf("the question's own text left what's read before test: %v", before)
+	}
+}
+
+// A turn's text its tool calls follow is a line, not a message: the owner
+// sees it on the live line. Text that ends a turn, another run's and a blank
+// one are what they were.
+func TestPreToolTextIsALine(t *testing.T) {
+	ev := func(run string, kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: run, Kind: kind, Body: b}
+	}
+	text := func(s string) session.Event { return ev("r1", session.AgentMessage, map[string]string{"text": s}) }
+	call := ev("r1", session.ToolCall, map[string]string{"call_id": "c1", "tool": "planque"})
+	events := []session.Event{
+		text("Miro las últimas ejecuciones de Reembolsos…"), ev("r1", session.Usage, map[string]int{"ms": 1}), call,
+		ev("r1", session.ToolResult, map[string]string{"call_id": "c1"}),
+		text("   "), call,
+		ev("r2", session.AgentMessage, map[string]string{"text": "Another run's."}), call,
+		text("Reembolsos está lista. Falta que apruebes la conexión."),
+	}
+	messages, lines := splitLines(events, "r1")
+	if !slices.Equal(messages, []string{"Reembolsos está lista. Falta que apruebes la conexión."}) ||
+		!slices.Equal(lines, []string{"Miro las últimas ejecuciones de Reembolsos…"}) {
+		t.Fatalf("messages %q, lines %q", messages, lines)
+	}
+}
+
+// Each line is one short line, as Setup's rule asks: none passes; a line
+// break or one past MaxLine characters fails, named.
+func TestLinesAreOneShortLine(t *testing.T) {
+	if g := shortLines(nil); !g.Pass {
+		t.Fatalf("no lines: %+v", g)
+	}
+	if g := shortLines([]string{"Miro las últimas ejecuciones de Reembolsos…", strings.Repeat("ñ", MaxLine)}); !g.Pass {
+		t.Fatalf("short lines: %+v", g)
+	}
+	g := shortLines([]string{"Reviso.", "Miro esto.\nY luego aquello.", strings.Repeat("a", MaxLine+1)})
+	if g.Pass || !strings.Contains(g.Why, "line 2") || !strings.Contains(g.Why, "line 3") || strings.Contains(g.Why, "line 1") {
+		t.Fatalf("long lines: %+v", g)
+	}
+}
+
+// Lines are Setup's words, read for its language, ids, planque and a mode,
+// never judged as messages.
+func TestLinesAreReadButNotJudgedAsMessages(t *testing.T) {
+	s := said{messages: []string{"Listo."}, lines: []string{"Miro la cuenta…"}}
+	if got := s.texts(); !slices.Contains(got, "Miro la cuenta…") {
+		t.Fatalf("texts %q", got)
+	}
+	if got := s.statements(); !slices.Contains(got, "Miro la cuenta…") {
+		t.Fatalf("statements %q", got)
 	}
 }

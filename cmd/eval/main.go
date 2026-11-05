@@ -464,7 +464,7 @@ func (rt *runtime) clearPending(name, when string) {
 		return
 	}
 	counts := map[string]int{}
-	withdrawn, left := 0, 0
+	withdrawn, left, gone := 0, 0, 0
 	for _, p := range open {
 		kind := p.State
 		if p.Answer != "" {
@@ -478,6 +478,9 @@ func (rt *runtime) clearPending(name, when string) {
 		w, err := withdraw(ctx, rt.kiffAPI, rt.kiffKey, p.ExceptionID)
 		switch {
 		case errors.Is(err, kiff.ErrNoHold):
+			// KIFF lists the call but has no hold for this key: nothing
+			// will answer it, and the key can't take it back.
+			gone++
 		case err != nil:
 			left++
 			fmt.Fprintf(rt.log, "eval: %s: %s, couldn't withdraw %s (%s): %v: refuse it in KIFF\n", name, when, p.Tool, rt.id(p.ExceptionID), rt.say(err))
@@ -492,8 +495,8 @@ func (rt *runtime) clearPending(name, when string) {
 		kinds = append(kinds, fmt.Sprintf("%s ×%d", k, n))
 	}
 	slices.Sort(kinds)
-	fmt.Fprintf(rt.log, "eval: %s: %s, KIFF listed %d open calls (%s): withdrew %d, %d left for the owner\n",
-		name, when, len(open), strings.Join(kinds, "; "), withdrawn, left)
+	fmt.Fprintf(rt.log, "eval: %s: %s, KIFF listed %d open calls (%s): withdrew %d, %d left for the owner, %d KIFF no longer holds\n",
+		name, when, len(open), strings.Join(kinds, "; "), withdrawn, left, gone)
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) (err error) {

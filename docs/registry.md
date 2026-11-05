@@ -67,11 +67,19 @@ of its eight kinds):
   standard. Each turn's `usage` event records its `speed`.
 - `thinking` (optional): `"summarized"` asks the model for a summary of its
   thinking as it writes it, streamed to whoever follows the run as `thinking`
-  events, so someone waiting sees what it considers. Nothing records them.
-  Empty keeps the thinking hidden, the provider's default. The thinking is
-  billed the same either way: it's taken only for a model that thinks whether
-  asked or not (`registry.ThinkingModels`: Claude Opus 5.5, Sonnet 5.5, Fable 5
-  and Mythos 5), since on another it would turn thinking on or be refused.
+  events, so someone waiting sees what it considers. `"updates"` keeps the
+  reasoning hidden and streams only the short progress notes the model writes
+  between tool calls ("Checking your last refunds…"), each whole, as an
+  `update` event, under the API's beta `thinking-display-updates-2026-08-18`.
+  On these models a line written before a tool call comes back as such a note,
+  not as text: under `"summarized"` it is mixed with the reasoning's summary,
+  and with no `thinking` it is hidden. Nothing records the events. Empty keeps
+  the thinking hidden, the provider's default. The thinking is billed the same
+  either way: it's taken only for a model that thinks whether asked or not
+  (`registry.ThinkingModels`: Claude Opus 5.5, Sonnet 5.5, Fable 5 and Mythos
+  5), since on another it would turn thinking on or be refused; `"updates"`
+  only for one that writes progress notes (`registry.UpdatesModels`: not
+  Mythos 5).
 - `defer_vendor_tools` (optional): every gateway tool that isn't KIFF's own
   (`kiff_*`) goes to the model deferred, whatever its name. A Card that
   covers a vendor's tools mid-conversation (Setup's reads) then leaves the

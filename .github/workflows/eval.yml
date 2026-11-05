@@ -1,4 +1,7 @@
 name: Eval
+# A run with a model or effort override says so in its name, so it reads apart
+# from the shipped definitions' runs in the list.
+run-name: ${{ (inputs.model != '' || inputs.effort != '') && format('Eval, override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || 'Eval' }}
 # The eval loop (#78): each night, the Chargebacks case runs on this commit's
 # runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
@@ -22,6 +25,24 @@ on:
         description: "How many times chargebacks runs (the nightly runs it twice)"
         type: string
         default: "2"
+      # Comparing models or efforts: Coach and every taf run on this model and
+      # effort instead of kiff/tafs' (infra/eval-override.sh), priced as that
+      # model charges. Such a run never counts for the Upgrade gate or the
+      # nightly's skip: it isn't the shipped definitions, and it ends red.
+      model:
+        description: "Run Coach and the tafs on this model (empty: as kiff/tafs defines them)"
+        type: choice
+        options: ["", "claude-opus-5-5", "claude-sonnet-5-5"]
+        default: ""
+      effort:
+        description: "At this effort (empty: as kiff/tafs defines them)"
+        type: choice
+        options: ["", "low", "medium", "high"]
+        default: ""
+      label:
+        description: "The run's label in its report and report path, e.g. opus-low (a-z, 0-9, -)"
+        type: string
+        default: ""
 permissions:
   contents: read
   id-token: write
@@ -41,6 +62,8 @@ jobs:
     timeout-minutes: 40
     env:
       REPORTS: kiff-agents-eval-reports
+      MODEL: ${{ inputs.model }}
+      EFFORT: ${{ inputs.effort }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,6 +106,18 @@ jobs:
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
+      - name: The model and effort to compare
+        if: steps.unchanged.outputs.skip != 'true' && (inputs.model != '' || inputs.effort != '')
+        env:
+          ASKED_LABEL: ${{ inputs.label }}
+        run: |
+          label=${ASKED_LABEL:-$(echo "${MODEL#claude-}-${EFFORT}" | sed 's/-5-5//; s/^-//; s/-$//')}
+          if ! printf '%s' "$label" | grep -Eq '^[a-z0-9][a-z0-9-]{0,39}$'; then
+            echo "::error::label is 1 to 40 of a-z, 0-9 and -, not \"$label\""; exit 1
+          fi
+          echo "LABEL=$label" >> "$GITHUB_ENV"
+          infra/eval-override.sh defs "$MODEL" "$EFFORT"
+          echo "Override **$label**: Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own}. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: Chargebacks, two seeded runs
         if: steps.unchanged.outputs.skip != 'true'
         env:
@@ -150,11 +185,26 @@ jobs:
       - name: The full report, to the private bucket
         if: steps.unchanged.outputs.skip != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
         run: |
-          key="reports/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+          run="$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}${LABEL:+-$LABEL}"
+          key="reports/$run"
           if [ "$GITHUB_REF" != refs/heads/main ]; then
-            key="reports/branches/${GITHUB_REF_NAME}/$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+            key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
+          for f in report.md setup.md desk.md; do
+            if [ -f "$f" ] && [ -n "$LABEL" ]; then
+              { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
+            fi
+          done
           for f in report.md results.json setup.md desk.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"
+      - name: An override doesn't count for the Upgrade gate
+        # kiff/tafs' Upgrade gate and the nightly's skip both take the latest
+        # completed run on main, when it succeeded, as a pass of the shipped
+        # definitions. A run on another model or effort isn't one, so it ends
+        # red, whatever its checks said: read its report for those.
+        if: always() && (inputs.model != '' || inputs.effort != '')
+        run: |
+          echo "::error::Override $LABEL: Coach and the tafs ran on ${MODEL:-their own model}, effort ${EFFORT:-their own}. Its checks are in the report; this run doesn't count for the Upgrade gate."
+          exit 1

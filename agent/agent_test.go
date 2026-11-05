@@ -39,8 +39,11 @@ func (s *script) Turn(_ context.Context, req model.Request, onText func(string))
 	}
 	r := s.replies[len(s.reqs)-1]
 	for _, b := range r.Blocks {
-		if b.Kind == model.Thinking && req.Thinking != "" && req.OnThinking != nil {
+		if b.Kind == model.Thinking && req.Thinking == model.ThinkingSummarized && req.OnThinking != nil {
 			req.OnThinking(b.Text)
+		}
+		if b.Kind == model.Thinking && req.Thinking == model.ThinkingUpdates && req.OnUpdate != nil && b.Text != "" {
+			req.OnUpdate(b.Text) // under updates, a thinking block with text is a progress note
 		}
 		if b.Kind == model.Text && onText != nil {
 			onText(b.Text)
@@ -170,16 +173,16 @@ func TestAFullTurnIsRecordedAndStreamed(t *testing.T) {
 }
 
 // An agent that shows its thinking streams the summary as it is written,
-// before the answer, and records none of it; one that doesn't asks for none.
+// before the answer, and records none of it; one that shows its progress
+// notes streams each as an update, and records none of them either; one that
+// shows neither asks for none.
 func TestThinkingIsStreamedNotRecorded(t *testing.T) {
 	thought := model.Reply{Blocks: []model.Block{{Kind: model.Thinking, Text: "The order is paid; a refund fits.", Signature: "s1"},
 		{Kind: model.Text, Text: "Refunded."}}, Stop: model.EndTurn, Usage: model.Usage{InputTokens: 1000, OutputTokens: 100}}
-	for _, shows := range []bool{true, false} {
+	for _, shows := range []string{model.ThinkingSummarized, model.ThinkingUpdates, ""} {
 		m := &script{replies: []model.Reply{thought}}
 		a := newAgent(m)
-		if shows {
-			a.Thinking = model.ThinkingSummarized
-		}
+		a.Thinking = shows
 		store, r := start(t, session.KindChat)
 		var streamed []agent.Event
 		if _, _, err := agent.Run(context.Background(), a, r, nil, "Refund ord_1.", func(e agent.Event) { streamed = append(streamed, e) }); err != nil {
@@ -192,12 +195,13 @@ func TestThinkingIsStreamedNotRecorded(t *testing.T) {
 		for _, e := range streamed {
 			got = append(got, string(e.Kind)+":"+e.Text)
 		}
-		want := "[text:Refunded.]"
-		if shows {
-			want = "[thinking:The order is paid; a refund fits. text:Refunded.]"
-		}
+		want := map[string]string{
+			model.ThinkingSummarized: "[thinking:The order is paid; a refund fits. text:Refunded.]",
+			model.ThinkingUpdates:    "[update:The order is paid; a refund fits. text:Refunded.]",
+			"":                       "[text:Refunded.]",
+		}[shows]
 		if fmt.Sprint(got) != want || m.reqs[0].Thinking != a.Thinking {
-			t.Fatalf("shows %v: streamed %v, asked thinking %q", shows, got, m.reqs[0].Thinking)
+			t.Fatalf("shows %q: streamed %v, asked thinking %q", shows, got, m.reqs[0].Thinking)
 		}
 		_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
 		if err != nil {
@@ -205,7 +209,7 @@ func TestThinkingIsStreamedNotRecorded(t *testing.T) {
 		}
 		for _, e := range events {
 			if strings.Contains(string(e.Body), "The order is paid") {
-				t.Fatalf("shows %v: the thinking was recorded in %s", shows, e.Kind)
+				t.Fatalf("shows %q: the thinking was recorded in %s", shows, e.Kind)
 			}
 		}
 	}
