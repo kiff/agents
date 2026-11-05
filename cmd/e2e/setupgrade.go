@@ -233,6 +233,9 @@ type modes struct {
 	// none is a vendor with no test or live (the desk, -desk): there is
 	// nothing for Setup to ask.
 	none bool
+	// allTest: every tool that acts (neither a read nor a setup read) is
+	// pinned to test, and there is at least one: what every call sends.
+	allTest bool
 }
 
 // uncheckedMoney are a grant's tools that move money without naming what
@@ -536,14 +539,49 @@ func choice(text string, options []option) string {
 // modeClaim is the first text where Setup states a mode the connection
 // doesn't report, "" when none (kiff/tafs#525's core rule). The fake vendor
 // reports test; the desk reports none (m.none). Test is reported once a tool
-// result said so (said.beforeTest holds what came before), or from the start
-// when Setup pinned every tool to test in its fixed arguments, as the owner
-// chose: a mode pinned on the calls is what the calls do.
+// result said so (said.beforeTest holds what came before). When every tool
+// that acts is pinned to test, as the owner chose, a sentence before that
+// about the calls (pinned, fixed, every call) is what the calls do; one that
+// names the account's own mode is still a claim (agentgabo on #325).
 func modeClaim(s said, m modes) string {
-	claim := claimsMode(s.texts(), !m.none)
-	pinnedTest := m.test && len(m.live) == 0
-	if claim == "" && !m.none && !pinnedTest {
-		claim = claimsMode(s.beforeTest, false)
+	if claim := claimsMode(s.texts(), !m.none); claim != "" || m.none {
+		return claim
 	}
-	return claim
+	for _, text := range s.beforeTest {
+		for _, sentence := range sentences(text) {
+			if m.allTest && len(m.live) == 0 && aboutTheCalls(sentence) {
+				continue
+			}
+			if claimsMode([]string{sentence}, false) != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+// callWords are what a sentence about the mode pinned on the calls says.
+var callWords = []string{"pinned", "fixed", "every call", "each call", "all calls", "cada llamada", "todas las llamadas", "fijad", "fijé", "fijamos", "fijo "}
+
+// aboutTheCalls reports whether a sentence speaks of the calls' pinned mode,
+// and not of the account's: it names the calls and not the account.
+func aboutTheCalls(sentence string) bool {
+	l := strings.ToLower(sentence)
+	if strings.Contains(l, "account") || strings.Contains(l, "cuenta") {
+		return false
+	}
+	return containsAny(l, callWords)
+}
+
+// sentences splits a text at sentence ends and line breaks.
+func sentences(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		for _, part := range strings.SplitAfter(line, ". ") {
+			if strings.TrimSpace(part) != "" {
+				out = append(out, strings.TrimSpace(part))
+			}
+		}
+	}
+	return out
 }
