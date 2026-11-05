@@ -454,6 +454,12 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/accounts/tnt_1/catalog/tools":
 			w.Write([]byte(`{"tools":[{"entry":"connector:composio:quickbooks","app":"quickbooks","app_title":"QuickBooks","app_state":"available","slug":"QUICKBOOKS_LIST_INVOICES","name":"List invoices","read_only":true},{"entry":"connector:composio:own","app":"own","app_title":"Own app","app_state":"needs_setup","slug":"OWN_SEND","name":"Send"}],"provider":"composio","next_cursor":"p2","skipped":1}`))
+		case "/v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants":
+			b, _ := io.ReadAll(r.Body)
+			seen[len(seen)-1] += " " + string(b)
+			// As planque answers a catalog grant: wrapped, with needs_key.
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"grant":{"id":"grt_9","status":"pending","text":"Connect QuickBooks for Invoices…","on_demand":true,"custody":"provider","request":{}},"needs_key":false}`))
 		case "/v1/accounts/tnt_1/catalog/connector:composio:quickbooks/events", "/v1/accounts/tnt_1/grants/grt_1/events":
 			w.Write([]byte(`{"events":[{"slug":"QUICKBOOKS_NEW_INVOICE","name":"New invoice","version":"20261101_00","config":{"type":"object"},"door":false}],"next_cursor":""}`))
 		default:
@@ -497,6 +503,38 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	if len(seen) != 4 {
 		t.Fatalf("a malformed events ask reached planque: %v", seen)
 	}
+	// The chosen app is connected by its entry: no URL, no tools yet, the
+	// taf's agent named; planque answers the grant to approve.
+	text, isErr = call(t, tl, `{"action":"request","entry":"connector:composio:quickbooks","name":"Invoices"}`)
+	var made struct{ ID, Agent string }
+	_ = json.Unmarshal([]byte(text), &made)
+	if isErr || made.ID != "grt_9" || !strings.HasPrefix(made.Agent, "invoices-") ||
+		seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"`+made.Agent+`"}` {
+		t.Fatalf("request by entry: %s %v", text, seen)
+	}
+	for _, bad := range []string{
+		`{"action":"request","entry":"connector:composio:quickbooks"}`,
+		`{"action":"request","entry":"connector:composio:quickbooks","server":"https://x.example","agent":"a"}`,
+		`{"action":"request","entry":"../grants","agent":"a"}`,
+		`{"action":"request","entry":"connector:composio:quickbooks","agent":"a","tools":[{"tool":"QUICKBOOKS_LIST_INVOICES"}]}`,
+	} {
+		if _, isErr := call(t, tl, bad); !isErr {
+			t.Errorf("not refused: %s", bad)
+		}
+	}
+	if len(seen) != 5 {
+		t.Fatalf("a malformed request reached planque: %v", seen)
+	}
+	// A reviewed entry may answer the grant flat: read as well.
+	flat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"grt_8","status":"pending","text":"Connect Desk for Invoices…","request":{}}`))
+	}))
+	t.Cleanup(flat.Close)
+	if text, isErr := call(t, planque.New(flat.URL, "tnt_1", "k_setup", nil), `{"action":"request","entry":"desk","agent":"a"}`); isErr || !strings.Contains(text, `"id":"grt_8"`) || !strings.Contains(text, `"agent":"a"`) {
+		t.Fatalf("a flat grant answer: %s", text)
+	}
 	// Both only read; the model is told when to use them.
 	if !tl.Reads(json.RawMessage(`{"action":"search","q":"x"}`)) || !tl.Reads(json.RawMessage(`{"action":"events","grant":"g"}`)) {
 		t.Fatal("search and events read")
@@ -510,7 +548,7 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	if text, isErr := call(t, planque.New(srv2.URL, "tnt_1", "k_setup", nil), `{"action":"status","grant":"grt_2"}`); isErr || !strings.Contains(text, `"on_demand":true`) || !strings.Contains(text, `"custody":"provider"`) || strings.Contains(text, `"digest"`) {
 		t.Fatalf("an on-demand grant: %s", text)
 	}
-	if spec := tl.Spec(); !strings.Contains(spec.Description, "search {q} finds tools across every app") || !strings.Contains(spec.Description, "events {entry} lists an app's events") || !strings.Contains(spec.Description, "on_demand: true") || !strings.Contains(string(spec.InputSchema), `"search","events"`) {
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "search {q} finds tools across every app") || !strings.Contains(spec.Description, "events {entry} lists an app's events") || !strings.Contains(spec.Description, "on_demand: true") || !strings.Contains(spec.Description, "request {entry}") || !strings.Contains(string(spec.InputSchema), `"search","events"`) {
 		t.Fatalf("the description doesn't say how to search: %s", spec.Description)
 	}
 }
