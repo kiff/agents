@@ -1913,3 +1913,33 @@ func TestAContinuedRunKnowsHowItsHeldCallsEnded(t *testing.T) {
 		})
 	}
 }
+
+// The turn cap counts the turns since the run last went on after a pause,
+// not over the whole run: a Setup the owner answers card by card, whose
+// turns add up past the cap across its pauses, goes on after each answer
+// (the 5 Nov phone run stopped on turn_cap right after the owner agreed).
+// Turns still counts the whole run.
+func TestTheTurnCapCountsSinceTheLastPause(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refund := use("c2", "stripe_refund", `{"charge":"ch_big"}`)
+	m := &script{replies: []model.Reply{refund, say("Waiting for you."), say("Refunded ch_big.")}}
+	a := newAgent(m, heldRefund())
+	stored, s := paused(t, store, rec, a)
+	a.MaxTurns = 2
+	stored.Turns = 7 // well past the cap, across earlier pauses
+	r, err := rec.Resume(context.Background(), s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, approved(), nil)
+	if err != nil || out.Stop == agent.TurnCap || out.Text != "Refunded ch_big." {
+		t.Fatalf("continued: stop %s, text %q, %v", out.Stop, out.Text, err)
+	}
+	if out.Turns != 8 {
+		t.Fatalf("the run's turns: %d, want 8 (7 before, 1 now)", out.Turns)
+	}
+}
