@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/tool"
 )
 
 func TestALongToolResultIsCutAndSaysSo(t *testing.T) {
@@ -82,5 +83,33 @@ func TestTheDefinitionBoundsOneResult(t *testing.T) {
 	got := capResult(compactJSON(page), 4<<10)
 	if !strings.HasPrefix(got, `{"data":[{"id":"ch_000","amount":15000},`) || !strings.Contains(got, "cut at 4 KB of") || !strings.Contains(got, "with a filter or a smaller limit") {
 		t.Fatalf("got %q…", got[:120])
+	}
+}
+
+// A tool's images (a drive's screenshot, kiff/tafs#544) reach the model with
+// its result, and leave with its text when the run clears what was read: in
+// the same clearing, so the cache breaks once.
+func TestAToolsImagesComeAndGoWithItsResult(t *testing.T) {
+	img := []model.Image{{MediaType: "image/jpeg", Bytes: []byte("jpeg")}}
+	b := resultBlock(ToolResultBody{CallID: "c1", Tool: "app_look", Result: tool.Result{Text: "Looked", Images: img}})
+	if len(b.Images) != 1 || b.Result != "Looked" {
+		t.Fatalf("block = %+v", b)
+	}
+	big := strings.Repeat("x", 49<<10)
+	msgs := []model.Message{
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "app_look"}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: big, Images: img}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c2", Tool: "app_look"}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c2", Result: "new", Images: img}}},
+	}
+	got := clearRead(msgs, 48<<10)
+	if got[1].Blocks[0].Images != nil || !cleared(got[1].Blocks[0].Result) {
+		t.Fatalf("a cleared result kept its images: %+v", got[1].Blocks[0])
+	}
+	if len(got[3].Blocks[0].Images) != 1 {
+		t.Fatal("the newest result lost its image")
+	}
+	if len(msgs[1].Blocks[0].Images) != 1 {
+		t.Fatal("clearing changed the messages it was given")
 	}
 }

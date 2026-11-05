@@ -12,11 +12,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +27,14 @@ import (
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/tool"
+)
+
+// MaxImages and MaxImageBytes bound the images one gateway call returns (a
+// drive's screenshot, kiff/tafs#544): what the model may read, never the
+// record, which keeps the text alone.
+const (
+	MaxImages     = 4
+	MaxImageBytes = 1 << 20
 )
 
 // URL is KIFF's gateway.
@@ -162,6 +172,9 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			// An image's (MCP's image content): base64 data and its type.
+			Data     string `json:"data"`
+			MimeType string `json:"mimeType"`
 		} `json:"content"`
 		IsError bool `json:"isError"`
 		// Meta is kept opaque: the gateway passes other namespaces through
@@ -172,9 +185,26 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		return tool.Result{}, meta{}, err
 	}
 	var text []string
+	var images []model.Image
 	for _, c := range res.Content {
-		if c.Type == "text" {
+		switch c.Type {
+		case "text":
 			text = append(text, c.Text)
+		case "image":
+			// A tool's picture (a screenshot of the app Coach drives, kiff/tafs#544): kept for
+			// the model only when it's an image type it reads, within MaxImageBytes, and at
+			// most MaxImages a call; anything else is a line saying so, never dropped silently.
+			b, err := base64.StdEncoding.DecodeString(c.Data)
+			switch {
+			case err != nil || len(b) == 0 || !slices.Contains(model.ImageTypes, c.MimeType):
+				text = append(text, "[an image the tool sent that couldn't be read]")
+			case len(b) > MaxImageBytes:
+				text = append(text, fmt.Sprintf("[an image of %d bytes, over the %d a tool's image may be]", len(b), MaxImageBytes))
+			case len(images) >= MaxImages:
+				text = append(text, fmt.Sprintf("[more than %d images: the rest left out]", MaxImages))
+			default:
+				images = append(images, model.Image{MediaType: c.MimeType, Bytes: b})
+			}
 		}
 	}
 	var m meta
@@ -183,7 +213,7 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 			return tool.Result{}, meta{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
 		}
 	}
-	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation)}
+	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation), Images: images}
 	// What the call is on: the argument KIFF's Card scopes on, where KIFF
 	// says it is in the call's arguments (never a guess), and only a string.
 	if name := str(m.ResourceArgument); name != "" {

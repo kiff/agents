@@ -15,7 +15,7 @@ import (
 // never as text in the chat. The others are shown and the run goes on. The
 // owner answers each of them but a result, which the service that hands the
 // owner over answers with what came of it (AnsweredBy).
-var Answerable = []string{"confirm", "questions", "approval", "sign_in", "result"}
+var Answerable = []string{"confirm", "questions", "approval", "sign_in", "result", "drive"}
 
 // ByService are the types a service answers in the owner's place, naming
 // itself (Answered.AnsweredBy); the owner answers the others.
@@ -64,7 +64,9 @@ type QuestionAnswer struct {
 //     their own signature), or "failed: <why>" (the phone's approval didn't
 //     go through);
 //   - sign_in: "signed in", "not now", or "failed: <why>";
-//   - result: an Outcome, {"taf_id": …} | {"version": n} | {"failed": "<why>"}.
+//   - result: an Outcome, {"taf_id": …} | {"version": n} | {"failed": "<why>"};
+//   - drive: "approved: the drive is on" (the person approved it with the
+//     approval key, which tafs cloud checked before answering) or "declined".
 func Answer(c Component, answer json.RawMessage) (Answered, error) {
 	if !slices.Contains(Answerable, c.Type) {
 		return Answered{}, fmt.Errorf("a %s isn't answered", c.Type)
@@ -100,6 +102,14 @@ func Answer(c Component, answer json.RawMessage) (Answered, error) {
 			return Answered{}, fmt.Errorf("%q isn't one of the card's options", s)
 		}
 		return Answered{Answer: answer, Words: c.Options[i].Label}, nil
+	case "drive":
+		switch s {
+		case "approved: the drive is on":
+			return Answered{Answer: answer, Words: "Approved"}, nil
+		case "declined":
+			return Answered{Answer: answer, Words: "Not now"}, nil
+		}
+		return Answered{}, errors.New(`a drive's answer is "approved: the drive is on" or "declined"`)
 	case "approval":
 		switch {
 		case s == "approved":
