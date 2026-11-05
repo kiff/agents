@@ -59,7 +59,7 @@ func TestEvalOverrideSetsModelEffortAndPrices(t *testing.T) {
 		if err := json.Unmarshal(d["price"], &price); err != nil {
 			t.Fatal(err)
 		}
-		if string(d["model"]) != `"claude-sonnet-5-5"` || string(d["effort"]) != `"low"` || price.Input != 2_000_000 || price.Output != 10_000_000 || price.CacheRead != 200_000 || price.CacheWrite != 2_500_000 || price.CacheWrite1h != 4_000_000 || !price.Caches() || !price.CachesAnHour() {
+		if string(d["model"]) != `"claude-sonnet-5-5"` || string(d["effort"]) != `"low"` || price.Input != 2_000_000 || price.Output != 10_000_000 || price.CacheRead != 100_000 || price.CacheWrite != 2_500_000 || price.CacheWrite1h != 4_000_000 || !price.Caches() || !price.CachesAnHour() {
 			t.Fatalf("%s: %s %s %+v", name, d["model"], d["effort"], price)
 		}
 		if string(d["max_cost_micro_usd"]) == "" {
