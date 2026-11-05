@@ -10,10 +10,11 @@
 # would count another model's prices. source.json records what was set.
 #
 # Prices are millionths of a US dollar per million tokens, as the
-# definitions carry them. Sonnet 5.5's input and output are the Eval judge's
-# price (eval.yml's -judge-price); its cache prices keep Opus 5.5's ratios
-# to input (a read 1/20, a write 5/4, an hour's write 2x), and the fast
-# output costs twice the standard, as Opus's does.
+# definitions carry them. Sonnet 5.5: input $2 and output $10 (the Eval
+# judge's price, eval.yml's -judge-price), a cache read $0.20 (as Opus
+# 5.5's), a write 5/4 of input and an hour's write 2x. Sonnet 5.5 has no
+# fast mode: its fast row, twice the standard, only prices a definition
+# that carries price_fast.
 set -euo pipefail
 [ $# -eq 3 ] || { echo "usage: $0 <defs dir> <model> <effort>" >&2; exit 2; }
 defs=$1 model=$2 effort=$3
@@ -25,8 +26,8 @@ case "$model" in
     price='{"Input":4000000,"Output":20000000,"CacheRead":200000,"CacheWrite":5000000,"CacheWrite1h":8000000}'
     fast='{"Input":8000000,"Output":40000000,"CacheRead":400000,"CacheWrite":10000000,"CacheWrite1h":16000000}' ;;
   claude-sonnet-5-5)
-    price='{"Input":2000000,"Output":10000000,"CacheRead":100000,"CacheWrite":2500000,"CacheWrite1h":4000000}'
-    fast='{"Input":4000000,"Output":20000000,"CacheRead":200000,"CacheWrite":5000000,"CacheWrite1h":8000000}' ;;
+    price='{"Input":2000000,"Output":10000000,"CacheRead":200000,"CacheWrite":2500000,"CacheWrite1h":4000000}'
+    fast='{"Input":4000000,"Output":20000000,"CacheRead":400000,"CacheWrite":5000000,"CacheWrite1h":8000000}' ;;
   *) echo "eval-override: no prices for model \"$model\": add them here first" >&2; exit 2 ;;
 esac
 case "$effort" in
