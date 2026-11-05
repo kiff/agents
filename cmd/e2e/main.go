@@ -859,6 +859,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				return "", "", err
 			}
 			t.said.messages = append(t.said.messages, msgs...)
+			if err := t.noteTestReport(ctx, ch.Session, r.ID); err != nil {
+				return "", "", err
+			}
 			reads, err := t.refusedReadsOf(ctx, ch.Session, r.ID)
 			if err != nil {
 				return "", "", err

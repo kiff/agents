@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/session"
 )
 
 // Which of Coach's skills a conversation opens with, as tafs cloud decides it
@@ -103,4 +108,52 @@ func claimsMode(texts []string, reportsTest bool) string {
 		}
 	}
 	return ""
+}
+
+// reportsTest is a tool result that says the account is in test mode: a
+// vendor object with livemode false, or an accounts read with mode test.
+var reportsTest = regexp.MustCompile(`"livemode"\s*:\s*false|"mode"\s*:\s*"test"`)
+
+// beforeTestReport walks a run's events in order: what Setup wrote (its
+// messages and the cards it showed) while no tool result in the
+// conversation had reported test mode, and whether one has by the run's end.
+// reported is the conversation's state before the run.
+func beforeTestReport(events []session.Event, runID string, reported bool) ([]string, bool) {
+	var before []string
+	for _, e := range events {
+		if e.Run != runID {
+			continue
+		}
+		switch e.Kind {
+		case session.ToolResult:
+			var b agent.ToolResultBody
+			if json.Unmarshal(e.Body, &b) == nil && !b.IsError && reportsTest.MatchString(b.Text) {
+				reported = true
+			}
+		case session.AgentMessage, session.Report:
+			var b agent.TextBody
+			if !reported && json.Unmarshal(e.Body, &b) == nil && strings.TrimSpace(b.Text) != "" {
+				before = append(before, b.Text)
+			}
+		case session.Component:
+			var c component
+			if !reported && json.Unmarshal(e.Body, &c) == nil {
+				before = append(before, cardTexts(c)...)
+			}
+		}
+	}
+	return before, reported
+}
+
+// noteTestReport adds a run's texts said before test mode was reported to
+// what the grader reads (said.beforeTest).
+func (t *test) noteTestReport(ctx context.Context, sessionID, runID string) error {
+	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
+	if err != nil {
+		return err
+	}
+	before, reported := beforeTestReport(events, runID, t.said.testReported)
+	t.said.beforeTest = append(t.said.beforeTest, before...)
+	t.said.testReported = reported
+	return nil
 }

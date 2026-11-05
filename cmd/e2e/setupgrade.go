@@ -97,6 +97,12 @@ type said struct {
 	// writesAsReads are tools Setup asked planque for as read-only that the
 	// vendor doesn't mark so, which planque refused (kiff/agents#139).
 	writesAsReads []string
+	// beforeTest is what Setup wrote before any tool result in the
+	// conversation reported test mode (livemode false, or mode test), and
+	// testReported whether one has: a mode said before it is a claim
+	// (kiff/tafs#525's core rule; agentgabo on #319).
+	beforeTest   []string
+	testReported bool
 }
 
 // refusedRead is the tool named in planque's refusal of a tool asked for as
@@ -134,28 +140,34 @@ func (s *said) card(c component) {
 func (s *said) texts() []string {
 	out := append([]string(nil), s.messages...)
 	for _, id := range s.order {
-		c := s.cards[id]
-		for _, t := range append([]string{c.Title, c.Text, c.Yes, c.No, c.Note}, labels(c)...) {
+		out = append(out, cardTexts(s.cards[id])...)
+	}
+	return out
+}
+
+// cardTexts is a card's title, text, button words, note and option labels.
+func cardTexts(c component) []string {
+	var out []string
+	for _, t := range append([]string{c.Title, c.Text, c.Yes, c.No, c.Note}, labels(c)...) {
+		if strings.TrimSpace(t) != "" {
+			out = append(out, t)
+		}
+	}
+	for _, o := range c.Options {
+		if strings.TrimSpace(o.Label) != "" {
+			out = append(out, o.Label)
+		}
+	}
+	for _, q := range c.Questions {
+		for _, t := range []string{q.Text, q.Note} {
 			if strings.TrimSpace(t) != "" {
 				out = append(out, t)
 			}
 		}
-		for _, o := range c.Options {
-			if strings.TrimSpace(o.Label) != "" {
-				out = append(out, o.Label)
-			}
-		}
-		for _, q := range c.Questions {
-			for _, t := range []string{q.Text, q.Note} {
+		for _, o := range q.Options {
+			for _, t := range []string{o.Label, o.Description} {
 				if strings.TrimSpace(t) != "" {
 					out = append(out, t)
-				}
-			}
-			for _, o := range q.Options {
-				for _, t := range []string{o.Label, o.Description} {
-					if strings.TrimSpace(t) != "" {
-						out = append(out, t)
-					}
 				}
 			}
 		}
@@ -343,7 +355,12 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	// 8b. Setup states only the mode the connection reports (kiff/tafs#525's core rule,
 	// after recipe 3 on the owner's phone): the fake vendor reports test, the desk none.
-	if claim := claimsMode(s.texts(), !m.none); claim != "" {
+	claim := claimsMode(s.texts(), !m.none)
+	if claim == "" && !m.none {
+		// Test is reported only once a tool result said so: before it, any mode is a claim.
+		claim = claimsMode(s.beforeTest, false)
+	}
+	if claim != "" {
 		add("states only the mode the connection reports", eval.Grade{Why: "a mode the connection doesn't report, stated as fact: " + oneLine(claim)})
 	} else {
 		add("states only the mode the connection reports", eval.Grade{Pass: true})

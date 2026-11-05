@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"testing"
+
+	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool"
 )
 
 // A conversation opens with the skills tafs cloud would name for its entry
@@ -59,5 +64,46 @@ func TestClaimsModeReadsWhatTheConnectionReports(t *testing.T) {
 	}
 	if c := claimsMode([]string{"Up to 20 replies a day."}, false); c != "" {
 		t.Fatalf("a text with no mode read as a claim: %q", c)
+	}
+}
+
+// A test mode said before any tool result reported it is a claim; after a
+// read that returned livemode false, it's what the connection reports
+// (agentgabo on #319: the same sentence, before and after).
+func TestModeCountsAsReportedOnlyAfterAToolSaidSo(t *testing.T) {
+	ev := func(kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: "r1", Kind: kind, Body: b}
+	}
+	say := ev(session.AgentMessage, agent.TextBody{Text: "Reembolsos en modo de prueba."})
+	read := ev(session.ToolResult, agent.ToolResultBody{Tool: "read", Result: tool.Result{Text: `{"id":"ch_1","object":"charge","livemode": false}`}})
+	accounts := ev(session.ToolResult, agent.ToolResultBody{Tool: "read", Result: tool.Result{Text: `{"accounts":[{"account":"acct_1","mode":"test"}]}`}})
+	refused := ev(session.ToolResult, agent.ToolResultBody{Tool: "read", Result: tool.Result{Text: `"livemode": false`, IsError: true}})
+
+	before, reported := beforeTestReport([]session.Event{say, read}, "r1", false)
+	if len(before) != 1 || !reported {
+		t.Fatalf("said before the read: %v %v", before, reported)
+	}
+	if c := claimsMode(before, false); c == "" {
+		t.Fatal("a test mode said before any read wasn't a claim")
+	}
+	before, reported = beforeTestReport([]session.Event{read, say}, "r1", false)
+	if len(before) != 0 || !reported {
+		t.Fatalf("said after the read: %v %v", before, reported)
+	}
+	if _, r := beforeTestReport([]session.Event{accounts}, "r1", false); !r {
+		t.Fatal("an accounts read with mode test didn't report it")
+	}
+	if b, r := beforeTestReport([]session.Event{refused, say}, "r1", false); r || len(b) != 1 {
+		t.Fatalf("an error result reported test: %v %v", b, r)
+	}
+	// A later run keeps what an earlier one reported; another run's events don't count.
+	if b, _ := beforeTestReport([]session.Event{say}, "r1", true); len(b) != 0 {
+		t.Fatalf("a report from an earlier run was forgotten: %v", b)
+	}
+	other := read
+	other.Run = "r2"
+	if _, r := beforeTestReport([]session.Event{other}, "r1", false); r {
+		t.Fatal("another run's read counted")
 	}
 }
