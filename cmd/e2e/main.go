@@ -1118,8 +1118,9 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	}
 	o := owners[t.cfg.owner]
 	if t.cfg.desk {
-		o.taf = "Desk" // the name the desk's owner gives (deskAsk)
-		m.none = true  // the desk has no test or live
+		o.taf = "Desk"        // the name the desk's owner gives (deskAsk)
+		o.facts = o.deskFacts // the limits the desk's owner gives, graded as theirs
+		m.none = true         // the desk has no test or live
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {

@@ -40,15 +40,24 @@ func TestStartSkillsFollowTafsCloudsTable(t *testing.T) {
 	}
 }
 
-// A mode stated as fact is a claim; the owner's choice, said as a choice, isn't.
-func TestClaimsModeReadsOnlyFacts(t *testing.T) {
-	fine := []string{"Chosen: test mode. Up to 5 EUR a refund, 50 EUR a day.", "You chose test mode; I can't tell whether this account is test or live, so check it before the first run.", "Modo elegido: prueba."}
-	if c := claimsMode(fine); c != "" {
-		t.Fatalf("a choice read as a claim: %q", c)
+// Setup states only the mode the connection reports: with test reported, a live
+// mode or real money is a claim and test isn't; with none reported, any mode is.
+func TestClaimsModeReadsWhatTheConnectionReports(t *testing.T) {
+	test := []string{"Chosen: test mode. Up to 5 EUR a refund.", "Stripe in test mode, no real money.", "Reembolsos en modo de prueba, sin dinero real."}
+	if c := claimsMode(test, true); c != "" {
+		t.Fatalf("test mode, which the vendor reports, read as a claim: %q", c)
 	}
-	for _, claim := range []string{"Stripe in test mode, no real money.", "Refunds (test mode) is ready.", "Reembolsos en modo de prueba, sin dinero real.", "Live mode (real money) from now on."} {
-		if c := claimsMode([]string{"fine", claim}); c != claim {
-			t.Fatalf("%q not read as a claim: %q", claim, c)
+	for _, claim := range []string{"Live mode (real money) from now on.", "Esto mueve dinero real.", "Refunds runs in live mode."} {
+		if c := claimsMode([]string{"fine", claim}, true); c != claim {
+			t.Fatalf("%q not read as a claim with test reported: %q", claim, c)
 		}
+	}
+	for _, claim := range []string{"Desk in test mode.", "No real money moves here.", "Modo de prueba activado."} {
+		if c := claimsMode([]string{claim}, false); c != claim {
+			t.Fatalf("%q not read as a claim with no mode reported: %q", claim, c)
+		}
+	}
+	if c := claimsMode([]string{"Up to 20 replies a day."}, false); c != "" {
+		t.Fatalf("a text with no mode read as a claim: %q", c)
 	}
 }

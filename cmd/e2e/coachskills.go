@@ -67,18 +67,38 @@ func (t *test) hasIt(ctx context.Context, sessionID, want, what string) error {
 	return nil
 }
 
-// modeClaims are words Setup may never write as fact: a connection's mode,
-// or that no real money moves, unless the connection reports it, which the
-// e2e's vendor never does (kiff/tafs#525's core rule, after recipe 3).
-var modeClaims = []string{"no real money", "sin dinero real", "(test mode)", "(modo de prueba)", "real money)", "dinero real)"}
+// What Setup may say of a connection's mode depends on what the connection
+// reports (kiff/tafs#525's core rule). planque's fake vendor reports test (its
+// accounts read, a charge's livemode false), so saying test is what it reports,
+// and saying live or real money is a claim. The desk reports no mode at all,
+// so any mode said as fact is a claim.
 
-// claimsMode is the first of Setup's texts that states a mode as fact, "" when none.
-func claimsMode(texts []string) string {
+// statedModes and statedLive are the words that state a mode, and a live one.
+var statedModes = []string{"test mode", "modo de prueba", "no real money", "sin dinero real", "live mode", "modo real", "real money", "dinero real"}
+var statedLive = []string{"live mode", "modo real", "real money", "dinero real"}
+
+// claimsMode is the first of Setup's texts that states a mode the connection
+// doesn't report, "" when none: with reportsTest, a live mode or real money
+// (not "no real money"); with none reported, any mode.
+func claimsMode(texts []string, reportsTest bool) string {
+	words := statedModes
+	if reportsTest {
+		words = statedLive
+	}
 	for _, t := range texts {
 		l := strings.ToLower(t)
-		for _, c := range modeClaims {
-			if strings.Contains(l, c) {
-				return t
+		for _, w := range words {
+			for i := strings.Index(l, w); i >= 0; {
+				before := l[:i]
+				negated := strings.HasSuffix(before, "no ") || strings.HasSuffix(before, "sin ")
+				if !negated || !reportsTest {
+					return t
+				}
+				next := strings.Index(l[i+len(w):], w)
+				if next < 0 {
+					break
+				}
+				i += len(w) + next
 			}
 		}
 	}
