@@ -659,3 +659,16 @@ func TestToolsCarryAManagedAppsProfile(t *testing.T) {
 		t.Fatal("the words don't say how to send a managed app's tools")
 	}
 }
+
+// The description says how each grant reaches its vendor, and to read the
+// account's connections before proposing an app for a vendor it already
+// connects, so a new taf is offered the same kind first.
+func TestTheDescriptionSaysEachConnectionsKind(t *testing.T) {
+	d := planque.New("http://planque.invalid", "tnt_1", "k_setup", nil).Spec().Description
+	for _, want := range []string{"vendor_sign_in", "provider", "key (a REST key", "mode_words",
+		"read grants with no agent: the same kind is the one to offer first"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("the description doesn't say %q: %s", want, d)
+		}
+	}
+}

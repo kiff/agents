@@ -85,9 +85,13 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"On a connected grant, tools {grant, tools} adds the tools sent (only those to add) to what it has: the owner approves the addition once, " +
 			"with no sign-in, and its tools keep working meanwhile. So a taf has one connection per vendor: grants {agent} lists the connections you asked for a taf's agent " +
-			"(id, agent, server, status, created, tools); add to the one for that vendor rather than requesting another. " +
+			"(id, agent, vendor, server, status, created, kind, tools); add to the one for that vendor rather than requesting another. " +
 			"grants with no agent lists every connection you asked for on the account, each with its agent: when you no longer have a taf's agent id " +
 			"or a grant's id, find it there, never ask for a new connection or the owner to sign in again. " +
+			"Each grant's kind is how it reaches its vendor: vendor_sign_in (the vendor's own server, signed in on the vendor's page: request {server} asks for the same), " +
+			"provider (a provider's app: request {entry} with its entry; its mode and mode_words say live, test, or not known yet, treated as live), " +
+			"key (a REST key: request {api} with its api) or browser. Before proposing an app for a vendor the account already connects, " +
+			"read grants with no agent: the same kind is the one to offer first. " +
 			"request {server, agent, tools} asks for known tools at once. server is the vendor's MCP server URL. " +
 			"A vendor with a REST API and no MCP server is reached by its key instead: request {api: {url, base, auth: {in, name}}, agent, tools}, " +
 			"where url is the vendor's published OpenAPI description (JSON), base the URL its operations' paths start from, and auth where the key goes " +
