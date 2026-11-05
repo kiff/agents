@@ -193,7 +193,10 @@ func withAgent(t *testing.T, m *script) {
 	// Every Card has room unless a test says otherwise.
 	oldRoom := cardRoom
 	cardRoom = func(context.Context, string, string) ([]kiff.Room, error) { return plenty(), nil }
-	t.Cleanup(func() { newModel, connect, cardRoom = oldModel, oldConnect, oldRoom })
+	// Nothing is left open at KIFF unless a test says otherwise.
+	oldPending := pending
+	pending = func(context.Context, string, string) ([]kiff.Pending, error) { return nil, nil }
+	t.Cleanup(func() { newModel, connect, cardRoom, pending = oldModel, oldConnect, oldRoom, oldPending })
 }
 
 // plenty is room for any case, on every tool the cases use.
@@ -508,6 +511,73 @@ func TestARunsHeldCallsAreWithdrawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(log.String(), "couldn't withdraw create_refund (ex_1): KIFF answered 500: refuse it in KIFF") {
+		t.Fatalf("log %q", log.String())
+	}
+}
+
+// What an earlier run left open at KIFF is withdrawn before the run and
+// after it, whichever run made it: a refused, sending or unknown call is
+// left, and only counted. A public log shows no ids, and a listing that
+// fails fails nothing.
+func TestWhatEarlierRunsLeftOpenIsWithdrawn(t *testing.T) {
+	m := &script{replies: []model.Reply{agentTurns()[1]}}
+	withAgent(t, m)
+	var listed []string
+	pending = func(_ context.Context, gateway, key string) ([]kiff.Pending, error) {
+		listed = append(listed, gateway+" "+key)
+		return []kiff.Pending{
+			{Tool: "update_dispute", State: "held", Answer: "waiting", ExceptionID: "exc_1"},
+			{Tool: "update_dispute", State: "held", Answer: "approved", ExceptionID: "exc_2"},
+			{Tool: "update_dispute", State: "held", Answer: "refused", ExceptionID: "exc_3"},
+			{Tool: "update_dispute", State: "unknown"},
+			{Tool: "update_dispute", State: "held", Answer: "unavailable", ExceptionID: "exc_4abcdef"},
+		}, nil
+	}
+	var asked []string
+	old := withdraw
+	withdraw = func(_ context.Context, api, key, exception string) (kiff.Withdrawal, error) {
+		asked = append(asked, exception)
+		if exception == "exc_4abcdef" {
+			return kiff.Withdrawal{}, errors.New("KIFF answered 500 about exc_4abcdef")
+		}
+		return kiff.Withdrawal{Withdrawn: true, Status: "invalidated"}, nil
+	}
+	t.Cleanup(func() { withdraw = old })
+	var log bytes.Buffer
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", MaxCost: 2_000_000, History: 20}, jobsDir(t), "", &log)
+	rt.public = true
+	if _, err := rt.Run(context.Background(), cases.Refunds); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 || listed[0] != "https://gateway.test/mcp kiff-k" {
+		t.Fatalf("listed %v", listed)
+	}
+	if want := []string{"exc_1", "exc_2", "exc_4abcdef", "exc_1", "exc_2", "exc_4abcdef"}; !slices.Equal(asked, want) {
+		t.Fatalf("withdrew %v, want %v", asked, want)
+	}
+	for _, want := range []string{
+		"eval: refunds: before the run, KIFF listed 5 open calls (update_dispute: held approved ×1; update_dispute: held refused ×1; update_dispute: held unavailable ×1; update_dispute: held waiting ×1; update_dispute: unknown ×1): withdrew 2, 3 left for the owner",
+		"eval: refunds: after the run, KIFF listed 5 open calls",
+		"before the run, couldn't withdraw update_dispute (…): KIFF answered 500 about …: refuse it in KIFF",
+	} {
+		if !strings.Contains(log.String(), want) {
+			t.Fatalf("log %q, want %q", log.String(), want)
+		}
+	}
+	if strings.Contains(log.String(), "exc_") {
+		t.Fatalf("a public log shows an id: %q", log.String())
+	}
+
+	log.Reset()
+	m.replies = []model.Reply{agentTurns()[1]}
+	pending = func(context.Context, string, string) ([]kiff.Pending, error) {
+		return nil, errors.New("kiff: kiff_pending answered with an error")
+	}
+	if _, err := rt.Run(context.Background(), cases.Refunds); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "before the run, couldn't list KIFF's open calls: kiff: … answered with an error") {
 		t.Fatalf("log %q", log.String())
 	}
 }
