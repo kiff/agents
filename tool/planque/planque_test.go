@@ -564,3 +564,23 @@ func TestCatalogSearchesByWords(t *testing.T) {
 		t.Fatalf("the description doesn't say to search: %s", spec.Description)
 	}
 }
+
+// A dot segment as a grant, entry or agent never leaves the tool: it would
+// go into planque's path as "." or "..", not as an id.
+func TestADotSegmentIsNeverSent(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = append(seen, r.URL.Path) }))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	for _, in := range []string{
+		`{"action":"status","grant":"."}`, `{"action":"catalog","grant":".."}`, `{"action":"events","grant":"."}`,
+		`{"action":"events","entry":".."}`, `{"action":"grants","agent":"."}`, `{"action":"tools","grant":"..","tools":[{"tool":"x"}]}`,
+	} {
+		if _, isErr := call(t, tl, in); !isErr {
+			t.Errorf("not refused: %s", in)
+		}
+	}
+	if len(seen) != 0 {
+		t.Fatalf("sent to planque: %v", seen)
+	}
+}

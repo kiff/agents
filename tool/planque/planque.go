@@ -169,7 +169,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		// a Setup that lost a taf's agent id finds it again (kiff/planque#49).
 		at := "/v1/accounts/" + url.PathEscape(t.tenant) + "/asked-grants"
 		if in.Agent != "" {
-			if strings.ContainsAny(in.Agent, "/?#") {
+			if !pathSafe(in.Agent) {
 				return tool.Result{Text: "grants takes the taf's agent id, or none for every connection you asked for", IsError: true}, nil
 			}
 			at = "/v1/accounts/" + url.PathEscape(t.tenant) + "/agents/" + url.PathEscape(in.Agent) + "/grants"
@@ -246,12 +246,12 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		at := "/v1/accounts/" + url.PathEscape(t.tenant)
 		switch {
 		case in.Entry != "":
-			if strings.ContainsAny(in.Entry, "/?#") {
+			if !pathSafe(in.Entry) {
 				return tool.Result{Text: "entry is a catalog entry as search gives it, such as connector:composio:gmail", IsError: true}, nil
 			}
 			at += "/catalog/" + url.PathEscape(in.Entry) + "/events"
 		default:
-			if strings.ContainsAny(in.Grant, "/?#") {
+			if !pathSafe(in.Grant) {
 				return tool.Result{Text: "events needs the grant's id", IsError: true}, nil
 			}
 			at += "/grants/" + url.PathEscape(in.Grant) + "/events"
@@ -265,7 +265,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		}
 		return tool.Result{Text: string(raw)}, nil
 	case "status", "catalog", "tools", "read":
-		if in.Grant == "" || strings.ContainsAny(in.Grant, "/?#") {
+		if !pathSafe(in.Grant) {
 			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
 		}
 		at := path + "/" + url.PathEscape(in.Grant)
@@ -302,6 +302,12 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	return tool.Result{Text: "action is request, status, catalog, tools, read, grants, search or events", IsError: true}, nil
 }
 
+// pathSafe says whether an id the model gives can go into planque's path as
+// one segment: no separator, no query or fragment, and never a dot segment.
+func pathSafe(id string) bool {
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, "/?#")
+}
+
 // MaxStated is how many of a session's grants State looks up: the latest.
 const MaxStated = 8
 
@@ -316,7 +322,7 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 	var b strings.Builder
 	b.WriteString("planque's grants in this conversation, as planque says now (status {grant} gives the same):\n")
 	for _, id := range grants {
-		if strings.ContainsAny(id, "/?#") {
+		if !pathSafe(id) {
 			continue
 		}
 		res, err := t.grant(ctx, http.MethodGet, path+url.PathEscape(id), nil)
