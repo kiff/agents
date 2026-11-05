@@ -277,8 +277,17 @@ turn or a tool call in flight included (`run.Renew`). So a dead invocation
 is due for the sweep within about two minutes, not at its deadline, and a
 live one, however long its call, is never taken for dead; a beat that finds
 the lease lost stops the invocation, since the sweep may have carried the
-run on. Until the sweep reaches it, a stopped run with an acting turn says
-so (`run.WorkAt`: retrying, `run.Stopped`), never "working".
+run on. Until the sweep reaches it, a stopped run says so (`run.WorkAt`:
+retrying, `run.Stopped`), never "working".
+
+A RUNNING run whose lease ran out before any turn acted (a model turn, a
+look-up) sent nothing: its last safe step is its start. The sweep stores
+it PAUSED on an empty turn, with the same restarts (`run.ResumeWaits`,
+`run.MaxResumes`), and continuing restarts it from its input, what the
+owner wrote meanwhile included, its cost and turns counted on from the
+run's (`agent.Continue`, the restart branch). Its input is recorded only
+if its first start never got to recording it. Past 3 restarts, the run
+ends ERROR with `run.NeedsYou`, as a crashed acting run does.
 
 A PENDING run no invocation claimed (a lost dispatch) is dispatched again by
 the sweep, once per look, up to `run.MaxResumes` times, its wait pushed out
