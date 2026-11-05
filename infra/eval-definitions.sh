@@ -35,10 +35,6 @@ writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", comm
 console.log(`wrote ${JOBS.length} job definitions and Setup's from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
 JS
 rm -rf "$out/skills"
-# Only skills as packages, <name>/<version>/SKILL.md: runtime/skills also holds
-# the kiff skill tafs pastes into its definitions (kiff/SKILL.md), which is no
-# package, and copying it alone would hand -skills nothing it can load.
-if ls "$tafs"/runtime/skills/*/*/SKILL.md >/dev/null 2>&1; then
-  cp -R "$tafs/runtime/skills" "$out/skills"
-  echo "copied kiff/tafs' skills to $out/skills"
-fi
+# Every skill package, wherever kiff/tafs keeps it (Coach's sit at
+# runtime/skills/coach/<name>/<version>/, kiff/tafs#525), as -skills reads them.
+"$(dirname "$0")/copy-skill-packages.sh" "$tafs/runtime/skills" "$out/skills"
