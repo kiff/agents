@@ -287,9 +287,9 @@ func TestTheSweepEndsWhatNobodyElseWill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := later.Add(d.Keep.SessionRetention())
-	if got, err := runs.Get(ctx, "t1", crashed.ID); err != nil || got.Status != run.Error || !got.Expires.Equal(want) {
-		t.Fatalf("got %s %s expiring %v (%v), want ERROR expiring %v", got.ID, got.Status, got.Expires, err, want)
+	// The crashed run stopped before any turn acted: restarted from its start by the sweep, its recording held.
+	if got, err := runs.Get(ctx, "t1", crashed.ID); err != nil || got.Status != run.Paused || got.Resumes != 1 || !got.Retrying() {
+		t.Fatalf("the crashed run: %+v (%v), want PAUSED, restarting", got, err)
 	}
 	// The unclaimed run's dispatch was lost: it is sent to an invocation again, not ended.
 	if got, err := runs.Get(ctx, "t1", unclaimed.ID); err != nil || got.Status != run.Pending || got.Resumes != 1 || !got.Wait.Equal(later.Add(run.PendingTimeout)) {
@@ -298,8 +298,8 @@ func TestTheSweepEndsWhatNobodyElseWill(t *testing.T) {
 	if n := len(inv.got); n != 1 {
 		t.Fatalf("%d invocations, want the unclaimed run's one", n)
 	}
-	if st, err := rn.Sessions.State(ctx, "t1", crashed.Session, crashed.ID); err != nil || !st.Ended {
-		t.Fatalf("the crashed run's recording: %+v (%v)", st, err)
+	if st, err := rn.Sessions.State(ctx, "t1", crashed.Session, crashed.ID); err != nil || !st.Held || st.Ended {
+		t.Fatalf("the crashed run's recording: %+v (%v), want held for its restart", st, err)
 	}
 	if got, _ := runs.Get(ctx, "t1", healthy.ID); got.Status != run.Running {
 		t.Fatalf("a run still in its lease was swept: %s", got.Status)

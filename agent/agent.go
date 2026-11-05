@@ -61,6 +61,11 @@ type Agent struct {
 	// cached prefix as it was.
 	DeferVendor bool
 
+	// Restarted says the run's input is on its record already, from a first
+	// start that stopped before any turn acted: a restart (Continue on an
+	// empty paused turn) then records it no second time. The runner sets it
+	// from the session's events.
+	Restarted bool
 	// MaxCost is the most a run may cost, in millionths of a US dollar. A run
 	// that reaches it stops before its next model turn.
 	MaxCost int64
@@ -399,6 +404,9 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if r.Paused == nil || (len(r.Requirements) == 0 && r.Resumes == 0) {
 		return Outcome{}, history, fmt.Errorf("%w: run %s has no paused turn", ErrResults, r.ID)
 	}
+	if len(r.Requirements) == 0 && len(r.Paused.Reply.Blocks) == 0 {
+		return a.restart(ctx, rec, history, r, emit)
+	}
 	results, err := merge(r, held)
 	if err != nil {
 		return Outcome{}, history, err
@@ -465,6 +473,33 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done}, emit)
+}
+
+// restart is Continue for a run that stopped before any turn acted (the
+// sweep stored it PAUSED on an empty turn): nothing was sent, so it goes
+// again from its input, what the owner wrote meanwhile included, as Run
+// would, with its cost and turns counted on from the run's: the restarted
+// turns cost against the same caps. Its input is on the record already,
+// from its first start, unless that start never got to it (Restarted).
+func (a Agent) restart(ctx context.Context, rec *session.Recording, history []model.Message, r run.Run, emit func(Event)) (Outcome, []model.Message, error) {
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	if !a.Restarted {
+		if err := rec.Record(session.OwnerMessage, TextBody{Text: r.Input, Attachments: a.Attachments}); err != nil {
+			return Outcome{}, history, err
+		}
+	}
+	asked := append(a.asked(r.Input), attach.Blocks(a.Attachments)...)
+	for _, text := range r.Taken() {
+		asked = append(asked, model.Block{Kind: model.Text, Text: SteerNote + Unforged(text)})
+	}
+	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
+	a.history = len(history)
+	if err := a.load(ctx, msgs); err != nil {
+		return Outcome{}, msgs, err
+	}
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns}, emit)
 }
 
 // outcomesIn is how the run's calls in msgs, its own turns after history,
