@@ -115,7 +115,13 @@ func (t *Tool) Spec() model.ToolSpec {
 			"(\"overdue invoice\", \"send reminder email\"; two or three short searches beat one long one), each tool with its app (entry, app_title) and the app's state: " +
 			"available, or needs_setup (not connectable until an operator sets it up: say so, and offer another app). apps narrows a search to the apps named (their app slugs). " +
 			"Propose the apps to the owner, then connect each chosen one with request {entry} (the entry search gave, such as connector:composio:gmail, never a URL) and name or agent, with no tools: " +
-			"once the owner signed in, pick its tools with catalog {grant} and ask for them with tools {grant, tools}. " +
+			"once the owner signed in, pick its tools with catalog {grant} and ask for them with tools {grant, tools, profile}. " +
+			"A managed app's tools always come with the profile you draft, which the owner approves with them: " +
+			"{\"v\":\"kiff.profile.v1\",\"vendor\":<the app's title>,\"transport\":\"rest\",\"pin\":{\"kind\":\"none\"},\"source\":\"drafted\",\"test_proven\":false," +
+			"\"operations\":[one per tool: {\"tool\":<the name you give it>,\"title\":<what it does, a few words>,\"kind\":\"read\" or \"write\",\"effect\" (a write only): " +
+			"\"sends\" (a message or email leaves), \"writes\" (it changes a record), \"none_until_approved\" (a draft), \"records_money\" or \"moves_money\" (these also need amount),\"shape\":\"single\"}]}. " +
+			"Say each tool's effect as it is: the owner reads it. A refusal from planque says what the request lacks: fix the request and ask again; " +
+			"never tell the owner their sign-in failed when the connection is listed. " +
 			"events {entry} lists an app's events, what can wake a taf, before connecting (the entry from search); events {grant} once connected. " +
 			"Pick an event as you pick an action, and draft it into the taf's dial; the owner approves its exact filters. " +
 			"A grant with on_demand: true is an app whose sign-in was set up on the owner's pick, not reviewed by an operator: draft every tool of it that changes data or moves money to ask the owner each time (0 a day, held), reads open, and say so in the rules. " +
@@ -135,7 +141,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), or in a connected grant's catalog (catalog)"},` +
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected)"},` +
-			`"arguments":{"type":"object","description":"the read's arguments (read)"}},` +
+			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
+			`"profile":{"type":"object","description":"a managed app's drafted profile, kiff.profile.v1, sent with its tools (tools)"}},` +
 			`"required":["action"]}`),
 	}
 }
@@ -157,6 +164,8 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Q      string          `json:"q"`
 		Apps   []string        `json:"apps"`
 		Entry  string          `json:"entry"`
+		// Profile is a managed app's drafted profile, with tools (tools).
+		Profile json.RawMessage `json:"profile"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.Result{Text: "the input must be {action, …}", IsError: true}, nil
@@ -332,7 +341,16 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if len(in.Tools) == 0 || in.Tools[0] != '[' || string(in.Tools) == "[]" {
 				return tool.Result{Text: "tools needs the taf's tools, from the grant's catalog", IsError: true}, nil
 			}
-			body, _ := json.Marshal(map[string]any{"tools": in.Tools})
+			ask := map[string]any{"tools": in.Tools}
+			if len(in.Profile) > 0 && string(in.Profile) != "null" {
+				if in.Profile[0] != '{' {
+					return tool.Result{Text: "profile is an object, kiff.profile.v1", IsError: true}, nil
+				}
+				// A managed app's tools come with the profile the owner
+				// approves with them (planque's managed connectors, step 5).
+				ask["profile"] = in.Profile
+			}
+			body, _ := json.Marshal(ask)
 			return t.grant(ctx, http.MethodPost, at+"/tools", body)
 		}
 		return t.grant(ctx, http.MethodGet, at, nil)
