@@ -457,7 +457,9 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 		case "/v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants":
 			b, _ := io.ReadAll(r.Body)
 			seen[len(seen)-1] += " " + string(b)
-			w.Write([]byte(`{"id":"grt_9","status":"pending","text":"Connect QuickBooks for Invoices…","on_demand":true,"custody":"provider","request":{}}`))
+			// As planque answers a catalog grant: wrapped, with needs_key.
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"grant":{"id":"grt_9","status":"pending","text":"Connect QuickBooks for Invoices…","on_demand":true,"custody":"provider","request":{}},"needs_key":false}`))
 		case "/v1/accounts/tnt_1/catalog/connector:composio:quickbooks/events", "/v1/accounts/tnt_1/grants/grt_1/events":
 			w.Write([]byte(`{"events":[{"slug":"QUICKBOOKS_NEW_INVOICE","name":"New invoice","version":"20261101_00","config":{"type":"object"},"door":false}],"next_cursor":""}`))
 		default:
@@ -514,6 +516,7 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 		`{"action":"request","entry":"connector:composio:quickbooks"}`,
 		`{"action":"request","entry":"connector:composio:quickbooks","server":"https://x.example","agent":"a"}`,
 		`{"action":"request","entry":"../grants","agent":"a"}`,
+		`{"action":"request","entry":"connector:composio:quickbooks","agent":"a","tools":[{"tool":"QUICKBOOKS_LIST_INVOICES"}]}`,
 	} {
 		if _, isErr := call(t, tl, bad); !isErr {
 			t.Errorf("not refused: %s", bad)
@@ -521,6 +524,16 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Fatalf("a malformed request reached planque: %v", seen)
+	}
+	// A reviewed entry may answer the grant flat: read as well.
+	flat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"grt_8","status":"pending","text":"Connect Desk for Invoices…","request":{}}`))
+	}))
+	t.Cleanup(flat.Close)
+	if text, isErr := call(t, planque.New(flat.URL, "tnt_1", "k_setup", nil), `{"action":"request","entry":"desk","agent":"a"}`); isErr || !strings.Contains(text, `"id":"grt_8"`) || !strings.Contains(text, `"agent":"a"`) {
+		t.Fatalf("a flat grant answer: %s", text)
 	}
 	// Both only read; the model is told when to use them.
 	if !tl.Reads(json.RawMessage(`{"action":"search","q":"x"}`)) || !tl.Reads(json.RawMessage(`{"action":"events","grant":"g"}`)) {

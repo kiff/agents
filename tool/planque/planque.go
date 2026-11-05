@@ -198,19 +198,30 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if !pathSafe(in.Entry) {
 				return tool.Result{Text: "entry is a catalog entry as search gives it, such as connector:composio:gmail", IsError: true}, nil
 			}
+			if len(in.Tools) > 0 && string(in.Tools) != "null" && string(in.Tools) != "[]" {
+				return tool.Result{Text: "request {entry} connects the app first, with no tools: once the owner signed in, pick them with catalog {grant} and ask with tools {grant, tools}", IsError: true}, nil
+			}
 			agent := in.Agent
 			if in.Name != "" {
 				agent = AgentID(in.Name)
 			}
 			body, _ := json.Marshal(map[string]any{"agent": agent})
-			res, err := t.grant(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
-			if err != nil || res.IsError {
-				return res, err
+			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
+			if err != nil || refused != nil {
+				return deref(refused), err
 			}
-			var g grantView
-			_ = json.Unmarshal([]byte(res.Text), &g)
-			g.Agent = agent
-			b, _ := json.Marshal(g)
+			// planque answers a catalog grant wrapped, {grant, needs_key}, and a
+			// reviewed entry may answer it flat: either is read.
+			var made struct {
+				Grant grantView `json:"grant"`
+			}
+			if err := json.Unmarshal(raw, &made); err != nil || made.Grant.ID == "" {
+				if json.Unmarshal(raw, &made.Grant) != nil || made.Grant.ID == "" {
+					return tool.Result{}, fmt.Errorf("planque: an answer that isn't a grant")
+				}
+			}
+			made.Grant.Agent = agent
+			b, _ := json.Marshal(made.Grant)
 			return tool.Result{Text: string(b)}, nil
 		}
 		tools := in.Tools
