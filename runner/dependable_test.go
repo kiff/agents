@@ -62,8 +62,7 @@ func TestAPendingRunNobodyClaimedIsDispatchedAgain(t *testing.T) {
 
 // A RUNNING run whose lease ran out stopped: its invocation is gone, and
 // until the sweep carries it on its work says so (retrying, from its last
-// safe step), never "working". One with no acting turn yet says nothing:
-// the sweep ends it, and it reads as failed with why.
+// safe step), never "working".
 func TestARunWhoseLeaseRanOutSaysItStopped(t *testing.T) {
 	now := time.Now().UTC()
 	r := run.Run{ID: "r1", Status: run.Running, Lease: now.Add(-time.Second), Acting: &run.Turn{}}
@@ -73,8 +72,9 @@ func TestARunWhoseLeaseRanOutSaysItStopped(t *testing.T) {
 	if w := r.WorkAt(now.Add(-2 * time.Second)); w.State != "" {
 		t.Fatalf("inside its lease: %+v", w)
 	}
+	// With no acting turn yet, the same: it restarts from its start.
 	r.Acting = nil
-	if w := r.WorkAt(now); w.State != "" {
+	if w := r.WorkAt(now); w.State != run.WorkRetrying || w.Reason != run.Stopped {
 		t.Fatalf("with no acting turn: %+v", w)
 	}
 }

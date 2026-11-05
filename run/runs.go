@@ -614,7 +614,7 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return sw.redispatch(ctx, r, now)
 	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
 		return sw.retry(ctx, r, now)
-	case r.Status == Running && !r.Cancel && r.Acting != nil && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:
+	case r.Status == Running && !r.Cancel && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:
 		return sw.resume(ctx, r, now)
 	}
 	paused := r.Status == Paused
@@ -643,7 +643,7 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 			n.Status = Cancelled
 		case paused:
 			n.Status, n.Error = Error, "it could not continue once KIFF resolved its held calls"
-		case r.Status == Running && r.Acting != nil && r.Resumes >= MaxResumes:
+		case r.Status == Running && r.Resumes >= MaxResumes:
 			n.Status, n.Error = Error, NeedsYou
 		case r.Status == Running:
 			n.Status, n.Error = Error, "its lease ran out: the invocation crashed or timed out"
@@ -691,12 +691,15 @@ func (sw Sweeper) redispatch(ctx context.Context, r Run, now time.Time) (bool, e
 	return true, nil
 }
 
-// resume carries on a RUNNING run whose invocation stopped while it acted:
-// its recording held, it is stored PAUSED on its acting turn (resumeOf),
-// already resolved, with its next look (Retry) ResumeWaits away. Its note
-// says it's retrying, and when. The sweep then continues it as any resolved
+// resume carries on a RUNNING run whose invocation stopped: its recording
+// held, it is stored PAUSED on its acting turn (resumeOf), already
+// resolved, with its next look (Retry) ResumeWaits away. Its note says
+// it's retrying, and when. The sweep then continues it as any resolved
 // paused run, and continuing repeats the turn's calls that have no result
-// by their operation IDs.
+// by their operation IDs. A run that stopped before any turn acted (a
+// model turn, a look-up) sent nothing: its last safe step is its start,
+// and it is stored PAUSED on an empty turn, which agent.Continue restarts
+// from the run's input, its cost counted on with the run's.
 func (sw Sweeper) resume(ctx context.Context, r Run, now time.Time) (bool, error) {
 	if err := sw.Hold(ctx, r); err != nil {
 		return false, err // still due: the next sweep tries again
@@ -704,6 +707,10 @@ func (sw Sweeper) resume(ctx context.Context, r Run, now time.Time) (bool, error
 	_, err := Change(ctx, sw.Runs, r, now, func(n *Run) error {
 		n.Status, n.Retries, n.Retry = Paused, 0, now.UTC().Add(ResumeWaits[n.Resumes])
 		n.Resumes++
+		if n.Acting == nil {
+			n.Paused, n.Requirements = &Turn{}, nil
+			return nil
+		}
 		n.Paused, n.Requirements = resumeOf(*n.Acting, now)
 		return nil
 	})
@@ -741,13 +748,13 @@ func (r Run) Work() Work { return r.WorkAt(time.Now()) }
 
 // WorkAt is Work as of now: a RUNNING run whose lease ran out stopped (its
 // invocation is gone), and reads as retrying from the moment it did, not
-// from the sweep that carries it on; one the sweep can't carry on (no
-// acting turn yet, or past its restarts) says nothing, and ends shortly.
+// from the sweep that carries it on; one past its restarts says nothing,
+// and ends shortly.
 func (r Run) WorkAt(now time.Time) Work {
 	switch {
 	case r.Retrying():
 		return Work{State: WorkRetrying, Reason: Restarted, Try: r.Resumes, Of: MaxResumes, NextAt: r.Retry}
-	case r.Status == Running && !r.Lease.IsZero() && !now.Before(r.Lease) && r.Acting != nil && r.Resumes < MaxResumes:
+	case r.Status == Running && !r.Lease.IsZero() && !now.Before(r.Lease) && r.Resumes < MaxResumes:
 		return Work{State: WorkRetrying, Reason: Stopped, Try: r.Resumes + 1, Of: MaxResumes}
 	case r.Status == Error && (r.Error == NeedsYou || r.Error == NeverStarted):
 		return Work{State: WorkNeedsYou, Reason: r.Error}

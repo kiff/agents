@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/kiff/agents/agent"
@@ -509,6 +510,10 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return x.repause(ctx, recording, r, fmt.Errorf("collecting its crashed turn's calls: %w", err))
 	}
 	held = append(held, resumed...)
+	// A run restarted from its start (the sweep's resume with no acting
+	// turn) has its input on the record from its first start, unless that
+	// start stopped before it got to recording it.
+	a.Restarted = slices.ContainsFunc(events, func(e session.Event) bool { return e.Run == r.ID && e.Kind == session.OwnerMessage })
 	history, _ := p.history()
 	a.Preface = p.preface(loop, a.Tools, rn.now())
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
