@@ -17,6 +17,21 @@ import (
 // lease has run out, the run's invocation is gone.
 const LeaseGrace = time.Minute
 
+// LeaseSpan is how long a RUNNING run's lease reaches ahead of its last
+// renewal: the invocation renews it on a heartbeat while it goes, so a
+// dead one is seen by the sweep within LeaseSpan, not at its deadline.
+const LeaseSpan = 2 * time.Minute
+
+// LeaseUntil is when a lease renewed at now runs out: LeaseSpan ahead, and
+// never past the invocation's deadline plus LeaseGrace.
+func LeaseUntil(now, deadline time.Time) time.Time {
+	until := now.Add(LeaseSpan)
+	if end := deadline.Add(LeaseGrace); end.Before(until) {
+		until = end
+	}
+	return until.UTC()
+}
+
 // PendingTimeout is how long a PENDING run may wait for an invocation to claim
 // it; past it, the sweep marks it ERROR. It stays well inside
 // session.MaxStartDelay, so a run that is claimed can always start recording.
@@ -364,7 +379,7 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 		return r, fmt.Errorf("%w: %w", ErrTransition, ErrCancelled)
 	}
 	return Change(ctx, runs, r, now, func(n *Run) error {
-		n.Status, n.Claim, n.Lease = Running, claim, deadline.UTC().Add(LeaseGrace)
+		n.Status, n.Claim, n.Lease = Running, claim, LeaseUntil(now, deadline)
 		return nil
 	})
 }
@@ -372,6 +387,22 @@ func Claim(ctx context.Context, runs Runs, tenant, id, claim string, deadline, n
 // SaveTries bounds how many times Save writes a run that keeps changing
 // under it while its claim still holds.
 const SaveTries = 5
+
+// Renew moves the lease of the run claim holds LeaseSpan ahead of now (never
+// past its deadline plus LeaseGrace): the invocation's heartbeat. A run that
+// isn't RUNNING under claim, or whose lease already ran out, is ErrLeaseLost:
+// the invocation stops, since the sweep may have carried the run on. A write
+// that loses to another (ErrConflict) is left for the next beat.
+func Renew(ctx context.Context, runs Runs, tenant, id, claim string, deadline, now time.Time) (Run, error) {
+	r, err := runs.Get(ctx, tenant, id)
+	if err != nil {
+		return r, err
+	}
+	if r.Status != Running || r.Claim != claim || !now.Before(r.Lease) {
+		return r, ErrLeaseLost
+	}
+	return Change(ctx, runs, r, now, func(n *Run) error { n.Lease = LeaseUntil(now, deadline); return nil })
+}
 
 // Save is Change for the invocation that claimed r: it writes only while it
 // holds the lease. A change it makes after its lease ran out, or after the run
@@ -524,6 +555,14 @@ const NeedsYou = "It stopped 3 times while it worked, and was restarted each tim
 // next restart.
 const Restarted = "It stopped while it worked. It carries on from its last safe step, and nothing it did is done twice."
 
+// Stopped is the reason a run whose invocation is gone gives before the
+// sweep has carried it on: its lease ran out, and the sweep is due.
+const Stopped = "It stopped while it worked. It carries on from its last safe step shortly, and nothing it did is done twice."
+
+// NeverStarted is the error of a run no invocation claimed after its
+// dispatch was tried MaxResumes times: it needs the owner.
+const NeverStarted = "It couldn't start: no invocation picked it up after 3 tries. It needs you to look at it."
+
 // Sweep looks at every run whose Due has passed: at most limit RUNNING and
 // PENDING runs, which it marks ERROR (or CANCELLED if asked to stop), and
 // then at most limit PAUSED ones, which it continues, or past PausedGiveUp
@@ -571,6 +610,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return true, sw.Note(ctx, r)
 	case r.Status == Pending && r.After != "" && sw.Continue != nil:
 		return sw.queued(ctx, r, now)
+	case r.Status == Pending && !r.Cancel && sw.Continue != nil && r.Resumes < MaxResumes:
+		return sw.redispatch(ctx, r, now)
 	case r.Status == Paused && now.Before(r.resolved().Add(ResolvedGrace+PausedGiveUp)):
 		return sw.retry(ctx, r, now)
 	case r.Status == Running && !r.Cancel && r.Acting != nil && sw.Hold != nil && sw.Continue != nil && r.Resumes < MaxResumes:
@@ -606,6 +647,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 			n.Status, n.Error = Error, NeedsYou
 		case r.Status == Running:
 			n.Status, n.Error = Error, "its lease ran out: the invocation crashed or timed out"
+		case r.Resumes >= MaxResumes:
+			n.Status, n.Error = Error, NeverStarted
 		default:
 			n.Status, n.Error = Error, "no invocation claimed it in time"
 		}
@@ -623,6 +666,29 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, nil // it moved on meanwhile: not ours to mark
 	}
 	return err == nil, err
+}
+
+// redispatch starts a PENDING run no invocation claimed within its wait (a
+// lost dispatch) once more, counting the try, with its next wait pushed out:
+// the owner's ask isn't lost to one dropped invocation. Past MaxResumes
+// tries the next sweep ends it NeverStarted. A run queued behind another
+// (After) is the queue's (queued), not this.
+func (sw Sweeper) redispatch(ctx context.Context, r Run, now time.Time) (bool, error) {
+	r, err := Change(ctx, sw.Runs, r, now, func(n *Run) error {
+		n.Resumes++
+		n.Wait = now.UTC().Add(PendingTimeout)
+		return nil
+	})
+	switch {
+	case errors.Is(err, ErrConflict):
+		return false, nil // it moved on meanwhile
+	case err != nil:
+		return false, err
+	}
+	if err := sw.Continue(ctx, r.Tenant, r.ID); err != nil {
+		return false, err // still due at its new wait: the sweep tries again
+	}
+	return true, nil
 }
 
 // resume carries on a RUNNING run whose invocation stopped while it acted:
@@ -670,13 +736,21 @@ const (
 	WorkNeedsYou = "needs_you"
 )
 
-// Work is where r's work stands (see Work).
-func (r Run) Work() Work {
+// Work is where r's work stands (see Work), as of now.
+func (r Run) Work() Work { return r.WorkAt(time.Now()) }
+
+// WorkAt is Work as of now: a RUNNING run whose lease ran out stopped (its
+// invocation is gone), and reads as retrying from the moment it did, not
+// from the sweep that carries it on; one the sweep can't carry on (no
+// acting turn yet, or past its restarts) says nothing, and ends shortly.
+func (r Run) WorkAt(now time.Time) Work {
 	switch {
 	case r.Retrying():
 		return Work{State: WorkRetrying, Reason: Restarted, Try: r.Resumes, Of: MaxResumes, NextAt: r.Retry}
-	case r.Status == Error && r.Error == NeedsYou:
-		return Work{State: WorkNeedsYou, Reason: NeedsYou}
+	case r.Status == Running && !r.Lease.IsZero() && !now.Before(r.Lease) && r.Acting != nil && r.Resumes < MaxResumes:
+		return Work{State: WorkRetrying, Reason: Stopped, Try: r.Resumes + 1, Of: MaxResumes}
+	case r.Status == Error && (r.Error == NeedsYou || r.Error == NeverStarted):
+		return Work{State: WorkNeedsYou, Reason: r.Error}
 	}
 	return Work{}
 }

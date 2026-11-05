@@ -270,6 +270,21 @@ Marks ERROR (or CANCELLED, if asked to stop) a RUNNING run whose lease ran
 out, and a PENDING run not claimed within `run.PendingTimeout` (5 min). `Ended`
 ends the run's recording first.
 
+A RUNNING run's lease reaches `run.LeaseSpan` (2 min) ahead of its last
+renewal, never past the invocation's deadline plus a minute: the invocation
+renews it on a heartbeat (`Runner.Heartbeat`, 30 s) while it goes, a model
+turn or a tool call in flight included (`run.Renew`). So a dead invocation
+is due for the sweep within about two minutes, not at its deadline, and a
+live one, however long its call, is never taken for dead; a beat that finds
+the lease lost stops the invocation, since the sweep may have carried the
+run on. Until the sweep reaches it, a stopped run with an acting turn says
+so (`run.WorkAt`: retrying, `run.Stopped`), never "working".
+
+A PENDING run no invocation claimed (a lost dispatch) is dispatched again by
+the sweep, once per look, up to `run.MaxResumes` times, its wait pushed out
+each time; then it ends ERROR with `run.NeverStarted`, which reads as
+`needs_you`. A run queued behind another (`After`) is the queue's.
+
 A RUNNING run whose lease ran out while it held an acting turn is carried on
 instead, when `Hold` and `Continue` are set: its recording held, it is stored
 PAUSED on that turn, each call without a result a `resume` requirement, with

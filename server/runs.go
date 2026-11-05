@@ -152,8 +152,11 @@ type runView struct {
 	NextAt time.Time `json:"next_at,omitzero"`
 }
 
-func viewRun(r run.Run) runView {
-	w := r.Work()
+// viewRun is viewRunAt as of the server's clock.
+func (s *Server) viewRun(r run.Run) runView { return viewRunAt(r, s.now()) }
+
+func viewRunAt(r run.Run, now time.Time) runView {
+	w := r.WorkAt(now)
 	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
@@ -221,10 +224,10 @@ func (s *Server) listRuns(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	out := []runView{}
 	for _, rn := range runs {
-		if active && (rn.Status.Final()) || state != "" && rn.Work().State != state || !readBy(rn, q) {
+		if active && (rn.Status.Final()) || state != "" && rn.WorkAt(s.now()).State != state || !readBy(rn, q) {
 			continue
 		}
-		if out = append(out, viewRun(rn)); len(out) == limit {
+		if out = append(out, s.viewRun(rn)); len(out) == limit {
 			break
 		}
 	}
@@ -243,7 +246,7 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 	if !readBy(rn, q) {
 		return 0, nil, run.ErrNotFound // another person's run
 	}
-	return http.StatusOK, viewRun(rn), nil
+	return http.StatusOK, s.viewRun(rn), nil
 }
 
 // readerOf is who reads a run: the person the requester parameter names
@@ -303,7 +306,7 @@ func (s *Server) cancelRun(ctx context.Context, c Caller, r *http.Request) (int,
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, viewRun(next), nil
+	return http.StatusOK, s.viewRun(next), nil
 }
 
 // requesterOf is a body's requester, checked; none when it names none.
@@ -432,7 +435,7 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	case err != nil:
 		return 0, nil, err
 	}
-	return http.StatusAccepted, viewRun(next), nil
+	return http.StatusAccepted, s.viewRun(next), nil
 }
 
 // cancelPaused records the cancel on a paused run first, then withdraws
@@ -783,17 +786,17 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, body.DedupKey)); {
 		case err == nil && rn.Status == run.Pending && rn.After != "":
 			// Queued behind the thread's run: the sweep starts it, not a resend.
-			writeJSON(w, http.StatusAccepted, viewRun(rn))
+			writeJSON(w, http.StatusAccepted, s.viewRun(rn))
 			return
 		case err == nil && rn.Status == run.Pending:
 			if err := s.toBackground(ctx, rn); err != nil {
 				s.fail(w, r, err)
 				return
 			}
-			writeJSON(w, http.StatusAccepted, viewRun(rn))
+			writeJSON(w, http.StatusAccepted, s.viewRun(rn))
 			return
 		case err == nil:
-			writeJSON(w, http.StatusOK, viewRun(rn))
+			writeJSON(w, http.StatusOK, s.viewRun(rn))
 			return
 		case !errors.Is(err, run.ErrNotFound):
 			s.fail(w, r, err)
@@ -880,7 +883,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	rn, err := s.start(ctx, st)
 	if errors.Is(err, run.ErrExists) {
 		// Sent twice at once: the other send started it.
-		writeJSON(w, http.StatusOK, viewRun(rn))
+		writeJSON(w, http.StatusOK, s.viewRun(rn))
 		return
 	}
 	if err != nil {
@@ -889,7 +892,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if rn.After != "" {
 		// Queued: the sweep starts it once the run before it is done.
-		writeJSON(w, http.StatusAccepted, viewRun(rn))
+		writeJSON(w, http.StatusAccepted, s.viewRun(rn))
 		return
 	}
 	if body.Background {
@@ -897,7 +900,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, viewRun(rn))
+		writeJSON(w, http.StatusAccepted, s.viewRun(rn))
 		return
 	}
 	s.execute(w, r, c, rn, 0)
@@ -970,7 +973,7 @@ func (s *Server) goOn(w http.ResponseWriter, r *http.Request, c Caller, rn run.R
 			s.fail(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, viewRun(rn))
+		writeJSON(w, http.StatusAccepted, s.viewRun(rn))
 		return
 	}
 	// The stream carries what the run records from here on: what it
@@ -1095,7 +1098,7 @@ func (s *Server) answerCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !resolved(next, s.now()) {
-		writeJSON(w, http.StatusAccepted, viewRun(next)) // it waits for KIFF, or another card, too
+		writeJSON(w, http.StatusAccepted, s.viewRun(next)) // it waits for KIFF, or another card, too
 		return
 	}
 	s.goOn(w, r, c, next, body.Background)
@@ -1156,7 +1159,7 @@ func openCard(rn run.Run, id string, now time.Time) (run.Requirement, bool) {
 func (s *Server) execute(w http.ResponseWriter, r *http.Request, c Caller, rn run.Run, after int64) {
 	ctx := r.Context()
 	sse := newStream(w)
-	sse.send("run", viewRun(rn))
+	sse.send("run", s.viewRun(rn))
 	f := &follower{s: s, sse: sse, tenant: c.Tenant, rn: rn, after: after}
 	// The run's recorded events follow while it executes; the follower is
 	// this request's, and ends before the stream does.
@@ -1219,7 +1222,7 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request, c Caller, rn ru
 	if err := f.catchUp(ctx); err != nil { // what was recorded since the last look
 		s.logError(r, "following a run", err)
 	}
-	sse.send("end", viewRun(end))
+	sse.send("end", s.viewRun(end))
 }
 
 // resumeRun picks a run's stream back up: its recorded events after the index
@@ -1266,7 +1269,7 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 		// it. Ending there would end the stream before the run's answer.
 		goingOn := rn.Status == run.Paused && len(rn.Requirements) > 0 && resolved(rn, s.now()) && time.Now().Before(handedOff)
 		if rn.Status.Final() || rn.Status == run.Paused && !goingOn {
-			f.sse.send("end", viewRun(rn))
+			f.sse.send("end", s.viewRun(rn))
 			return
 		}
 		select {
@@ -1430,7 +1433,7 @@ func (s *Server) triggerSchedule(ctx context.Context, c Caller, r *http.Request)
 	if err := s.toBackground(ctx, rn); err != nil {
 		return 0, nil, err
 	}
-	return http.StatusAccepted, viewRun(rn), nil
+	return http.StatusAccepted, s.viewRun(rn), nil
 }
 
 // Event limits: an event's key and its source's name.
@@ -1486,7 +1489,7 @@ func (s *Server) startEvent(ctx context.Context, c Caller, r *http.Request) (int
 		Input: body.Input, ID: EventRunID(c.Tenant, id, body.Key)})
 	switch {
 	case errors.Is(err, run.ErrExists) && rn.Status != run.Pending:
-		return http.StatusOK, viewRun(rn), nil // delivered again: the run it started
+		return http.StatusOK, s.viewRun(rn), nil // delivered again: the run it started
 	case err != nil && !errors.Is(err, run.ErrExists):
 		return 0, nil, err
 	}
@@ -1497,7 +1500,7 @@ func (s *Server) startEvent(ctx context.Context, c Caller, r *http.Request) (int
 	if err := s.Background(ctx, rn.Tenant, rn.ID); err != nil {
 		return 0, nil, err
 	}
-	return http.StatusAccepted, viewRun(rn), nil
+	return http.StatusAccepted, s.viewRun(rn), nil
 }
 
 // start is how every route starts a run: through the tenant's cap
@@ -1570,7 +1573,7 @@ func (s *Server) scheduleRuns(ctx context.Context, c Caller, r *http.Request) (i
 	}
 	out := make([]runView, len(list))
 	for i, rn := range list {
-		out[i] = viewRun(rn)
+		out[i] = s.viewRun(rn)
 	}
 	return http.StatusOK, map[string]any{"runs": out}, nil
 }
@@ -1701,7 +1704,7 @@ func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, 
 			continue // answered meanwhile, or the run went on
 		}
 		if !resolved(next, s.now()) {
-			writeJSON(w, http.StatusAccepted, viewRun(next))
+			writeJSON(w, http.StatusAccepted, s.viewRun(next))
 			return true
 		}
 		s.goOn(w, r, c, next, background)

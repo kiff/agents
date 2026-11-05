@@ -411,14 +411,23 @@ func TestExecuteOutlivesItsCaller(t *testing.T) {
 	}
 }
 
-// The lease ends a minute after the caller's deadline.
+// The lease reaches run.LeaseSpan ahead, and never past a minute after the
+// caller's deadline.
 func TestExecuteLeasesToTheDeadline(t *testing.T) {
 	f := newFixture(t)
-	deadline := f.clock.now().Add(3 * time.Minute)
 	var lease time.Time
 	f.model.add(use("c1", "stripe_refund", `{}`), say("done"))
 	r := f.start(server.Start{Input: "go"})
 	f.refund.onCall = func() { lease = f.get(r.ID).Lease }
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := f.clock.now().Add(run.LeaseSpan); !lease.Equal(want) {
+		t.Fatalf("lease %v, want %v", lease, want)
+	}
+	f.model.add(use("c1", "stripe_refund", `{}`), say("done"))
+	r = f.start(server.Start{Input: "go"})
+	deadline := f.clock.now().Add(time.Minute)
 	dctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	if _, err := f.r.Execute(dctx, "t1", r.ID, nil); err != nil {

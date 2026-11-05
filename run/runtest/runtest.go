@@ -519,23 +519,31 @@ func aCrashedRunIsCarriedOnFromItsActingTurn(t *testing.T, s run.Runs, c *clock)
 }
 
 // The sweep marks ERROR a RUNNING run whose lease ran out and a PENDING run
-// nobody claimed in time, oldest first; nothing else.
+// nobody claimed in time, oldest first; nothing else. A RUNNING run's lease
+// reaches run.LeaseSpan ahead of its last renewal (the invocation's
+// heartbeat): renewed, it isn't due; left alone, it is.
 func sweepMarksWhatIsDue(t *testing.T, s run.Runs, c *clock) {
 	pending := created(t, s, c, "t1", "refunds")
-	running := claimed(t, s, c) // lease: 16 minutes on
+	running := claimed(t, s, c) // lease: run.LeaseSpan on, renewed by its invocation
 	paused := claimed(t, s, c)
 	paused, err := run.Save(ctx, s, paused, c.now(), set(run.Paused))
 	check(t, err)
 	if due, err := s.Due(ctx, c.now(), 10); err != nil || len(due) != 0 {
 		t.Fatalf("due now: %d, err = %v", len(due), err)
 	}
-	c.add(run.PendingTimeout + time.Second)
+	for range 2 {
+		c.add(run.LeaseSpan - time.Second)
+		if _, err := run.Renew(ctx, s, "t1", running.ID, running.Claim, c.now().Add(15*time.Minute), c.now()); err != nil {
+			t.Fatalf("renew: %v", err)
+		}
+	}
+	c.add(run.PendingTimeout + time.Second - 2*(run.LeaseSpan-time.Second))
 	due, err := s.Due(ctx, c.now(), 10)
 	check(t, err)
 	if len(due) != 1 || due[0].ID != pending.ID {
-		t.Fatalf("due once the pending wait is over: %v", ids(due))
+		t.Fatalf("due once the pending wait is over, the running one renewed: %v", ids(due))
 	}
-	c.add(16 * time.Minute)
+	c.add(16 * time.Minute) // the running one's invocation is gone: no renewal
 	var ended []string
 	sw := run.Sweeper{Runs: s, Ended: func(_ context.Context, r run.Run) error { ended = append(ended, r.ID); return nil }}
 	n, err := sw.Sweep(ctx, c.now(), 10)
@@ -603,16 +611,16 @@ func sweepContinuesAResolvedPausedRun(t *testing.T, s run.Runs, c *clock) {
 		t.Fatalf("after one continue: retries %d, retry %v", got.Retries, got.Retry)
 	}
 	c.add(time.Minute)
-	sweep(1, 1) // r waits; late is next
-	if got := get(t, s, late); got.Status != run.Error {
-		t.Fatalf("a run due after a paused one wasn't swept: %s", got.Status)
+	sweep(1, 1) // r waits; late is next: a pending run nobody claimed is dispatched again, once per look
+	if got := get(t, s, late); got.Status != run.Pending || got.Resumes != 1 || !got.Wait.Equal(c.now().Add(run.PendingTimeout)) {
+		t.Fatalf("a run due after a paused one wasn't swept: %+v", got)
 	}
 	c.add(time.Minute + time.Second)
 	fail = errors.New("invoke failed")
 	sweep(10, 0) // still paused, so due again; a continue that fails is an error
 	fail = nil
 	sweep(10, 0) // and it waits 4 minutes more
-	if want := []string{"t1/" + r.ID, "t1/" + r.ID}; !slices.Equal(continued, want) || len(ended) != 0 {
+	if want := []string{"t1/" + r.ID, "t1/" + late.ID, "t1/" + r.ID}; !slices.Equal(continued, want) || len(ended) != 0 {
 		t.Fatalf("continued %v, ended %v; want %v", continued, ended, want)
 	}
 	if got := get(t, s, r); got.Status != run.Paused || got.Retries != 2 {
@@ -620,11 +628,11 @@ func sweepContinuesAResolvedPausedRun(t *testing.T, s run.Runs, c *clock) {
 	}
 
 	c.add(run.PausedGiveUp)
-	sweep(10, 1)
+	sweep(10, 2) // r is given up on; late, still unclaimed, is dispatched again
 	if got := get(t, s, r); got.Status != run.Error || !strings.Contains(got.Error, "KIFF resolved") || !slices.Equal(ended, []string{r.ID}) {
 		t.Fatalf("given up: %s %q, ended %v", got.Status, got.Error, ended)
 	}
-	if len(continued) != 2 {
+	if len(continued) != 4 || continued[3] != "t1/"+late.ID {
 		t.Fatalf("continued after giving up: %v", continued)
 	}
 	if got := get(t, s, waits); got.Status != run.Paused {

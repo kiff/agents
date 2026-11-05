@@ -188,7 +188,7 @@ func (s *Server) trialMessage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"run": viewRun(rn), "trial": viewTrial(t)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": s.viewRun(rn), "trial": viewTrial(t)})
 }
 
 // closeTrial ends the agent's open trial: Install or Go back, from the

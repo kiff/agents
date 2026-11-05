@@ -175,13 +175,21 @@ func (n Notifying) log(msg string, err error) {
 	}
 }
 
+// clock is the time Notifying works from: Now, or the wall clock.
+func (n Notifying) clock() time.Time {
+	if n.Now != nil {
+		return n.Now()
+	}
+	return time.Now()
+}
+
 func (n Notifying) send(ctx context.Context, r Run) error {
 	note := Note{Run: r.ID, Agent: r.Agent, Status: r.Status, Ref: r.Notify.Ref}
 	if r.Status == Paused {
 		note.Cards = waitingCards(r)
 		note.Waits = waitingEvents(r)
 	}
-	w := r.Work()
+	w := r.WorkAt(n.clock())
 	note.State, note.Reason, note.Try, note.Of, note.NextAt = w.State, w.Reason, w.Try, w.Of, w.NextAt
 	body, err := json.Marshal(note)
 	if err != nil {

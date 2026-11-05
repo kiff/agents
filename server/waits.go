@@ -65,7 +65,7 @@ func (s *Server) answerWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !resolved(next, s.now()) {
-		writeJSON(w, http.StatusAccepted, viewRun(next)) // it waits for KIFF, a card, or another event too
+		writeJSON(w, http.StatusAccepted, s.viewRun(next)) // it waits for KIFF, a card, or another event too
 		return
 	}
 	s.goOn(w, r, c, next, body.Background)

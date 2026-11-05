@@ -378,7 +378,7 @@ func (s *Server) startTrial(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"run": viewRun(rn)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"run": s.viewRun(rn)})
 }
 
 // trialWrite is one write of a trial, as the API shows it: the call as the
@@ -415,5 +415,5 @@ func (s *Server) getTrial(ctx context.Context, c Caller, r *http.Request) (int, 
 		}
 		writes = append(writes, trialWrite{Tool: b.Tool, Title: b.Title, Arguments: b.Input, Decision: b.Decision, Reason: b.Reason})
 	}
-	return http.StatusOK, map[string]any{"run": viewRun(rn), "writes": writes}, nil
+	return http.StatusOK, map[string]any{"run": s.viewRun(rn), "writes": writes}, nil
 }
