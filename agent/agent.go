@@ -155,6 +155,11 @@ const SteerNote = "The owner wrote this while you were working:\n\n"
 const PauseNote = "KIFF holds a call above for the owner, so your run pauses here until they answer, and you can't call tools now. " +
 	"Write your report: what you did, what waits for the owner, and what you didn't do and why, naming each item."
 
+// WaitPauseNote is PauseNote for a run that waits for a sent call's outcome
+// to come later, as the vendor's event.
+const WaitPauseNote = "Your run pauses here until the vendor's event with the outcome of the call above comes, or its wait runs out, and you can't call tools now. " +
+	"Tell the owner in one or two sentences what you're waiting for, then stop."
+
 // CardPauseNote is PauseNote for a run that waits for the owner to answer a
 // card it showed (and for KIFF, if it also holds a call).
 const CardPauseNote = "Your run pauses here until the owner answers the card above, and you can't call tools now. " +
@@ -407,12 +412,26 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		if err := recordRef(rec, h.Result); err != nil {
 			return Outcome{}, history, err
 		}
-		if q, ok := requirement(r, h.CallID); ok && q.Card() {
+		q, ok := requirement(r, h.CallID)
+		switch {
+		case ok && q.Card():
 			if err := recordAnswered(rec, q); err != nil {
 				return Outcome{}, history, err
 			}
-		} else if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID))); err != nil {
-			return Outcome{}, history, err
+		case ok && q.Event():
+			// A sent call whose outcome came later (or didn't): the call
+			// was done when it was sent; the record says what came of it.
+			oc := OutcomeCame
+			if q.Answered.IsZero() {
+				oc = OutcomeNotCame
+			}
+			if err := recordCalled(rec, nil, h.Tool, q.Input, oc); err != nil {
+				return Outcome{}, history, err
+			}
+		default:
+			if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID))); err != nil {
+				return Outcome{}, history, err
+			}
 		}
 		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
 	}
@@ -842,11 +861,24 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	turn.Results = nil
 	turn.Before = before(msgs, a.history)
 	blocks := make([]model.Block, len(results))
-	cards := false
+	cards, waits := false, false
 	for i, r := range results {
 		blocks[i] = resultBlock(r)
 		if !r.Waits() {
 			turn.Results = append(turn.Results, blocks[i])
+			continue
+		}
+		if r.State == tool.StateWaiting && r.Wait != nil {
+			// A call whose outcome comes later: the event answers it
+			// through the API, within the connection's timeout.
+			for _, b := range turn.Reply.Blocks {
+				if b.Kind == model.ToolUse && b.CallID == r.CallID {
+					out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: b.Input,
+						Kind: run.KindEvent, Expires: a.clock().Add(run.WaitFor(r.Wait.TimeoutS)).UTC(),
+						Wait: &run.Wait{Grant: r.Wait.Grant, Event: r.Wait.Event, Key: r.Wait.Key, Words: r.Wait.Words}})
+				}
+			}
+			waits = true
 			continue
 		}
 		if r.State == tool.StateAwaiting {
@@ -882,8 +914,11 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	// keeps, and Continue sends, stay as they are.
 	asked := slices.Clone(msgs)
 	note := PauseNote
-	if cards {
+	switch {
+	case cards:
 		note = CardPauseNote
+	case waits:
+		note = WaitPauseNote
 	}
 	asked[len(asked)-1].Blocks = append(slices.Clone(blocks), model.Block{Kind: model.Text, Text: note})
 	reply, err := a.turn(ctx, rec, asked, specs, true, nil, &out, emit)

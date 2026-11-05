@@ -167,6 +167,19 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		// Meta is kept opaque: the gateway passes other namespaces through
 		// from the tool, and only MetaKey is KIFF's to read.
 		Meta map[string]json.RawMessage `json:"_meta"`
+		// Structured is the tool's own structured content, passed through by
+		// the gateway: a connection says there that a sent call's outcome
+		// comes later (pending, wait_for, timeout_s).
+		Structured struct {
+			Pending  bool `json:"pending"`
+			TimeoutS int  `json:"timeout_s"`
+			WaitFor  struct {
+				Grant string `json:"grant"`
+				Event string `json:"event"`
+				Key   string `json:"key"`
+				Words string `json:"words"`
+			} `json:"wait_for"`
+		} `json:"structuredContent"`
 	}
 	if err := t.c.call(ctx, "tools/call", map[string]any{"name": t.spec.Name, "arguments": input}, &res); err != nil {
 		return tool.Result{}, meta{}, err
@@ -198,6 +211,13 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		// sends nothing, so there's nothing for the Record to name.
 		out.Trial, out.State, out.Resource = m.Trial, "", ""
 		return out, m, nil
+	}
+	// A sent call whose outcome comes later: the connection says so in the
+	// result, with the event and the key the run waits for. Only a call
+	// that went (not held, not refused, not an error) waits.
+	if sc := res.Structured; sc.Pending && !res.IsError && m.State != tool.StateHeld && m.State != tool.StateRefused && sc.WaitFor.Event != "" && sc.WaitFor.Key != "" {
+		out.State = tool.StateWaiting
+		out.Wait = &tool.Wait{Grant: sc.WaitFor.Grant, Event: sc.WaitFor.Event, Key: sc.WaitFor.Key, TimeoutS: sc.TimeoutS, Words: sc.WaitFor.Words}
 	}
 	if m.State == tool.StateHeld {
 		// Only state says whether the call is held. The hold's fields are

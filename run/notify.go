@@ -28,6 +28,10 @@ type Note struct {
 	Status Status     `json:"status"`
 	Ref    string     `json:"ref"`
 	Cards  []NoteCard `json:"cards,omitempty"`
+	// Waits are the events the run waits on (KindEvent): what a caller
+	// matches an incoming event to, by grant, event and key, and answers
+	// through the API before Expires.
+	Waits []NoteWait `json:"waits,omitempty"`
 	// State is set when the status alone doesn't say where the work stands:
 	// "retrying" for a crashed run waiting for its restart Try of Of, at
 	// NextAt; "needs_you" for one past its last restart. Reason says why, in
@@ -43,6 +47,27 @@ type Note struct {
 type NoteCard struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
+}
+
+// NoteWait is an event a paused run waits on.
+type NoteWait struct {
+	Call    string    `json:"call"`
+	Grant   string    `json:"grant,omitempty"`
+	Event   string    `json:"event"`
+	Key     string    `json:"key"`
+	Expires time.Time `json:"expires"`
+	Words   string    `json:"words,omitempty"`
+}
+
+// waitingEvents are the events r waits on, unanswered, in order.
+func waitingEvents(r Run) []NoteWait {
+	var out []NoteWait
+	for _, q := range r.Requirements {
+		if q.Event() && q.Answered.IsZero() && q.Wait != nil {
+			out = append(out, NoteWait{Call: q.CallID, Grant: q.Wait.Grant, Event: q.Wait.Event, Key: q.Wait.Key, Expires: q.Expires, Words: q.Wait.Words})
+		}
+	}
+	return out
 }
 
 // waitingCards are the cards r waits on, unanswered, in order.
@@ -154,6 +179,7 @@ func (n Notifying) send(ctx context.Context, r Run) error {
 	note := Note{Run: r.ID, Agent: r.Agent, Status: r.Status, Ref: r.Notify.Ref}
 	if r.Status == Paused {
 		note.Cards = waitingCards(r)
+		note.Waits = waitingEvents(r)
 	}
 	w := r.Work()
 	note.State, note.Reason, note.Try, note.Of, note.NextAt = w.State, w.Reason, w.Try, w.Of, w.NextAt

@@ -10,6 +10,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -523,11 +524,12 @@ func notCollected(reqs []run.Requirement, text string) []agent.ToolResultBody {
 	return out
 }
 
-// splitCards is reqs' held calls, then its cards.
+// splitCards is reqs' held calls, then its cards and its events (both
+// answered on the run itself), then a crashed turn's calls.
 func splitCards(reqs []run.Requirement) (holds, cards, resumes []run.Requirement) {
 	for _, q := range reqs {
 		switch {
-		case q.Card():
+		case q.Card() || q.Event():
 			cards = append(cards, q)
 		case q.Resume():
 			resumes = append(resumes, q)
@@ -617,12 +619,33 @@ func ResumedOutcome(res tool.Result) tool.Result {
 const NoAnswer = "The owner didn't answer this card. Don't assume an answer: ask again only if it's still needed."
 
 // CardResult is a card's answer as the show call's result: what the owner
-// chose, as recorded on the run (run.AnswerCard), or NoAnswer.
+// chose, as recorded on the run (run.AnswerCard), or NoAnswer. For an
+// event's requirement, it is the event's payload as the call's result, or
+// TimedOut when the wait ran out with no event.
 func CardResult(q run.Requirement) agent.ToolResultBody {
+	if q.Event() {
+		return waitResult(q)
+	}
 	if q.Answered.IsZero() || len(q.Result) == 0 {
 		return agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: NoAnswer}}
 	}
 	return agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: string(q.Result)}}
+}
+
+// waitResult is an event's requirement as the call's result: the event's
+// payload, said to be the outcome that came later; or, with no event by
+// the deadline, a timed-out result that says so and names the wait, in
+// JSON the model can act on, never an error.
+func waitResult(q run.Requirement) agent.ToolResultBody {
+	event := ""
+	if q.Wait != nil {
+		event = q.Wait.Event
+	}
+	if q.Answered.IsZero() || len(q.Result) == 0 {
+		body, _ := json.Marshal(map[string]any{"timed_out": true, "event": event})
+		return agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: "The outcome of this call didn't come in time: no " + event + " event arrived before the wait ran out. Don't assume it happened or didn't; check with a read if one exists, or tell the owner.\n" + string(body)}}
+	}
+	return agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: "The outcome of this call came later, as the " + event + " event:\n" + string(q.Result)}}
 }
 
 // HeldOutcome is a collected held call's result, opening with what happened
