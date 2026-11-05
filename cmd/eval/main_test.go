@@ -531,12 +531,17 @@ func TestWhatEarlierRunsLeftOpenIsWithdrawn(t *testing.T) {
 			{Tool: "update_dispute", State: "held", Answer: "refused", ExceptionID: "exc_3"},
 			{Tool: "update_dispute", State: "unknown"},
 			{Tool: "update_dispute", State: "held", Answer: "unavailable", ExceptionID: "exc_4abcdef"},
+			// Listed, but KIFF has no hold for this key (404): counted, never silent.
+			{Tool: "update_dispute", State: "held", Answer: "waiting", ExceptionID: "exc_5"},
 		}, nil
 	}
 	var asked []string
 	old := withdraw
 	withdraw = func(_ context.Context, api, key, exception string) (kiff.Withdrawal, error) {
 		asked = append(asked, exception)
+		if exception == "exc_5" {
+			return kiff.Withdrawal{}, fmt.Errorf("%w: %s", kiff.ErrNoHold, exception)
+		}
 		if exception == "exc_4abcdef" {
 			return kiff.Withdrawal{}, errors.New("KIFF answered 500 about exc_4abcdef")
 		}
@@ -553,12 +558,12 @@ func TestWhatEarlierRunsLeftOpenIsWithdrawn(t *testing.T) {
 	if len(listed) != 2 || listed[0] != "https://gateway.test/mcp kiff-k" {
 		t.Fatalf("listed %v", listed)
 	}
-	if want := []string{"exc_1", "exc_2", "exc_4abcdef", "exc_1", "exc_2", "exc_4abcdef"}; !slices.Equal(asked, want) {
+	if want := []string{"exc_1", "exc_2", "exc_4abcdef", "exc_5", "exc_1", "exc_2", "exc_4abcdef", "exc_5"}; !slices.Equal(asked, want) {
 		t.Fatalf("withdrew %v, want %v", asked, want)
 	}
 	for _, want := range []string{
-		"eval: refunds: before the run, KIFF listed 5 open calls (update_dispute: held approved ×1; update_dispute: held refused ×1; update_dispute: held unavailable ×1; update_dispute: held waiting ×1; update_dispute: unknown ×1): withdrew 2, 3 left for the owner",
-		"eval: refunds: after the run, KIFF listed 5 open calls",
+		"eval: refunds: before the run, KIFF listed 6 open calls (update_dispute: held approved ×1; update_dispute: held refused ×1; update_dispute: held unavailable ×1; update_dispute: held waiting ×2; update_dispute: unknown ×1): withdrew 2, 3 left for the owner, 1 KIFF no longer holds",
+		"eval: refunds: after the run, KIFF listed 6 open calls",
 		"before the run, couldn't withdraw update_dispute (…): KIFF answered 500 about …: refuse it in KIFF",
 	} {
 		if !strings.Contains(log.String(), want) {
