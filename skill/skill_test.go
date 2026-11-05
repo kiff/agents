@@ -3,6 +3,7 @@ package skill_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -63,6 +64,14 @@ func TestCheckBoundsAPackage(t *testing.T) {
 	}
 	if err := skill.CheckRefs([]skill.Ref{{Name: "kiff", Version: "v1"}, {Name: "kiff", Version: "v2"}}); err == nil {
 		t.Error("one skill named twice")
+	}
+	// Coach's eleven (kiff/tafs#525, #535) fit.
+	eleven := make([]skill.Ref, 11)
+	for i := range eleven {
+		eleven[i] = skill.Ref{Name: fmt.Sprintf("skill-%d", i), Version: "1"}
+	}
+	if err := skill.CheckRefs(eleven); err != nil {
+		t.Fatalf("eleven skills: %v", err)
 	}
 	if err := skill.CheckRefs(make([]skill.Ref, skill.MaxPerAgent+1)); err == nil {
 		t.Error("too many skills")
