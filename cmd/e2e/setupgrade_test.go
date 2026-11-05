@@ -438,6 +438,40 @@ func TestPreToolTextIsALine(t *testing.T) {
 	}
 }
 
+// A text its calls follow, that the run never writes after, is the run's
+// message: "Falta que apruebes la conexión…" and the card it waits on (the
+// confirming Eval, 6 Nov). A text the run writes after makes the earlier one
+// a line, whatever came between.
+func TestATextTheRunWaitsOnIsAMessage(t *testing.T) {
+	ev := func(kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: "r1", Kind: kind, Body: b}
+	}
+	text := func(s string) session.Event { return ev(session.AgentMessage, map[string]string{"text": s}) }
+	show := ev(session.ToolCall, map[string]string{"call_id": "c1", "tool": "show"})
+	messages, lines := splitLines([]session.Event{text("Falta que apruebes la conexión con tu proveedor de pagos."), show}, "r1")
+	if !slices.Equal(messages, []string{"Falta que apruebes la conexión con tu proveedor de pagos."}) || lines != nil {
+		t.Fatalf("waited on: messages %q, lines %q", messages, lines)
+	}
+	messages, lines = splitLines([]session.Event{
+		text("Miro la cuenta…"), show, ev(session.ToolResult, map[string]string{"call_id": "c1"}),
+		text("Reviso los límites…"), show, ev(session.Component, map[string]string{"type": "steps"}),
+		text("Falta que apruebes la conexión."), show,
+	}, "r1")
+	if !slices.Equal(lines, []string{"Miro la cuenta…"}) || !slices.Equal(messages, []string{"Reviso los límites…", "Falta que apruebes la conexión."}) {
+		t.Fatalf("a card before the next text: messages %q, lines %q", messages, lines)
+	}
+	// The run waits on the owner, then goes on and writes again: the text it waited on stays its message.
+	resumed := ev(session.Usage, map[string]any{"timing": map[string]any{"ms": 900, "resumed": true}})
+	messages, lines = splitLines([]session.Event{
+		text("Falta que lo apruebes."), ev(session.ToolCall, map[string]string{"call_id": "c2", "tool": "planque"}),
+		resumed, text("Conectado. Ya puede reembolsar."),
+	}, "r1")
+	if lines != nil || !slices.Equal(messages, []string{"Falta que lo apruebes.", "Conectado. Ya puede reembolsar."}) {
+		t.Fatalf("after a pause: messages %q, lines %q", messages, lines)
+	}
+}
+
 // Each line is one short line, as Setup's rule asks: none passes; a line
 // break or one past MaxLine characters fails, named.
 func TestLinesAreOneShortLine(t *testing.T) {
@@ -462,5 +496,18 @@ func TestLinesAreReadButNotJudgedAsMessages(t *testing.T) {
 	}
 	if got := s.statements(); !slices.Contains(got, "Miro la cuenta…") {
 		t.Fatalf("statements %q", got)
+	}
+}
+
+// A run read again after it went on counts only what it wrote since: the
+// confirming Eval listed "Falta que apruebes la conexión…" four times.
+func TestARunReadAgainCountsOnce(t *testing.T) {
+	tt := &test{}
+	tt.take("r1", []string{"Falta que apruebes la conexión."}, []string{"Miro la cuenta…"})
+	tt.take("r1", []string{"Falta que apruebes la conexión.", "Conectado."}, []string{"Miro la cuenta…"})
+	tt.take("r2", []string{"Falta que apruebes la conexión."}, nil)
+	if !slices.Equal(tt.said.messages, []string{"Falta que apruebes la conexión.", "Conectado.", "Falta que apruebes la conexión."}) ||
+		!slices.Equal(tt.said.lines, []string{"Miro la cuenta…"}) {
+		t.Fatalf("messages %q, lines %q", tt.said.messages, tt.said.lines)
 	}
 }

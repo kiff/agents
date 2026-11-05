@@ -303,6 +303,9 @@ type test struct {
 	// sent each message: the waits for words in the setup chat.
 	words *wordsClock
 	sent  []time.Time
+	// taken is, by run, how many of its messages and lines are in said: a
+	// run read again counts only what's new (take).
+	taken map[string][2]int
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
 	// result is Setup's result that waits for what came of the hand-over:
@@ -878,8 +881,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			if err != nil {
 				return "", "", err
 			}
-			t.said.messages = append(t.said.messages, msgs...)
-			t.said.lines = append(t.said.lines, lines...)
+			t.take(r.ID, msgs, lines)
 			if err := t.noteTestReport(ctx, ch.Session, r.ID); err != nil {
 				return "", "", err
 			}
@@ -1087,42 +1089,71 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (message
 	return messages, lines, nil
 }
 
-// splitLines parts what an agent wrote in one run into its messages and its
-// lines. A turn's text that its tool calls follow is a line, what it's doing
-// now ("Miro las últimas ejecuciones de Reembolsos…"), not a message: the
-// owner sees it on the live line, as a progress note, never as a message of
-// its own (kiff/tafs' core rule). The agent records a turn's text before its
-// calls, so a text whose next text or call in the run is a call is a line.
-func splitLines(events []session.Event, runID string) (messages, lines []string) {
-	pending := ""
-	flush := func(asLine bool) {
-		if strings.TrimSpace(pending) == "" {
-			pending = ""
-			return
-		}
-		if asLine {
-			lines = append(lines, pending)
-		} else {
-			messages = append(messages, pending)
-		}
-		pending = ""
+// take adds what a run wrote to what Setup said, once: a run read again after
+// it went on (a held call answered, a card's answer) has its earlier messages
+// and lines again, first and in the same order, and only the new ones count.
+func (t *test) take(runID string, messages, lines []string) {
+	if t.taken == nil {
+		t.taken = map[string][2]int{}
 	}
+	had := t.taken[runID]
+	t.said.messages = append(t.said.messages, messages[min(had[0], len(messages)):]...)
+	t.said.lines = append(t.said.lines, lines[min(had[1], len(lines)):]...)
+	t.taken[runID] = [2]int{max(had[0], len(messages)), max(had[1], len(lines))}
+}
+
+// splitLines parts what an agent wrote in one run into its messages and its
+// lines. A turn's text is a line, what it's doing now ("Miro las últimas
+// ejecuciones de Reembolsos…"), when tool calls follow it and the run then
+// writes again: the owner sees it on the live line, as a progress note, never
+// as a message of its own (kiff/tafs' core rule). A text its calls follow and
+// that the run doesn't write after before a card, a pause or its end ("Falta
+// que apruebes la conexión…", then the call the run waits on) is the run's
+// message, as tafs cloud shows it. The agent records a turn's text before its
+// calls, and marks the first turn after a pause (TurnTiming.Resumed).
+func splitLines(events []session.Event, runID string) (messages, lines []string) {
+	pending := ""       // the latest text, nothing after it yet
+	var called []string // texts calls followed, the run not having written since
 	for _, e := range events {
 		if e.Run != runID {
 			continue
 		}
 		switch e.Kind {
 		case session.AgentMessage, session.Report:
-			flush(false)
+			lines = append(lines, called...) // the run wrote again: they were lines
+			called = nil
+			if strings.TrimSpace(pending) != "" {
+				messages = append(messages, pending)
+			}
+			pending = ""
 			var b agent.TextBody
 			if json.Unmarshal(e.Body, &b) == nil {
 				pending = b.Text
 			}
 		case session.ToolCall:
-			flush(true)
+			if strings.TrimSpace(pending) != "" {
+				called = append(called, pending)
+			}
+			pending = ""
+		case session.Component:
+			// A card shown before the run writes again: what its calls followed introduced it.
+			messages = append(messages, called...)
+			called = nil
+		case session.Usage:
+			// The first turn after a pause: the run waited on the owner after them, so they were its messages.
+			var b struct {
+				Timing *session.TurnTiming `json:"timing"`
+			}
+			if json.Unmarshal(e.Body, &b) == nil && b.Timing != nil && b.Timing.Resumed {
+				messages = append(messages, called...)
+				called = nil
+			}
 		}
 	}
-	flush(false)
+	messages = append(messages, called...) // nothing written after them: the run's messages
+	if strings.TrimSpace(pending) != "" {
+		messages = append(messages, pending)
+	}
 	return messages, lines
 }
 
@@ -2157,8 +2188,7 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 		if err != nil {
 			return err
 		}
-		t.said.messages = append(t.said.messages, msgs...)
-		t.said.lines = append(t.said.lines, lines...)
+		t.take(w.run, msgs, lines)
 	}
 	return nil
 }
