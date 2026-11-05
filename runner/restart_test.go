@@ -61,7 +61,8 @@ func (s *stuckRead) Call(context.Context, json.RawMessage) (tool.Result, error) 
 // retrying meanwhile, its input is on the record once, and its restarted
 // turns cost on the run as its own.
 func TestARunKilledBeforeItActedIsRestartedFromItsStart(t *testing.T) {
-	f := newFixture(t, use("c1", "stripe_lookup", `{"charge":"ch_1"}`), say("Order 42 is paid."))
+	// The scripted model: the first attempt's look-up, then the restarted attempt's look-up and answer.
+	f := newFixture(t, use("c1", "stripe_lookup", `{"charge":"ch_1"}`))
 	s := newStuckRead(1)
 	t.Cleanup(func() { close(s.stuck) })
 	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
@@ -177,7 +178,7 @@ func TestAStoppedRunIsRestartedOnceUnderConcurrentSweeps(t *testing.T) {
 func TestARunThatKeepsStoppingBeforeItActsNeedsTheOwner(t *testing.T) {
 	f := newFixture(t)
 	for range run.MaxResumes + 1 {
-		f.model.add(use("c1", "stripe_lookup", `{"charge":"ch_1"}`), say("Order 42 is paid."))
+		f.model.add(use("c1", "stripe_lookup", `{"charge":"ch_1"}`)) // every attempt looks up, and stops there
 	}
 	s := newStuckRead(run.MaxResumes + 1)
 	t.Cleanup(func() { close(s.stuck) })
