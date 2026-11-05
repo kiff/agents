@@ -565,7 +565,6 @@ func TestCatalogSearchesByWords(t *testing.T) {
 	}
 }
 
-
 // A dot segment as a grant, entry or agent never leaves the tool: it would
 // go into planque's path as "." or "..", not as an id.
 func TestADotSegmentIsNeverSent(t *testing.T) {
