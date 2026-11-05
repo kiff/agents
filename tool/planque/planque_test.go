@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,11 +20,18 @@ import (
 
 // fake answers as planque does (contract 2): a grant view for the agent's
 // own key, a 409 before the owner's phone is enrolled.
+// seenMu guards what a fake saw: State reads grants at once, so its
+// handlers append at the same time. A test that reads seen after concurrent
+// calls holds it too.
+var seenMu sync.Mutex
+
 func fake(t *testing.T, enrolled bool) (*httptest.Server, *[]string) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		seenMu.Lock()
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization")+" "+string(body))
+		seenMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Header.Get("Authorization") != "Bearer k_setup":
@@ -397,14 +406,26 @@ func TestStateSaysWhereEachShownGrantStands(t *testing.T) {
 	if strings.Index(text, "grt_9") > strings.Index(text, "grt_1") {
 		t.Fatalf("the grants aren't in the order last shown: %q", text)
 	}
-	for _, s := range *seen {
+	seenMu.Lock()
+	asked := slices.Clone(*seen)
+	*seen = nil
+	seenMu.Unlock()
+	// The grants are read at once, so in any order: sorted, the two distinct grants, each once.
+	slices.Sort(asked)
+	if len(asked) != 2 || !strings.Contains(asked[0], "/grants/grt_1 ") || !strings.Contains(asked[1], "/grants/grt_9 ") {
+		t.Fatalf("State asked %v", asked)
+	}
+	for _, s := range asked {
 		if !strings.HasPrefix(s, "GET ") || !strings.Contains(s, "Bearer k_setup") {
 			t.Fatalf("State made %q", s)
 		}
 	}
-	*seen = nil
-	if text, _ := tl.State(context.Background(), shown[1:2]); text != "" || len(*seen) != 0 {
-		t.Fatalf("with no grant shown, State said %q and asked planque %d times", text, len(*seen))
+	text, _ = tl.State(context.Background(), shown[1:2])
+	seenMu.Lock()
+	n := len(*seen)
+	seenMu.Unlock()
+	if text != "" || n != 0 {
+		t.Fatalf("with no grant shown, State said %q and asked planque %d times", text, n)
 	}
 }
 
