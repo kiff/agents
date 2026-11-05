@@ -31,8 +31,11 @@ const (
 	// text: encoding can make a string several times longer (a '"' becomes
 	// two bytes, a control character six).
 	MaxSize = 256 << 10
-	// MaxPerAgent bounds the skills one definition names.
-	MaxPerAgent = 8
+	// MaxPerAgent bounds the skills one definition names. Their names and
+	// descriptions are in every turn's context (at most MaxDescription each),
+	// and the bodies a session loads are its own choice: kiff/tafs' Coach names
+	// eleven (kiff/tafs#525, #535).
+	MaxPerAgent = 16
 )
 
 // Package is one version of a skill, as the tenant stored it. A stored
