@@ -253,7 +253,8 @@ func TestTheModelKeyIsOutsideTheAgentsKeys(t *testing.T) {
 // event, with their expiry from the agent's keep rules; a run still in its
 // lease is left alone.
 func TestTheSweepEndsWhatNobodyElseWill(t *testing.T) {
-	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	inv := &invocations{}
+	f, _, agents, runs := newFunctionWith(t, &replies{}, inv)
 	d := registrytest.Definition("t1", "rae")
 	_ = agents.Put(ctx, d)
 	rn := f.runner.(*runner.Runner)
@@ -274,24 +275,28 @@ func TestTheSweepEndsWhatNobodyElseWill(t *testing.T) {
 	if err := rn.Sessions.Begin(ctx, "t1", crashed.Session, crashed.ID, crashed.Created); err != nil {
 		t.Fatal(err)
 	}
+	// Past PendingTimeout and the crashed run's lease; the healthy one's invocation holds a live lease (claimed a
+	// second ago here; renewed on its heartbeat in life).
+	later := now.Add(run.PendingTimeout + run.LeaseGrace + 2*time.Minute)
 	healthy := start()
-	if _, err := run.Claim(ctx, runs, "t1", healthy.ID, "c2", now.Add(time.Hour), now); err != nil {
+	if _, err := run.Claim(ctx, runs, "t1", healthy.ID, "c2", later.Add(time.Hour), later.Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
-
-	// Past PendingTimeout and the crashed run's lease, inside the healthy one's.
-	later := now.Add(run.PendingTimeout + run.LeaseGrace + 2*time.Minute)
 	f.now = func() time.Time { return later }
 	if _, err := f.handle(ctx, json.RawMessage(`{"sweep":{}}`)); err != nil {
 		t.Fatal(err)
 	}
 
 	want := later.Add(d.Keep.SessionRetention())
-	for _, r := range []run.Run{unclaimed, crashed} {
-		got, err := runs.Get(ctx, "t1", r.ID)
-		if err != nil || got.Status != run.Error || !got.Expires.Equal(want) {
-			t.Fatalf("got %s %s expiring %v (%v), want ERROR expiring %v", got.ID, got.Status, got.Expires, err, want)
-		}
+	if got, err := runs.Get(ctx, "t1", crashed.ID); err != nil || got.Status != run.Error || !got.Expires.Equal(want) {
+		t.Fatalf("got %s %s expiring %v (%v), want ERROR expiring %v", got.ID, got.Status, got.Expires, err, want)
+	}
+	// The unclaimed run's dispatch was lost: it is sent to an invocation again, not ended.
+	if got, err := runs.Get(ctx, "t1", unclaimed.ID); err != nil || got.Status != run.Pending || got.Resumes != 1 || !got.Wait.Equal(later.Add(run.PendingTimeout)) {
+		t.Fatalf("the unclaimed run: %+v (%v), want PENDING, dispatched again", got, err)
+	}
+	if n := len(inv.got); n != 1 {
+		t.Fatalf("%d invocations, want the unclaimed run's one", n)
 	}
 	if st, err := rn.Sessions.State(ctx, "t1", crashed.Session, crashed.ID); err != nil || !st.Ended {
 		t.Fatalf("the crashed run's recording: %+v (%v)", st, err)

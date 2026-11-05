@@ -67,6 +67,9 @@ type Runner struct {
 	Sessions session.Store
 	// Builder builds a run's agent for its tenant, each time it executes.
 	Builder *registry.Builder
+	// Heartbeat is how often a going run renews its lease (run.Renew):
+	// zero, DefaultHeartbeat. A test sets it short.
+	Heartbeat time.Duration
 	// Collect gets the outcome of each call a paused run waits for, from KIFF
 	// by its operation ID: one result per requirement, none still held. Nil
 	// until KIFF's operation IDs are recorded (step 4): a paused run can't
@@ -331,6 +334,13 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if r, err = run.Claim(ctx, rn.Runs, tenant, id, x.claim, deadline, rn.now()); err != nil {
 		return r, err
 	}
+	// The lease reaches run.LeaseSpan ahead and is renewed on a heartbeat
+	// while the invocation goes, a model turn or a tool call in flight
+	// included: a dead invocation is seen by the sweep within that span,
+	// not at its deadline, and a live one is never taken for dead. A beat
+	// that finds the lease lost stops the invocation: the sweep may have
+	// carried the run on.
+	go x.heartbeat(ctx, cancel, deadline)
 	// Checked once the run is claimed: a switch begins only while none of
 	// the agent's runs is active, so either it saw this one, or this sees
 	// the switch. A paused run goes back to waiting; a new one doesn't start.
@@ -952,6 +962,34 @@ func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.
 		return r, run.ErrLeaseLost
 	}
 	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), change)
+}
+
+// DefaultHeartbeat is how often a going run renews its lease when its
+// Runner sets no Heartbeat: well inside run.LeaseSpan.
+const DefaultHeartbeat = 30 * time.Second
+
+// heartbeat renews the run's lease every Heartbeat until ctx ends, and
+// stops the invocation (lost) when a renewal finds the lease gone. A
+// renewal that loses a write to another (run.ErrConflict), or can't read,
+// is left for the next beat: the lease still has most of its span.
+func (x *execution) heartbeat(ctx context.Context, lost context.CancelFunc, deadline time.Time) {
+	every := x.rn.Heartbeat
+	if every <= 0 {
+		every = DefaultHeartbeat
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if _, err := run.Renew(ctx, x.rn.Runs, x.tenant, x.id, x.claim, deadline, x.rn.now()); errors.Is(err, run.ErrLeaseLost) {
+			lost()
+			return
+		}
+	}
 }
 
 // checkpoint stores turn as the run's last safe step (Run.Acting), under its
