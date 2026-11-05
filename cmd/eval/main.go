@@ -448,6 +448,11 @@ func (rt *runtime) withdrawHeld(name, id string) {
 // state and answer, and how many it withdrew; a refused, sending or unknown
 // call can't be withdrawn, and is logged for the owner. Like withdrawHeld,
 // it fails nothing, and a public log shows no ids.
+//
+// It withdraws an approved hold the agent never collected too: right for
+// the eval's own test account, where every run starts from the same
+// fixture, and wrong anywhere else, where that call is still the agent's
+// to send. It belongs to cmd/eval alone.
 func (rt *runtime) clearPending(name, when string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
