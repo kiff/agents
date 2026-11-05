@@ -124,3 +124,17 @@ func TestTurnThinkingEstimate(t *testing.T) {
 		t.Fatalf("summary %+v", s)
 	}
 }
+
+// Setup's progress notes are kept as its lines, graded with what it wrote;
+// another agent's aren't.
+func TestWordsClockKeepsSetupsNotes(t *testing.T) {
+	w := &wordsClock{Model: deltas{"(note) Miro la cuenta…"}, setup: "You are Coach."}
+	for _, system := range []string{"You are Coach.\n\nskills…", "You are the Refunds taf."} {
+		if _, err := w.Turn(context.Background(), model.Request{System: system}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := w.setupNotes(); !slices.Equal(got, []string{"Miro la cuenta…"}) {
+		t.Fatalf("notes %q", got)
+	}
+}

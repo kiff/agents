@@ -91,9 +91,14 @@ var owners = map[string]owner{
 // said is what Setup wrote in the conversation, in order.
 type said struct {
 	messages []string
-	cards    map[string]component // by id, its latest version
-	order    []string             // card ids, as first shown
-	plans    map[string][]string  // a steps card's labels, as first shown, by id
+	// lines are what Setup wrote before its tool calls, what it's doing now:
+	// a turn's text its calls follow, or a progress note. Graded as Setup's
+	// words (language, ids, planque, a mode), never as messages: the owner
+	// sees them on the live line.
+	lines []string
+	cards map[string]component // by id, its latest version
+	order []string             // card ids, as first shown
+	plans map[string][]string  // a steps card's labels, as first shown, by id
 	// writesAsReads are tools Setup asked planque for as read-only that the
 	// vendor doesn't mark so, which planque refused (kiff/agents#139).
 	writesAsReads []string
@@ -141,20 +146,20 @@ func (s *said) card(c component) {
 }
 
 // texts is every piece of text Setup showed the owner, numbered: its
-// messages, then each card's title, text, button words, note and option
-// labels.
+// messages and lines, then each card's title, text, button words, note and
+// option labels.
 func (s *said) texts() []string {
-	out := append([]string(nil), s.messages...)
+	out := append(append([]string(nil), s.messages...), s.lines...)
 	for _, id := range s.order {
 		out = append(out, cardTexts(s.cards[id])...)
 	}
 	return out
 }
 
-// statements are what Setup stated: its messages and each card's
+// statements are what Setup stated: its messages, its lines and each card's
 // statements (cardStatements), never the options it offered the owner.
 func (s *said) statements() []string {
-	out := append([]string(nil), s.messages...)
+	out := append(append([]string(nil), s.messages...), s.lines...)
 	for _, id := range s.order {
 		out = append(out, cardStatements(s.cards[id])...)
 	}
@@ -299,11 +304,13 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	add("in the owner's language", g)
 
-	// 2. Concise, as judged for what each message had to say.
+	// 2. Concise, as judged for what each message had to say. Its lines
+	// aren't messages: a message opens with the outcome, never with one.
 	if g, err = j.AskMajority(ctx, Concise, numbered(s.messages)); err != nil {
 		return nil, err
 	}
 	add("concise", g)
+	add("says what it's doing in one short line", shortLines(s.lines))
 
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in
 	// a component (a confirm can ask too).
@@ -569,4 +576,24 @@ func choice(text string, options []option) string {
 		labels = append(labels, o.Label)
 	}
 	return strings.TrimSpace(text + " [" + strings.Join(labels, " | ") + "]")
+}
+
+// MaxLine is the most a line before a tool call may be, in characters: one
+// short line, as Setup's rule asks, which the live line shows whole.
+const MaxLine = 120
+
+// shortLines passes when each of Setup's lines is one short line: no line
+// break, at most MaxLine characters. Setup writing none passes.
+func shortLines(lines []string) eval.Grade {
+	var long []string
+	for i, l := range lines {
+		l = strings.TrimSpace(l)
+		if strings.Contains(l, "\n") || len([]rune(l)) > MaxLine {
+			long = append(long, fmt.Sprintf("line %d (%d characters): %q", i+1, len([]rune(l)), oneLine(l)))
+		}
+	}
+	if len(long) > 0 {
+		return eval.Grade{Why: "not one short line: " + strings.Join(long, "; ")}
+	}
+	return eval.Grade{Pass: true}
 }
