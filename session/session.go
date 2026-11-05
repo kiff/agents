@@ -8,6 +8,8 @@ package session
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -258,6 +260,21 @@ type ToolTiming struct {
 	IsError     bool   `json:"is_error,omitempty"`
 	// NotMade: the call was refused back unmade (agent.OneAtATime), not failed.
 	NotMade bool `json:"not_made,omitempty"`
+	// InputHash is a digest of the call's input (InputHash), never the input:
+	// a later call of the same tool with the same digest is a retry of this
+	// one, which a reader may fold into the retry's outcome (kiff-cloud#1487).
+	InputHash string `json:"input_hash,omitempty"`
+}
+
+// InputHash is the digest a ToolTiming carries for a call's input: the
+// first 16 hex digits of SHA-256 over the input as written. Empty input,
+// empty digest.
+func InputHash(input []byte) string {
+	if len(input) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(input)
+	return hex.EncodeToString(sum[:8])
 }
 
 // UsageBody is the body of a Usage event: what one model call used and cost.

@@ -774,7 +774,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
 				out.Done = append(out.Done, doneOf(r, calls[i].Input))
 			}
-			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade}
+			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade, InputHash: session.InputHash(calls[i].Input)}
 		}
 		if held {
 			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
