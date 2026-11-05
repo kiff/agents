@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/kiff/agents/model"
@@ -170,6 +171,26 @@ func Named(components []json.RawMessage, field string, max int) []string {
 		out = out[len(out)-max:]
 	}
 	return out
+}
+
+// Each runs f for 0..n-1 concurrently, at most limit at once, and returns
+// when all have: a Stater's reads of what the session names don't wait on
+// one another, and their answers keep their order (f writes its own slot).
+func Each(n, limit int, f func(i int)) {
+	if limit < 1 {
+		limit = 1
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, limit)
+	for i := range n {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			f(i)
+		}()
+	}
+	wg.Wait()
 }
 
 // Held reports whether KIFF holds the call for its owner.

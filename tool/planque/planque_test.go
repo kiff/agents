@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/planque"
@@ -669,6 +670,38 @@ func TestTheDescriptionSaysEachConnectionsKind(t *testing.T) {
 		"read grants with no agent: the same kind is the one to offer first"} {
 		if !strings.Contains(d, want) {
 			t.Fatalf("the description doesn't say %q: %s", want, d)
+		}
+	}
+}
+
+// A run's start waits for the slowest grant read, not their sum: each grant on
+// screen is read at once, and the lines keep the grants' order.
+func TestStateReadsTheGrantsAtOnce(t *testing.T) {
+	const delay = 150 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		w.Write([]byte(`{"id":"` + id + `","status":"connected"}`))
+	}))
+	t.Cleanup(srv.Close)
+	var shown []json.RawMessage
+	for i := range planque.MaxStated {
+		shown = append(shown, json.RawMessage(`{"type":"approval","grant":"grt_`+strconv.Itoa(i)+`"}`))
+	}
+	began := time.Now()
+	text, err := planque.New(srv.URL, "tnt_1", "k_setup", nil).State(context.Background(), shown)
+	took := time.Since(began)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%d grants at %v each: %v (one after another: %v)", planque.MaxStated, delay, took.Round(time.Millisecond), delay*planque.MaxStated)
+	if took > 3*delay {
+		t.Fatalf("%d grants took %v, one after another", planque.MaxStated, took)
+	}
+	for i := range planque.MaxStated {
+		at := strings.Index(text, `"grt_`+strconv.Itoa(i)+`"`)
+		if at < 0 || (i > 0 && at < strings.Index(text, `"grt_`+strconv.Itoa(i-1)+`"`)) {
+			t.Fatalf("grant %d missing or out of order: %s", i, text)
 		}
 	}
 }
