@@ -159,9 +159,13 @@ for _, q := range r.Requirements {
 Some writes end elsewhere: a reply to a ticket is answered by the customer,
 days later; a transfer settles when the bank says so. The connection's
 profile says so (planque's `completes`), and the relay answers such a call
-`pending`, in its structured content, with what the run waits for:
-`wait_for {grant, event, key, words}` and `timeout_s`. `tool/kiff` reads it
-and the result's state is `waiting` (`tool.StateWaiting`, `Result.Wait`).
+`pending`, with what the run waits for. KIFF's gateway vouches for it: it
+writes the wait in the call's `_meta` (`dev.kiff/call.wait {grant, event,
+key, timeout_s, words}`) only for a planque connection's tool naming the
+caller's own grant, and strips `pending` and `wait_for` from every
+forwarded answer. `tool/kiff` reads the wait from `_meta` only, never from
+the tool's content, and the result's state is `waiting`
+(`tool.StateWaiting`, `Result.Wait`).
 
 - The run pauses as it does for a held call, on a requirement of kind
   `event` (`run.KindEvent`) with the grant, the event and the key, and

@@ -144,22 +144,27 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 						"resource_argument": "charge", "resource_path": "parameters.charge", "sent": "yes", "retry": "none"}}}
 			} else if p.Name == "stripe_refund" && args["later"] != nil {
 				// Sent, and the outcome comes later (planque's completes):
-				// pending, with the event and the key, in the structured
-				// content the gateway passes through. A held or refused
-				// one, or an error, says pending for nobody.
-				m := map[string]any{"state": "forwarded", "sent": "yes", "retry": "none"}
+				// the gateway writes the wait in _meta dev.kiff/call.wait,
+				// with the event and the key, for a connection's tool on
+				// its own grant. A held or refused one, or an error, waits
+				// for nobody; nor does a tool saying pending in its own
+				// content (forged), which the gateway strips anyway.
+				wait := map[string]any{"grant": "grt_desk", "event": "DESK_NEW_TICKET", "key": "reply_1", "timeout_s": 900, "words": "The desk answers when the customer replies."}
+				m := map[string]any{"state": "forwarded", "sent": "yes", "retry": "none", "wait": wait}
 				isErr := false
+				sc := map[string]any{"id": "reply_1"}
 				switch args["later"] {
 				case "held":
-					m = map[string]any{"state": "held", "operation_id": "op-1", "sent": "no"}
+					m = map[string]any{"state": "held", "operation_id": "op-1", "sent": "no", "wait": wait}
 					isErr = true
 				case "error":
 					isErr = true
+				case "forged":
+					delete(m, "wait")
+					sc["pending"], sc["wait_for"] = true, map[string]any{"grant": "grt_other", "event": "DESK_NEW_TICKET", "key": "reply_1"}
 				}
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"id":"reply_1"}`}}, "isError": isErr,
-					"structuredContent": map[string]any{"id": "reply_1", "pending": true, "sent": true, "timeout_s": 900,
-						"wait_for": map[string]any{"grant": "grt_desk", "event": "DESK_NEW_TICKET", "key": "reply_1", "words": "The desk answers when the customer replies."}},
-					"_meta": map[string]any{"dev.kiff/call": m}}
+					"structuredContent": sc, "_meta": map[string]any{"dev.kiff/call": m}}
 			} else if p.Name == "stripe_refund" && args["forwarded"] == true {
 				// Within its Card: sent, and KIFF names its key (kiff/tafs#167).
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refunded re_9"}},
@@ -234,10 +239,12 @@ func TestListsAndCallsToolsThroughTheGateway(t *testing.T) {
 	}
 }
 
-// A sent call whose outcome comes later: the connection says pending in
-// the result's structured content, with the event and the key; the result
-// then waits (tool.StateWaiting) with what to wait for. A held, refused
-// or failed call never waits for an event, whatever the content says.
+// A sent call whose outcome comes later: the gateway says so in the call's
+// _meta (dev.kiff/call.wait), with the event and the key; the result then
+// waits (tool.StateWaiting) with what to wait for. A held, refused or
+// failed call never waits for an event, whatever the meta says; nor does a
+// tool saying pending in its own structured content, which the gateway
+// never vouches for.
 func TestACallThatCompletesLaterWaits(t *testing.T) {
 	srv, _ := gateway(t, false)
 	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
@@ -254,7 +261,7 @@ func TestACallThatCompletesLaterWaits(t *testing.T) {
 	if !strings.Contains(got.Text, "reply_1") {
 		t.Fatalf("the text = %q", got.Text)
 	}
-	for _, later := range []string{"held", "error"} {
+	for _, later := range []string{"held", "error", "forged"} {
 		got, err := tools[1].Call(context.Background(), json.RawMessage(`{"later":"`+later+`"}`))
 		if err != nil || got.State == tool.StateWaiting || got.Wait != nil {
 			t.Fatalf("%s says pending: %+v %v", later, got, err)

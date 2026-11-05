@@ -100,10 +100,12 @@ type Hold struct {
 	Expires time.Time `json:"expires"`
 }
 
-// Wait is what a call whose outcome comes later waits for, as the
-// connection said in the call's result: the event of the app that
-// completes it, the key that event carries (the call's handle), the grant
-// the event comes on, how long to wait, and the words the owner reads.
+// Wait is what a call whose outcome comes later waits for, as KIFF's
+// gateway writes it in the call's _meta (dev.kiff/call.wait, from the
+// connection's answer, for the caller's own grant only): the event of the
+// app that completes it, the key that event carries (the call's handle),
+// the grant the event comes on, how long to wait, and the words the owner
+// reads.
 type Wait struct {
 	Grant    string `json:"grant,omitempty"`
 	Event    string `json:"event"`
