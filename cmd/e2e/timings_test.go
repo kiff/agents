@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,12 +81,32 @@ func TestWordsClockTimesTheFirstText(t *testing.T) {
 	}
 }
 
-// deltas is a model whose turn streams these texts.
+// A progress note before the turn's first tool call is its first words: the
+// person waiting sees it on the live line, before any text. The note still
+// reaches whoever asked for it.
+func TestWordsClockTimesAProgressNote(t *testing.T) {
+	w := &wordsClock{Model: deltas{"(note) Miro las ejecuciones de Reembolsos", "Listo."}}
+	var notes, text []string
+	if _, err := w.Turn(context.Background(), model.Request{OnUpdate: func(s string) { notes = append(notes, s) }},
+		func(s string) { text = append(text, s) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.times()) != 1 || !slices.Equal(notes, []string{"Miro las ejecuciones de Reembolsos"}) || !slices.Equal(text, []string{"Listo."}) {
+		t.Fatalf("times %v, notes %q, text %q", w.times(), notes, text)
+	}
+}
+
+// deltas is a model whose turn streams these texts; one that starts "(note) "
+// is a progress note instead.
 type deltas []string
 
-func (d deltas) Turn(_ context.Context, _ model.Request, onText func(string)) (model.Reply, error) {
+func (d deltas) Turn(_ context.Context, req model.Request, onText func(string)) (model.Reply, error) {
 	for _, s := range d {
-		if onText != nil {
+		if note, ok := strings.CutPrefix(s, "(note) "); ok {
+			if req.OnUpdate != nil {
+				req.OnUpdate(note)
+			}
+		} else if onText != nil {
 			onText(s)
 		}
 	}

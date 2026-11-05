@@ -343,8 +343,14 @@ var ErrNoVersion = errors.New("registry: no such version")
 // refused (Claude Haiku 4.5).
 var ThinkingModels = []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5", "claude-mythos-5"}
 
-func thinksAnyway(id string) bool {
-	return slices.ContainsFunc(ThinkingModels, func(p string) bool { return strings.HasPrefix(id, p) })
+// UpdatesModels are the model ids, by prefix, that write progress notes
+// between tool calls, for thinking "updates". Claude Mythos 5 doesn't.
+var UpdatesModels = []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5", "claude-mythos-5-1"}
+
+func thinksAnyway(id string) bool { return hasPrefix(ThinkingModels, id) }
+
+func hasPrefix(prefixes []string, id string) bool {
+	return slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(id, p) })
 }
 
 // Check refuses a definition that can't be stored or run safely.
@@ -362,10 +368,12 @@ func (d Definition) Check() error {
 		return errors.New("registry: max tokens must be positive")
 	case d.Effort != "" && !slices.Contains(model.Efforts, d.Effort):
 		return fmt.Errorf("registry: effort is empty or one of %s", strings.Join(model.Efforts, ", "))
-	case d.Thinking != "" && d.Thinking != model.ThinkingSummarized:
-		return fmt.Errorf("registry: thinking is empty or %q", model.ThinkingSummarized)
+	case d.Thinking != "" && d.Thinking != model.ThinkingSummarized && d.Thinking != model.ThinkingUpdates:
+		return fmt.Errorf("registry: thinking is empty, %q or %q", model.ThinkingSummarized, model.ThinkingUpdates)
 	case d.Thinking != "" && !thinksAnyway(d.Model):
 		return fmt.Errorf("registry: thinking is shown only for a model that thinks whether asked or not (%s)", strings.Join(ThinkingModels, ", "))
+	case d.Thinking == model.ThinkingUpdates && !hasPrefix(UpdatesModels, d.Model):
+		return fmt.Errorf("registry: thinking %q is only for a model that writes progress notes (%s)", model.ThinkingUpdates, strings.Join(UpdatesModels, ", "))
 	case d.Speed != "" && d.Speed != SpeedStandard && d.Speed != SpeedFast:
 		return errors.New(`registry: speed is empty, "standard" or "fast"`)
 	case d.Speed == SpeedFast && (d.PriceFast.Input <= 0 || d.PriceFast.Output <= 0 || d.PriceFast.CacheRead < 0 || d.PriceFast.CacheWrite < 0 || d.PriceFast.CacheWrite1h < 0):

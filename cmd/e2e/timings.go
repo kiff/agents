@@ -58,9 +58,10 @@ func (t *test) setupTimings(ctx context.Context) {
 	}
 }
 
-// wordsClock is the model, timing the first text of each of its turns: the
-// first words a person waiting sees. Every turn goes through it; what's
-// read is only when.
+// wordsClock is the model, timing the first words of each of its turns that
+// a person waiting sees: its first text, or its first progress note between
+// tool calls (thinking "updates"), whichever comes first. Every turn goes
+// through it; what's read is only when.
 type wordsClock struct {
 	model.Model
 	mu    sync.Mutex
@@ -69,20 +70,30 @@ type wordsClock struct {
 
 func (w *wordsClock) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
 	first := true
-	return w.Model.Turn(ctx, req, func(text string) {
-		if first && strings.TrimSpace(text) != "" {
+	words := func(s string) {
+		if first && strings.TrimSpace(s) != "" {
 			first = false
 			w.mu.Lock()
 			w.texts = append(w.texts, time.Now())
 			w.mu.Unlock()
 		}
+	}
+	onUpdate := req.OnUpdate
+	req.OnUpdate = func(note string) {
+		words(note)
+		if onUpdate != nil {
+			onUpdate(note)
+		}
+	}
+	return w.Model.Turn(ctx, req, func(text string) {
+		words(text)
 		if onText != nil {
 			onText(text)
 		}
 	})
 }
 
-// times is when each turn that wrote text wrote its first, in order.
+// times is when each turn that wrote words wrote its first, in order.
 func (w *wordsClock) times() []time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()

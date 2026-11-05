@@ -915,3 +915,79 @@ func TestAWebSearchGoesBackOnlyWhileTheWebIsOffered(t *testing.T) {
 		}
 	}
 }
+
+// updatesStream is a turn under display "updates": an empty reasoning block,
+// a progress note in two deltas before its tool call, and the API's note for
+// unfinished work, which says nothing to someone waiting.
+var updatesStream = []string{
+	`{"type":"message_start","message":{"id":"msg_3","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-r"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+	`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Checking your last "}}`,
+	`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"refunds…"}}`,
+	`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"sig-n"}}`,
+	`{"type":"content_block_stop","index":1}`,
+	`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"list_refunds","input":{}}}`,
+	`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+	`{"type":"content_block_stop","index":2}`,
+	`{"type":"content_block_start","index":3,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+	`{"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"This part of the response was interrupted before it finished."}}`,
+	`{"type":"content_block_delta","index":3,"delta":{"type":"signature_delta","signature":"sig-i"}}`,
+	`{"type":"content_block_stop","index":3}`,
+	`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":40}}`,
+	`{"type":"message_stop"}`,
+}
+
+// Thinking "updates" asks for adaptive thinking with display "updates", under
+// its beta, and passes on each progress note whole, once its block ends: not
+// an empty block, not the API's note for unfinished work, never as text or as
+// thinking. The blocks keep every note as it came, to go back unchanged.
+func TestAnUpdatesTurnShowsItsProgressNotesWhole(t *testing.T) {
+	m, got := answering(t, call{http.StatusOK, updatesStream}, call{http.StatusOK, updatesStream})
+	msgs := []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "How are refunds?"}}}}
+	var notes, thoughts []string
+	var text strings.Builder
+	reply, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 512, Messages: msgs, Thinking: model.ThinkingUpdates,
+		OnUpdate: func(s string) { notes = append(notes, s) }, OnThinking: func(s string) { thoughts = append(thoughts, s) }},
+		func(s string) { text.WriteString(s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := (*got)[0]
+	if a.beta != anthropic.UpdatesBeta || a.thinking["type"] != "adaptive" || a.thinking["display"] != "updates" {
+		t.Fatalf("asked %+v", a)
+	}
+	if fmt.Sprint(notes) != "[Checking your last refunds…]" || thoughts != nil || text.Len() != 0 {
+		t.Fatalf("notes %q, thinking %q, text %q", notes, thoughts, text.String())
+	}
+	if len(reply.Blocks) != 4 || reply.Blocks[1].Text != "Checking your last refunds…" || reply.Blocks[1].Signature != "sig-n" || reply.Blocks[3].Signature != "sig-i" {
+		t.Fatalf("blocks %+v", reply.Blocks)
+	}
+
+	// Replaying thinking (a chat after its first call) and fast output send
+	// their betas in the same header value, and the display stays.
+	replay := append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks},
+		model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "toolu_1", Result: "[]"}}})
+	if _, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 512, Messages: replay, Thinking: model.ThinkingUpdates, Fast: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := (*got)[1]; a.beta != anthropic.BindingBeta+","+anthropic.UpdatesBeta+","+anthropic.FastBeta || a.thinking["display"] != "updates" {
+		t.Fatalf("a replay asked %+v", a)
+	}
+}
+
+// A summarized turn never passes its thinking on as progress notes.
+func TestASummarizedTurnHasNoProgressNotes(t *testing.T) {
+	m, _ := serve(t, updatesStream)
+	var notes, thoughts []string
+	if _, err := m.Turn(context.Background(), model.Request{Model: "m", MaxTokens: 512, Thinking: model.ThinkingSummarized,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Hi."}}}},
+		OnUpdate: func(s string) { notes = append(notes, s) }, OnThinking: func(s string) { thoughts = append(thoughts, s) }}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if notes != nil || len(thoughts) != 3 {
+		t.Fatalf("notes %q, thinking %q", notes, thoughts)
+	}
+}
