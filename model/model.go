@@ -74,12 +74,14 @@ type Block struct {
 
 // Image is a picture a tool returned, as the model reads it.
 type Image struct {
-	MediaType string // image/jpeg, image/png, image/gif or image/webp
+	MediaType string // image/jpeg, image/png or image/gif
 	Bytes     []byte
 }
 
-// ImageTypes are the media types a tool's image may have.
-var ImageTypes = []string{"image/jpeg", "image/png", "image/gif", "image/webp"}
+// ImageTypes are the media types a tool's image may have: the ones the model
+// reads that the standard library can check (a tool's image is decoded before
+// it's kept, so a bad one never reaches the model; qa-kiff on #339).
+var ImageTypes = []string{"image/jpeg", "image/png", "image/gif"}
 
 // Message is one turn of the conversation.
 type Message struct {

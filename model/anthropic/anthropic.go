@@ -571,10 +571,13 @@ func fromMessage(msg sdk.Message) model.Reply {
 // ImagesDropStep how many leave at once past that: the oldest go in steps,
 // not one a turn, so the cached prefix stays the same for that many turns
 // (dropping one each turn would rewrite the cache every turn, which costs
-// more than reading the images again; kiff/tafs#544).
+// more than reading the images again; kiff/tafs#544). At 20, a request never
+// holds more than 20 images, past which the model applies a stricter bound to
+// every image's size, and a turn uploads about half as much (agentgabo and
+// qa-kiff on #339).
 const (
-	ImagesKept     = 40
-	ImagesDropStep = 20
+	ImagesKept     = 20
+	ImagesDropStep = 10
 )
 
 // imagesDropped is how many of the request's tool images, oldest first, the

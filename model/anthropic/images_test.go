@@ -63,7 +63,8 @@ func TestAToolsImagesGoInItsResult(t *testing.T) {
 
 // Past ImagesKept, the oldest images leave ImagesDropStep at a time, each a
 // line saying so: the request's prefix stays the same for that many turns,
-// so the cache holds, and the model always reads the latest ones.
+// so the cache holds, the model always reads the latest ones, and a request
+// never holds more than ImagesKept.
 func TestTheOldestImagesLeaveInSteps(t *testing.T) {
 	images := func(got [][]map[string]any) (shown, gone int) {
 		for _, r := range got {
@@ -91,6 +92,10 @@ func TestTheOldestImagesLeaveInSteps(t *testing.T) {
 		shown, gone := images(got)
 		if gone != tc.gone || shown != tc.n-tc.gone {
 			t.Errorf("%d images: %d shown, %d gone; want %d gone", tc.n, shown, gone, tc.gone)
+		}
+		// Never more than ImagesKept in one request: past 20, the model holds every image to a stricter size.
+		if shown > anthropic.ImagesKept {
+			t.Errorf("%d images: %d in one request", tc.n, shown)
 		}
 		// The latest is always read, the oldest first to go.
 		if got[len(got)-1][1]["type"] != "image" || (tc.gone > 0 && got[0][1]["type"] == "image") {

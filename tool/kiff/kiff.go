@@ -16,6 +16,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"  // a tool's image is decoded as what it says it is (DecodeConfig)
+	_ "image/jpeg" // likewise
+	_ "image/png"  // likewise
 	"io"
 	"net/http"
 	"slices"
@@ -29,12 +33,15 @@ import (
 	"github.com/kiff/agents/tool"
 )
 
-// MaxImages and MaxImageBytes bound the images one gateway call returns (a
-// drive's screenshot, kiff/tafs#544): what the model may read, never the
-// record, which keeps the text alone.
+// MaxImages, MaxImageBytes and MaxImageSide bound the images one gateway call
+// returns (a drive's screenshot, kiff/tafs#544): what the model may read,
+// never the record, which keeps the text alone. MaxImageSide is the model's
+// own bound on a side once a request holds many images: past it, the whole
+// request is refused, every later turn with it.
 const (
 	MaxImages     = 4
 	MaxImageBytes = 1 << 20
+	MaxImageSide  = 3000
 )
 
 // URL is KIFF's gateway.
@@ -195,11 +202,25 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 			// the model only when it's an image type it reads, within MaxImageBytes, and at
 			// most MaxImages a call; anything else is a line saying so, never dropped silently.
 			b, err := base64.StdEncoding.DecodeString(c.Data)
+			var cfg image.Config
+			format := ""
+			if err == nil && len(b) > 0 && len(b) <= MaxImageBytes {
+				// Decoded as what it says it is before it's kept: an image the model can't read
+				// would fail this turn and every later one that carries it (qa-kiff on #339). The
+				// header first, which bounds its size, then the whole of it, so one cut short is
+				// caught too.
+				cfg, format, err = image.DecodeConfig(bytes.NewReader(b))
+				if err == nil && cfg.Width <= MaxImageSide && cfg.Height <= MaxImageSide {
+					_, _, err = image.Decode(bytes.NewReader(b))
+				}
+			}
 			switch {
-			case err != nil || len(b) == 0 || !slices.Contains(model.ImageTypes, c.MimeType):
-				text = append(text, "[an image the tool sent that couldn't be read]")
 			case len(b) > MaxImageBytes:
 				text = append(text, fmt.Sprintf("[an image of %d bytes, over the %d a tool's image may be]", len(b), MaxImageBytes))
+			case err != nil || len(b) == 0 || !slices.Contains(model.ImageTypes, c.MimeType) || "image/"+format != c.MimeType:
+				text = append(text, "[an image the tool sent that couldn't be read]")
+			case cfg.Width > MaxImageSide || cfg.Height > MaxImageSide:
+				text = append(text, fmt.Sprintf("[an image of %d×%d pixels, over the %d a side a tool's image may be]", cfg.Width, cfg.Height, MaxImageSide))
 			case len(images) >= MaxImages:
 				text = append(text, fmt.Sprintf("[more than %d images: the rest left out]", MaxImages))
 			default:
@@ -212,6 +233,11 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return tool.Result{}, meta{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
 		}
+	}
+	if len(images) > 0 {
+		// The record keeps the text alone: said, so a run resumed from it knows an image was
+		// there and is no longer in view (qa-kiff on #339).
+		text = append(text, fmt.Sprintf("[%d image(s) with this answer, for this run only: not kept once it pauses]", len(images)))
 	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation), Images: images}
 	// What the call is on: the argument KIFF's Card scopes on, where KIFF
