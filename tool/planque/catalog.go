@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/kiff/agents/tool"
 )
@@ -45,7 +47,27 @@ type catalogPage struct {
 	Truncated bool          `json:"truncated,omitempty"`
 }
 
-func (t *Tool) catalog(ctx context.Context, path, only, cursor string) (tool.Result, error) {
+// maxMatches is how many tools a word search of a catalog answers at most,
+// each in full.
+const maxMatches = 20
+
+// matches says whether every word of q is in the tool's name or description,
+// whatever the case.
+func matches(q string, ct catalogTool) bool {
+	text := strings.ToLower(ct.Name + " " + ct.Description)
+	for _, w := range strings.Fields(strings.ToLower(q)) {
+		if !strings.Contains(text, w) {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.Result, error) {
+	q = strings.TrimSpace(q)
+	if only != "" && q != "" {
+		return tool.Result{Text: "catalog takes tool (one by its name) or q (words to search by), not both", IsError: true}, nil
+	}
 	var at catalogCursor
 	if cursor != "" {
 		if len(cursor) > maxCatalogCursor {
@@ -111,6 +133,29 @@ func (t *Tool) catalog(ctx context.Context, path, only, cursor string) (tool.Res
 				c.Truncated, c.Skipped = false, 0
 				break
 			}
+		} else if q != "" {
+			// A word search across the pages (kiff/tafs#476, gap 1): the tools
+			// whose name or description has every word, in full, up to
+			// maxMatches; a cursor resumes just after the last match.
+			full := false
+			for i := at.Offset; i < len(p.Tools); i++ {
+				if !matches(q, p.Tools[i]) {
+					continue
+				}
+				c.Tools = append(c.Tools, p.Tools[i])
+				if len(c.Tools) == maxMatches {
+					if i+1 < len(p.Tools) {
+						c.Next = catalogCursor{Page: at.Page, Offset: i + 1}.encode()
+					} else if p.Next != "" {
+						c.Next = catalogCursor{Page: p.Next}.encode()
+					}
+					full = true
+					break
+				}
+			}
+			if full {
+				break
+			}
 		} else {
 			for i := at.Offset; i < len(p.Tools); i++ {
 				positions = append(positions, catalogCursor{Page: at.Page, Offset: i})
@@ -129,7 +174,35 @@ func (t *Tool) catalog(ctx context.Context, path, only, cursor string) (tool.Res
 		}
 	}
 	incompleteSearch := false
-	if only != "" {
+	if q != "" {
+		var shortened, left int
+		header := c
+		header.Tools = nil
+		metadata, _ := json.Marshal(header)
+		c.Tools, shortened, left = bound(c.Tools, MaxCatalog-len(metadata)-maxCatalogCursor-512)
+		c.Truncated = c.Truncated || c.Next != "" || left > 0
+		switch {
+		case len(c.Tools) == 0 && !c.Truncated && c.Skipped == 0:
+			c.Note = "No tool's name or description has every word of " + strconv.Quote(q) + ": try fewer or other words, or catalog {grant} to list them."
+		case len(c.Tools) == 0:
+			c.Note = "No match so far; the search is incomplete, so a tool is not known to be absent."
+			if c.Next != "" {
+				c.Note += " Continue catalog {grant, q, cursor: next_cursor}."
+			}
+			incompleteSearch = true
+		default:
+			c.Note = fmt.Sprintf("%d tools match %s, in full.", len(c.Tools), strconv.Quote(q))
+			if len(c.Tools) == 1 {
+				c.Note = fmt.Sprintf("1 tool matches %s, in full.", strconv.Quote(q))
+			}
+			if shortened > 0 {
+				c.Note += fmt.Sprintf(" %d are shortened: catalog {grant, tool} shows one in full.", shortened)
+			}
+			if c.Next != "" {
+				c.Note += " More may match: continue catalog {grant, q, cursor: next_cursor}."
+			}
+		}
+	} else if only != "" {
 		if len(c.Tools) == 0 {
 			if c.Next == "" && !c.Truncated && c.Skipped == 0 {
 				return tool.Result{Text: "the catalog has no tool named " + only, IsError: true}, nil
