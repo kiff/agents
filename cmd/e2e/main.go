@@ -304,8 +304,11 @@ type test struct {
 	// result is Setup's result that waits for what came of the hand-over:
 	// answered, as tafs cloud does, once the taf or its version is made.
 	result *waitingResult
-	// setupSkills are the skills Setup's definition names, by name (kiff/tafs#218).
-	setupSkills []string
+	// setupSkills are the skills Setup's definition names, by name (kiff/tafs#218),
+	// and setupSkillRefs the same as stored versions ("name@version"), in the
+	// definition's order, for a conversation's start (kiff/tafs#525).
+	setupSkills    []string
+	setupSkillRefs []string
 	// skillMisses are the skills cases that failed so far: the test fails on them at its end,
 	// after every case ran.
 	skillMisses []string
@@ -379,6 +382,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	}
 	for _, r := range setup.Skills {
 		t.setupSkills = append(t.setupSkills, r.Name)
+		t.setupSkillRefs = append(t.setupSkillRefs, r.String())
 	}
 
 	fmt.Fprintln(t.cfg.log, "== the setup chat")
@@ -815,7 +819,8 @@ func cardAnswer(c show.Component, msg string) (json.RawMessage, error) {
 // converse is the owner in the setup chat: one message, then an answer to
 // each component the agent shows, until it shows the result.
 func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) {
-	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup"}
+	// A free start opens with the setup's skills, as tafs cloud names them (kiff/tafs#525).
+	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free")}
 	defer func() { t.setupSession = ch.Session }()
 	o := owners[t.cfg.owner]
 	// What an owner would say: the outcome, in their words and language.
