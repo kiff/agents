@@ -107,6 +107,8 @@ type config struct {
 	judge                                           *eval.Judge // grades the setup chat (-grade); nil: not graded
 	maxTurns                                        int
 	maxCost                                         int64
+	// speed overrides the definitions' speed for the run ("standard" or "fast"); "" keeps theirs.
+	speed string
 	keep                                            bool
 	improve                                         bool // the improve case, after the taf
 	desk                                            bool // the second vendor: a desk by its key, Setup's connection only
@@ -157,6 +159,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
 	maxCost := fs.Float64("max-cost", 3, "the most the whole test may spend on the model, in US dollars")
+	fs.StringVar(&cfg.speed, "speed", "", "run every definition at this speed, standard or fast, whatever it says; empty keeps the definition's")
 	fs.BoolVar(&cfg.people, "people", false, "step 9 (kiff/tafs#294) instead of the taf's own checks: tafs cloud starts Setup's taf, it is shared with Support, "+
 		"and Maria and Luis (E2E_MARIA_*, E2E_LUIS_*) each see only their own use of it")
 	fs.BoolVar(&cfg.desk, "desk", false, "the second vendor (kiff/agents#293): Setup connects the fake vendor's support desk, a REST API by its key "+
@@ -184,6 +187,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		return peopleSignIn(ctx, kiff.APIURL, *account, *person, &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	cfg.maxCost = int64(*maxCost * 1e6)
+	if cfg.speed != "" && cfg.speed != registry.SpeedStandard && cfg.speed != registry.SpeedFast {
+		return fmt.Errorf("-speed %q: standard or fast", cfg.speed)
+	}
 	if *transcript != "" {
 		f, err := os.OpenFile(*transcript, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
@@ -604,7 +610,16 @@ func (t *test) setupDefinition() (registry.Definition, error) {
 	d.Keep = keepAll
 	d.Planque, d.Show, d.Drafts, d.Workspace = strings.TrimRight(t.cfg.planque, "/"), true, true, false
 	d.MaxCost = t.cfg.maxCost
+	atSpeed(&d, t.cfg.speed)
 	return d, d.Check()
+}
+
+// atSpeed runs d at speed when one is given (-speed): a run that must not
+// cost the fast output, whatever the definition says.
+func atSpeed(d *registry.Definition, speed string) {
+	if speed != "" {
+		d.Speed = speed
+	}
 }
 
 // tafDefinition is the taf the owner then uses: -taf's definition, as kiff/tafs
@@ -626,6 +641,7 @@ func (t *test) tafDefinition(id string) (registry.Definition, error) {
 	}
 	d.Tenant, d.ID, d.KeyRef, d.Gateway = t.tenant, id, "kiff/taf", kiff.URL
 	d.Keep, d.MaxCost, d.MaxTurns, d.History = keepAll, t.cfg.maxCost/4, 6, 2
+	atSpeed(&d, t.cfg.speed)
 	return d, d.Check()
 }
 

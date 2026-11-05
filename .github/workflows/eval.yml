@@ -17,6 +17,11 @@ on:
   schedule:
     - cron: "7 4 * * *"
   workflow_dispatch:
+    inputs:
+      repeat:
+        description: "How many times chargebacks runs (the nightly runs it twice)"
+        type: string
+        default: "2"
 permissions:
   contents: read
   id-token: write
@@ -88,7 +93,7 @@ jobs:
           # refuses any other.
           EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
         run: |
-          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat 2 \
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat "${{ inputs.repeat || '2' }}" -speed standard \
             -baseline eval/baseline.json \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results.json -report report.md chargebacks
@@ -103,8 +108,9 @@ jobs:
         # bucket, so a failed chat can be read afterwards. Then the improve
         # case (kiff/tafs#107): Setup makes the taf's next version, a trial
         # decides it, the owner switches, it runs. A failed check fails the
-        # night. Setup runs at the fast output (#197): its cap keeps the same
-        # room.
+        # night. Setup's definition runs at the fast output (#197), but the
+        # eval runs it standard (-speed), as the judge is Sonnet: the eval
+        # measures the words, never the speed, and costs the less for it.
         if: steps.unchanged.outputs.skip != 'true' && (always())
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -113,7 +119,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md -speed standard -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Setup on the second vendor, a desk by its key
         # The same Setup on a vendor that isn't payments and has no MCP server
         # (kiff/agents#293): the fake vendor's support desk, by its REST API and
@@ -131,7 +137,7 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -transcript desk.md
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -transcript desk.md -speed standard -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       # Main's role writes under reports/; a branch's (an eval/tafs-<sha>
       # measure, a PR's branch) only under reports/branches/<branch>/, so a
       # check that fails there can be read too (infra/aws.sh). Only a pushed
