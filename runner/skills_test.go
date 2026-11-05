@@ -9,6 +9,7 @@ import (
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/skill"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
@@ -68,6 +69,38 @@ func TestARunsSkillsFollowTheInstructionsInTheDefinitionsOrder(t *testing.T) {
 	}
 	if got, _ := f.store.List(ctx, "t1", "rae", 10); len(got) != 1 {
 		t.Fatalf("a refused start opened a session: %d sessions", len(got))
+	}
+}
+
+// Naming skills never lets a run into a session that isn't its own: another
+// person's chat, or another agent's session, is not found with skills as
+// without (#219), and the session gains none (qa-kiff's probe on #312).
+func TestSkillsNeverOpenAnotherPersonsOrAgentsSession(t *testing.T) {
+	f := newFixture(t, say("Hello."))
+	withSkills(t, f)
+	ana := run.Requester{Kind: run.ByMember, ID: "ana"}
+	luis := run.Requester{Kind: run.ByMember, ID: "luis"}
+	r := f.start(server.Start{Input: "hi", Requester: ana})
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: r.Session, Input: "x", Requester: luis, Skills: []string{"cards@1"}}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("luis going on in ana's session with skills: %v, want not found", err)
+	}
+	other := registrytest.Definition("t1", "other")
+	other.Skills = []skill.Ref{{Name: "cards", Version: "1"}}
+	if err := f.agents.Put(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "other", Trigger: run.ByOwner, Session: r.Session, Input: "x", Requester: ana, Skills: []string{"cards@1"}}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("another agent going on in rae's session with skills: %v, want not found", err)
+	}
+	if got, err := f.store.Skills(ctx, "t1", r.Session); err != nil || len(got) != 0 {
+		t.Fatalf("the refused runs added skills: %v, %v", got, err)
+	}
+	// Ana herself, with skills, goes on and the session gains them.
+	if next, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Session: r.Session, Input: "more", Requester: ana, Skills: []string{"cards@1"}}); err != nil || next.Session != r.Session {
+		t.Fatalf("ana going on: %v", err)
+	}
+	if got, _ := f.store.Skills(ctx, "t1", r.Session); strings.Join(got, " ") != "cards@1" {
+		t.Fatalf("the session holds %v", got)
 	}
 }
 

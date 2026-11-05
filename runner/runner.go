@@ -189,11 +189,6 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 			return run.Run{}, err
 		}
 		s.Session, opened = sess.ID, true
-	}
-	if len(s.Skills) > 0 {
-		if _, err := rn.Sessions.AddSkills(ctx, s.Tenant, s.Session, s.Skills); err != nil {
-			return run.Run{}, err
-		}
 	} else {
 		sess, _, err := rn.Sessions.Read(ctx, s.Tenant, s.Session)
 		if err != nil {
@@ -202,6 +197,13 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		// Another agent's session, or another person's, is not found.
 		if sess.Agent != s.Agent || !sess.ContinuedBy(s.Requester.Key()) {
 			return run.Run{}, session.ErrNotFound
+		}
+	}
+	// The session's skills, once it is known to be this agent's and this
+	// person's: a later run adds to what it holds, once.
+	if len(s.Skills) > 0 {
+		if _, err := rn.Sessions.AddSkills(ctx, s.Tenant, s.Session, s.Skills); err != nil {
+			return run.Run{}, err
 		}
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
