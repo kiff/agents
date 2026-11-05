@@ -498,3 +498,16 @@ func TestLinesAreReadButNotJudgedAsMessages(t *testing.T) {
 		t.Fatalf("statements %q", got)
 	}
 }
+
+// A run read again after it went on counts only what it wrote since: the
+// confirming Eval listed "Falta que apruebes la conexión…" four times.
+func TestARunReadAgainCountsOnce(t *testing.T) {
+	tt := &test{}
+	tt.take("r1", []string{"Falta que apruebes la conexión."}, []string{"Miro la cuenta…"})
+	tt.take("r1", []string{"Falta que apruebes la conexión.", "Conectado."}, []string{"Miro la cuenta…"})
+	tt.take("r2", []string{"Falta que apruebes la conexión."}, nil)
+	if !slices.Equal(tt.said.messages, []string{"Falta que apruebes la conexión.", "Conectado.", "Falta que apruebes la conexión."}) ||
+		!slices.Equal(tt.said.lines, []string{"Miro la cuenta…"}) {
+		t.Fatalf("messages %q, lines %q", tt.said.messages, tt.said.lines)
+	}
+}

@@ -303,6 +303,9 @@ type test struct {
 	// sent each message: the waits for words in the setup chat.
 	words *wordsClock
 	sent  []time.Time
+	// taken is, by run, how many of its messages and lines are in said: a
+	// run read again counts only what's new (take).
+	taken map[string][2]int
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
 	// result is Setup's result that waits for what came of the hand-over:
@@ -878,8 +881,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			if err != nil {
 				return "", "", err
 			}
-			t.said.messages = append(t.said.messages, msgs...)
-			t.said.lines = append(t.said.lines, lines...)
+			t.take(r.ID, msgs, lines)
 			if err := t.noteTestReport(ctx, ch.Session, r.ID); err != nil {
 				return "", "", err
 			}
@@ -1085,6 +1087,19 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (message
 	}
 	messages, lines = splitLines(events, runID)
 	return messages, lines, nil
+}
+
+// take adds what a run wrote to what Setup said, once: a run read again after
+// it went on (a held call answered, a card's answer) has its earlier messages
+// and lines again, first and in the same order, and only the new ones count.
+func (t *test) take(runID string, messages, lines []string) {
+	if t.taken == nil {
+		t.taken = map[string][2]int{}
+	}
+	had := t.taken[runID]
+	t.said.messages = append(t.said.messages, messages[min(had[0], len(messages)):]...)
+	t.said.lines = append(t.said.lines, lines[min(had[1], len(lines)):]...)
+	t.taken[runID] = [2]int{max(had[0], len(messages)), max(had[1], len(lines))}
 }
 
 // splitLines parts what an agent wrote in one run into its messages and its
@@ -2173,8 +2188,7 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 		if err != nil {
 			return err
 		}
-		t.said.messages = append(t.said.messages, msgs...)
-		t.said.lines = append(t.said.lines, lines...)
+		t.take(w.run, msgs, lines)
 	}
 	return nil
 }
