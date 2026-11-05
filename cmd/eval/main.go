@@ -107,6 +107,12 @@ var cardRoom = func(ctx context.Context, gateway, key string) ([]kiff.Room, erro
 	return kiff.New(gateway, key, nil).CardRoom(ctx)
 }
 
+// pending lists the agent's open calls at KIFF, through the gateway's
+// read-only kiff_pending.
+var pending = func(ctx context.Context, gateway, key string) ([]kiff.Pending, error) {
+	return kiff.New(gateway, key, nil).Pending(ctx)
+}
+
 // errNotGraded means a run can't be graded fairly, so it isn't run.
 var errNotGraded = errors.New("not graded")
 
@@ -349,10 +355,16 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err := rt.note(ctx, s.Name); err != nil {
 		return eval.Run{}, err
 	}
+	// What an earlier run left open at KIFF would be this run's to find:
+	// each run starts from the same fixture, with none.
+	rt.clearPending(s.Name, "before the run")
 	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: s.Input})
 	if err != nil {
 		return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
 	}
+	// After the run, however it ended, even when its record can't be read:
+	// after withdrawHeld, so this lists only what that couldn't reach.
+	defer rt.clearPending(s.Name, "after the run")
 	// The runner detaches a run from its caller's context, as a server run
 	// outlives its request; an interrupt here asks the run to stop instead,
 	// and it does at its next checkpoint.
@@ -428,6 +440,55 @@ func (rt *runtime) withdrawHeld(name, id string) {
 			fmt.Fprintf(rt.log, "eval: %s: KIFF's hold on %s (%s) was already %s\n", name, q.Tool, rt.id(q.Exception), w.Status)
 		}
 	}
+}
+
+// clearPending withdraws every hold KIFF still lists open for the agent,
+// whichever run made it, so none is the next run's to find: withdrawHeld
+// reaches only the holds this run recorded. It logs what KIFF listed, by
+// state and answer, and how many it withdrew; a refused, sending or unknown
+// call can't be withdrawn, and is logged for the owner. Like withdrawHeld,
+// it fails nothing, and a public log shows no ids.
+func (rt *runtime) clearPending(name, when string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	open, err := pending(ctx, rt.base.Gateway, rt.kiffKey)
+	if err != nil {
+		fmt.Fprintf(rt.log, "eval: %s: %s, couldn't list KIFF's open calls: %v\n", name, when, rt.say(err))
+	}
+	if len(open) == 0 {
+		return
+	}
+	counts := map[string]int{}
+	withdrawn, left := 0, 0
+	for _, p := range open {
+		kind := p.State
+		if p.Answer != "" {
+			kind += " " + p.Answer
+		}
+		counts[p.Tool+": "+kind]++
+		if p.State != "held" || p.ExceptionID == "" || p.Answer == "refused" {
+			left++
+			continue
+		}
+		w, err := withdraw(ctx, rt.kiffAPI, rt.kiffKey, p.ExceptionID)
+		switch {
+		case errors.Is(err, kiff.ErrNoHold):
+		case err != nil:
+			left++
+			fmt.Fprintf(rt.log, "eval: %s: %s, couldn't withdraw %s (%s): %v: refuse it in KIFF\n", name, when, p.Tool, rt.id(p.ExceptionID), rt.say(err))
+		case w.Withdrawn:
+			withdrawn++
+		default:
+			left++
+		}
+	}
+	kinds := make([]string, 0, len(counts))
+	for k, n := range counts {
+		kinds = append(kinds, fmt.Sprintf("%s ×%d", k, n))
+	}
+	slices.Sort(kinds)
+	fmt.Fprintf(rt.log, "eval: %s: %s, KIFF listed %d open calls (%s): withdrew %d, %d left for the owner\n",
+		name, when, len(open), strings.Join(kinds, "; "), withdrawn, left)
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(string) string) (err error) {
