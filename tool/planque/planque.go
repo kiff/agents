@@ -81,6 +81,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"To look before you choose: request {server, agent} with no tools connects first. Once the owner approved and signed in, the grant is listed, " +
 			"and catalog {grant} shows the vendor's tools (name, description, arguments, read_only) and the account the sign-in acts in; nothing is called. " +
 			"The catalog follows vendor pages and lists tools by name. If next_cursor is present, catalog {grant, cursor: next_cursor} continues the list; keep going to find tools on later pages. In a large catalog some tools are shortened (shortened: true: arguments or description left out); catalog {grant, tool} searches the pages for one in full, so ask for the ones you need. " +
+			"A long catalog is never a reason to stop: catalog {grant, q} searches it by words (name and description, every word must match) across its pages and answers the matches in full, so ask with words from the job (\"find page\", \"list invoices\") and pick from them. " +
 			"Then tools {grant, tools} sets the taf's tools from that catalog, and the owner approves them, with no second sign-in. " +
 			"On a connected grant, tools {grant, tools} adds the tools sent (only those to add) to what it has: the owner approves the addition once, " +
 			"with no sign-in, and its tools keep working meanwhile. So a taf has one connection per vendor: grants {agent} lists the connections you asked for a taf's agent " +
@@ -115,7 +116,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"available, or needs_setup (not connectable until an operator sets it up: say so, and offer another app). apps narrows a search to the apps named (their app slugs). " +
 			"Propose the apps to the owner, then connect the chosen ones with request, using the entry's app as the catalog names it. " +
 			"events {entry} lists an app's events, what can wake a taf, before connecting (the entry from search); events {grant} once connected. " +
-			"Pick an event as you pick an action, and draft it into the taf's dial; the owner approves its exact filters.",
+			"Pick an event as you pick an action, and draft it into the taf's dial; the owner approves its exact filters. " +
+			"A grant with on_demand: true is an app whose sign-in was set up on the owner's pick, not reviewed by an operator: draft every tool of it that changes data or moves money to ask the owner each time (0 a day, held), reads open, and say so in the rules. " +
+			"custody says who holds the sign-in (provider, or planque): say it in the owner's words, never the service's name.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants","search","events"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
@@ -128,7 +131,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
-			`"q":{"type":"string","description":"a few words from the job to find tools by, across apps (search)"},` +
+			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), or in a connected grant's catalog (catalog)"},` +
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail, whose events to list before connecting (events); or grant, once connected"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"}},` +
@@ -268,7 +271,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		at := path + "/" + url.PathEscape(in.Grant)
 		switch in.Action {
 		case "catalog":
-			return t.catalog(ctx, at+"/catalog", in.Tool, in.Cursor)
+			return t.catalog(ctx, at+"/catalog", in.Tool, in.Q, in.Cursor)
 		case "read":
 			// A tool the owner approved for Setup to read (setup_reads), by
 			// the name the grant lists (kiff/tafs#174). It goes through KIFF's
@@ -379,6 +382,11 @@ type grantView struct {
 	Account string   `json:"account,omitempty"`
 	Tools   []string `json:"tools,omitempty"`
 	Reason  string   `json:"reason,omitempty"`
+	// OnDemand: the app's sign-in was set up on an owner's pick, not by an
+	// operator (kiff/planque#87): the taf's writes and money ask the owner by
+	// default. Custody says who holds the sign-in: provider or planque.
+	OnDemand bool   `json:"on_demand,omitempty"`
+	Custody  string `json:"custody,omitempty"`
 }
 
 // grant calls planque and answers with the grant it returns.

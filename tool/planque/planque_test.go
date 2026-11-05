@@ -501,7 +501,66 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	if !tl.Reads(json.RawMessage(`{"action":"search","q":"x"}`)) || !tl.Reads(json.RawMessage(`{"action":"events","grant":"g"}`)) {
 		t.Fatal("search and events read")
 	}
-	if spec := tl.Spec(); !strings.Contains(spec.Description, "search {q} finds tools across every app") || !strings.Contains(spec.Description, "events {entry} lists an app's events") || !strings.Contains(string(spec.InputSchema), `"search","events"`) {
+	// A grant set up on demand says so to the model, with who holds the sign-in.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"grt_2","status":"pending","text":"Connect AgentMail for Invoices…","on_demand":true,"custody":"provider","digest":"x","request":{}}`))
+	}))
+	t.Cleanup(srv2.Close)
+	if text, isErr := call(t, planque.New(srv2.URL, "tnt_1", "k_setup", nil), `{"action":"status","grant":"grt_2"}`); isErr || !strings.Contains(text, `"on_demand":true`) || !strings.Contains(text, `"custody":"provider"`) || strings.Contains(text, `"digest"`) {
+		t.Fatalf("an on-demand grant: %s", text)
+	}
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "search {q} finds tools across every app") || !strings.Contains(spec.Description, "events {entry} lists an app's events") || !strings.Contains(spec.Description, "on_demand: true") || !strings.Contains(string(spec.InputSchema), `"search","events"`) {
 		t.Fatalf("the description doesn't say how to search: %s", spec.Description)
+	}
+}
+
+// A long catalog is searched by words rather than given up on: every page
+// is read, the tools whose name or description has every word come back in
+// full, and no match says so without claiming the tool is absent.
+func TestCatalogSearchesByWords(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("cursor") == "" {
+			w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.notion.example","account":"acc_1","tools":[` +
+				`{"name":"create_page","description":"Creates a page in a database.","input_schema":{"type":"object","properties":{"title":{"type":"string"}}}},` +
+				`{"name":"list_users","description":"Lists the workspace's users."}],"next_cursor":"p2"}`))
+			return
+		}
+		w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.notion.example","account":"acc_1","tools":[` +
+			`{"name":"search","description":"Finds a page or database by its title.","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"read_only":true},` +
+			`{"name":"retrieve_page","description":"Reads one page by its id."}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	text, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1","q":"Find page"}`)
+	if isErr || !strings.Contains(text, `"name":"search"`) || strings.Contains(text, `"create_page"`) || strings.Contains(text, `"list_users"`) || !strings.Contains(text, `"query"`) {
+		t.Fatalf("by words: %s", text)
+	}
+	if !strings.Contains(text, `1 tool matches \"Find page\", in full.`) {
+		t.Fatalf("the note: %s", text)
+	}
+	// One word matches more, across both pages, in the vendor's order.
+	text, _ = call(t, tl, `{"action":"catalog","grant":"grt_1","q":"page"}`)
+	var got struct {
+		Tools []struct{ Name string } `json:"tools"`
+	}
+	_ = json.Unmarshal([]byte(text), &got)
+	names := []string{}
+	for _, tl := range got.Tools {
+		names = append(names, tl.Name)
+	}
+	if strings.Join(names, " ") != "create_page search retrieve_page" {
+		t.Fatalf("matches: %v", names)
+	}
+	// No match says so, and never that the catalog was read when it wasn't.
+	if text, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1","q":"refund"}`); isErr || !strings.Contains(text, "No tool's name or description has every word") {
+		t.Fatalf("no match: %s", text)
+	}
+	if _, isErr := call(t, tl, `{"action":"catalog","grant":"grt_1","q":"page","tool":"search"}`); !isErr {
+		t.Fatal("tool and q together should be refused")
+	}
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "A long catalog is never a reason to stop: catalog {grant, q}") {
+		t.Fatalf("the description doesn't say to search: %s", spec.Description)
 	}
 }
