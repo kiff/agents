@@ -197,6 +197,7 @@ func (s *Server) Handler() http.Handler {
 	route("DELETE /sessions/{id}", s.deleteSession)
 	route("POST /agents/{id}/attachments", s.createAttachment)
 	route("GET /agents/{id}/attachments/{att}", s.readAttachment)
+	route("PUT /agents/{id}/sessions/{session}/skills", s.addSessionSkills)
 	route("POST /sessions/{id}/archive", s.archiveSession(true))
 	route("POST /sessions/{id}/unarchive", s.archiveSession(false))
 
@@ -429,6 +430,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusNotFound, "not_found", "not found"
 	case errors.Is(err, attach.ErrBound):
 		status, code, msg = http.StatusConflict, "attachment_sent", "a file was already sent with another message: attach it again"
+	case errors.Is(err, registry.ErrSkillNotNamed):
+		status, code, msg = http.StatusBadRequest, "skill_not_named", err.Error()
 	case errors.Is(err, attach.ErrInvalid):
 		status, code, msg = http.StatusBadRequest, "invalid", strings.TrimPrefix(err.Error(), attach.ErrInvalid.Error()+": ")
 	}

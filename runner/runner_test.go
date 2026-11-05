@@ -183,6 +183,16 @@ func (f *fixture) start(s server.Start) run.Run {
 	return r
 }
 
+// runs0 is the fixture's newest run.
+func (f *fixture) runs0() run.Run {
+	f.t.Helper()
+	list, err := f.runs.List(ctx, "t1", "rae", 1)
+	if err != nil || len(list) == 0 {
+		f.t.Fatalf("no run: %v", err)
+	}
+	return list[0]
+}
+
 func (f *fixture) get(id string) run.Run {
 	f.t.Helper()
 	r, err := f.runs.Get(ctx, "t1", id)

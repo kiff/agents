@@ -439,6 +439,46 @@ func validID(id string) bool {
 	return true
 }
 
+// ErrSkillNotNamed means a run or a session asked for a skill the definition
+// doesn't name ("name@version", exactly): refused, nothing added.
+var ErrSkillNotNamed = errors.New("registry: the definition doesn't name that skill")
+
+// CheckSessionSkills refuses skills ("name@version") the definition doesn't
+// name, by name and version both, or an empty or repeated one.
+func (d Definition) CheckSessionSkills(skills []string) error {
+	seen := map[string]bool{}
+	for _, s := range skills {
+		if s == "" || seen[s] {
+			return fmt.Errorf("%w: %q named badly or twice", ErrSkillNotNamed, s)
+		}
+		seen[s] = true
+		if !slices.ContainsFunc(d.Skills, func(r skill.Ref) bool { return r.String() == s }) {
+			return fmt.Errorf("%w: %s", ErrSkillNotNamed, s)
+		}
+	}
+	return nil
+}
+
+// SessionSkillText is the bodies of the session's skills (Session.Skills)
+// for the context, after the definition's instructions: in the definition's
+// order, never the order they were picked in, so the prefix is the same for
+// every conversation that loaded the same set; each as "# Skill: <name>"
+// and its body. Only skills the definition names are read.
+func SessionSkillText(ctx context.Context, store skill.Store, tenant string, d Definition, skills []string) (string, error) {
+	var out strings.Builder
+	for _, r := range d.Skills {
+		if !slices.Contains(skills, r.String()) {
+			continue
+		}
+		p, err := store.Get(ctx, tenant, r.Name, r.Version)
+		if err != nil {
+			return "", fmt.Errorf("skill %s: %w", r, err)
+		}
+		out.WriteString("\n\n# Skill: " + p.Name + "\n" + p.Body)
+	}
+	return out.String(), nil
+}
+
 // ErrNoSkills means a definition names skills and the builder has no store
 // to read them from.
 var ErrNoSkills = errors.New("registry: the agent names skills and none can be read here")

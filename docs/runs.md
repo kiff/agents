@@ -126,6 +126,21 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
 
 Runnable: [`runner/example_test.go`](../runner/example_test.go).
 
+## The skills a session loads
+
+A definition names its skills (#101); the context carries their names and
+descriptions, and `read_skill` reads one on demand. A session can also load
+some outright (kiff-cloud#1487, the lighter Coach: the service decides,
+never the model): `POST /agents/{id}/runs` takes `skills: ["name@version"]`,
+and `PUT /agents/{id}/sessions/{session}/skills {"add": […]}` adds one
+mid-conversation, as the service. Each must be one the definition names, by
+name and version (`registry.ErrSkillNotNamed`); the session keeps them
+(`Session.Skills`), added once. Every turn's context carries their bodies
+after the instructions, in the definition's order (never the order they
+were named in), each as `# Skill: <name>`; one added mid-conversation is
+read before the next model turn (`Agent.Reload`) and appended, never
+inserted, so the cached prefix holds. No tool's answer ever carries one.
+
 ## When KIFF holds a call
 
 ```go

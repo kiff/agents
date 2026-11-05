@@ -211,6 +211,9 @@ func metaItem(se session.Session) map[string]types.AttributeValue {
 	if se.Owner != "" {
 		item["owner"] = s(se.Owner)
 	}
+	if len(se.Skills) > 0 {
+		item["skills"] = stringList(se.Skills)
+	}
 	item["runs"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}}
 	if !se.Expires.IsZero() {
 		item["ttl"] = ttl(se.Expires)
@@ -239,6 +242,13 @@ func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 	}, isk: getS(item, "isk"), deleting: getBool(item, "deleting")}
 	if v, ok := item["held"].(*types.AttributeValueMemberSS); ok {
 		m.Held = slices.Sorted(slices.Values(v.Value))
+	}
+	if v, ok := item["skills"].(*types.AttributeValueMemberL); ok {
+		for _, e := range v.Value {
+			if sv, ok := e.(*types.AttributeValueMemberS); ok {
+				m.Skills = append(m.Skills, sv.Value)
+			}
+		}
 	}
 	if v, ok := item["runs"].(*types.AttributeValueMemberM); ok {
 		m.runs = v.Value
@@ -842,6 +852,64 @@ func keysOf(items []map[string]types.AttributeValue) []map[string]types.Attribut
 // SetArchived sets or removes the session item's "archived", only on a
 // session that is there and not being deleted. The index entry doesn't
 // carry it: a listing reads the session items anyway.
+// stringList is strs as a list attribute, in order.
+func stringList(strs []string) types.AttributeValue {
+	l := make([]types.AttributeValue, len(strs))
+	for i, v := range strs {
+		l[i] = s(v)
+	}
+	return &types.AttributeValueMemberL{Value: l}
+}
+
+func (st *Store) Skills(ctx context.Context, tenant, id string) ([]string, error) {
+	m, err := st.meta(ctx, tenant, id)
+	if err != nil {
+		return nil, err
+	}
+	return m.Skills, nil
+}
+
+// AddSkills reads the session, appends what it doesn't hold, and writes the
+// list back only if it is still as read (the condition), so two adds at
+// once lose nothing: the loser reads again. A few tries, then the error.
+func (st *Store) AddSkills(ctx context.Context, tenant, id string, skills []string) ([]string, error) {
+	for try := 0; ; try++ {
+		m, err := st.meta(ctx, tenant, id)
+		if err != nil {
+			return nil, err
+		}
+		next := session.AddSkills(m.Skills, skills)
+		if len(next) == len(m.Skills) {
+			return next, nil
+		}
+		u := &ddb.UpdateItemInput{
+			TableName:                 &st.table,
+			Key:                       pkey(sessionPK(tenant, id), metaSK),
+			UpdateExpression:          aws.String("SET #skills = :next"),
+			ExpressionAttributeNames:  map[string]string{"#skills": "skills"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":next": stringList(next)},
+		}
+		if len(m.Skills) == 0 {
+			u.ConditionExpression = aws.String("attribute_exists(pk) AND attribute_not_exists(deleting) AND attribute_not_exists(#skills)")
+		} else {
+			u.ConditionExpression = aws.String("attribute_exists(pk) AND attribute_not_exists(deleting) AND #skills = :have")
+			u.ExpressionAttributeValues[":have"] = stringList(m.Skills)
+		}
+		_, err = st.db.UpdateItem(ctx, u)
+		var failed *types.ConditionalCheckFailedException
+		switch {
+		case err == nil:
+			return next, nil
+		case errors.As(err, &failed) && try < 3:
+			continue // changed meanwhile: read again
+		case errors.As(err, &failed):
+			return nil, fmt.Errorf("session %s: skills changed under every try", id)
+		default:
+			return nil, err
+		}
+	}
+}
+
 func (st *Store) SetArchived(ctx context.Context, tenant, id string, archived bool) error {
 	u := &ddb.UpdateItemInput{
 		TableName:                &st.table,

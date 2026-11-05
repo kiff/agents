@@ -96,6 +96,11 @@ type Start struct {
 	// Notify is where the run is announced when it ends or pauses
 	// (kiff/tafs#206); zero, nowhere.
 	Notify run.Notify
+	// Skills are the agent's skills the session loads ("name@version"),
+	// named on its first run (kiff-cloud#1487): each must be one the
+	// definition names, or the run is refused. On a later run they are
+	// added to what the session holds, once.
+	Skills []string
 	// ID is the run's ID, when the caller names it; empty, a new one. A
 	// caller that may start the same run more than once (a schedule's firing,
 	// delivered at least once) names it, and the second Start returns the run
@@ -570,6 +575,10 @@ type startBody struct {
 	// RunGrant is the account's grant for a member's run: the requester
 	// is the person KIFF signed it for (Server.ResolveGrant).
 	RunGrant string `json:"run_grant,omitempty"`
+	// Skills are the agent's skills the session loads ("name@version"),
+	// named on its first run (kiff-cloud#1487): each one the definition
+	// names, or 400. Later, they are added to what the session holds, once.
+	Skills []string `json:"skills,omitempty"`
 	// DedupKey names the request at its origin (a door message's id): one
 	// key starts one run of the agent, however often it is sent, and a
 	// second send gets the first run (RequestRunID). Background only.
@@ -856,7 +865,19 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
-		Attachments: body.Attachments, Source: body.Source}
+		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills}
+	if len(st.Skills) > 0 {
+		// The session's skills are the definition's, by name and version
+		// (kiff-cloud#1487): refused here, before anything is stored.
+		d, err := s.Agents.Get(ctx, c.Tenant, id)
+		if err == nil {
+			err = d.CheckSessionSkills(st.Skills)
+		}
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if body.DedupKey != "" {
 		st.ID = RequestRunID(c.Tenant, id, body.DedupKey)
 	}

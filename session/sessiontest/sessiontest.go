@@ -51,6 +51,7 @@ func Run(t *testing.T, newBackend func(t *testing.T, now func() time.Time) Backe
 		{"ListLimitIsTheNewest", listLimitIsTheNewest},
 		{"ListOwnedIsTheOwners", listOwnedIsTheOwners},
 		{"ArchivedIsKept", archivedIsKept},
+		{"SkillsAreKeptAndAddedOnce", skillsAreKeptAndAddedOnce},
 		{"ConcurrentRecordsAllLand", concurrentRecordsAllLand},
 		{"ConcurrentRunsInOneSession", concurrentRunsInOneSession},
 		{"BodiesAreCopied", bodiesAreCopied},
@@ -171,6 +172,44 @@ func order(events []session.Event) []string {
 		out = append(out, fmt.Sprintf("%s:%d", e.Run, e.Seq))
 	}
 	return out
+}
+
+// A session's skills (kiff-cloud#1487) are kept as created, read cheaply,
+// added to in order and once each, and a session that isn't there has none.
+func skillsAreKeptAndAddedOnce(t *testing.T, b Backend, c *clock) {
+	r := recorder(t, b, session.DefaultPolicy(30*day), c)
+	s := open(t, r, "coach", session.KindChat)
+	if got, err := b.Skills(context.Background(), s.Tenant, s.ID); err != nil || len(got) != 0 {
+		t.Fatalf("a new session's skills: %v, %v", got, err)
+	}
+	got, err := b.AddSkills(context.Background(), s.Tenant, s.ID, []string{"wakes@1", "cards@1"})
+	check(t, err)
+	if !slices.Equal(got, []string{"wakes@1", "cards@1"}) {
+		t.Fatalf("added: %v", got)
+	}
+	got, err = b.AddSkills(context.Background(), s.Tenant, s.ID, []string{"cards@1", "halting@1", "wakes@1"})
+	check(t, err)
+	if !slices.Equal(got, []string{"wakes@1", "cards@1", "halting@1"}) {
+		t.Fatalf("added again: %v", got)
+	}
+	if got, err := b.Skills(context.Background(), s.Tenant, s.ID); err != nil || !slices.Equal(got, []string{"wakes@1", "cards@1", "halting@1"}) {
+		t.Fatalf("read: %v, %v", got, err)
+	}
+	if read, _, err := b.Read(context.Background(), s.Tenant, s.ID); err != nil || !slices.Equal(read.Skills, []string{"wakes@1", "cards@1", "halting@1"}) {
+		t.Fatalf("the session read: %v, %v", read.Skills, err)
+	}
+	if _, err := b.Skills(context.Background(), s.Tenant, "nope"); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("a session that isn't there: %v", err)
+	}
+	if _, err := b.AddSkills(context.Background(), "other", s.ID, []string{"x@1"}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("another tenant: %v", err)
+	}
+	// Created with skills, they're there.
+	with := session.Session{ID: "s-with", Tenant: s.Tenant, Agent: "coach", Kind: session.KindChat, Started: c.now(), Updated: c.now(), Skills: []string{"cards@1"}}
+	check(t, b.Create(context.Background(), with))
+	if got, err := b.Skills(context.Background(), s.Tenant, "s-with"); err != nil || !slices.Equal(got, []string{"cards@1"}) {
+		t.Fatalf("created with skills: %v, %v", got, err)
+	}
 }
 
 func recordAndRead(t *testing.T, b Backend, c *clock) {
