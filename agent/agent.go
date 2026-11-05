@@ -126,6 +126,12 @@ type Agent struct {
 	// Now is the clock a card's wait is counted from (run.CardWait); nil is
 	// the system clock.
 	Now func() time.Time
+	// Reload, when set, is read before each model turn: text to follow the
+	// system prompt from this turn on (a skill the session gained
+	// mid-conversation, kiff-cloud#1487). Appended, never inserted, so
+	// the cached prefix holds; empty, nothing changes. It never reaches a
+	// tool's result.
+	Reload func(ctx context.Context) (string, error)
 
 	// history is how many of a run's messages are its history (Run, Continue):
 	// the prefix the next run renders the same way, cached apart.
@@ -1144,7 +1150,13 @@ func (a Agent) capped(out Outcome) Stop {
 // turn is one model turn, offered tools (to call, unless noToolUse),
 // recorded and costed into out, whose Text becomes the turn's text.
 func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Message, tools []model.ToolSpec, noToolUse bool, waited []session.ToolTiming, out *Outcome, emit func(Event)) (model.Reply, error) {
-	req := model.Request{Model: a.ModelID, System: a.System, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history,
+	system := a.System
+	if a.Reload != nil {
+		if more, err := a.Reload(ctx); err == nil && more != "" {
+			system += more
+		}
+	}
+	req := model.Request{Model: a.ModelID, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history,
 		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) }}
 	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })

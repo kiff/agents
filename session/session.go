@@ -51,6 +51,24 @@ type Session struct {
 	// leaves their list, and a live message no longer goes on in it. It is
 	// kept for its retention all the same.
 	Archived bool `json:"archived,omitempty"`
+	// Skills are the agent's skills this session loaded ("name@version"),
+	// in the order they were added: named on its first run, or added
+	// mid-conversation (kiff-cloud#1487, the lighter Coach). Each turn's
+	// context carries their bodies after the agent's instructions, in the
+	// definition's order; a skill is added once.
+	Skills []string `json:"skills,omitempty"`
+}
+
+// AddSkills is have with the skills of add it doesn't hold yet appended, in
+// add's order: what a Store's AddSkills stores.
+func AddSkills(have, add []string) []string {
+	out := slices.Clone(have)
+	for _, s := range add {
+		if s != "" && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // OwnedBy reports whether owner (a requester's Key, or empty for none) may
@@ -417,6 +435,13 @@ type Store interface {
 	// SetArchived archives the session, or puts it back (Session.Archived).
 	// A session that isn't there is ErrNotFound.
 	SetArchived(ctx context.Context, tenant, id string, archived bool) error
+	// Skills returns the skills the session loaded (Session.Skills): one
+	// cheap read, made before a turn. A session that isn't there is ErrNotFound.
+	Skills(ctx context.Context, tenant, id string) ([]string, error)
+	// AddSkills adds the skills the session hasn't loaded yet, in their
+	// order, and returns the skills it holds: adding one again changes
+	// nothing. A session that isn't there is ErrNotFound.
+	AddSkills(ctx context.Context, tenant, id string, skills []string) ([]string, error)
 	// Delete removes a session and its events.
 	Delete(ctx context.Context, tenant, id string) error
 	// DeleteAgent removes all of an agent's sessions and events.

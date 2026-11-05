@@ -213,6 +213,27 @@ func (m *Store) SetArchived(_ context.Context, tenant, id string, archived bool)
 	return nil
 }
 
+func (m *Store) Skills(_ context.Context, tenant, id string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return nil, session.ErrNotFound
+	}
+	return slices.Clone(ms.s.Skills), nil
+}
+
+func (m *Store) AddSkills(_ context.Context, tenant, id string, skills []string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ms := m.get(tenant, id)
+	if ms == nil {
+		return nil, session.ErrNotFound
+	}
+	ms.s.Skills = session.AddSkills(ms.s.Skills, skills)
+	return slices.Clone(ms.s.Skills), nil
+}
+
 func (m *Store) Hold(_ context.Context, tenant, id, run string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

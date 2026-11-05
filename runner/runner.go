@@ -165,6 +165,11 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	if err != nil {
 		return run.Run{}, err
 	}
+	// The session's skills are the definition's, by name and version, or
+	// nothing starts.
+	if err := d.CheckSessionSkills(s.Skills); err != nil {
+		return run.Run{}, err
+	}
 	opened := false // a session Start opens is removed again if the run can't be stored
 	if s.Session == "" {
 		rec, err := session.NewRecorderAt(rn.Sessions, d.Keep, rn.now)
@@ -192,6 +197,13 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		// Another agent's session, or another person's, is not found.
 		if sess.Agent != s.Agent || !sess.ContinuedBy(s.Requester.Key()) {
 			return run.Run{}, session.ErrNotFound
+		}
+	}
+	// The session's skills, once it is known to be this agent's and this
+	// person's: a later run adds to what it holds, once.
+	if len(s.Skills) > 0 {
+		if _, err := rn.Sessions.AddSkills(ctx, s.Tenant, s.Session, s.Skills); err != nil {
+			return run.Run{}, err
 		}
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, rn.now())
@@ -331,7 +343,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if holds, _, resumes := splitCards(r.Requirements); paused && len(holds)+len(resumes) > 0 && rn.Collect == nil {
 		return r, ErrNoCollect // a run that waits only on cards has their answers already
 	}
-	x := &execution{rn: rn, tenant: tenant, id: id, claim: run.NewID()}
+	x := &execution{rn: rn, tenant: tenant, id: id, claim: run.NewID(), sessionID: r.Session}
 	if r, err = run.Claim(ctx, rn.Runs, tenant, id, x.claim, deadline, rn.now()); err != nil {
 		return r, err
 	}
@@ -425,6 +437,18 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
 	}
+	// The session's skills, their bodies after the instructions in the
+	// definition's order (kiff-cloud#1487): one added mid-conversation is
+	// read before each turn and appended, never inserted, so the cached
+	// prefix holds; a tool's answer never carries one.
+	if len(sess.Skills) > 0 {
+		text, err := registry.SessionSkillText(ctx, rn.Builder.Skills, tenant, d, sess.Skills)
+		if err != nil {
+			return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its skills: %w", err))
+		}
+		a.System += text
+	}
+	a.Reload = x.addedSkills(d, sess.Skills)
 	if sess.Kind == session.KindChat {
 		a.System += "\n\n" + NamesNote // the same for each of the agent's chats, so it caches
 	}
@@ -792,6 +816,8 @@ func expires(keep session.Policy, now time.Time) time.Time {
 
 // execution is one invocation's claim on a run.
 type execution struct {
+	// sessionID is the run's session, for the skills it gains mid-conversation.
+	sessionID  string
 	rn         *Runner
 	tenant, id string
 	claim      string
@@ -967,6 +993,30 @@ func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.
 		return r, run.ErrLeaseLost
 	}
 	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), change)
+}
+
+// addedSkills is the agent's Reload: the bodies of the skills the session
+// gained since loaded, in the definition's order, as text to follow the
+// instructions. A read that fails leaves the turn as it was: the next
+// turn reads again.
+func (x *execution) addedSkills(d registry.Definition, loaded []string) func(ctx context.Context) (string, error) {
+	have := slices.Clone(loaded)
+	return func(ctx context.Context) (string, error) {
+		now, err := x.rn.Sessions.Skills(ctx, x.tenant, x.sessionID)
+		if err != nil || len(now) <= len(have) {
+			return "", err
+		}
+		var added []string
+		for _, s := range now {
+			if !slices.Contains(have, s) {
+				added = append(added, s)
+			}
+		}
+		if len(added) == 0 {
+			return "", nil
+		}
+		return registry.SessionSkillText(ctx, x.rn.Builder.Skills, x.tenant, d, added)
+	}
 }
 
 // DefaultHeartbeat is how often a going run renews its lease when its

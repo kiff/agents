@@ -62,6 +62,11 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent || !sess.OwnedBy(s.Requester.Key()) {
 		return run.Run{}, session.ErrNotFound // the contract: another tenant's, agent's or person's session isn't found
 	}
+	if len(s.Skills) > 0 {
+		if _, err := rr.store.AddSkills(ctx, s.Tenant, s.Session, s.Skills); err != nil {
+			return run.Run{}, err
+		}
+	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
 	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession, r.Grant = s.Source, s.Version, s.Draft, s.Requester, opened, s.Grant
 	if s.After != "" { // the contract: queued behind the thread's run, looked at again in QueueLook
@@ -149,7 +154,7 @@ func newRunFixture(t *testing.T) *runFixture {
 			}
 			return server.Caller{}, errors.New("no tenant header")
 		},
-		Agents: base.agents, Sessions: base.store, Notes: base.store, Schedules: base.schedSvc,
+		Agents: base.agents, Sessions: base.store, Notes: base.store, Schedules: base.schedSvc, Skills: base.skills,
 		Runs: f.runs, Runner: f.runner,
 		Background: func(_ context.Context, tenant, id string) error {
 			if f.bgFail != nil {
