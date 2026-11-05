@@ -151,6 +151,38 @@ func (s *said) texts() []string {
 	return out
 }
 
+// statements are what Setup stated: its messages and each card's
+// statements (cardStatements), never the options it offered the owner.
+func (s *said) statements() []string {
+	out := append([]string(nil), s.messages...)
+	for _, id := range s.order {
+		out = append(out, cardStatements(s.cards[id])...)
+	}
+	return out
+}
+
+// cardStatements is what a card states: its title, text, note, steps and
+// each question's text and note. Never the options it offers the owner to
+// choose from, nor its button words: an option is the owner's choice, not
+// Setup's claim ("Modo real", the mode question's second option, says
+// nothing about the account).
+func cardStatements(c component) []string {
+	var out []string
+	for _, t := range append([]string{c.Title, c.Text, c.Note}, labels(c)...) {
+		if strings.TrimSpace(t) != "" {
+			out = append(out, t)
+		}
+	}
+	for _, q := range c.Questions {
+		for _, t := range []string{q.Text, q.Note} {
+			if strings.TrimSpace(t) != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
 // cardTexts is a card's title, text, button words, note and option labels.
 func cardTexts(c component) []string {
 	var out []string
@@ -361,7 +393,8 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	// 8b. Setup states only the mode the connection reports (kiff/tafs#525's core rule,
 	// after recipe 3 on the owner's phone): the fake vendor reports test, the desk none.
-	claim := claimsMode(s.texts(), !m.none)
+	// Only what Setup stated: a question's options are the owner's choice.
+	claim := claimsMode(s.statements(), !m.none)
 	if claim == "" && !m.none {
 		// Test is reported only once a tool result said so: before it, any mode is a claim.
 		claim = claimsMode(s.beforeTest, false)
