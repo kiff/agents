@@ -328,7 +328,7 @@ type improvement struct {
 // a result naming the taf it improves and a draft revising its Cards. An approval
 // of that draft in the chat fails the case: the owner confirms it at the switch.
 func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID string) (improvement, error) {
-	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup"}
+	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("improve")}
 	answered := map[string]bool{}
 	approvedGrant := ""
 	msg := first
@@ -352,11 +352,17 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 			t.logf("agent: %s", oneLine(text))
 		}
 		t.logToolErrors(ctx, ch.Session, r.ID)
-		if turn == 0 && slices.Contains(t.setupSkills, "change-a-taf") {
-			// Changing a taf is a skill Setup reads before its first answer (kiff/tafs#218). A
-			// miss is noted and the case goes on, so the run still shows how the change went.
-			if err := t.readIt(ctx, ch.Session, "change-a-taf", "improving the taf"); err != nil {
-				t.skillMisses = append(t.skillMisses, err.Error())
+		if turn == 0 {
+			// Changing a taf is a skill: loaded by the start (kiff/tafs#525) or, under the
+			// older design, read before the first answer (kiff/tafs#218). A miss is noted and
+			// the case goes on, so the run still shows how the change went.
+			for _, name := range []string{"improve-a-taf", "change-a-taf"} {
+				if !slices.Contains(t.setupSkills, name) {
+					continue
+				}
+				if err := t.hasIt(ctx, ch.Session, name, "improving the taf"); err != nil {
+					t.skillMisses = append(t.skillMisses, err.Error())
+				}
 			}
 		}
 		msg = ""

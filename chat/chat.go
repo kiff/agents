@@ -25,6 +25,10 @@ type Chat struct {
 	// Session is the conversation's session: empty until the first message
 	// opens it, then every message's.
 	Session string
+	// Skills are the agent's skills the conversation opens with ("name@version",
+	// the definition's own), as tafs cloud names them for a new Coach
+	// conversation (kiff/tafs#525, way 1); sent with the first message only.
+	Skills []string
 }
 
 // Send runs text, the owner's message, as a new run in the conversation, and
@@ -33,7 +37,11 @@ type Chat struct {
 // where it stopped; a run that failed is stored ERROR, and its cause is
 // returned too.
 func (c *Chat) Send(ctx context.Context, text string, emit func(agent.Event)) (run.Run, error) {
-	r, err := c.Runner.Start(ctx, server.Start{Tenant: c.Tenant, Agent: c.Agent, Session: c.Session, Trigger: run.ByOwner, Input: text})
+	st := server.Start{Tenant: c.Tenant, Agent: c.Agent, Session: c.Session, Trigger: run.ByOwner, Input: text}
+	if c.Session == "" {
+		st.Skills = c.Skills
+	}
+	r, err := c.Runner.Start(ctx, st)
 	if err != nil {
 		return r, err
 	}

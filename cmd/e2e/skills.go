@@ -19,23 +19,40 @@ import (
 // is about them. What skills can break is a skill not read when it should be,
 // or read when it shouldn't. So, when Setup's definition names skills:
 //
-//   - setting up a new taf reads none of them (the setup chat);
-//   - the improve case reads change-a-taf;
-//   - each question below reads its skill, though the owner never names it.
+//   - setting up a new taf reads none of them (the setup chat): since
+//     kiff/tafs#525 the start loads the setup's skills, and none is read;
+//   - the improve case has improve-a-taf (loaded by the start; change-a-taf,
+//     read, under kiff/tafs#218);
+//   - each question below has its skill, though the owner never names it:
+//     loaded by the account's state in tafs cloud, or read by the agent.
 
 // skillAsks are owner questions that need a skill without naming its topic,
 // by language, with the skill each must read.
-var skillAsks = map[string][]struct{ ask, skill string }{
+var skillAsks = map[string][]struct {
+	ask   string
+	skill []string
+}{
 	"en": {
-		{"Refunds hasn't done anything since this morning. What's going on?", "explain-a-hold"},
-		{"How much can my tafs still do this month before I have to pay more?", "tasks-and-packs"},
-		{"Something's wrong with the refunds. Stop everything right now.", "halt-and-resume"},
+		{"Refunds hasn't done anything since this morning. What's going on?", []string{"cards-and-holds", "explain-a-hold"}},
+		{"How much can my tafs still do this month before I have to pay more?", []string{"usage-and-plans", "tasks-and-packs"}},
+		{"Something's wrong with the refunds. Stop everything right now.", []string{"halting", "halt-and-resume"}},
 	},
 	"es": {
-		{"Reembolsos no ha hecho nada desde esta mañana. ¿Qué pasa?", "explain-a-hold"},
-		{"¿Cuánto pueden hacer todavía mis tafs este mes antes de que tenga que pagar más?", "tasks-and-packs"},
-		{"Algo va mal con los reembolsos. Para todo ahora mismo.", "halt-and-resume"},
+		{"Reembolsos no ha hecho nada desde esta mañana. ¿Qué pasa?", []string{"cards-and-holds", "explain-a-hold"}},
+		{"¿Cuánto pueden hacer todavía mis tafs este mes antes de que tenga que pagar más?", []string{"usage-and-plans", "tasks-and-packs"}},
+		{"Algo va mal con los reembolsos. Para todo ahora mismo.", []string{"halting", "halt-and-resume"}},
 	},
+}
+
+// skillOf is the name the definition has of a question's skill (the new name, or
+// kiff/tafs#218's), "" when it names neither.
+func (t *test) skillOf(names []string) string {
+	for _, n := range names {
+		if slices.Contains(t.setupSkills, n) {
+			return n
+		}
+	}
+	return ""
 }
 
 // skillsRead are the skills the agent read in a session, in order, by name.
@@ -95,10 +112,14 @@ func (t *test) readIt(ctx context.Context, sessionID, want, what string) error {
 func (t *test) skillChoice(ctx context.Context) error {
 	var failed []string
 	for _, c := range skillAsks[t.cfg.owner] {
-		if !slices.Contains(t.setupSkills, c.skill) {
+		skill := t.skillOf(c.skill)
+		if skill == "" {
 			continue
 		}
-		ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup"}
+		// A free-text start, with no held call or halt on the account: the setup's skills, as
+		// tafs cloud sends them; the question's own skill is loaded only by the account's state,
+		// so here it comes by the agent's read, which is what this case measures.
+		ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free")}
 		t.logf("owner: %s", c.ask)
 		r, err := ch.Send(ctx, c.ask, nil)
 		if err != nil {
@@ -110,7 +131,7 @@ func (t *test) skillChoice(ctx context.Context) error {
 		if _, text, err := t.latest(ctx, ch.Session, r.ID); err == nil && text != "" {
 			t.logf("agent: %s", oneLine(text))
 		}
-		if err := t.readIt(ctx, ch.Session, c.skill, "asked about "+c.skill); err != nil {
+		if err := t.hasIt(ctx, ch.Session, skill, "asked about "+skill); err != nil {
 			failed = append(failed, err.Error())
 		}
 	}
