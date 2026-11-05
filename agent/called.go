@@ -37,6 +37,8 @@ const (
 	OutcomeRefused  = "refused by KIFF, not sent"
 	OutcomeApproved = "held by KIFF, approved by the owner, then sent once: done"
 	OutcomeChanged  = "held by KIFF, its Card changed for it by the owner, then sent once: done"
+	OutcomeCame     = "sent; its outcome came later, as the vendor's event"
+	OutcomeNotCame  = "sent; its outcome didn't come in time (the wait for the vendor's event ran out)"
 )
 
 // RecordNote follows a continued run's held calls' results: what the run did,

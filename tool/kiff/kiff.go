@@ -199,6 +199,18 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		out.Trial, out.State, out.Resource = m.Trial, "", ""
 		return out, m, nil
 	}
+	// A sent call whose outcome comes later: KIFF's gateway says so in the
+	// call's _meta (dev.kiff/call.wait), with the event and the key the run
+	// waits for, and only for a planque connection's tool naming its own
+	// grant. The tool's own content never says it: the gateway strips
+	// pending and wait_for from every forwarded answer, and a tool can't
+	// write dev.kiff/ itself. Only a call that went (not held, not refused,
+	// not an error) waits.
+	if w := m.Wait; w != nil && !res.IsError && m.State != tool.StateHeld && m.State != tool.StateRefused && w.Event != "" && w.Key != "" {
+		out.State = tool.StateWaiting
+		wait := *w
+		out.Wait = &wait
+	}
 	if m.State == tool.StateHeld {
 		// Only state says whether the call is held. The hold's fields are
 		// read best effort: one KIFF writes in another shape is left empty,
@@ -279,6 +291,10 @@ type meta struct {
 	// Trial is KIFF's decision on a trial's write, which it never sent
 	// (kiff/tafs#107): only for a call made with KIFF-Trial.
 	Trial *tool.TrialDecision `json:"trial"`
+	// Wait is what a sent call waits for when its outcome comes later as
+	// the vendor's event (the slow-tools design): written by the gateway
+	// only, for a planque connection's tool on the caller's own grant.
+	Wait *tool.Wait `json:"wait"`
 }
 
 // TrialHeader asks KIFF to decide a call and not send it (kiff/tafs#107):

@@ -336,8 +336,51 @@ type Requirement struct {
 	Kind string `json:"kind,omitempty"`
 	// Result is a card's answer as the run reads it, the call's result:
 	// {"answer": …, "words": "…"}, or {"wrote": "…", "words": "…"} when the
-	// owner wrote a message instead.
+	// owner wrote a message instead; or, for an event's requirement, the
+	// event's payload as it came.
 	Result json.RawMessage `json:"result,omitempty"`
+	// Wait is what an event's requirement (KindEvent) waits for: the grant
+	// and event the outcome comes on, and the key that event carries. The
+	// event is matched to the run by (tenant, grant, event, key) and
+	// answered through the API (AnswerWait); Expires is the connection's
+	// timeout, after which the run goes on with a timed-out result.
+	Wait *Wait `json:"wait,omitempty"`
+}
+
+// Wait is what an event's requirement waits for.
+type Wait struct {
+	Grant string `json:"grant,omitempty"`
+	Event string `json:"event"`
+	Key   string `json:"key"`
+	// Words say what the wait is, as the connection's profile puts it.
+	Words string `json:"words,omitempty"`
+}
+
+// KindEvent is a Requirement for a call the connection sent whose outcome
+// comes later as an event of the vendor's app (the slow-tools design).
+const KindEvent = "event"
+
+// Event reports whether the requirement is an event's.
+func (r Requirement) Event() bool { return r.Kind == KindEvent }
+
+// WaitMax bounds how long an event's requirement waits, whatever the
+// connection said: three days, within a paused run's week. WaitMin is the
+// least.
+const (
+	WaitMin = time.Minute
+	WaitMax = 3 * 24 * time.Hour
+)
+
+// WaitFor is how long a wait of timeoutS seconds is, bounded.
+func WaitFor(timeoutS int) time.Duration {
+	d := time.Duration(timeoutS) * time.Second
+	if d < WaitMin {
+		return WaitMin
+	}
+	if d > WaitMax {
+		return WaitMax
+	}
+	return d
 }
 
 // KindCard is a Requirement for a card that waits for the owner's answer.

@@ -37,6 +37,10 @@ const (
 	// (show's answerable types): the run pauses as for a hold, and the
 	// answer comes back as the call's result, never as the owner's text.
 	StateAwaiting = "awaiting"
+	// StateWaiting is a call the connection sent whose outcome comes later,
+	// as an event of the vendor's app (the slow-tools design): the run
+	// pauses as for a card, and the event, matched by its key, answers it.
+	StateWaiting = "waiting"
 )
 
 // Result is what a call returned. State is the gateway's word on the call,
@@ -49,6 +53,10 @@ type Result struct {
 	// answer is announced and withdrawn, and when it stops waiting. Set only
 	// when State is StateHeld.
 	Hold *Hold `json:"hold,omitempty"`
+	// Wait names what a call whose outcome comes later waits for: the
+	// event, the key the event carries, and how long. Set only when State
+	// is StateWaiting.
+	Wait *Wait `json:"wait,omitempty"`
 	// Trial is KIFF's decision on a trial's write (kiff/tafs#107): what it
 	// would have done with the call, which it never sent. Set only in a
 	// trial run, for a gateway call KIFF decided.
@@ -90,6 +98,20 @@ type Hold struct {
 	Exception string `json:"exception"`
 	// Expires is when the hold stops waiting. Expiry means refused.
 	Expires time.Time `json:"expires"`
+}
+
+// Wait is what a call whose outcome comes later waits for, as KIFF's
+// gateway writes it in the call's _meta (dev.kiff/call.wait, from the
+// connection's answer, for the caller's own grant only): the event of the
+// app that completes it, the key that event carries (the call's handle),
+// the grant the event comes on, how long to wait, and the words the owner
+// reads.
+type Wait struct {
+	Grant    string `json:"grant,omitempty"`
+	Event    string `json:"event"`
+	Key      string `json:"key"`
+	TimeoutS int    `json:"timeout_s"`
+	Words    string `json:"words,omitempty"`
 }
 
 // Shower is a tool whose results may carry a component for the owner's
@@ -153,9 +175,12 @@ func Named(components []json.RawMessage, field string, max int) []string {
 // Held reports whether KIFF holds the call for its owner.
 func (r Result) Held() bool { return r.State == StateHeld }
 
-// Waits reports whether the run waits on the call: KIFF holds it, or it is
-// a card the owner hasn't answered yet.
-func (r Result) Waits() bool { return r.State == StateHeld || r.State == StateAwaiting }
+// Waits reports whether the run waits on the call: KIFF holds it, it is a
+// card the owner hasn't answered yet, or its outcome comes later as an
+// event.
+func (r Result) Waits() bool {
+	return r.State == StateHeld || r.State == StateAwaiting || r.State == StateWaiting
+}
 
 // Tool is one tool an agent can call.
 type Tool interface {

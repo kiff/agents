@@ -299,6 +299,10 @@ func (r Run) clone() Run {
 	c.Requirements = nil
 	for _, q := range r.Requirements {
 		q.Input, q.Result = bytes.Clone(q.Input), bytes.Clone(q.Result)
+		if q.Wait != nil {
+			w := *q.Wait
+			q.Wait = &w
+		}
 		c.Requirements = append(c.Requirements, q)
 	}
 	// Every part of a turn, Before included: a copy without it would give the
@@ -751,6 +755,30 @@ func AnswerCard(ctx context.Context, runs Runs, tenant, id, call string, result 
 		}
 		next, err := Change(ctx, runs, r, now, func(n *Run) error {
 			n.Requirements[i].Answered, n.Requirements[i].Answer, n.Requirements[i].Result = now.UTC(), "answered", result
+			return nil
+		})
+		if !errors.Is(err, ErrConflict) || try == SaveTries {
+			return next, err
+		}
+	}
+}
+
+// AnswerWait records payload as the event that completes the run's call
+// (an event's requirement, KindEvent), once: the requirement is answered,
+// and the run, paused, can go on with the payload as the call's result.
+// One already answered, or a run no longer paused, is ErrNotOpen.
+func AnswerWait(ctx context.Context, runs Runs, tenant, id, call string, payload json.RawMessage, now time.Time) (Run, error) {
+	for try := 1; ; try++ {
+		r, err := runs.Get(ctx, tenant, id)
+		if err != nil {
+			return r, err
+		}
+		i := slices.IndexFunc(r.Requirements, func(q Requirement) bool { return q.Event() && q.CallID == call })
+		if i < 0 || r.Status != Paused || r.Requirements[i].Resolved(now) {
+			return r, ErrNotOpen
+		}
+		next, err := Change(ctx, runs, r, now, func(n *Run) error {
+			n.Requirements[i].Answered, n.Requirements[i].Answer, n.Requirements[i].Result = now.UTC(), "answered", payload
 			return nil
 		})
 		if !errors.Is(err, ErrConflict) || try == SaveTries {

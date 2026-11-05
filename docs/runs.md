@@ -154,6 +154,39 @@ for _, q := range r.Requirements {
   it is then claimed again, records the outcomes and ends CANCELLED. A run
   cancelled while RUNNING that then pauses does the same once KIFF resolves it.
 
+## When a call's outcome comes later
+
+Some writes end elsewhere: a reply to a ticket is answered by the customer,
+days later; a transfer settles when the bank says so. The connection's
+profile says so (planque's `completes`), and the relay answers such a call
+`pending`, with what the run waits for. KIFF's gateway vouches for it: it
+writes the wait in the call's `_meta` (`dev.kiff/call.wait {grant, event,
+key, timeout_s, words}`) only for a planque connection's tool naming the
+caller's own grant, and strips `pending` and `wait_for` from every
+forwarded answer. `tool/kiff` reads the wait from `_meta` only, never from
+the tool's content, and the result's state is `waiting`
+(`tool.StateWaiting`, `Result.Wait`).
+
+- The run pauses as it does for a held call, on a requirement of kind
+  `event` (`run.KindEvent`) with the grant, the event and the key, and
+  `expires` set from the connection's timeout, within a minute and three
+  days (`run.WaitFor`). The pause's note names it (`waits`), and the agent's
+  last turn says in a sentence what it waits for (`agent.WaitPauseNote`).
+- The call itself is done: it was sent. It is in the run's `done` from the
+  pause, and the session's record says `sent; its outcome came later, as the
+  vendor's event`, or that it didn't come in time, when the run goes on.
+- The event answers the wait through the API
+  (`POST /agents/{id}/runs/{run_id}/waits/{call}/answer {payload}`,
+  `run.AnswerWait`), by the service that matched it to the run on
+  (tenant, grant, event, key): the event's data is the call's result,
+  said to be the outcome that came later, and the run continues as after a
+  card. A second event for the same call, or one after the wait ran out, is
+  refused (`ErrNotOpen`, 409 `wait_not_open`).
+- With no event by the deadline, the sweep continues the run as it does a
+  card nobody answered (`resolved` is answered or expired), and the result
+  says the outcome didn't come in time, with `{"timed_out": true, "event"}`:
+  the agent never assumes it happened or didn't.
+
 ## A halt
 
 The owner halts one agent, or every agent of the account.

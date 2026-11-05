@@ -112,6 +112,9 @@ func TestNotifyNeverChanges(t *testing.T) {
 // A paused run's note names the cards it waits on, unanswered, so a service
 // that answers some of them knows which run to read back; an ended run's
 // names none.
+// The note also names the events it waits on (waits): the call, the
+// grant, the event, the key, the deadline and the connection's words, so
+// the caller matches a vendor's event to the run without reading it.
 func TestAPausedRunsNoteNamesTheCardsItWaitsOn(t *testing.T) {
 	ctx := context.Background()
 	n := &notes{}
@@ -135,7 +138,8 @@ func TestAPausedRunsNoteNamesTheCardsItWaitsOn(t *testing.T) {
 	}
 	r, err = run.Change(ctx, runs, r, now, func(x *run.Run) error {
 		x.Status, x.Paused = run.Paused, &run.Turn{}
-		x.Requirements = []run.Requirement{answered, card("done", "result"), {CallID: "h1", Tool: "refund", Operation: "op"}}
+		x.Requirements = []run.Requirement{answered, card("done", "result"), {CallID: "h1", Tool: "refund", Operation: "op"},
+			{CallID: "c9", Tool: "desk_reply", Kind: run.KindEvent, Expires: now.Add(15 * time.Minute).UTC(), Wait: &run.Wait{Grant: "grt_desk", Event: "DESK_NEW_TICKET", Key: "reply_1", Words: "The desk answers when the customer replies."}}}
 		return nil
 	})
 	if err != nil {
@@ -145,7 +149,8 @@ func TestAPausedRunsNoteNamesTheCardsItWaitsOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []run.Note{
-		{Run: r.ID, Agent: "setup", Status: run.Paused, Ref: "ref-0123456789abcdef", Cards: []run.NoteCard{{ID: "done", Type: "result"}}},
+		{Run: r.ID, Agent: "setup", Status: run.Paused, Ref: "ref-0123456789abcdef", Cards: []run.NoteCard{{ID: "done", Type: "result"}},
+			Waits: []run.NoteWait{{Call: "c9", Grant: "grt_desk", Event: "DESK_NEW_TICKET", Key: "reply_1", Expires: now.Add(15 * time.Minute).UTC(), Words: "The desk answers when the customer replies."}}},
 		{Run: r.ID, Agent: "setup", Status: run.Cancelled, Ref: "ref-0123456789abcdef"},
 	}
 	if !reflect.DeepEqual(n.got, want) {
