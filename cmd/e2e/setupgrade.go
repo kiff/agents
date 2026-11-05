@@ -97,6 +97,12 @@ type said struct {
 	// writesAsReads are tools Setup asked planque for as read-only that the
 	// vendor doesn't mark so, which planque refused (kiff/agents#139).
 	writesAsReads []string
+	// beforeTest is what Setup wrote before any tool result in the
+	// conversation reported test mode (livemode false, or mode test), and
+	// testReported whether one has: a mode said before it is a claim
+	// (kiff/tafs#525's core rule; agentgabo on #319).
+	beforeTest   []string
+	testReported bool
 }
 
 // refusedRead is the tool named in planque's refusal of a tool asked for as
@@ -134,28 +140,34 @@ func (s *said) card(c component) {
 func (s *said) texts() []string {
 	out := append([]string(nil), s.messages...)
 	for _, id := range s.order {
-		c := s.cards[id]
-		for _, t := range append([]string{c.Title, c.Text, c.Yes, c.No, c.Note}, labels(c)...) {
+		out = append(out, cardTexts(s.cards[id])...)
+	}
+	return out
+}
+
+// cardTexts is a card's title, text, button words, note and option labels.
+func cardTexts(c component) []string {
+	var out []string
+	for _, t := range append([]string{c.Title, c.Text, c.Yes, c.No, c.Note}, labels(c)...) {
+		if strings.TrimSpace(t) != "" {
+			out = append(out, t)
+		}
+	}
+	for _, o := range c.Options {
+		if strings.TrimSpace(o.Label) != "" {
+			out = append(out, o.Label)
+		}
+	}
+	for _, q := range c.Questions {
+		for _, t := range []string{q.Text, q.Note} {
 			if strings.TrimSpace(t) != "" {
 				out = append(out, t)
 			}
 		}
-		for _, o := range c.Options {
-			if strings.TrimSpace(o.Label) != "" {
-				out = append(out, o.Label)
-			}
-		}
-		for _, q := range c.Questions {
-			for _, t := range []string{q.Text, q.Note} {
+		for _, o := range q.Options {
+			for _, t := range []string{o.Label, o.Description} {
 				if strings.TrimSpace(t) != "" {
 					out = append(out, t)
-				}
-			}
-			for _, o := range q.Options {
-				for _, t := range []string{o.Label, o.Description} {
-					if strings.TrimSpace(t) != "" {
-						out = append(out, t)
-					}
 				}
 			}
 		}
@@ -341,18 +353,24 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	} else {
 		add("pins the mode the owner chose", eval.Grade{Pass: true})
 	}
-	// 8b. The mode is the owner's choice, never a fact Setup states: the vendor here
-	// reports none, so "no real money" or "(test mode)" as fact is a claim (kiff/tafs#525's
-	// core rule, after recipe 3 on the owner's phone).
-	if claim := claimsMode(s.texts()); claim != "" {
-		add("states no mode as fact", eval.Grade{Why: "stated as fact, though the connection reports no mode: " + oneLine(claim)})
-	} else {
-		add("states no mode as fact", eval.Grade{Pass: true})
+	// 8b. Setup states only the mode the connection reports (kiff/tafs#525's core rule,
+	// after recipe 3 on the owner's phone): the fake vendor reports test, the desk none.
+	claim := claimsMode(s.texts(), !m.none)
+	if claim == "" && !m.none {
+		// Test is reported only once a tool result said so: before it, any mode is a claim.
+		claim = claimsMode(s.beforeTest, false)
 	}
-	// 8c. A limit the owner gave is asked once (recipe 3 asked "past 20 a day" twice).
-	g, err = j.AskMajority(ctx, fmt.Sprintf("The owner told Setup these limits once, in their own words: %q. Every numbered text below is "+
-		"what Setup wrote afterwards. Setup does not ask the owner again for a limit they already gave (it may repeat a limit back "+
-		"to confirm the rules, or ask about a limit the owner did not give).", o.facts[0]), numbered(s.texts()))
+	if claim != "" {
+		add("states only the mode the connection reports", eval.Grade{Why: "a mode the connection doesn't report, stated as fact: " + oneLine(claim)})
+	} else {
+		add("states only the mode the connection reports", eval.Grade{Pass: true})
+	}
+	// 8c. A limit the owner gave is asked once (recipe 3 asked "past 20 a day" twice):
+	// graded against the limits the owner of this conversation gave, and only those.
+	g, err = j.AskMajority(ctx, fmt.Sprintf("In this conversation, and only this one, the owner told Setup these limits once, in their own words: %q. "+
+		"Every numbered text below is what Setup wrote in it afterwards. Setup does not ask the owner again for a limit they already gave there. "+
+		"Repeating a limit back to confirm the rules, asking about a limit the owner did not give, or asking which of two things the owner said "+
+		"applies when they conflict, is not asking again. Judge only these texts; ignore any limit not quoted above.", o.facts[0]), numbered(s.texts()))
 	if err != nil {
 		return nil, err
 	}

@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/session"
 )
 
 // Which of Coach's skills a conversation opens with, as tafs cloud decides it
@@ -67,20 +72,88 @@ func (t *test) hasIt(ctx context.Context, sessionID, want, what string) error {
 	return nil
 }
 
-// modeClaims are words Setup may never write as fact: a connection's mode,
-// or that no real money moves, unless the connection reports it, which the
-// e2e's vendor never does (kiff/tafs#525's core rule, after recipe 3).
-var modeClaims = []string{"no real money", "sin dinero real", "(test mode)", "(modo de prueba)", "real money)", "dinero real)"}
+// What Setup may say of a connection's mode depends on what the connection
+// reports (kiff/tafs#525's core rule). planque's fake vendor reports test (its
+// accounts read, a charge's livemode false), so saying test is what it reports,
+// and saying live or real money is a claim. The desk reports no mode at all,
+// so any mode said as fact is a claim.
 
-// claimsMode is the first of Setup's texts that states a mode as fact, "" when none.
-func claimsMode(texts []string) string {
+// statedModes and statedLive are the words that state a mode, and a live one.
+var statedModes = []string{"test mode", "modo de prueba", "no real money", "sin dinero real", "live mode", "modo real", "real money", "dinero real"}
+var statedLive = []string{"live mode", "modo real", "real money", "dinero real"}
+
+// claimsMode is the first of Setup's texts that states a mode the connection
+// doesn't report, "" when none: with reportsTest, a live mode or real money
+// (not "no real money"); with none reported, any mode.
+func claimsMode(texts []string, reportsTest bool) string {
+	words := statedModes
+	if reportsTest {
+		words = statedLive
+	}
 	for _, t := range texts {
 		l := strings.ToLower(t)
-		for _, c := range modeClaims {
-			if strings.Contains(l, c) {
-				return t
+		for _, w := range words {
+			for i := strings.Index(l, w); i >= 0; {
+				before := l[:i]
+				negated := strings.HasSuffix(before, "no ") || strings.HasSuffix(before, "sin ")
+				if !negated || !reportsTest {
+					return t
+				}
+				next := strings.Index(l[i+len(w):], w)
+				if next < 0 {
+					break
+				}
+				i += len(w) + next
 			}
 		}
 	}
 	return ""
+}
+
+// reportsTest is a tool result that says the account is in test mode: a
+// vendor object with livemode false, or an accounts read with mode test.
+var reportsTest = regexp.MustCompile(`"livemode"\s*:\s*false|"mode"\s*:\s*"test"`)
+
+// beforeTestReport walks a run's events in order: what Setup wrote (its
+// messages and the cards it showed) while no tool result in the
+// conversation had reported test mode, and whether one has by the run's end.
+// reported is the conversation's state before the run.
+func beforeTestReport(events []session.Event, runID string, reported bool) ([]string, bool) {
+	var before []string
+	for _, e := range events {
+		if e.Run != runID {
+			continue
+		}
+		switch e.Kind {
+		case session.ToolResult:
+			var b agent.ToolResultBody
+			if json.Unmarshal(e.Body, &b) == nil && !b.IsError && reportsTest.MatchString(b.Text) {
+				reported = true
+			}
+		case session.AgentMessage, session.Report:
+			var b agent.TextBody
+			if !reported && json.Unmarshal(e.Body, &b) == nil && strings.TrimSpace(b.Text) != "" {
+				before = append(before, b.Text)
+			}
+		case session.Component:
+			var c component
+			if !reported && json.Unmarshal(e.Body, &c) == nil {
+				before = append(before, cardTexts(c)...)
+			}
+		}
+	}
+	return before, reported
+}
+
+// noteTestReport adds a run's texts said before test mode was reported to
+// what the grader reads (said.beforeTest).
+func (t *test) noteTestReport(ctx context.Context, sessionID, runID string) error {
+	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
+	if err != nil {
+		return err
+	}
+	before, reported := beforeTestReport(events, runID, t.said.testReported)
+	t.said.beforeTest = append(t.said.beforeTest, before...)
+	t.said.testReported = reported
+	return nil
 }
