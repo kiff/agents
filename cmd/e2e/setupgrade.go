@@ -579,8 +579,9 @@ func choice(text string, options []option) string {
 }
 
 // MaxLine is the most a line before a tool call may be, in characters: one
-// short line, as Setup's rule asks, which the live line shows whole.
-const MaxLine = 120
+// short line, as Setup's rule asks. tafs cloud shows one this long on the live
+// line (its MAX_NOTE); a longer text before a tool call stays a message there.
+const MaxLine = 90
 
 // shortLines passes when each of Setup's lines is one short line: no line
 // break, at most MaxLine characters. Setup writing none passes.
