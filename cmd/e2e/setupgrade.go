@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -540,19 +541,20 @@ func choice(text string, options []option) string {
 // doesn't report, "" when none (kiff/tafs#525's core rule). The fake vendor
 // reports test; the desk reports none (m.none). Test is reported once a tool
 // result said so (said.beforeTest holds what came before). When every tool
-// that acts is pinned to test, as the owner chose, a sentence before that
+// that acts is pinned to test, as the owner chose, a clause before that
 // about the calls (pinned, fixed, every call) is what the calls do; one that
-// names the account's own mode is still a claim (agentgabo on #325).
+// names the account's or the vendor's own mode is still a claim, even joined
+// to it (agentgabo and qa-kiff on #325).
 func modeClaim(s said, m modes) string {
 	if claim := claimsMode(s.texts(), !m.none); claim != "" || m.none {
 		return claim
 	}
 	for _, text := range s.beforeTest {
-		for _, sentence := range sentences(text) {
-			if m.allTest && len(m.live) == 0 && aboutTheCalls(sentence) {
+		for _, clause := range clauses(text) {
+			if m.allTest && len(m.live) == 0 && aboutTheCalls(clause) {
 				continue
 			}
-			if claimsMode([]string{sentence}, false) != "" {
+			if claimsMode([]string{clause}, false) != "" {
 				return text
 			}
 		}
@@ -563,21 +565,41 @@ func modeClaim(s said, m modes) string {
 // callWords are what a sentence about the mode pinned on the calls says.
 var callWords = []string{"pinned", "fixed", "every call", "each call", "all calls", "cada llamada", "todas las llamadas", "fijad", "fijé", "fijamos", "fijo "}
 
-// aboutTheCalls reports whether a sentence speaks of the calls' pinned mode,
-// and not of the account's: it names the calls and not the account.
-func aboutTheCalls(sentence string) bool {
-	l := strings.ToLower(sentence)
-	if strings.Contains(l, "account") || strings.Contains(l, "cuenta") {
+// ownerWords name the owner's own account or vendor ("your Stripe", "tu
+// cuenta"): a clause that says them speaks of what the owner has, not of the
+// calls (qa-kiff on #325).
+var ownerWords = []string{"account", "cuenta", "your ", "tu ", "tus ", "su ", "sus "}
+
+// stateWords say what something is in ("Stripe is in test mode"), and
+// callState the same said of the calls, which is what they do.
+var stateWords = []string{" is in ", " are in ", " está en ", " esta en ", " están en ", " estan en "}
+var callState = []string{"call is in ", "calls are in ", "llamada está en ", "llamada esta en ", "llamadas están en ", "llamadas estan en "}
+
+// aboutTheCalls reports whether a clause speaks of the calls' pinned mode,
+// and not of the account's or the vendor's: it names the calls, and neither
+// what the owner has nor a state of something else ("…, because Stripe is in
+// test mode").
+func aboutTheCalls(clause string) bool {
+	l := " " + strings.ToLower(clause) + " "
+	if containsAny(l, ownerWords) || !containsAny(l, callWords) {
 		return false
 	}
-	return containsAny(l, callWords)
+	for _, w := range callState {
+		l = strings.ReplaceAll(l, w, "call ")
+	}
+	return !containsAny(l, stateWords)
 }
 
-// sentences splits a text at sentence ends and line breaks.
-func sentences(text string) []string {
+// clauseEnd ends a clause: a sentence's end, an exclamation or question, a
+// semicolon or a colon.
+var clauseEnd = regexp.MustCompile(`[.!?;:](\s+|$)`)
+
+// clauses splits a text into its clauses, so that a statement about the
+// account or the vendor next to one about the calls is graded on its own.
+func clauses(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
-		for _, part := range strings.SplitAfter(line, ". ") {
+		for _, part := range clauseEnd.Split(line, -1) {
 			if strings.TrimSpace(part) != "" {
 				out = append(out, strings.TrimSpace(part))
 			}

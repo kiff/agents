@@ -188,4 +188,30 @@ func TestAPinnedModeIsReported(t *testing.T) {
 	if !aboutTheCalls("Cada llamada va fijada en modo de prueba, como elegiste.") || aboutTheCalls(account) {
 		t.Fatal("aboutTheCalls in Spanish")
 	}
+	// The vendor's own mode, joined to the calls' by a comma, a semicolon, a
+	// colon or an exclamation, is still a claim (qa-kiff on #325).
+	for _, joined := range []string{
+		"Every call is pinned to test, and your Stripe is in test mode.",
+		"Stripe está en modo de prueba; cada llamada va fijada.",
+		"Every call is pinned to test: Stripe is in test mode.",
+		"Every call is pinned to test! Stripe is in test mode.",
+		"Every call is pinned to test because Stripe is in test mode.",
+		"Cada llamada va fijada, porque Stripe está en modo de prueba.",
+	} {
+		s := said{messages: []string{joined}, beforeTest: []string{joined}}
+		if c := modeClaim(s, modes{test: true, allTest: true}); c == "" {
+			t.Fatalf("the vendor's mode, joined to the calls', wasn't a claim: %q", joined)
+		}
+	}
+	for _, calls := range []string{
+		"Every Stripe call is pinned to test mode, as you chose.",
+		"Cada llamada a Stripe va fijada en modo de prueba, como elegiste.",
+		"Every call is pinned to test and moves no real money.",
+		"Every call is in test mode, as you chose.",
+	} {
+		s := said{messages: []string{calls}, beforeTest: []string{calls}}
+		if c := modeClaim(s, modes{test: true, allTest: true}); c != "" {
+			t.Fatalf("a sentence about the pinned calls read as a claim: %q", calls)
+		}
+	}
 }
