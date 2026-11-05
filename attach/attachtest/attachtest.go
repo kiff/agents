@@ -33,7 +33,11 @@ func Run(t *testing.T, newStore func(t *testing.T) attach.Store) {
 	}
 }
 
-var t0 = time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+// t0 is the tests' time, a day ahead of the clock, to the second: a store
+// that expires records (DynamoDB's TTL, from an attachment's due time) must
+// never find one expired while a test runs. A fixed date drifted into the
+// past and made DynamoDB Local delete them mid-test.
+var t0 = time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
 
 func att(id, agent string) attach.Attachment {
 	return attach.Attachment{ID: id, Tenant: "t1", Agent: agent, Owner: "member:ana", MediaType: "image/png",
