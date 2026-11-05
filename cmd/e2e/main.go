@@ -299,6 +299,10 @@ type test struct {
 	// cardAnswers is this turn's answer to each card shown, by its id.
 	cardAnswers map[string]string
 	tafSaid     []string // the taf's answers in the chat, checked with -taf
+	// words times each model turn's first text, and sent is when the owner
+	// sent each message: the waits for words in the setup chat.
+	words *wordsClock
+	sent  []time.Time
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
 	// result is Setup's result that waits for what came of the hand-over:
@@ -508,8 +512,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 		t.logf("loaded %d skills", len(ps))
 	}
 	claims := &drafts.Service{Store: t.keys, Keys: t.keys, KIFF: draftsapi.New(kiff.APIURL, t.hc)}
+	t.words = &wordsClock{Model: m}
 	t.rn = &runner.Runner{Runs: memory.NewRuns(), Sessions: t.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
-		Agents: t.agents, Secrets: keyring{t.keys}, Model: m, Gateways: []string{kiff.URL}, Skills: skills,
+		Agents: t.agents, Secrets: keyring{t.keys}, Model: t.words, Gateways: []string{kiff.URL}, Skills: skills,
 		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
@@ -758,6 +763,7 @@ func answerQuestions(c component, own string) string {
 // they wrote instead), or else a message that starts the chat's next run.
 // msg is in the old "[type id] answer" form when it answers a card.
 func (t *test) reply(ctx context.Context, ch *chat.Chat, last runs.Run, msg string) (runs.Run, error) {
+	t.sent = append(t.sent, time.Now()) // the owner's message: their wait for words starts here
 	if last.Status == runs.Paused {
 		// Every card the run waits on is answered, each with its own answer
 		// (t.cardAnswers, by the card's id; msg for one with none), and the
