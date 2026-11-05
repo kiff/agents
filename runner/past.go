@@ -261,17 +261,25 @@ func state(ctx context.Context, tools []tool.Tool, shown []json.RawMessage) stri
 	if len(shown) == 0 {
 		return ""
 	}
-	var parts []string
+	// The Staters are asked at once, keeping the tools' order: a run's start
+	// waits for the slowest, not their sum.
+	var staters []tool.Stater
 	for _, t := range tools {
-		s, ok := t.(tool.Stater)
-		if !ok {
-			continue
+		if s, ok := t.(tool.Stater); ok {
+			staters = append(staters, s)
 		}
-		text, err := s.State(ctx, shown)
-		if err != nil || strings.TrimSpace(text) == "" {
-			continue
+	}
+	said := make([]string, len(staters))
+	tool.Each(len(staters), len(staters), func(i int) {
+		if text, err := staters[i].State(ctx, shown); err == nil {
+			said[i] = strings.TrimSpace(text)
 		}
-		parts = append(parts, strings.TrimSpace(text))
+	})
+	var parts []string
+	for _, text := range said {
+		if text != "" {
+			parts = append(parts, text)
+		}
 	}
 	if len(parts) == 0 {
 		return ""

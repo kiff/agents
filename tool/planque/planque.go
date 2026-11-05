@@ -381,21 +381,28 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 		return "", nil
 	}
 	path := "/v1/accounts/" + url.PathEscape(t.tenant) + "/grants/"
-	var b strings.Builder
-	b.WriteString("planque's grants in this conversation, as planque says now (status {grant} gives the same):\n")
-	for _, id := range grants {
+	// Each grant is read at once, not one after another: a run's start waits
+	// for the slowest, not their sum. The lines keep the grants' order.
+	lines := make([]string, len(grants))
+	tool.Each(len(grants), MaxStated, func(i int) {
+		id := grants[i]
 		if !pathSafe(id) {
-			continue
+			return
 		}
 		res, err := t.grant(ctx, http.MethodGet, path+url.PathEscape(id), nil)
 		switch {
 		case err != nil:
-			fmt.Fprintf(&b, "- %s: planque didn't answer now\n", id)
+			lines[i] = fmt.Sprintf("- %s: planque didn't answer now\n", id)
 		case res.IsError:
-			fmt.Fprintf(&b, "- %s: %s\n", id, res.Text)
+			lines[i] = fmt.Sprintf("- %s: %s\n", id, res.Text)
 		default:
-			fmt.Fprintf(&b, "- %s\n", res.Text)
+			lines[i] = fmt.Sprintf("- %s\n", res.Text)
 		}
+	})
+	var b strings.Builder
+	b.WriteString("planque's grants in this conversation, as planque says now (status {grant} gives the same):\n")
+	for _, l := range lines {
+		b.WriteString(l)
 	}
 	return b.String(), nil
 }

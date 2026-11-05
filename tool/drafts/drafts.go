@@ -68,22 +68,29 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 	if len(ids) == 0 {
 		return "", nil
 	}
-	var b strings.Builder
-	b.WriteString("Drafts in this conversation, as kept now:\n")
-	for _, id := range ids {
+	// Each draft is read at once, keeping their order: a run's start waits
+	// for the slowest read, not their sum.
+	lines := make([]string, len(ids))
+	tool.Each(len(ids), MaxStated, func(i int) {
+		id := ids[i]
 		rec, err := t.svc.Store.Get(ctx, t.tenant, id)
 		switch {
 		case errors.Is(err, drafts.ErrNotFound):
-			fmt.Fprintf(&b, "- %s: nothing kept of it here (a revision of a taf's Cards, or not submitted here)\n", id)
+			lines[i] = fmt.Sprintf("- %s: nothing kept of it here (a revision of a taf's Cards, or not submitted here)\n", id)
 		case err != nil:
-			fmt.Fprintf(&b, "- %s: couldn't be read now\n", id)
+			lines[i] = fmt.Sprintf("- %s: couldn't be read now\n", id)
 		case rec.Claimed:
-			fmt.Fprintf(&b, "- %s, for agent %s: confirmed by the owner, and the taf has its key\n", id, rec.AgentID)
+			lines[i] = fmt.Sprintf("- %s, for agent %s: confirmed by the owner, and the taf has its key\n", id, rec.AgentID)
 		case rec.Mismatch:
-			fmt.Fprintf(&b, "- %s, for agent %s: confirmed, but KIFF's key wasn't this agent's, so it wasn't kept\n", id, rec.AgentID)
+			lines[i] = fmt.Sprintf("- %s, for agent %s: confirmed, but KIFF's key wasn't this agent's, so it wasn't kept\n", id, rec.AgentID)
 		default:
-			fmt.Fprintf(&b, "- %s, for agent %s: submitted; not claimed yet (the owner hasn't confirmed it, or tafs hasn't taken its key)\n", id, rec.AgentID)
+			lines[i] = fmt.Sprintf("- %s, for agent %s: submitted; not claimed yet (the owner hasn't confirmed it, or tafs hasn't taken its key)\n", id, rec.AgentID)
 		}
+	})
+	var b strings.Builder
+	b.WriteString("Drafts in this conversation, as kept now:\n")
+	for _, l := range lines {
+		b.WriteString(l)
 	}
 	return b.String(), nil
 }
