@@ -108,21 +108,21 @@ func TestModeCountsAsReportedOnlyAfterAToolSaidSo(t *testing.T) {
 	}
 }
 
-// A new taf's result carries the job Setup drafted with the owner (kiff/tafs#476), or
-// tafs' named one from a Setup before it; an empty job with nothing drafted isn't one.
+// A new taf's result carries the job Setup drafted with the owner (kiff/tafs#476): an
+// empty or custom job with a kickoff, instructions optional; a named job isn't one.
 func TestOwnJobIsTheDraftedJob(t *testing.T) {
 	for _, tc := range []struct {
-		job, kickoff, instructions string
-		want                       bool
+		job, kickoff string
+		want         bool
 	}{
-		{"", "Work the refund queue.", "Refund what's owed.", true},
-		{"custom", "Work the refund queue.", "Refund what's owed.", true},
-		{"refunds", "", "", true},
-		{"", "", "", false},
-		{"", "Work the refund queue.", "", false},
-		{"billpay", "", "", false},
+		{"", "Work the refund queue.", true},
+		{"custom", "Work the refund queue.", true},
+		{"", "", false},
+		{"custom", "", false},
+		{"refunds", "Work the refund queue.", false},
+		{"billpay", "", false},
 	} {
-		if got := ownJob(tc.job, tc.kickoff, tc.instructions); got != tc.want {
+		if got := ownJob(tc.job, tc.kickoff); got != tc.want {
 			t.Fatalf("%+v: %v", tc, got)
 		}
 	}

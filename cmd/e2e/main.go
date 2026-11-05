@@ -934,9 +934,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 				t.out.hide(c.Taf.Agent, "<the taf>")
 				// What tafs cloud starts the taf from (POST /v1/tafs, from_setup).
-				if c.Taf.Draft != draftID || !ownJob(c.Taf.Job, c.Taf.Kickoff, c.Taf.Instructions) {
-					return "", "", fmt.Errorf("the result names job %q (kickoff %t, instructions %t) and draft %q; want the job Setup drafted and the draft the owner confirmed",
-						c.Taf.Job, c.Taf.Kickoff != "", c.Taf.Instructions != "", c.Taf.Draft)
+				if c.Taf.Draft != draftID || !ownJob(c.Taf.Job, c.Taf.Kickoff) {
+					return "", "", fmt.Errorf("the result names job %q (kickoff %t) and draft %q; want the job Setup drafted and the draft the owner confirmed",
+						c.Taf.Job, c.Taf.Kickoff != "", c.Taf.Draft)
 				}
 				return c.Taf.Agent, draftID, nil
 			}
