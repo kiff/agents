@@ -108,13 +108,13 @@ type config struct {
 	maxTurns                                        int
 	maxCost                                         int64
 	// speed overrides the definitions' speed for the run ("standard" or "fast"); "" keeps theirs.
-	speed string
-	keep                                            bool
-	improve                                         bool // the improve case, after the taf
-	desk                                            bool // the second vendor: a desk by its key, Setup's connection only
-	people                                          bool // step 9's people on a shared taf, instead of the taf's own checks
-	log                                             io.Writer
-	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
+	speed      string
+	keep       bool
+	improve    bool // the improve case, after the taf
+	desk       bool // the second vendor: a desk by its key, Setup's connection only
+	people     bool // step 9's people on a shared taf, instead of the taf's own checks
+	log        io.Writer
+	transcript io.Writer // each step's details, also in CI (-transcript); nil: none
 }
 
 // redacting writes what the test says with what it learns (the account,

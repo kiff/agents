@@ -165,7 +165,7 @@ const evalKeep = 24 * time.Hour
 // runtime runs cases on this runtime, kept in memory.
 type runtime struct {
 	// speed overrides the definitions' speed (-speed); "" keeps theirs.
-	speed string
+	speed    string
 	agents   *memory.Agents
 	skills   *memory.Skills // the packages -skills loaded, which definitions may name (#101)
 	sessions *memory.Store
@@ -283,7 +283,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		if rt.speed != "" {
 			d.Speed = rt.speed // -speed: a run that must not cost the fast output
 		}
-		d.Skills = t.Skills                         // read from -skills: a skill it names that isn't there fails the build
+		d.Skills = t.Skills // read from -skills: a skill it names that isn't there fails the build
 		d.DeferredTools, d.DeferVendorTools = t.DeferredTools, t.DeferVendorTools
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
