@@ -214,6 +214,17 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Every call is pinned to test mode, matching your test keys.",
 		// Not the prescribed sentence: a mode said of the calls otherwise.
 		"Every call is in test mode, as you chose.",
+		// The vendor's mode before the calls, or in a "when" (qa-kiff on #325).
+		"Your Stripe is in test mode, and every call is pinned to test mode.",
+		"Since Stripe is in test mode, every call is pinned to test mode.",
+		"Como tu Stripe está en modo de prueba, cada llamada va fijada en modo de prueba.",
+		"Every call is pinned to test mode, as it was when your Stripe was in test mode.",
+		"Every call is pinned to test mode because, when you connected it, Stripe was in test mode.",
+		"Cada llamada va fijada en modo de prueba, porque cuando conectaste Stripe estaba en modo de prueba.",
+		"Stripe is live. Every call is pinned to test mode.",
+		"Tu Stripe está en vivo. Cada llamada va fijada en modo de prueba.",
+		"I pinned every call to test mode, since Stripe is in test mode.",
+		"Stripe is test or live: it's test.",
 		// A "no" that doesn't deny the money.
 		"No te preocupes, esto mueve dinero real.",
 	} {
@@ -243,6 +254,9 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Every call is pinned to test mode, and nothing real moves.",
 		"Every call is pinned to test mode: nothing real moves.",
 		"Every call is pinned to test mode, so it doesn't move real money.",
+		// The active voice (agentgabo on #325).
+		"I pinned every call to test mode, as you chose.",
+		"Fijé cada llamada en modo de prueba, como elegiste.",
 	} {
 		if c := claim(text, pinned); c != "" {
 			t.Errorf("the pinned calls read as a claim: %q", text)

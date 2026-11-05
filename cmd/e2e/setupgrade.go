@@ -615,6 +615,10 @@ func modeClaim(s said, m modes) string {
 // or fixed ("fijada"), then to test ("to test mode", "en modo de prueba").
 var callsPinned = regexp.MustCompile(`(?i)\b(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\b(?:pinned|fixed|fijad[ao]s?)\s+(?:to|in|on|at|en|a)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
 
+// pinnedCallsActive is the same in the active voice: "I pinned every call to
+// test mode", "Fijé cada llamada en modo de prueba" (agentgabo on #325).
+var pinnedCallsActive = regexp.MustCompile(`(?i)\b(?:pinned|fixed|fij[ée]|fijamos|he fijado)\s+(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\s*\b(?:to|in|on|at|en|a)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
+
 // nextStep is what comes after, not what is ("until you switch it to live",
 // "hasta que elijas pasar a real"), and noMoney what a test call doesn't
 // move ("no real money", "sin mover dinero real", "nothing real moves").
@@ -628,31 +632,60 @@ var vendorWord = regexp.MustCompile(`(?i)\b(?:stripe|connection|conexi\x{f3}n)\b
 var accountWord = regexp.MustCompile(`(?i)\b(?:account|cuenta)\b`)
 
 // pinnedCalls reports whether a sentence has the prescribed sentence's fixed
-// parts (found), and whether it says nothing else of a mode (clean): between
-// the calls and "pinned" only where they go, and after it no mode, vendor or
-// account, but for a next step or the money a test call doesn't move. So
-// "…, and your Stripe is in test mode", "…; your Stripe too" and "…, as is
-// your Stripe" are claims.
+// parts (found), and whether it says nothing else of a mode (clean): before
+// the calls no mode, vendor or account; between the calls and "pinned" only
+// where they go; and after it no mode, vendor or account, but for a next step
+// that names neither, or the money a test call doesn't move. So "Your Stripe
+// is in test mode, and every call…", "…, and your Stripe is in test mode",
+// "…; your Stripe too", "…, as is your Stripe" and "…, as it was when your
+// Stripe was in test mode" are claims (qa-kiff on #325).
 func pinnedCalls(sentence string) (clean, found bool) {
 	loc := callsPinned.FindStringSubmatchIndex(sentence)
 	if loc == nil {
+		loc = pinnedCallsActive.FindStringSubmatchIndex(sentence)
+	}
+	if loc == nil {
 		return false, false
 	}
-	between := sentence[loc[2]:loc[3]]
-	if modeWord.MatchString(between) || accountWord.MatchString(between) {
+	before, between, rest := sentence[:loc[0]], sentence[loc[2]:loc[3]], sentence[loc[1]:]
+	if modeWord.MatchString(before) || vendorWord.MatchString(before) || accountWord.MatchString(before) ||
+		modeWord.MatchString(between) || accountWord.MatchString(between) {
 		return false, true
 	}
-	rest := noMoney.ReplaceAllString(nextStep.ReplaceAllString(sentence[loc[1]:], ""), "")
+	if step := nextStep.FindString(rest); step != "" && !vendorWord.MatchString(step) && !accountWord.MatchString(step) {
+		rest = strings.TrimSuffix(rest, step)
+	}
+	rest = noMoney.ReplaceAllString(rest, "")
 	return !modeWord.MatchString(rest) && !vendorWord.MatchString(rest) && !accountWord.MatchString(rest), true
 }
 
 // inMode is a mode said as where something is ("Stripe answers in test"),
-// which claimsMode's phrases ("test mode") miss.
+// and isMode as what something is ("Stripe is live", "está en vivo"), which
+// claimsMode's phrases ("test mode") miss (qa-kiff on #325).
 var inMode = regexp.MustCompile(`(?i)\b(?:in|en)\s+(?:test|live|sandbox|prueba)\b`)
+var isMode = regexp.MustCompile(`(?i)(?:\b(?:is|are|was|were)|'s|'re)\s+(?:now\s+)?(?:live|test|sandbox)\b|\b(?:está|están|estaba|estaban)\s+(?:ya\s+)?en\s+(?:vivo|real|producción)\b|\b(?:es|son|era)\s+de\s+prueba\b`)
+
+// conditional is a sentence that asks or supposes ("Whether the account
+// itself is test or live, check it", "Si la cuenta es de prueba o real…"),
+// and orOther a mode offered with its other ("test or live"): neither states
+// what something is.
+var conditional = regexp.MustCompile(`(?i)\b(?:whether|if|si)\b`)
+var orOther = regexp.MustCompile(`(?i)^\s+(?:or|o)\s`)
 
 // namesMode reports whether a sentence states a mode as fact.
 func namesMode(sentence string) bool {
-	return claimsMode([]string{sentence}, false) != "" || inMode.MatchString(sentence)
+	if claimsMode([]string{sentence}, false) != "" || inMode.MatchString(sentence) {
+		return true
+	}
+	if conditional.MatchString(sentence) {
+		return false
+	}
+	for _, m := range isMode.FindAllStringIndex(sentence, -1) {
+		if !orOther.MatchString(sentence[m[1]:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // sentenceEnd ends a sentence: a full stop, an exclamation or a question.
