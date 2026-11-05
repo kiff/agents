@@ -157,3 +157,38 @@ func (t *test) noteTestReport(ctx context.Context, sessionID, runID string) erro
 	t.said.testReported = reported
 	return nil
 }
+
+// markFacts notes where the setup session stands when the owner gives their
+// limits: the number of its events so far (said.factsAt). A card the owner
+// answers belongs to the latest run, so what Setup writes next comes after.
+func (t *test) markFacts(ctx context.Context, sessionID string) error {
+	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
+	if err != nil {
+		return err
+	}
+	t.said.factsAt, t.said.factsMarked = len(events), true
+	return nil
+}
+
+// textsAfter is what Setup wrote (messages and cards) in events from index from on.
+func textsAfter(events []session.Event, from int) []string {
+	var out []string
+	for i, e := range events {
+		if i < from {
+			continue
+		}
+		switch e.Kind {
+		case session.AgentMessage, session.Report:
+			var b agent.TextBody
+			if json.Unmarshal(e.Body, &b) == nil && strings.TrimSpace(b.Text) != "" {
+				out = append(out, b.Text)
+			}
+		case session.Component:
+			var c component
+			if json.Unmarshal(e.Body, &c) == nil {
+				out = append(out, cardTexts(c)...)
+			}
+		}
+	}
+	return out
+}

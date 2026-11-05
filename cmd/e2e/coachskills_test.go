@@ -108,6 +108,31 @@ func TestModeCountsAsReportedOnlyAfterAToolSaidSo(t *testing.T) {
 	}
 }
 
+// The limit check reads only what Setup wrote after the owner gave their limits:
+// Coach's question for them, before, isn't a re-ask.
+func TestTextsAfterTheFacts(t *testing.T) {
+	ev := func(kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: "r1", Kind: kind, Body: b}
+	}
+	ask := ev(session.AgentMessage, agent.TextBody{Text: "What daily limit do you want?"})
+	card := ev(session.Component, map[string]any{"type": "confirm", "id": "rules", "title": "The rules", "text": "Up to 50 EUR a day."})
+	after := ev(session.AgentMessage, agent.TextBody{Text: "Got it: 50 EUR a day."})
+	events := []session.Event{ask, card, after}
+	got := textsAfter(events, 1)
+	if len(got) != 3 || got[0] != "The rules" || got[2] != "Got it: 50 EUR a day." {
+		t.Fatalf("after the facts: %q", got)
+	}
+	for _, g := range got {
+		if g == "What daily limit do you want?" {
+			t.Fatal("the question before the facts was read")
+		}
+	}
+	if got := textsAfter(events, len(events)); len(got) != 0 {
+		t.Fatalf("nothing after: %q", got)
+	}
+}
+
 // A new taf's result carries the job Setup drafted with the owner (kiff/tafs#476): an
 // empty or custom job with a kickoff, instructions optional; a named job isn't one.
 func TestOwnJobIsTheDraftedJob(t *testing.T) {

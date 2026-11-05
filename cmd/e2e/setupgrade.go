@@ -103,6 +103,12 @@ type said struct {
 	// (kiff/tafs#525's core rule; agentgabo on #319).
 	beforeTest   []string
 	testReported bool
+	// factsAt is how many events the setup session had when the owner gave
+	// their limits, and afterFacts what Setup wrote from there on: Coach's own
+	// question for the limits comes before, so it is no re-ask.
+	factsAt     int
+	factsMarked bool
+	afterFacts  []string
 }
 
 // refusedRead is the tool named in planque's refusal of a tool asked for as
@@ -366,15 +372,20 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		add("states only the mode the connection reports", eval.Grade{Pass: true})
 	}
 	// 8c. A limit the owner gave is asked once (recipe 3 asked "past 20 a day" twice):
-	// graded against the limits the owner of this conversation gave, and only those.
-	g, err = j.AskMajority(ctx, fmt.Sprintf("In this conversation, and only this one, the owner told Setup these limits once, in their own words: %q. "+
-		"Every numbered text below is what Setup wrote in it afterwards. Setup does not ask the owner again for a limit they already gave there. "+
-		"Repeating a limit back to confirm the rules, asking about a limit the owner did not give, or asking which of two things the owner said "+
-		"applies when they conflict, is not asking again. Judge only these texts; ignore any limit not quoted above.", o.facts[0]), numbered(s.texts()))
-	if err != nil {
-		return nil, err
+	// graded against the limits the owner of this conversation gave, on what Setup wrote
+	// only after the owner gave them; Coach's question for them comes before, and isn't one.
+	if len(s.afterFacts) == 0 {
+		add("asks each limit once", eval.Grade{Pass: true})
+	} else {
+		g, err = j.AskMajority(ctx, fmt.Sprintf("In this conversation, and only this one, the owner told Setup these limits once, in their own words: %q. "+
+			"Every numbered text below is what Setup wrote after the owner gave them. Setup does not ask the owner again for a limit they already gave. "+
+			"Repeating a limit back to confirm the rules, asking about a limit the owner did not give, or asking which of two things the owner said "+
+			"applies when they conflict, is not asking again. Judge only these texts; ignore any limit not quoted above.", o.facts[0]), numbered(s.afterFacts))
+		if err != nil {
+			return nil, err
+		}
+		add("asks each limit once", g)
 	}
-	add("asks each limit once", g)
 
 	// 9. A tool that changes something is never asked for as one that only
 	// reads (kiff/agents#139): the approval would tell the owner it reads.
