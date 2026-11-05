@@ -41,7 +41,9 @@ type Agent struct {
 	// provider's default.
 	Effort string
 	// Thinking model.ThinkingSummarized streams a summary of the model's
-	// thinking as Thinking events; empty keeps it hidden.
+	// thinking as Thought events; model.ThinkingUpdates streams only its
+	// progress notes between tool calls, as Update events; empty keeps both
+	// hidden.
 	Thinking string
 	// Fast runs the turns at the provider's fast speed, at PriceFast, for a
 	// run someone waits on. A turn that couldn't run fast runs at standard,
@@ -276,6 +278,10 @@ const (
 	// Thought is more of the summary of the model's thinking (Agent.Thinking),
 	// for showing while the run goes. It isn't recorded.
 	Thought EventKind = "thinking"
+	// Update is one short progress note the model wrote between tool calls
+	// (Agent.Thinking "updates"), whole: what it's doing now, for the person
+	// waiting. It isn't recorded apart from the turn's own blocks.
+	Update EventKind = "update"
 )
 
 // Event is streamed to the caller as the run goes.
@@ -1157,7 +1163,8 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 		}
 	}
 	req := model.Request{Model: a.ModelID, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history,
-		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) }}
+		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) },
+		OnUpdate: func(s string) { emit(Event{Kind: Update, Text: s}) }}
 	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	took := time.Since(began)

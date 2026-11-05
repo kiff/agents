@@ -44,6 +44,9 @@ func TestCheckRefuses(t *testing.T) {
 		"thinking on a model that doesn't always think": func(d *registry.Definition) {
 			d.Model, d.Thinking = "claude-haiku-4-5", model.ThinkingSummarized
 		},
+		"progress notes on a model that writes none": func(d *registry.Definition) {
+			d.Model, d.Thinking = "claude-mythos-5", model.ThinkingUpdates
+		},
 		"fast with no fast price": func(d *registry.Definition) { d.Speed = "fast" },
 		"a fast price without the cache": func(d *registry.Definition) {
 			d.Speed, d.PriceFast = "fast", model.Price{Input: 2 * d.Price.Input, Output: 2 * d.Price.Output}
@@ -75,6 +78,10 @@ func TestCheckRefuses(t *testing.T) {
 		shows.Model, shows.Thinking = id, model.ThinkingSummarized
 		if err := shows.Check(); err != nil {
 			t.Errorf("summarized thinking on %s refused: %v", id, err)
+		}
+		shows.Thinking = model.ThinkingUpdates
+		if err := shows.Check(); err != nil {
+			t.Errorf("progress notes on %s refused: %v", id, err)
 		}
 	}
 	fast := registrytest.Definition("t1", "payouts")
