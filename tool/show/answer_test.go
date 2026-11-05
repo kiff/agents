@@ -89,9 +89,9 @@ func TestOnlyAnAnswerableCardWaits(t *testing.T) {
 // the new taf's id for a new taf, the new version for an improvement, or why
 // neither was made. Its words say which, never the model's guess.
 func TestAResultIsAnsweredWithWhatCameOfIt(t *testing.T) {
-	newTaf := card(t, `{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","job":"refunds","draft":"drf_1"}}`)
+	newTaf := card(t, `{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *"}}`)
 	improves := card(t, `{"type":"result","id":"v","text":"A new version.","taf":{"agent":"refunds","name":"Refunds","job":"refunds","improves":"taf_1","note":"asks first"}}`)
-	res, err := show.Tool{}.Call(t.Context(), json.RawMessage(`{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","job":"refunds","draft":"drf_1"}}`))
+	res, err := show.Tool{}.Call(t.Context(), json.RawMessage(`{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *"}}`))
 	if err != nil || !res.Waits() || !strings.Contains(res.Text, "what came of the hand-over") {
 		t.Fatalf("a result: %+v, %v; want it to wait for the hand-over", res, err)
 	}

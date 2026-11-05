@@ -85,7 +85,10 @@ type Question struct {
 type Taf struct {
 	Agent string `json:"agent"`
 	Name  string `json:"name"`
-	Job   string `json:"job"` // one of tafs' jobs, such as refunds or access
+	// Job is the taf's job: for a new taf, empty or "custom" (its own job,
+	// drafted with the owner: Kickoff, Instructions, Cron or Unscheduled;
+	// kiff/tafs#476); for an improvement, the taf's job as tafs has it.
+	Job string `json:"job,omitempty"`
 	// Draft is the taf's KIFF draft: for a new taf, the one the owner
 	// confirmed in the second approval; for an improvement, the revision of
 	// its Cards, which the owner confirms only when they switch to the
@@ -105,10 +108,23 @@ type Taf struct {
 	// so it gets no schedule: the owner hands it work in its chat
 	// (kiff/tafs#138). An improvement keeps the taf's schedule.
 	Unscheduled bool `json:"unscheduled,omitempty"`
+	// Kickoff is what each run of a new taf is asked to do, in one or two
+	// sentences; Instructions how it works, as agreed with the owner; Cron
+	// when it runs (five POSIX fields, in the account's time zone), unless
+	// it is Unscheduled. A new taf's job of its own (kiff/tafs#476).
+	Kickoff      string `json:"kickoff,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	Cron         string `json:"cron,omitempty"`
 }
 
 // MaxNotes bounds an improvement's instructions from the owner.
 const MaxNotes = 4000
+
+// MaxJob bounds a new taf's kickoff and its instructions, as tafs does.
+const MaxJob = 2000
+
+// cronPattern is five POSIX cron fields; tafs checks how often it runs.
+var cronPattern = regexp.MustCompile(`^[0-9*/,-]+( [0-9*/,-]+){4}$`)
 
 // Component is one component. Which fields it has depends on its type.
 type Component struct {
@@ -198,13 +214,16 @@ func (Tool) Spec() model.ToolSpec {
 			`"grant":{"type":"string","description":"planque's grant id"},"draft":{"type":"string","description":"KIFF's agent draft id"},` +
 			`"service":{"type":"string","description":"the vendor's host: its MCP server's, or its API's base"},` +
 			`"taf":{"type":"object","properties":{"agent":{"type":"string"},"name":{"type":"string"},` +
-			`"job":{"type":"string","description":"one of tafs' jobs, such as refunds or access"},"draft":{"type":"string","description":"the taf's KIFF draft id: confirmed by the owner for a new taf; an improvement's Card revision, confirmed at the switch"},` +
+			`"job":{"type":"string","description":"an improvement only: the taf's job as tafs has it; a new taf leaves it out, its job is its own (kickoff, instructions, cron)"},"draft":{"type":"string","description":"the taf's KIFF draft id: confirmed by the owner for a new taf; an improvement's Card revision, confirmed at the switch"},` +
 			`"improves":{"type":"string","description":"the tafs id of the taf this is the next version of"},` +
 			`"note":{"type":"string","description":"what changed, in the owner's language (an improvement)"},` +
 			`"notes":{"type":"string","description":"the taf's full new instructions from the owner (an improvement); omit to keep them"},` +
 			`"summary":{"type":"string","description":"one short line on what the taf does, in the owner's language: its job line once it goes live"},` +
-			`"unscheduled":{"type":"boolean","description":"a new taf whose tools can't find its work by themselves: no schedule, the owner hands it work in its chat"}},` +
-			`"required":["agent","name","job"]},` +
+			`"unscheduled":{"type":"boolean","description":"a new taf whose tools can't find its work by themselves: no schedule, the owner hands it work in its chat"},` +
+			`"kickoff":{"type":"string","description":"a new taf: what each run is asked to do, in one or two sentences, drafted with the owner"},` +
+			`"instructions":{"type":"string","description":"a new taf: how it works, from what was agreed with the owner, and its never rules"},` +
+			`"cron":{"type":"string","description":"a new taf with a schedule: when it runs, five POSIX cron fields in the account's time zone, such as 0 9 * * 1-5"}},` +
+			`"required":["agent","name"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
 			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
 			`"no":{"type":"string","description":"the other button's label (sign_in)"},` +
@@ -382,9 +401,6 @@ func (c Component) check() error {
 		if err := text("taf.name", c.Taf.Name, true, MaxLabel); err != nil {
 			return err
 		}
-		if !idPattern.MatchString(c.Taf.Job) {
-			return fmt.Errorf("taf.job is one of tafs' jobs, such as refunds or access")
-		}
 		if c.Taf.Improves == "" {
 			if !refPattern.MatchString(c.Taf.Draft) {
 				return fmt.Errorf("taf.draft is the taf's KIFF draft id, the one the owner confirmed")
@@ -392,7 +408,30 @@ func (c Component) check() error {
 			if c.Taf.Note != "" || c.Taf.Notes != "" {
 				return fmt.Errorf("taf.note and taf.notes are for an improvement (taf.improves)")
 			}
+			// A new taf carries the job drafted with the owner, never one
+			// of a fixed list (kiff/tafs#476).
+			if c.Taf.Job != "" && c.Taf.Job != "custom" {
+				return fmt.Errorf("a new taf carries the job you drafted with the owner (taf.kickoff, taf.instructions, taf.cron or taf.unscheduled); leave taf.job out")
+			}
+			if err := text("taf.kickoff", c.Taf.Kickoff, true, MaxJob); err != nil {
+				return err
+			}
+			if err := text("taf.instructions", c.Taf.Instructions, false, MaxJob); err != nil {
+				return err
+			}
+			switch {
+			case c.Taf.Unscheduled && c.Taf.Cron != "":
+				return fmt.Errorf("taf.cron is for a taf with a schedule; an unscheduled one has none")
+			case !c.Taf.Unscheduled && !cronPattern.MatchString(c.Taf.Cron):
+				return fmt.Errorf("taf.cron is when it runs, five POSIX cron fields such as \"0 9 * * 1-5\", or set taf.unscheduled")
+			}
 		} else {
+			if !idPattern.MatchString(c.Taf.Job) {
+				return fmt.Errorf("taf.job is the taf's job, as tafs has it")
+			}
+			if c.Taf.Kickoff != "" || c.Taf.Instructions != "" || c.Taf.Cron != "" {
+				return fmt.Errorf("taf.kickoff, taf.instructions and taf.cron are for a new taf; an improvement changes its notes")
+			}
 			if c.Taf.Unscheduled {
 				return fmt.Errorf("taf.unscheduled is for a new taf: an improvement keeps its schedule")
 			}
