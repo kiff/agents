@@ -14,7 +14,7 @@ jobs:
         # A private tracker is never named in this public repo: not in the tree, not in a pull
         # request's added lines. The pattern is split so this file never matches it.
         run: |
-          pattern='kiff-cloud''#|kiff/kiff''-cloud'
+          pattern='kiff-cloud''#|kiff/kiff''-cloud|[Tt]he ''PM\b'
           if git grep -nE "$pattern" -- .; then
             echo "::error::a private reference is in the tree: name the gap or describe it instead"; exit 1
           fi

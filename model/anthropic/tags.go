@@ -8,7 +8,7 @@ import (
 
 // A reply's text can carry a tag of the model's own format, leaked into the
 // words meant for the owner: "antml:final_answer_dialog Falta que apruebes…"
-// reached a chat in Eval 42141761407 (the PM, qa-kiff). Every reply text is
+// reached a chat in Eval 42141761407. Every reply text is
 // cleaned of them here, the one place the stream, the stored message and what
 // tafs builds from it all read from. Only the model's reply text is: never an
 // owner's words, a tool's result or a thinking block, which goes back signed.
