@@ -113,6 +113,11 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 	// Under updates, every thinking block with text is one progress note,
 	// shown whole when its block ends; an empty one shows nothing.
 	var note strings.Builder
+	// The streamed text, without a tag of the model's format leaked into it (tags.go).
+	var tf *tagFilter
+	if onText != nil {
+		tf = &tagFilter{out: onText}
+	}
 	for stream.Next() {
 		ev := stream.Current()
 		if err := msg.Accumulate(ev); err != nil {
@@ -123,10 +128,13 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 		case sdk.ContentBlockDeltaEvent:
 			d = e
 		case sdk.ContentBlockStopEvent:
-			if s := strings.TrimSpace(note.String()); s != "" && s != interrupted && req.OnUpdate != nil {
+			if s := strings.TrimSpace(stripTags(note.String())); s != "" && s != interrupted && req.OnUpdate != nil {
 				req.OnUpdate(s)
 			}
 			note.Reset()
+			if tf != nil {
+				tf.flush() // a tag never spans blocks
+			}
 			continue
 		default:
 			continue
@@ -143,15 +151,24 @@ func (m *Model) turn(ctx context.Context, req model.Request, onText func(string)
 				req.OnThinking(t.Thinking)
 			}
 		case sdk.TextDelta:
-			if onText != nil {
-				onText(t.Text)
+			if tf != nil {
+				tf.write(t.Text)
 			}
 		}
 	}
 	if err := stream.Err(); err != nil {
 		return model.Reply{}, first != 0, fmt.Errorf("anthropic: %w", err)
 	}
+	if tf != nil {
+		tf.flush()
+	}
 	r := fromMessage(msg)
+	// The stored reply without them too: the chat's thread, and what tafs builds from it.
+	for i, b := range r.Blocks {
+		if b.Kind == model.Text {
+			r.Blocks[i].Text = stripTags(b.Text)
+		}
+	}
 	r.FirstToken, r.ThinkingBytes = first, thinking
 	// The API says the speed it ran at in usage.speed; a fast call it
 	// accepted without saying ran fast.
