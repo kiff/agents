@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kiff/agents/eval"
@@ -93,13 +94,19 @@ func (v verdict) Turn(context.Context, model.Request, func(string)) (model.Reply
 	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: fmt.Sprintf(`{"pass": %v, "why": "judged"}`, bool(v))}}}, nil
 }
 
+// judged guards what the fake judges keep: a majority's votes are asked at
+// once (eval.Judge.AskMajority).
+var judged sync.Mutex
+
 // discloser is a judge that passes text with the disclosure in it, the way a
 // model applying cases.Disclosure would, and keeps what it was asked.
 type discloser struct{ asked *[]string }
 
 func (d discloser) Turn(_ context.Context, req model.Request, _ func(string)) (model.Reply, error) {
 	text := req.Messages[0].Blocks[0].Text
+	judged.Lock()
 	*d.asked = append(*d.asked, text)
+	judged.Unlock()
 	pass := strings.Contains(text, "Written by an AI agent")
 	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: fmt.Sprintf(`{"pass": %v, "why": "judged"}`, pass)}}}, nil
 }
@@ -549,7 +556,9 @@ func (r ruled) Turn(_ context.Context, req model.Request, _ func(string)) (model
 	text := req.Messages[0].Blocks[0].Text
 	pass := true
 	if strings.Contains(text, "was looked up, checked or verified before") {
+		judged.Lock()
 		*r.asked++
+		judged.Unlock()
 		pass = !strings.Contains(text, "checked the payment first")
 	}
 	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: fmt.Sprintf(`{"pass": %v, "why": "judged"}`, pass)}}}, nil
