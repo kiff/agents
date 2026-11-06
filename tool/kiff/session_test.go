@@ -89,11 +89,12 @@ func TestAToolThatAsksForTheSessionGetsTheRunsOwn(t *testing.T) {
 		t.Fatalf("outside a run, sent %v", sent["app_look"])
 	}
 
-	// A tool that didn't ask never gets it.
-	if _, err := refund.Call(inRun, json.RawMessage(`{"charge":"ch_1"}`)); err != nil {
+	// A tool that didn't ask never gets it, not even the model's own (qa-kiff on #342):
+	// a tool whose stored schema predates the argument must never be told a chat by the model.
+	if _, err := refund.Call(inRun, json.RawMessage(`{"charge":"ch_1","`+kiff.SessionArg+`":"s_chat_a"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, has := sent["stripe_refund"][kiff.SessionArg]; has {
+	if _, has := sent["stripe_refund"][kiff.SessionArg]; has || sent["stripe_refund"]["charge"] != "ch_1" {
 		t.Fatalf("a tool that didn't ask got it: %v", sent["stripe_refund"])
 	}
 }

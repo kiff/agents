@@ -37,7 +37,8 @@ import (
 // call comes from: kiff/agents sets it to the run's session on every call,
 // over anything the model put there, and the model never sees it in the
 // tool's schema. A tool opts in by declaring it, so no other tool gets an
-// argument it doesn't know. KIFF forwards it like any argument, inside the
+// argument it doesn't know; on any other tool it's taken out, so the model
+// never names a chat itself. KIFF forwards it like any argument, inside the
 // call's permit (kiff/tafs#544: a Coach drive is its chat's alone).
 const SessionArg = "agent_session"
 
@@ -220,11 +221,13 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		input = json.RawMessage(`{}`)
 	}
 	// The chat the call comes from, for a tool that asked for it: the run's own
-	// session, never the model's word for it. Set before the operation ID, so a
-	// model's value never makes two operations of one action.
-	if t.session {
+	// session, never the model's word for it. On every other tool it's taken out,
+	// so a model never names a chat to a tool whose stored schema predates the
+	// argument (qa-kiff on #342). Set before the operation ID, so a model's value
+	// never makes two operations of one action.
+	if t.session || bytes.Contains(input, []byte(SessionArg)) {
 		session := ""
-		if ref, ok := run.RefFrom(ctx); ok {
+		if ref, ok := run.RefFrom(ctx); ok && t.session {
 			session = ref.Session
 		}
 		with, err := withSession(input, session)
