@@ -684,6 +684,52 @@ func TestAPausedRunContinues(t *testing.T) {
 	}
 }
 
+// A look-up made in one message of a chat counts in the next one's run,
+// continued after a hold: that run reads the earlier read's line in its
+// history before its own record, whose note says such a read is the look-up
+// made, and is for the model, never the owner (Eval 42146041790: told to say
+// what was done "from this record, with its amounts and ids, not from earlier
+// messages", a taf said the look-up made in the message before "isn't in this
+// run's record", which the owner reads as unchecked).
+func TestALookUpInAnEarlierMessageCountsAfterAHold(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_read", `{"charge":"ch_1"}`), say("€7 of it can be refunded."))
+	f.extra = []tool.Tool{&lookUp{name: "stripe_read"}}
+	first := f.start(server.Start{Input: "Check ch_1: can €7 of it be refunded? Don't refund it yet."})
+	if got, err := f.r.Execute(ctx, "t1", first.ID, nil); err != nil || got.Status != run.Completed {
+		t.Fatalf("the check: %+v, %v", got, err)
+	}
+	f.model.add(use("c2", "stripe_refund", `{"charge":"ch_1","amount":700}`), say("Your approval is needed for the €7 refund."))
+	second := f.start(server.Start{Session: first.Session, Input: "Refund it."})
+	if paused := f.pause(second); paused.Status != run.Paused {
+		t.Fatalf("the refund: %+v", paused)
+	}
+	f.answer(second)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "refunded", State: "allowed"}}}, nil
+	}
+	f.model.add(say("You approved the €7 refund on that charge, and it went through once."))
+	if got, err := f.r.Execute(ctx, "t1", second.ID, nil); err != nil || got.Status != run.Completed {
+		t.Fatalf("continued: %+v, %v", got, err)
+	}
+	reqs := f.model.requests()
+	read := texts(reqs[len(reqs)-1].Messages)
+	earlier := slices.Index(read, `assistant: [called] stripe_read {"charge":"ch_1"} → done`)
+	note := slices.IndexFunc(read, func(s string) bool { return strings.HasPrefix(s, "user: "+agent.RecordNote) })
+	if earlier < 0 || note < earlier {
+		t.Fatalf("the continued run read %q: want the earlier look-up's line, then its record's note", read)
+	}
+	for _, said := range []string{"the owner, who never sees runs or records", "never what a run or a record holds", "a read of the same item earlier in this conversation", "say it was checked earlier"} {
+		if !strings.Contains(agent.RecordNote, said) {
+			t.Errorf("the note doesn't say %q", said)
+		}
+	}
+	for _, said := range []string{"ids", "not from earlier messages", "This run's record"} {
+		if strings.Contains(agent.RecordNote, said) {
+			t.Errorf("the note still says %q", said)
+		}
+	}
+}
+
 // What a run did is kept across its pause (#249): the act made before the
 // hold is stored when it pauses, and the held call is added once the owner
 // approved it and the run went on.
