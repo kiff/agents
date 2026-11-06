@@ -157,8 +157,8 @@ func (rt *runtime) checkRoom(ctx context.Context, s cases.Scenario, runs int) er
 	return nil
 }
 
-// connect lists the agent's tools through KIFF's gateway.
-var connect = func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+// connect lists the agent's tools through KIFF's gateway: each eval run is its own, with no warm session.
+var connect = func(ctx context.Context, _, _, gateway, key string) ([]tool.Tool, error) {
 	return kiff.New(gateway, key, nil).Tools(ctx)
 }
 
@@ -207,8 +207,8 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 }
 
 // connect lists the agent's tools, and keeps their names for the report.
-func (rt *runtime) connect(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
-	ts, err := connect(ctx, gateway, key)
+func (rt *runtime) connect(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
+	ts, err := connect(ctx, tenant, agent, gateway, key)
 	if err == nil {
 		rt.tools = rt.tools[:0]
 		for _, t := range ts {

@@ -91,7 +91,9 @@ func setup(t *testing.T) env {
 	e := env{runs: memory.NewRuns(), store: memory.New(), model: &echo{}}
 	e.runner = &runner.Runner{Runs: e.runs, Sessions: e.store,
 		Builder: &registry.Builder{Agents: agents, Secrets: keys{}, Model: e.model, Gateways: []string{"https://gateway.test/mcp"},
-			Connect: func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{held{}}, nil }}}
+			Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+				return []tool.Tool{held{}}, nil
+			}}}
 	return e
 }
 

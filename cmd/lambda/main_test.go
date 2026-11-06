@@ -77,7 +77,7 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 	gateways := []string{"https://gateway.test/mcp"}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
 		Agents: agents, Secrets: keys{}, Model: m, Gateways: gateways,
-		Connect: func(context.Context, string, string) ([]tool.Tool, error) { return nil, nil },
+		Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) { return nil, nil },
 	}}
 	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
 		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
@@ -356,7 +356,9 @@ func TestProbeReadsThroughTheAgentsGateway(t *testing.T) {
 	list := &gwTool{name: "gmail__list", access: tool.Read}
 	send := &gwTool{name: "gmail__send", access: tool.Write}
 	b := &registry.Builder{Agents: agents, Secrets: keys{}, Model: &replies{}, Gateways: []string{"https://gateway.test/mcp"},
-		Connect: func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{list, send}, nil }}
+		Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+			return []tool.Tool{list, send}, nil
+		}}
 	got, err := probe(ctx, b, "t1", "payouts", schedule.Check{Tool: "gmail__list", Arguments: json.RawMessage(`{"q":"refund"}`), Cursor: "c"})
 	if err != nil || got != `{"data":[]}` || string(list.in) != `{"q":"refund"}` {
 		t.Fatalf("read %q (%v), sent %s", got, err, list.in)

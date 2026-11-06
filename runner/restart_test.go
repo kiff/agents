@@ -65,7 +65,7 @@ func TestARunKilledBeforeItActedIsRestartedFromItsStart(t *testing.T) {
 	f := newFixture(t, use("c1", "stripe_lookup", `{"charge":"ch_1"}`))
 	s := newStuckRead(1)
 	t.Cleanup(func() { close(s.stuck) })
-	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
+	f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
 	r := f.start(server.Start{Input: "is order 42 paid?"})
 	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
 	<-s.inFlow[0]
@@ -139,7 +139,7 @@ func TestAStoppedRunIsRestartedOnceUnderConcurrentSweeps(t *testing.T) {
 	f := newFixture(t, use("c1", "stripe_lookup", `{"charge":"ch_1"}`), say("Order 42 is paid."))
 	s := newStuckRead(1)
 	t.Cleanup(func() { close(s.stuck) })
-	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
+	f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
 	r := f.start(server.Start{Input: "is order 42 paid?"})
 	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
 	<-s.inFlow[0]
@@ -192,7 +192,7 @@ func TestARunThatKeepsStoppingBeforeItActsNeedsTheOwner(t *testing.T) {
 	}
 	s := newStuckRead(run.MaxResumes + 1)
 	t.Cleanup(func() { close(s.stuck) })
-	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
+	f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) { return []tool.Tool{s}, nil }
 	r := f.start(server.Start{Input: "is order 42 paid?"})
 	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
 	<-s.inFlow[0]

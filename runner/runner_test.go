@@ -174,7 +174,7 @@ func newFixture(t testing.TB, replies ...model.Reply) *fixture {
 func (f *fixture) newRunner() *runner.Runner {
 	return &runner.Runner{Runs: f.runs, Sessions: f.store, Now: f.clock.now,
 		Builder: &registry.Builder{Agents: f.agents, Secrets: keys{}, Model: f.model, Gateways: []string{"https://gateway.test/mcp"},
-			Connect: func(context.Context, string, string) ([]tool.Tool, error) {
+			Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) {
 				if f.connectErr != nil {
 					return nil, f.connectErr
 				}

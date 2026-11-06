@@ -155,7 +155,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.b = &registry.Builder{Agents: f.agents, Secrets: f.secrets, Model: model0{},
 		Gateways: []string{"https://gateway.test/mcp"},
-		Connect: func(_ context.Context, gateway, key string) ([]tool.Tool, error) {
+		Connect: func(_ context.Context, _, _, gateway, key string) ([]tool.Tool, error) {
 			f.connects = append(f.connects, gateway+" "+key)
 			return []tool.Tool{stub{name: "stripe_refund", access: tool.Write, gateway: true}}, nil
 		},
@@ -278,7 +278,7 @@ func BenchmarkBuild(b *testing.B) {
 	}
 	builder := &registry.Builder{Agents: agents, Model: model0{}, Gateways: []string{d.Gateway},
 		Secrets: &secrets{keys: map[[2]string]string{{"t1", d.KeyRef}: "key-t1"}},
-		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+		Connect: func(ctx context.Context, _, _, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, srv.Client()).Tools(ctx)
 		},
 	}
@@ -610,9 +610,9 @@ func TestADefinitionNamesItsCards(t *testing.T) {
 func TestTheStartSplitsTheGatewaysHandshake(t *testing.T) {
 	f := newFixture(t)
 	connect := f.b.Connect
-	f.b.Connect = func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+	f.b.Connect = func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
 		session.Mark(ctx, "handshake")
-		return connect(ctx, gateway, key)
+		return connect(ctx, tenant, agent, gateway, key)
 	}
 	if err := f.agents.Put(ctx, registrytest.Definition("t1", "payouts")); err != nil {
 		t.Fatal(err)

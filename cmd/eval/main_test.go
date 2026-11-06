@@ -186,7 +186,7 @@ func withAgent(t *testing.T, m *script) {
 		}
 		return m
 	}
-	connect = func(_ context.Context, gateway, key string) ([]tool.Tool, error) {
+	connect = func(_ context.Context, _, _, gateway, key string) ([]tool.Tool, error) {
 		if key != "kiff-k" || gateway != "https://gateway.test/mcp" {
 			t.Errorf("connected to %s with %q", gateway, key)
 		}
@@ -479,7 +479,9 @@ func TestARunsHeldCallsAreWithdrawn(t *testing.T) {
 	turns := []model.Reply{agentTurns()[0], {Blocks: []model.Block{{Kind: model.Text, Text: "Waiting on the owner."}}, Stop: model.EndTurn}}
 	m := &script{replies: slices.Clone(turns)}
 	withAgent(t, m)
-	connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{heldTool{}}, nil }
+	connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+		return []tool.Tool{heldTool{}}, nil
+	}
 	var asked []string
 	old := withdraw
 	withdraw = func(_ context.Context, api, key, exception string) (kiff.Withdrawal, error) {
@@ -779,7 +781,9 @@ func TestAPublicLogNamesNothing(t *testing.T) {
 	turns := []model.Reply{agentTurns()[0], {Blocks: []model.Block{{Kind: model.Text, Text: "Waiting on the owner."}}, Stop: model.EndTurn}}
 	m := &script{replies: slices.Clone(turns)}
 	withAgent(t, m)
-	connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{heldTool{}}, nil }
+	connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+		return []tool.Tool{heldTool{}}, nil
+	}
 	old := withdraw
 	withdraw = func(context.Context, string, string, string) (kiff.Withdrawal, error) {
 		return kiff.Withdrawal{Withdrawn: true, Status: "invalidated"}, nil

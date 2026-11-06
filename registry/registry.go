@@ -680,9 +680,10 @@ type Builder struct {
 	Model   model.Model
 	// Gateways are the gateway URLs a definition may name, exactly.
 	Gateways []string
-	// Connect lists the tools a gateway offers the agent whose KIFF key is
-	// key.
-	Connect func(ctx context.Context, gateway, key string) ([]tool.Tool, error)
+	// Connect lists the tools a gateway offers the tenant's agent, whose KIFF
+	// key is key. A warm session (kiff.Sessions) is kept per tenant, agent and
+	// key, so all three are given.
+	Connect func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error)
 	// Own, when set, returns the tools an agent has besides its gateway's,
 	// such as its memory.
 	Own func(tenant, agent string) []tool.Tool
@@ -761,7 +762,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	}
 	mark("key")
 	// The gateway client marks its handshake ("handshake"); "connect" is then the rest: its tool list.
-	tools, err := b.Connect(session.WithMark(ctx, mark), d.Gateway, key)
+	tools, err := b.Connect(session.WithMark(ctx, mark), tenant, id, d.Gateway, key)
 	if err != nil {
 		return agent.Agent{}, d, err
 	}

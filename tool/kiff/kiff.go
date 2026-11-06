@@ -79,6 +79,25 @@ type Client struct {
 
 	smu     sync.Mutex
 	session string // Mcp-Session-Id, once the gateway gives one
+
+	// refused, when set (Sessions), is told of any answer the gateway
+	// refused or failed, so a kept session isn't reused after it.
+	refused func()
+}
+
+// isReady says the session was opened.
+func (c *Client) isReady() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ready
+}
+
+// fail tells refused of a failed answer, and returns err.
+func (c *Client) fail(err error) error {
+	if c.refused != nil {
+		c.refused()
+	}
+	return err
 }
 
 // New returns a client for the gateway at url, as the agent whose KIFF key is
@@ -597,7 +616,7 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	c.smu.Unlock()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key))
+		return c.fail(fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key)))
 	}
 	defer resp.Body.Close()
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -607,14 +626,14 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	}
 	if resp.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &HTTPError{Method: method, Status: resp.StatusCode, Body: c.redact(strings.TrimSpace(string(snippet)))}
+		return c.fail(&HTTPError{Method: method, Status: resp.StatusCode, Body: c.redact(strings.TrimSpace(string(snippet)))})
 	}
 	if !withID {
 		return nil
 	}
 	raw, err := readResponse(resp, id)
 	if err != nil {
-		return fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key))
+		return c.fail(fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key)))
 	}
 	var rpc struct {
 		Result json.RawMessage `json:"result"`
@@ -627,7 +646,7 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 		return fmt.Errorf("kiff: %s: %w", method, err)
 	}
 	if rpc.Error != nil {
-		return &Error{Method: method, Code: rpc.Error.Code, Message: c.redact(rpc.Error.Message)}
+		return c.fail(&Error{Method: method, Code: rpc.Error.Code, Message: c.redact(rpc.Error.Message)})
 	}
 	if out == nil {
 		return nil
