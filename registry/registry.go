@@ -103,6 +103,10 @@ type Definition struct {
 	// Show gives the agent the show tool: UI components in the owner's chat
 	// (kiff/agents#91). Off unless set.
 	Show bool `json:"show,omitempty"`
+	// ShowTypes are the cards the agent shows, when not show.Types: a taf's
+	// own (show.TafTypes: ask_coach, to send a setting to Coach;
+	// kiff/tafs#476, gap 15). It needs Show.
+	ShowTypes []string `json:"show_types,omitempty"`
 	// Drafts gives the agent the kiff_draft tool: submit a taf's KIFF draft,
 	// whose claim secret the model never sees (kiff/agents#91). Off unless
 	// set; the server must offer drafts.
@@ -136,6 +140,11 @@ type Definition struct {
 	// writes outside the company, in the fields it names, whatever the model
 	// wrote (agent.Disclosure). Nil: none.
 	Disclose *agent.Disclosure `json:"disclose,omitempty"`
+	// Credit puts a line crediting what the taf was built with ("Built with
+	// tafs.") in the calls it names, after the disclosure: its own line and
+	// its own check, so neither is added twice and either can be left out of
+	// a tool (no credit in evidence for a bank). Checked as Disclose is.
+	Credit *agent.Disclosure `json:"credit,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -417,6 +426,17 @@ func (d Definition) Check() error {
 	}
 	if err := d.Disclose.Check(); err != nil {
 		return fmt.Errorf("registry: %w", err)
+	}
+	if err := d.Credit.Check(); err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	if len(d.ShowTypes) > 0 && !d.Show {
+		return errors.New("registry: show_types needs show")
+	}
+	for i, t := range d.ShowTypes {
+		if !slices.Contains(show.TafTypes, t) || slices.Contains(d.ShowTypes[:i], t) {
+			return fmt.Errorf("registry: show_types names each of %s at most once, not %q", strings.Join(show.TafTypes, ", "), t)
+		}
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
 	// several times longer (a control character becomes six bytes).
@@ -749,7 +769,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, b.Own(tenant, id)...)
 	}
 	if d.Show {
-		tools = append(tools, show.New())
+		tools = append(tools, show.New(d.ShowTypes...))
 	}
 	if d.FollowUps {
 		if b.FollowUp == nil {
@@ -784,7 +804,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	mark("tools and skills")
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast, StartSpans: spans,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
-		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose}
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose, Credit: d.Credit}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}

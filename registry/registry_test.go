@@ -19,6 +19,7 @@ import (
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
+	"github.com/kiff/agents/tool/show"
 )
 
 var ctx = context.Background()
@@ -551,5 +552,55 @@ func TestADefinitionsDisclosureIsCheckedAndBuilt(t *testing.T) {
 	}
 	if a.Disclose == nil || a.Disclose.Line != d.Disclose.Line || len(a.Disclose.In) != 1 {
 		t.Fatalf("built with disclosure %+v", a.Disclose)
+	}
+	// The credit too, checked on its own: "Built with tafs." after the disclosure.
+	d.Credit = &agent.Disclosure{Line: "Built with tafs.", After: d.Disclose.Line, In: []agent.DisclosureIn{{Tool: "send_reply", Fields: []string{"body"}}}}
+	if err := d.Check(); err != nil {
+		t.Fatal(err)
+	}
+	bad = d
+	bad.Credit = &agent.Disclosure{Line: "Built with tafs.", After: "two\nlines", In: d.Credit.In}
+	if err := bad.Check(); err == nil {
+		t.Fatal("a credit following two lines passed")
+	}
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if a, _, err = f.b.Build(ctx, "t1", "payouts"); err != nil || a.Credit == nil || a.Credit.Line != "Built with tafs." || a.Credit.After != d.Disclose.Line {
+		t.Fatalf("built with credit %+v, %v", a.Credit, err)
+	}
+}
+
+// A definition may name the cards its agent shows, from a taf's own: an
+// ask_coach card only, and only with show (kiff/tafs#476, gap 15).
+func TestADefinitionNamesItsCards(t *testing.T) {
+	d := registrytest.Definition("t1", "payouts")
+	d.Show, d.ShowTypes = true, []string{show.AskCoach}
+	if err := d.Check(); err != nil {
+		t.Fatal(err)
+	}
+	for name, bad := range map[string]func(*registry.Definition){
+		"without show":  func(d *registry.Definition) { d.Show = false },
+		"Coach's types": func(d *registry.Definition) { d.ShowTypes = []string{"confirm"} },
+		"twice":         func(d *registry.Definition) { d.ShowTypes = []string{show.AskCoach, show.AskCoach} },
+	} {
+		b := d
+		b.ShowTypes = slices.Clone(d.ShowTypes)
+		bad(&b)
+		if err := b.Check(); err == nil {
+			t.Errorf("%s passed", name)
+		}
+	}
+	f := newFixture(t)
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(a.Tools, func(t tool.Tool) bool { return t.Spec().Name == show.Name })
+	if i < 0 || !strings.Contains(string(a.Tools[i].Spec().InputSchema), `"enum":["ask_coach"]`) {
+		t.Fatalf("built tools %v", a.Tools)
 	}
 }

@@ -218,6 +218,7 @@ func TestTheModeJudgeOnTheSameSentence(t *testing.T) {
 	}{
 		{"said before the report", "test", reported, same, true, false},
 		{"said after the report", "test", reported, same, false, true},
+		{"the Eval's text 6, after the report, any wording", "test", reported, "Your account there is in test mode.", false, true},
 		{"live as fact, test reported", "test", reported, "When I checked, your account was in live mode.", false, false},
 		{"a mode on the desk", "", modes{none: true}, "Desk in test mode.", false, false},
 		{"the pin as chosen", "test", reported, "Every call is set to test mode, as you chose.", false, true},

@@ -99,7 +99,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"(in: header or query, name: the header or parameter the vendor's docs name). The owner gives the key on their phone, with the approval, straight to planque; never ask for it. " +
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. support): the tool makes the agent's id from it, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. " +
-			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
+			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
+			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
+			"ask for a new sign-in or key only when there's none, or planque refuses the reuse. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
 			"Every argument's path is a field the vendor's operation takes, read from the vendor's own description of it (its OpenAPI description, or the vendor tool that describes an operation's fields), never made up: " +
@@ -141,6 +143,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"taf_name":{"type":"string","description":"the taf's name as the owner will read it, on one line (request): the approval names the taf by it"},` +
+			`"reuse":{"type":"string","description":"a connected grant's id, from grants: a new taf's grant uses its sign-in or key, so the owner approves the tools alone (request, instead of server, api or entry)"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
@@ -164,15 +167,17 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Agent  string          `json:"agent"`
 		Name   string          `json:"name"`
 		// TafName is the taf's name for people, sent as agent_name.
-		TafName string          `json:"taf_name"`
-		Tools   json.RawMessage `json:"tools"`
-		Grant   string          `json:"grant"`
-		Tool    string          `json:"tool"`
-		Cursor  string          `json:"cursor"`
-		Args    json.RawMessage `json:"arguments"`
-		Q       string          `json:"q"`
-		Apps    []string        `json:"apps"`
-		Entry   string          `json:"entry"`
+		TafName string `json:"taf_name"`
+		// Reuse is a connected grant whose sign-in a new taf\'s grant uses.
+		Reuse  string          `json:"reuse"`
+		Tools  json.RawMessage `json:"tools"`
+		Grant  string          `json:"grant"`
+		Tool   string          `json:"tool"`
+		Cursor string          `json:"cursor"`
+		Args   json.RawMessage `json:"arguments"`
+		Q      string          `json:"q"`
+		Apps   []string        `json:"apps"`
+		Entry  string          `json:"entry"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`
 	}
@@ -201,13 +206,13 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	case "request":
 		byKey := len(in.API) > 0 && string(in.API) != "null"
 		ways := 0
-		for _, set := range []bool{in.Server != "", byKey, in.Entry != ""} {
+		for _, set := range []bool{in.Server != "", byKey, in.Entry != "", in.Reuse != ""} {
 			if set {
 				ways++
 			}
 		}
 		if ways != 1 || (in.Agent == "") == (in.Name == "") {
-			return tool.Result{Text: "request needs one of server (an MCP server), api (a REST vendor by its key) or entry (an app from search, such as connector:composio:gmail), not both, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first or name an entry", IsError: true}, nil
+			return tool.Result{Text: "request needs one of server (an MCP server), api (a REST vendor by its key), entry (an app from search, such as connector:composio:gmail) or reuse (a connected grant whose sign-in to use), not two, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first or name an entry", IsError: true}, nil
 		}
 		if in.Entry != "" {
 			// An app from search is connected by its catalog entry: planque
@@ -257,6 +262,14 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			agent = AgentID(in.Name)
 		}
 		ask := map[string]any{"server": in.Server, "agent": agent, "tools": tools}
+		if in.Reuse != "" {
+			// The account's sign-in to that vendor, as a connected grant has it: the
+			// owner approves the tools alone, with no new sign-in or key (kiff/tafs#476).
+			if !pathSafe(in.Reuse) {
+				return tool.Result{Text: "reuse is a connected grant's id, as grants lists it", IsError: true}, nil
+			}
+			ask = map[string]any{"reuse": in.Reuse, "agent": agent, "tools": tools}
+		}
 		if byKey {
 			// planque reads the description into a snapshot the owner approves,
 			// and takes the key from the owner's phone (kiff/planque#64).
