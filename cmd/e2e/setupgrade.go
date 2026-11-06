@@ -700,7 +700,7 @@ var noMoney = regexp.MustCompile(`(?i)\b(?:no|sin|ni)\s+(?:\pL+\s+){0,2}(?:real 
 
 // modeWord is any mode named, vendorWord the vendor (by the fake's name) or
 // its connection, accountWord the owner's account.
-var modeWord = regexp.MustCompile(`(?i)\b(?:test|live|prueba|real|sandbox)\b`)
+var modeWord = regexp.MustCompile(`(?i)\b(?:test|live|prueba|real|sandbox|vivo)\b`)
 var vendorWord = regexp.MustCompile(`(?i)\b(?:stripe|connection|conexi\x{f3}n)\b`)
 var accountWord = regexp.MustCompile(`(?i)\b(?:account|cuenta)\b`)
 
@@ -721,6 +721,10 @@ func pinnedCalls(sentence string) (clean, found bool) {
 		return false, false
 	}
 	before, between, rest := sentence[:loc[0]], sentence[loc[2]:loc[3]], sentence[loc[1]:]
+	// The subject's own words count with what comes between: a mode there ("all
+	// your live requests") is said of the calls, not where they're pinned
+	// (qa-kiff on #349).
+	between = sentence[loc[0]:loc[2]] + " " + between
 	if modeWord.MatchString(before) || vendorWord.MatchString(before) || accountWord.MatchString(before) ||
 		modeWord.MatchString(between) || accountWord.MatchString(between) {
 		return false, true

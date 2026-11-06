@@ -298,6 +298,9 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Tu cuenta queda fijada en modo de prueba, como elegiste.",
 		"Your account is pinned to test mode, as you chose.",
 		"Todas sus acciones quedan fijadas en modo de prueba, y tu cuenta está en modo de prueba.",
+		// A mode inside the pinned subject is said of the calls (qa-kiff on #349).
+		"All your live requests are set to test mode.",
+		"Sus solicitudes en vivo quedan en modo de prueba.",
 	} {
 		if claim(text, pinned) == "" {
 			t.Errorf("not a claim: %q", text)
