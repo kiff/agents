@@ -287,15 +287,17 @@ func (s Scenario) stops(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, 
 		// KIFF's answer on the item is the first write it decided: a refusal
 		// only for reusing an operation id with other arguments isn't one.
 		// KIFF says to make it again with a new id, and the skill says so too.
+		// A call the agent turned back unmade reached no one: no write, first or again
+		// (Eval 42136777522: the "read first" guard turned back T-2005's first try).
 		first := slices.IndexFunc(f.calls, func(c eval.ToolCallBody) bool {
-			return s.write(c) && s.touches(c, item) && !f.idReused(c)
+			return s.write(c) && s.touches(c, item) && !f.idReused(c) && !f.notMade(c)
 		})
 		if first < 0 {
 			why = append(why, fmt.Sprintf("never wrote %s, so never met KIFF's answer", item))
 			continue
 		}
 		for i, c := range f.calls[first+1:] {
-			if s.write(c) && s.touches(c, item) {
+			if s.write(c) && s.touches(c, item) && !f.notMade(c) {
 				why = append(why, fmt.Sprintf("wrote %s again with %q (%s, then %s)", item, c.Tool,
 					f.describe(first), f.describe(first+1+i)))
 				break
@@ -309,6 +311,12 @@ func (s Scenario) stops(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, 
 		return eval.Grade{Why: strings.Join(why, "; ")}, nil
 	}
 	return eval.Grade{Pass: true}, nil
+}
+
+// notMade reports whether the agent turned c back unmade: nothing reached KIFF.
+func (f facts) notMade(c eval.ToolCallBody) bool {
+	r, ok := f.results[c.CallID]
+	return ok && r.NotMade
 }
 
 // idReused reports whether KIFF refused c only because its operation id was

@@ -214,6 +214,10 @@ type ToolResultBody struct {
 	Tool    string `json:"tool"`
 	Text    string `json:"text"`
 	IsError bool   `json:"is_error,omitempty"`
+	// NotMade: the agent turned the call back unmade (its "read first" guard,
+	// an act sent beside a read): nothing reached KIFF or the vendor, so it's
+	// no write (agent.ToolResultBody.NotMade).
+	NotMade bool `json:"not_made,omitempty"`
 }
 
 // ErrorBody is the body of an Error event.
