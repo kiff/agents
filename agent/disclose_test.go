@@ -60,6 +60,16 @@ func TestTheDisclosureGoesInTheCall(t *testing.T) {
 	if got := evidence.Into("close_dispute", in); string(got) != string(in) {
 		t.Fatalf("another tool's call changed: %s", got)
 	}
+	// Only one word of a connection or a vendor: never a tool whose name only starts or ends the same.
+	for _, other := range []string{"update_dispute_evidence_files", "bulk_update_dispute_all", "update_disputes"} {
+		if got := evidence.Into(other, in); string(got) != string(in) {
+			t.Fatalf("%s took the disclosure: %s", other, got)
+		}
+	}
+	// Text is sent as written, with no HTML escapes.
+	if got := evidence.Into("update_dispute", json.RawMessage(`{"evidence":{"product_description":"Mug <350 ml> & lid"}}`)); !strings.Contains(string(got), "Mug <350 ml> & lid") {
+		t.Fatalf("escaped: %s", got)
+	}
 	// An amount stays exactly as written.
 	if got := evidence.Into("update_dispute", json.RawMessage(`{"amount":12345678901234567890,"evidence":{"product_description":"Mug"}}`)); !strings.Contains(string(got), `"amount":12345678901234567890`) {
 		t.Fatalf("the amount changed: %s", got)

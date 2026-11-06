@@ -203,3 +203,28 @@ func TestAStepIsDoneOnlyOnceItsCallWentThrough(t *testing.T) {
 		}
 	}
 }
+
+// A new taf's result names its tools that write outside the company, with
+// their free-text fields: tafs gives the taf its AI disclosure there
+// (kiff/tafs#476, gap 9). What doesn't fit is refused in words for Coach.
+func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
+	ok := call(t, `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind each customer.","cron":"0 9 * * 1-5",`+
+		`"disclose":[{"tool":"send_message_k3f9","fields":["text"]}]},"text":"Invoices is ready."}`)
+	if ok.IsError || !strings.Contains(string(ok.Component), `"disclose":[{"tool":"send_message_k3f9","fields":["text"]}]`) {
+		t.Fatalf("a result with its disclosure: %+v", ok)
+	}
+	for name, taf := range map[string]string{
+		"a tool with no name": `"disclose":[{"tool":"","fields":["text"]}]`,
+		"no field":            `"disclose":[{"tool":"send","fields":[]}]`,
+		"a path with a gap":   `"disclose":[{"tool":"send","fields":["a..b"]}]`,
+		"an improvement's":    `"improves":"taf-1","job":"refunds","note":"n","disclose":[{"tool":"send","fields":["text"]}]`,
+	} {
+		in := `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind.","cron":"0 9 * * 1-5",` + taf + `},"text":"t"}`
+		if strings.Contains(taf, "improves") {
+			in = `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices",` + taf + `},"text":"t"}`
+		}
+		if r := call(t, in); !r.IsError || !strings.Contains(r.Text, "disclose") {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+}

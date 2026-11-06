@@ -57,18 +57,36 @@ func (d *Disclosure) Check() error {
 }
 
 // fields is where the line goes in a call of tool, or nil when it goes in
-// none: a tool named as given, or with KIFF's part for a connection before or
-// after it ("update_dispute_k3f9", "stripe_update_dispute").
+// none: a tool named as given, or with one word of KIFF's for a connection
+// after it or a vendor's before it ("update_dispute_k3f9",
+// "stripe_update_dispute"); never another tool whose name only starts the
+// same ("send_test_mode_off" for "send", agentgabo on #352).
 func (d *Disclosure) fields(tool string) []string {
 	if d == nil {
 		return nil
 	}
 	for _, in := range d.In {
-		if tool == in.Tool || strings.HasPrefix(tool, in.Tool+"_") || strings.HasSuffix(tool, "_"+in.Tool) {
+		after, isAfter := strings.CutPrefix(tool, in.Tool+"_")
+		before, isBefore := strings.CutSuffix(tool, "_"+in.Tool)
+		if tool == in.Tool || isAfter && word(after) || isBefore && word(before) {
 			return in.Fields
 		}
 	}
 	return nil
+}
+
+// word is one lowercase word of letters and digits, at most 16: a
+// connection's part or a vendor's name, never more of a tool's name.
+func word(s string) bool {
+	if s == "" || len(s) > 16 {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // Into is input as the call sends it, with the line: at the end of the first
@@ -117,11 +135,14 @@ func (d *Disclosure) Into(tool string, input json.RawMessage) json.RawMessage {
 		}
 		parent[last] = d.Line
 	}
-	out, err := json.Marshal(call)
-	if err != nil {
+	// As the model wrote it: no HTML escapes, which change the text sent but not its value (agentgabo on #352).
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(call) != nil {
 		return input
 	}
-	return out
+	return bytes.TrimRight(out.Bytes(), "\n")
 }
 
 // parentOf is the object holding path's last part in call, and that part;
