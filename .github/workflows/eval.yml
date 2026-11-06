@@ -163,20 +163,6 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner en -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
-      - name: Setup in Spanish, graded, as advice
-        # The same chat with an owner who writes in Spanish, nightly only,
-        # without the improve case. It never fails the night: what it finds
-        # is advice, read in its transcript (setup-es.md, the private bucket).
-        if: steps.unchanged.outputs.skip != 'true' && github.event_name == 'schedule' && (always())
-        continue-on-error: true
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
-          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
-          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
-          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
-          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -max-cost 4 -owner-turns 14 -transcript setup-es.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Setup on the second vendor, a desk by its key
         # The same Setup on a vendor that isn't payments and has no MCP server
         # (kiff/agents#293): the fake vendor's support desk, by its REST API and
@@ -213,12 +199,12 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
-          for f in report.md setup.md setup-es.md desk.md; do
+          for f in report.md setup.md desk.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json setup.md setup-es.md desk.md; do
+          for f in report.md results.json setup.md desk.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"
