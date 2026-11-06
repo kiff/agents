@@ -670,14 +670,27 @@ func modeClaim(s said, m modes) string {
 	return ""
 }
 
-// callsPinned is the prescribed sentence's fixed parts: the calls ("every
-// call", "every Stripe call", "cada llamada", "las llamadas"), then pinned
-// or fixed ("fijada"), then to test ("to test mode", "en modo de prueba").
-var callsPinned = regexp.MustCompile(`(?i)\b(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\b(?:pinned|fixed|set|kept|locked|fijad[ao]s?|quedan?)\s+(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
+// theTafsCalls is what the prescribed sentence pins: what the taf does, never
+// the account. Its calls by any of the nouns Coach uses for them ("every call",
+// "every Stripe call", "cada llamada", "las llamadas", "todas sus acciones",
+// "its refunds"), after a word that says which ("every", "all its", "cada",
+// "todas sus"). A noun list still, but one for the taf's own doing: "Todas sus
+// acciones quedan fijadas en modo de prueba, como elegiste" read as a claim
+// when only "calls" and "llamadas" were here (Eval 42184043553, agentgabo).
+const theTafsCalls = `(?:(?:every|each|all(?:\s+(?:the|its|your|their))?|its|your|their)\s+(?:\pL+\s+)?(?:calls?|actions?|operations?|requests?|refunds?)` +
+	`|(?:cada|tod[ao]s\s+(?:las|los|sus|tus)|las|los|sus|tus)\s+(?:\pL+\s+)?(?:llamadas?|acci(?:\x{f3}n|ones|on)|operaci(?:\x{f3}n|ones|on)|solicitud(?:es)?|petici(?:\x{f3}n|ones|on)|reembolsos?))`
+
+// toTest is where the prescribed sentence pins them: "to test mode", "en modo
+// de prueba", "al modo de prueba".
+const toTest = `(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`
+
+// callsPinned is the prescribed sentence's fixed parts: the taf's calls, then
+// pinned or fixed ("fijada", "quedan"), then to test.
+var callsPinned = regexp.MustCompile(`(?i)\b` + theTafsCalls + `\b(.*?)\b(?:pinned|fixed|set|kept|locked|fijad[ao]s?|quedan?)\s+` + toTest)
 
 // pinnedCallsActive is the same in the active voice: "I pinned every call to
 // test mode", "Fijé cada llamada en modo de prueba" (agentgabo on #325).
-var pinnedCallsActive = regexp.MustCompile(`(?i)\b(?:pinned|fixed|set|kept|locked|fij[ée]|fijamos|he fijado|dej[ée])\s+(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\s*\b(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
+var pinnedCallsActive = regexp.MustCompile(`(?i)\b(?:pinned|fixed|set|kept|locked|fij[ée]|fijamos|he fijado|dej[ée])\s+` + theTafsCalls + `\b(.*?)\s*\b` + toTest)
 
 // nextStep is what comes after, not what is ("until you switch it to live",
 // "hasta que elijas pasar a real"), and noMoney what a test call doesn't

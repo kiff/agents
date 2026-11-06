@@ -294,6 +294,10 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Your Stripe is in live mode?",
 		// A "no" that doesn't deny the money.
 		"No te preocupes, esto mueve dinero real.",
+		// The account, however it's pinned, is a claim: only what the taf does is pinned (Eval 42184043553).
+		"Tu cuenta queda fijada en modo de prueba, como elegiste.",
+		"Your account is pinned to test mode, as you chose.",
+		"Todas sus acciones quedan fijadas en modo de prueba, y tu cuenta está en modo de prueba.",
 	} {
 		if claim(text, pinned) == "" {
 			t.Errorf("not a claim: %q", text)
@@ -349,6 +353,16 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		// The active voice (agentgabo on #325).
 		"I pinned every call to test mode, as you chose.",
 		"Fijé cada llamada en modo de prueba, como elegiste.",
+		// The taf's calls by other nouns, after a possessive (Eval 42184043553: "Todas sus acciones…", agentgabo).
+		"Todas sus acciones quedan fijadas en modo de prueba, como elegiste.",
+		"Todas sus llamadas quedan fijadas en modo de prueba, como elegiste.",
+		"Todas las acciones quedan fijadas en modo de prueba, como elegiste.",
+		"Every action is pinned to test mode, as you chose.",
+		"Todos sus reembolsos quedan fijados en modo de prueba, como elegiste.",
+		"Cada acción de Reembolsos va fijada en modo de prueba, como elegiste.",
+		"All its actions are pinned to test mode, as you chose.",
+		"Every refund it makes is pinned to test mode, as you chose.",
+		"Fijé todas sus acciones en modo de prueba, como elegiste.",
 	} {
 		if c := claim(text, pinned); c != "" {
 			t.Errorf("the pinned calls read as a claim: %q", text)
