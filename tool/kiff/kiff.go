@@ -69,8 +69,10 @@ type Client struct {
 	key  string
 	http *http.Client
 
-	mu    sync.Mutex // held while initializing
-	ready bool
+	mu sync.Mutex // held while initializing
+	// ready is whether the session was opened: read without mu, so a warm
+	// session's holder (Sessions) never waits on a handshake under way.
+	ready atomic.Bool
 	// trials is whether the gateway said it decides a call without sending
 	// it (TrialCapability). A trial's call goes to a gateway that said so,
 	// or nowhere: one that didn't would send it.
@@ -81,15 +83,10 @@ type Client struct {
 	session string // Mcp-Session-Id, once the gateway gives one
 
 	// refused, when set (Sessions), is told of any answer the gateway
-	// refused or failed, so a kept session isn't reused after it.
+	// refused or failed, so a kept session isn't reused after it. It may be
+	// called while mu is held (a failed handshake), so it must take no lock
+	// that waits on a handshake: Sessions' only sets a flag.
 	refused func()
-}
-
-// isReady says the session was opened.
-func (c *Client) isReady() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.ready
 }
 
 // fail tells refused of a failed answer, and returns err.
@@ -487,7 +484,7 @@ const RunGrantHeader = "KIFF-Run-Grant"
 func (c *Client) init(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.ready {
+	if c.ready.Load() {
 		return nil
 	}
 	params := map[string]any{
@@ -508,7 +505,7 @@ func (c *Client) init(ctx context.Context) error {
 	if err := c.read(ctx, "notifications/initialized", nil, false, nil); err != nil {
 		return err
 	}
-	c.ready = true
+	c.ready.Store(true)
 	return nil
 }
 

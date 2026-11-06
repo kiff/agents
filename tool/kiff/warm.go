@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kiff/agents/tool"
@@ -44,6 +45,15 @@ type warmSession struct {
 	c   *Client
 	key [sha256.Size]byte
 	at  time.Time
+	// dropped is set by the session's client when the gateway refuses or
+	// fails it: a flag, never a lock, since the client may be holding its
+	// own (a failed handshake). The next start opens a new session.
+	dropped *atomic.Bool
+}
+
+// usable says the session may be reused at now.
+func (w *warmSession) usable(now time.Time) bool {
+	return fresh(w.at, now) && !w.dropped.Load()
 }
 
 // Tools lists the tools the gateway offers the agent, through its warm
@@ -68,23 +78,26 @@ func (s *Sessions) client(gateway, tenant, agent, key string) (c *Client, warm b
 	now := s.now()
 	of := agentOf{gateway, tenant, agent}
 	sum := sha256.Sum256([]byte(key))
+	// Nothing under s.mu waits on a client: its state is read atomically, so
+	// one agent's handshake never holds up another agent's start.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if w, ok := s.m[of]; ok && w.key == sum && fresh(w.at, now) {
-		return w.c, w.c.isReady()
+	if w, ok := s.m[of]; ok && w.key == sum && w.usable(now) {
+		return w.c, w.c.ready.Load()
 	}
 	if s.m == nil {
 		s.m = map[agentOf]*warmSession{}
 	}
-	// Sessions past their time go as new ones are opened: none is kept for long.
+	// Sessions past their time, or dropped, go as new ones are opened: none is kept for long.
 	for k, w := range s.m {
-		if !fresh(w.at, now) {
+		if !w.usable(now) {
 			delete(s.m, k)
 		}
 	}
 	c = New(gateway, key, s.HTTP)
-	c.refused = func() { s.drop(of, c) }
-	s.m[of] = &warmSession{c: c, key: sum, at: now}
+	dropped := new(atomic.Bool)
+	c.refused = func() { dropped.Store(true) }
+	s.m[of] = &warmSession{c: c, key: sum, at: now, dropped: dropped}
 	return c, false
 }
 

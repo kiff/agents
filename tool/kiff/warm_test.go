@@ -241,3 +241,73 @@ func TestRunsAtOnceShareTheirAgentsSession(t *testing.T) {
 		t.Fatalf("%d handshakes and %d lists, want 1 and 9", inits, lists)
 	}
 }
+
+// Two starts of one agent at once, whose handshake the gateway holds and then
+// fails, never lock each other or anyone else (qa-kiff on #360: the failed
+// handshake's drop waited on the sessions' lock while a second start, holding
+// it, waited on the handshake). Another agent's start meanwhile never waits
+// on that handshake either. The failed session isn't reused.
+func TestAFailedHandshakeHoldsUpNoStart(t *testing.T) {
+	was := ReadRetryWait
+	ReadRetryWait = 0
+	t.Cleanup(func() { ReadRetryWait = was })
+	entered, release := make(chan struct{}, 4), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		var msg struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &msg)
+		if key == "kiff_key_slow" && msg.Method == "initialize" {
+			entered <- struct{}{}
+			<-release
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		if msg.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+		if msg.Method == "tools/list" {
+			result = map[string]any{"tools": []any{}}
+		}
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": result})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
+	}))
+	t.Cleanup(srv.Close)
+	s := &Sessions{}
+	ctx := context.Background()
+	done := make(chan error, 2)
+	go func() { _, err := s.Tools(ctx, srv.URL, "t1", "slow", "kiff_key_slow"); done <- err }()
+	<-entered // the first start is in its handshake
+	go func() { _, err := s.Tools(ctx, srv.URL, "t1", "slow", "kiff_key_slow"); done <- err }()
+	// Another agent's start goes on while that handshake is held.
+	other := make(chan error, 1)
+	go func() { _, err := s.Tools(ctx, srv.URL, "t1", "other", "kiff_key_other"); other <- err }()
+	select {
+	case err := <-other:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("another agent's start waited on this one's handshake")
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("a start went on through a failed handshake")
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("deadlock: the starts of the agent whose handshake failed are stuck")
+		}
+	}
+	if _, warm := s.client(srv.URL, "t1", "slow", "kiff_key_slow"); warm {
+		t.Fatal("the failed session was kept")
+	}
+}
