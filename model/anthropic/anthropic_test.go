@@ -357,6 +357,19 @@ func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
 		}, msgs...)}, "system,message 1 block 0,message 4 block 0"},
 		"no history": {model.Request{Model: "m", MaxTokens: 1, System: "be brief", Tools: tools, Messages: msgs, Cache: true, HistoryEnd: 0},
 			"system,message 2 block 0"},
+		// Where the run before put its history's end, too: read back exactly
+		// there, however many blocks that run added (kiff-cloud#1487). Four
+		// breakpoints, the most a request may carry.
+		"the history's end, and the run before's": {model.Request{Model: "m", MaxTokens: 1, System: "s", Cache: true, HistoryEnd: 4, HistoryPrev: 2, Messages: append([]model.Message{
+			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "first"}}},
+			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "first answer"}}},
+			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "earlier"}}},
+			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "a call"}, {Kind: model.Text, Text: "earlier answer"}}},
+		}, msgs...)}, "system,message 1 block 0,message 3 block 1,message 6 block 0"},
+		"the run before read no history": {model.Request{Model: "m", MaxTokens: 1, System: "s", Cache: true, HistoryEnd: 2, HistoryPrev: 0, Messages: append([]model.Message{
+			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "earlier"}}},
+			{Role: model.Assistant, Blocks: []model.Block{{Kind: model.Text, Text: "earlier answer"}}},
+		}, msgs...)}, "system,message 1 block 0,message 4 block 0"},
 	}
 	for name, c := range cases {
 		if got := strings.Join(cached(sent(t, c.req)), ","); got != c.want {

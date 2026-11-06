@@ -698,6 +698,14 @@ func (b *Builder) BuildRun(ctx context.Context, tenant, id, run string) (agent.A
 func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n int) (agent.Agent, Definition, error) {
 	var d Definition
 	var err error
+	// Its steps' times, for where a run's start went (session.TurnTiming.Start).
+	var spans []session.Span
+	last := time.Now()
+	mark := func(name string) {
+		now := time.Now()
+		spans = append(spans, session.Span{Name: name, MS: now.Sub(last).Milliseconds()})
+		last = now
+	}
 	if n > 0 {
 		d, err = b.Agents.GetVersion(ctx, tenant, id, n)
 	} else {
@@ -709,6 +717,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	if d.Tenant != tenant || d.ID != id {
 		return agent.Agent{}, Definition{}, fmt.Errorf("registry: the store returned agent %q of another tenant or id", d.ID)
 	}
+	mark("definition")
 	if err := d.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}
@@ -723,10 +732,12 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	if err != nil {
 		return agent.Agent{}, d, fmt.Errorf("registry: the agent's KIFF key: %w", err)
 	}
+	mark("key")
 	tools, err := b.Connect(ctx, d.Gateway, key)
 	if err != nil {
 		return agent.Agent{}, d, err
 	}
+	mark("connect")
 	if b.Own != nil {
 		tools = append(tools, b.Own(tenant, id)...)
 	}
@@ -763,7 +774,8 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		system += "\n\n" + skill.Catalog(ps)
 		tools = append(tools, skill.NewTool(ps))
 	}
-	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast,
+	mark("tools and skills")
+	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast, StartSpans: spans,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
 		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText}
 	if err := a.Check(); err != nil {

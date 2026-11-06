@@ -55,9 +55,36 @@ func TestEveryComponentIsShown(t *testing.T) {
 		var got, want map[string]any
 		_ = json.Unmarshal(r.Component, &got)
 		_ = json.Unmarshal([]byte(in), &want)
+		// The card as the agent wrote it, and who its run waits on, which the tool adds.
+		waits, _ := got["waits"].(string)
+		delete(got, "waits")
 		if g, _ := json.Marshal(got); string(g) != mustJSON(want) {
 			t.Errorf("shown %s, want %s", g, mustJSON(want))
 		}
+		if w := map[string]string{"confirm": "owner", "questions": "owner", "approval": "owner", "sign_in": "owner", "drive": "owner", "result": "service"}[want["type"].(string)]; waits != w {
+			t.Errorf("%s waits %q, want %q", in, waits, w)
+		}
+	}
+}
+
+// A shown card says whether its run waits on it, and on whom, from the one
+// list where the run pauses (Answerable, ByService): the owner for the cards
+// they answer, the service for its hand-over, and nothing for a card the run
+// goes on past (steps, notice, knob). The agent can't write it (kiff/tafs: the
+// apps and tafs cloud kept lists of their own, which drifted).
+func TestACardSaysWhoItsRunWaitsOn(t *testing.T) {
+	r := call(t, `{"type":"drive","id":"d1","text":"Show where Refunds' daily limit is set"}`)
+	if r.IsError || !strings.Contains(string(r.Component), `"waits":"owner"`) {
+		t.Fatalf("a drive card: %+v %s", r, r.Component)
+	}
+	r = call(t, `{"type":"knob","id":"dial-v8","taf_id":"taf-0123456789abcdef0123","version":8}`)
+	if r.IsError || strings.Contains(string(r.Component), `"waits"`) {
+		t.Fatalf("a knob card: %+v %s", r, r.Component)
+	}
+	// The agent's own "waits" is refused, as any field its type doesn't take.
+	r = call(t, `{"type":"notice","id":"n1","text":"Done.","waits":"owner"}`)
+	if !r.IsError || !strings.Contains(r.Text, `no field "waits"`) {
+		t.Fatalf("an agent's waits: %+v", r)
 	}
 }
 

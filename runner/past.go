@@ -57,6 +57,19 @@ type past struct {
 	opening string
 	// shown is the session's components, oldest first, for the Staters.
 	shown []json.RawMessage
+	// last is how many of msgs are the last run's: what this run's history
+	// adds to the history the run before it read.
+	last int
+}
+
+// prevEnd is where, in history (as history() gives it), the history of the
+// run before this one ended: what that run marked for the cache. Zero when
+// that run read no history.
+func (p past) prevEnd(history []model.Message) int {
+	if p.last == 0 {
+		return 0
+	}
+	return max(0, len(history)-p.last)
 }
 
 // past reads what current gets of its session: its finished runs before it
@@ -156,6 +169,9 @@ func (rn *Runner) past(ctx context.Context, sess session.Session, events []sessi
 		}
 	}
 	p.msgs = flatten(fit)
+	if len(fit) > 0 {
+		p.last = len(fit[len(fit)-1].msgs)
+	}
 
 	// The owner's first message, unless it is in what the run reads.
 	if len(order) > 0 && (len(fit) == 0 || fit[0].id != order[0]) {

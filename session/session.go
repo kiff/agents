@@ -241,6 +241,9 @@ type TurnTiming struct {
 	ToolInputBytes int   `json:"tool_input_bytes,omitempty"`
 	ToolCalls      int   `json:"tool_calls,omitempty"`
 	StartMS        int64 `json:"start_ms,omitempty"`
+	// Start is where StartMS went, step by step, on the run's first turn:
+	// each step of the run's start in order, adding up to about StartMS.
+	Start []Span `json:"start,omitempty"`
 	// Waited is the tool calls of the turn before, whose results this turn
 	// read: each call's time and result size.
 	Waited []ToolTiming `json:"waited,omitempty"`
@@ -248,6 +251,13 @@ type TurnTiming struct {
 	// held calls were answered (Continue); steering and More don't set it.
 	// The turns after a hold begin there, so a reader can tell where.
 	Resumed bool `json:"resumed,omitempty"`
+}
+
+// Span is one step of a run's start and how long it took: its name (such as
+// "connect", the agent's tools listed by its gateway) and milliseconds.
+type Span struct {
+	Name string `json:"name"`
+	MS   int64  `json:"ms"`
 }
 
 // ToolTiming is one tool call's time, its result's size, and how many calls

@@ -155,6 +155,31 @@ type Component struct {
 	// the app from the taf's dial, never the agent's.
 	TafID   string `json:"taf_id,omitempty"`
 	Version int    `json:"version,omitempty"`
+	// Waits says the run pauses on this card until it's answered, and who
+	// answers it: WaitsOwner (Answerable: the person) or WaitsService
+	// (ByService: the service that hands the owner over). The show tool sets
+	// it, never the agent, and a card the run goes on past (steps, notice,
+	// knob) has none. tafs cloud and the apps read it and keep no list of their
+	// own, which drifted apart (kiff/tafs, the drive card placed before Coach's
+	// words on Android).
+	Waits string `json:"waits,omitempty"`
+}
+
+// Who a card's run waits on (Component.Waits).
+const (
+	WaitsOwner   = "owner"
+	WaitsService = "service"
+)
+
+// waitsOn is who the run waits on for a card of type t, or "" when it goes on.
+func waitsOn(t string) string {
+	switch {
+	case !slices.Contains(Answerable, t):
+		return ""
+	case slices.Contains(ByService, t):
+		return WaitsService
+	}
+	return WaitsOwner
 }
 
 // fields lists the fields each type may carry, besides type and id.
@@ -246,6 +271,7 @@ func (Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error
 	if err := stepsDone(c, tool.OutcomesFrom(ctx)); err != nil {
 		return tool.Result{Text: err.Error(), IsError: true}, nil
 	}
+	c.Waits = waitsOn(c.Type)
 	b, _ := json.Marshal(c)
 	if slices.Contains(Answerable, c.Type) {
 		// The run waits here: the owner's answer is this call's result.

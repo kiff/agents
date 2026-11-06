@@ -343,7 +343,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		p.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &sdk.ToolChoiceNoneParam{}}
 	}
 	if req.Cache {
-		markCache(&p, req.CacheLong, req.HistoryEnd)
+		markCache(&p, req.CacheLong, req.HistoryEnd, req.HistoryPrev)
 	}
 	return p, nil
 }
@@ -498,7 +498,7 @@ func searchResult(b model.Block) (string, bool) {
 // long keeps the shared prefix an hour: an owner's next message often comes
 // after more than five minutes. The conversation's breakpoints stay five
 // minutes; the API wants the longer one first, as it is here.
-func markCache(p *sdk.MessageNewParams, long bool, historyEnd int) {
+func markCache(p *sdk.MessageNewParams, long bool, historyEnd, historyPrev int) {
 	cc := sdk.NewCacheControlEphemeralParam()
 	shared := cc
 	if long {
@@ -517,6 +517,11 @@ func markCache(p *sdk.MessageNewParams, long bool, historyEnd int) {
 		// the chat reads it back, and a person's next message often comes
 		// after a pause longer than five minutes (kiff/agents#242).
 		markLast(p.Messages[historyEnd-1].Content, shared)
+		// Where the run before put its history's end, read back exactly
+		// there: the fourth and last breakpoint a request may carry.
+		if historyPrev > 0 && historyPrev < historyEnd {
+			markLast(p.Messages[historyPrev-1].Content, shared)
+		}
 	}
 	markLast(p.Messages[len(p.Messages)-1].Content, cc)
 }
