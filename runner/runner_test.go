@@ -718,12 +718,15 @@ func TestALookUpInAnEarlierMessageCountsAfterAHold(t *testing.T) {
 	if earlier < 0 || note < earlier {
 		t.Fatalf("the continued run read %q: want the earlier look-up's line, then its record's note", read)
 	}
-	for _, said := range []string{"the owner, who never sees runs or records", "never what a run or a record holds", "a read of the same item earlier in this conversation", "say it was checked earlier"} {
+	for _, said := range []string{"the owner, who never sees runs or records", "never what a run or a record holds", "a read of the same item earlier in this conversation",
+		"Neither gets a word in your answer: it was made before the owner answered."} {
 		if !strings.Contains(agent.RecordNote, said) {
 			t.Errorf("the note doesn't say %q", said)
 		}
 	}
-	for _, said := range []string{"ids", "not from earlier messages", "This run's record"} {
+	// Nor does it invite a sentence about the check (Eval 42176052141: "I had checked the
+	// charge earlier in this conversation: …").
+	for _, said := range []string{"ids", "not from earlier messages", "This run's record", "say it was checked earlier"} {
 		if strings.Contains(agent.RecordNote, said) {
 			t.Errorf("the note still says %q", said)
 		}

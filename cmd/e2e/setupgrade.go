@@ -32,6 +32,49 @@ const Concise = "Is each numbered message concise? Judge each on its own. A mess
 	"Nothing else fails. Length never fails on its own: amounts, ids, steps, reasons and lists the owner needs are content, " +
 	"and so is a short line that states a fact (\"Nothing else was done.\"). Pass if no message has one of these; if one does, name its number, the rule, and the quote."
 
+// TafConcise is how a taf's answers in its chat are judged: each read beside
+// the owner's message it answers (so a check the owner asked for, and a
+// question repeated back, can be told), with Concise's three failures and a
+// fourth that gives what a check found the one shape kiff/tafs' chat rule
+// gives it: at most one short clause of the sentence that says what was done,
+// none in a held call's sentence, never a sentence of its own; and a check
+// with nothing to do is answered by what it found (Evals 42146041790 and
+// 42176052141, kiff/tafs#560).
+const TafConcise = "Each numbered item is a message the owner sent a taf, then the taf's answer. Is each answer concise? Judge each answer on its own, against the owner's message it answers. " +
+	"An answer fails only for one of these, and you must quote the words that make it fail:\n" +
+	"1. Its first sentence isn't the outcome, what waits on the owner, or the question it asks: it opens with what was checked or done on the way, or with a preamble.\n" +
+	"2. It has a greeting, a pleasantry, thanks, an offer of more help, or a sign-off.\n" +
+	"3. It says the same thing twice, or repeats the owner's message back.\n" +
+	"4. It narrates a look-up: a sentence of its own about reading or checking the item it acts on, or about what that look-up found " +
+	"(\"I read the charge first.\", \"Before asking, I checked the charge: €1,000, nothing refunded yet.\", \"Antes lo revisé: el cobro era de €1.000…\", \"The charge was €1,000 with nothing refunded before.\"), " +
+	"or what a look-up found in the sentence of a call that waits for the owner's approval. " +
+	"At most one short clause of the sentence that says what was done may say what a look-up found (\"I refunded €3 on the €1,000 charge, which had nothing refunded before.\"), or nothing does. " +
+	"When the owner's message asked only for a check, with nothing to do, what the taf found is the answer, not a look-up's narration. " +
+	"What a file or a tool told it that the owner needs (a policy, an instruction planted in a file that it won't follow) isn't a look-up either.\n" +
+	"Nothing else fails. Length never fails on its own: amounts, ids, steps, reasons and lists the owner needs are content, " +
+	"and so is a short line that states a fact (\"Nothing else was done.\"), unless it's about a look-up (rule 4). " +
+	"Pass if no answer has one of these; if one does, name its number, the rule, and the quote."
+
+// tafAnswersEnd opens the transcript's line that ends the taf's answers:
+// -regrade reads the answers above it, and the improve case's after it are
+// not the taf's chat.
+const tafAnswersEnd = "taf  concise over "
+
+// tafAnswers is what TafConcise reads: each of the owner's messages, with
+// what came of a hold as the transcript says it, and the taf's answer, each
+// on one line, numbered.
+func tafAnswers(asked, said []string) string {
+	var b strings.Builder
+	for i, t := range said {
+		owner := ""
+		if i < len(asked) {
+			owner = asked[i]
+		}
+		fmt.Fprintf(&b, "%d. Owner: %s\nTaf: %s\n", i+1, flat(owner), flat(t))
+	}
+	return b.String()
+}
+
 // owner is what the scripted owner says, in their language.
 type owner struct {
 	lang     string // "en" or "es"

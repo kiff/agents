@@ -470,6 +470,25 @@ func TestATextTheRunWaitsOnIsAMessage(t *testing.T) {
 	if lines != nil || !slices.Equal(messages, []string{"Falta que lo apruebes.", "Conectado. Ya puede reembolsar."}) {
 		t.Fatalf("after a pause: messages %q, lines %q", messages, lines)
 	}
+	// The owner answers a card (the connection's approval), or writes, before the run writes
+	// again, with no turn marked resumed between: it waited on them, so the text stays its
+	// message (Eval 42177781403: "Falta que apruebes la conexión con tu proveedor de pagos y que
+	// inicies sesión en su página.", then "Falta que elijas el modo…").
+	waited := "Falta que apruebes la conexión con tu proveedor de pagos y que inicies sesión en su página."
+	for _, owner := range []session.Event{
+		ev(session.Answered, map[string]string{"id": "conectar", "type": "approval"}),
+		ev(session.OwnerMessage, map[string]string{"text": "Listo, aprobado."}),
+	} {
+		messages, lines, _ = splitLines([]session.Event{
+			text(waited), ev(session.ToolCall, map[string]string{"call_id": "c3", "tool": "planque"}),
+			ev(session.ToolResult, map[string]string{"call_id": "c3"}), owner,
+			ev(session.Usage, map[string]any{"timing": map[string]any{"ms": 700}}),
+			text("Falta que elijas el modo y si puedo leer la lista de tus cuentas."),
+		}, "r1")
+		if lines != nil || !slices.Equal(messages, []string{waited, "Falta que elijas el modo y si puedo leer la lista de tus cuentas."}) {
+			t.Fatalf("after the owner's %s: messages %q, lines %q", owner.Kind, messages, lines)
+		}
+	}
 }
 
 // Each line is one short line, as Setup's rule asks: none passes; a line
@@ -509,6 +528,21 @@ func TestARunReadAgainCountsOnce(t *testing.T) {
 	if !slices.Equal(tt.said.messages, []string{"Falta que apruebes la conexión.", "Conectado.", "Falta que apruebes la conexión."}) ||
 		!slices.Equal(tt.said.lines, []string{"Miro la cuenta…"}) || !slices.Equal(tt.said.intros, []string{"Falta que apruebes la conexión."}) {
 		t.Fatalf("messages %q, lines %q, intros %q", tt.said.messages, tt.said.lines, tt.said.intros)
+	}
+
+	// Read first as a message, then, once the run wrote again, as a line: it counts once, as the
+	// message it was taken as, and no line check reads it (Eval 42177781403, agentgabo). A text
+	// the run wrote twice still counts twice.
+	waited := "Falta que apruebes la conexión con tu proveedor de pagos y que inicies sesión en su página."
+	tt = &test{}
+	tt.take("r1", []string{waited}, nil, nil)
+	tt.take("r1", []string{"Falta que elijas el modo."}, []string{waited}, nil)
+	tt.take("r1", []string{"Falta que elijas el modo.", "Listo.", "Listo."}, []string{waited}, nil)
+	if !slices.Equal(tt.said.messages, []string{waited, "Falta que elijas el modo.", "Listo.", "Listo."}) || tt.said.lines != nil {
+		t.Fatalf("a message read again as a line: messages %q, lines %q", tt.said.messages, tt.said.lines)
+	}
+	if g := shortLines(tt.said.lines); !g.Pass {
+		t.Fatalf("the 91 characters failed the line check: %+v", g)
 	}
 }
 
