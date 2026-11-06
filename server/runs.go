@@ -97,7 +97,7 @@ type Start struct {
 	// (kiff/tafs#206); zero, nowhere.
 	Notify run.Notify
 	// Skills are the agent's skills the session loads ("name@version"),
-	// named on its first run (kiff-cloud#1487): each must be one the
+	// named on its first run: each must be one the
 	// definition names, or the run is refused. On a later run they are
 	// added to what the session holds, once.
 	Skills []string
@@ -576,7 +576,7 @@ type startBody struct {
 	// is the person KIFF signed it for (Server.ResolveGrant).
 	RunGrant string `json:"run_grant,omitempty"`
 	// Skills are the agent's skills the session loads ("name@version"),
-	// named on its first run (kiff-cloud#1487): each one the definition
+	// named on its first run: each one the definition
 	// names, or 400. Later, they are added to what the session holds, once.
 	Skills []string `json:"skills,omitempty"`
 	// DedupKey names the request at its origin (a door message's id): one
@@ -867,8 +867,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
 		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills}
 	if len(st.Skills) > 0 {
-		// The session's skills are the definition's, by name and version
-		// (kiff-cloud#1487): refused here, before anything is stored.
+		// The session's skills are the definition's, by name and version:
+		// any other is refused here, before anything is stored.
 		d, err := s.Agents.Get(ctx, c.Tenant, id)
 		if err == nil {
 			err = d.CheckSessionSkills(st.Skills)

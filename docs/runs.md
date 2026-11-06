@@ -152,7 +152,7 @@ Runnable: [`runner/example_test.go`](../runner/example_test.go).
 
 A definition names its skills (#101); the context carries their names and
 descriptions, and `read_skill` reads one on demand. A session can also load
-some outright (kiff-cloud#1487, the lighter Coach: the service decides,
+some outright (the lighter Coach: the service decides,
 never the model): `POST /agents/{id}/runs` takes `skills: ["name@version"]`,
 and `PUT /agents/{id}/sessions/{session}/skills {"add": […]}` adds one
 mid-conversation, as the service. Each must be one the definition names, by

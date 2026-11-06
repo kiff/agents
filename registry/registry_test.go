@@ -606,7 +606,7 @@ func TestADefinitionNamesItsCards(t *testing.T) {
 }
 
 // A run's start splits the gateway's handshake from its tool list, when the
-// gateway's client marks it: where the start's second goes (kiff-cloud#1487).
+// gateway's client marks it: where the start's second goes.
 func TestTheStartSplitsTheGatewaysHandshake(t *testing.T) {
 	f := newFixture(t)
 	connect := f.b.Connect

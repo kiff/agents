@@ -174,7 +174,7 @@ func order(events []session.Event) []string {
 	return out
 }
 
-// A session's skills (kiff-cloud#1487) are kept as created, read cheaply,
+// A session's skills are kept as created, read cheaply,
 // added to in order and once each, and a session that isn't there has none.
 func skillsAreKeptAndAddedOnce(t *testing.T, b Backend, c *clock) {
 	r := recorder(t, b, session.DefaultPolicy(30*day), c)

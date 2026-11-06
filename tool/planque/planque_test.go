@@ -534,17 +534,25 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 		seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"`+made.Agent+`"}` {
 		t.Fatalf("request by entry: %s %v", text, seen)
 	}
+	// With the tools search found that the taf will use: planque narrows the sign-in to them (gap 5 of kiff/tafs#476).
+	text, isErr = call(t, tl, `{"action":"request","entry":"connector:composio:quickbooks","agent":"invoices-a1","uses":["QUICKBOOKS_LIST_INVOICES","QUICKBOOKS_GET_INVOICE"]}`)
+	if isErr || seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"invoices-a1","tools":["QUICKBOOKS_LIST_INVOICES","QUICKBOOKS_GET_INVOICE"]}` {
+		t.Fatalf("request with uses: %s %v", text, seen)
+	}
 	for _, bad := range []string{
 		`{"action":"request","entry":"connector:composio:quickbooks"}`,
 		`{"action":"request","entry":"connector:composio:quickbooks","server":"https://x.example","agent":"a"}`,
 		`{"action":"request","entry":"../grants","agent":"a"}`,
 		`{"action":"request","entry":"connector:composio:quickbooks","agent":"a","tools":[{"tool":"QUICKBOOKS_LIST_INVOICES"}]}`,
+		`{"action":"request","entry":"connector:composio:quickbooks","agent":"a","uses":["not a slug"]}`,
+		`{"action":"request","entry":"connector:composio:quickbooks","agent":"a","uses":["QUICKBOOKS_LIST_INVOICES","QUICKBOOKS_LIST_INVOICES"]}`,
+		`{"action":"request","server":"https://x.example/mcp","agent":"a","uses":["QUICKBOOKS_LIST_INVOICES"]}`,
 	} {
 		if _, isErr := call(t, tl, bad); !isErr {
 			t.Errorf("not refused: %s", bad)
 		}
 	}
-	if len(seen) != 5 {
+	if len(seen) != 6 {
 		t.Fatalf("a malformed request reached planque: %v", seen)
 	}
 	// A reviewed entry may answer the grant flat: read as well.

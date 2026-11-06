@@ -19,6 +19,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -122,7 +124,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Before connecting anything, when the owner names no app: search {q} finds tools across every app the catalog can connect, by a few words from the job " +
 			"(\"overdue invoice\", \"send reminder email\"; two or three short searches beat one long one), each tool with its app (entry, app_title) and the app's state: " +
 			"available, or needs_setup (not connectable until an operator sets it up: say so, and offer another app). apps narrows a search to the apps named (their app slugs). " +
-			"Propose the apps to the owner, then connect each chosen one with request {entry} (the entry search gave, such as connector:composio:gmail, never a URL) and name or agent, with no tools: " +
+			"Propose the apps to the owner, then connect each chosen one with request {entry} (the entry search gave, such as connector:composio:gmail, never a URL) and name or agent, with no tools, " +
+			"and uses: the slugs of the tools search found that the taf will use, so the app's sign-in asks only for what they need (else the owner reads that it asks for more than the taf uses); " +
 			"once the owner signed in, pick its tools with catalog {grant} and ask for them with tools {grant, tools, profile}. " +
 			"A managed app's tools always come with the profile you draft, which the owner approves with them: " +
 			"{\"v\":\"kiff.profile.v1\",\"vendor\":<the app's title>,\"transport\":\"rest\",\"pin\":{\"kind\":\"none\"},\"source\":\"drafted\",\"test_proven\":false," +
@@ -151,11 +154,31 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), or in a connected grant's catalog (catalog)"},` +
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected)"},` +
+			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
 			`"profile":{"type":"object","description":"a managed app's drafted profile, kiff.profile.v1, sent with its tools (tools)"}},` +
 			`"required":["action"]}`),
 	}
 }
+
+// MaxUses is the most tools a connection is asked for with (planque's own bound).
+const MaxUses = 20
+
+// checkUses says what's wrong with uses, or "": each a tool's slug, once, at most MaxUses.
+func checkUses(uses []string) string {
+	if len(uses) > MaxUses {
+		return fmt.Sprintf("uses names at most %d tools", MaxUses)
+	}
+	for i, u := range uses {
+		if !slugPattern.MatchString(u) || slices.Contains(uses[:i], u) {
+			return "uses are the app's tools as search named them (their slug, such as GOOGLECALENDAR_LIST_EVENTS), each once"
+		}
+	}
+	return ""
+}
+
+// slugPattern is a provider's tool slug.
+var slugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_]{0,127}$`)
 
 // Call asks for a grant or reads one. What planque refuses comes back as a
 // result the model can read and correct.
@@ -178,6 +201,10 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Q      string          `json:"q"`
 		Apps   []string        `json:"apps"`
 		Entry  string          `json:"entry"`
+		// Uses are the app's tools the taf will use, as search named them
+		// (their slugs), with request {entry}: the sign-in asks for only what
+		// they need (gap 5 of kiff/tafs#476).
+		Uses []string `json:"uses"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`
 	}
@@ -232,6 +259,12 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if n := tafName(in.TafName); n != "" {
 				ask["agent_name"] = n
 			}
+			if len(in.Uses) > 0 {
+				if msg := checkUses(in.Uses); msg != "" {
+					return tool.Result{Text: msg, IsError: true}, nil
+				}
+				ask["tools"] = in.Uses
+			}
 			body, _ := json.Marshal(ask)
 			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
 			if err != nil || refused != nil {
@@ -250,6 +283,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			made.Grant.Agent = agent
 			b, _ := json.Marshal(made.Grant)
 			return tool.Result{Text: string(b)}, nil
+		}
+		if len(in.Uses) > 0 {
+			return tool.Result{Text: "uses goes with request {entry}: the app's tools the taf will use, as search named them", IsError: true}, nil
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" {

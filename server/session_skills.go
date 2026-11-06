@@ -14,7 +14,7 @@ type skillsBody struct {
 	Add []string `json:"add"`
 }
 
-// addSessionSkills adds skills to a session mid-conversation (kiff-cloud#1487,
+// addSessionSkills adds skills to a session mid-conversation (the lighter Coach,
 // the lighter Coach's way 2): the caller is the service that answers the
 // agent's tools (as=service), for its own tenant; the session must be the
 // agent's (404 otherwise, so another agent's or tenant's ids tell nothing);

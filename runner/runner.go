@@ -500,7 +500,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	sp.mark("session")
 	// The session's skills, their bodies after the instructions in the
-	// definition's order (kiff-cloud#1487): one added mid-conversation is
+	// definition's order: one added mid-conversation is
 	// read before each turn and appended, never inserted, so the cached
 	// prefix holds; a tool's answer never carries one.
 	if len(sess.Skills) > 0 {

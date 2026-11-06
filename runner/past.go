@@ -320,24 +320,45 @@ func (p past) preface(ctx context.Context, tools []tool.Tool, now time.Time) []m
 // sent: where things stand and the date, as they are now.
 const SinceNote = "Since this run paused, as things stand now:"
 
+// GoneNote opens what a continued run's first preface said that nothing says
+// now: a state that went away, with no line in its place (qa-kiff on #360).
+const GoneNote = "No longer said, as it was when this run began:"
+
 // since is what a continuation's fresh preface says that the one its run
-// first sent doesn't: each such block's text under SinceNote, one block, or
-// nothing when nothing changed.
+// first sent doesn't, then what the first said that the fresh one doesn't
+// (the date aside: the new one says the time), in one block; nothing when
+// nothing changed.
 func since(first, now []model.Block) []model.Block {
-	sent := make(map[string]bool, len(first))
-	for _, b := range first {
-		sent[b.Text] = true
+	texts := func(blocks []model.Block) map[string]bool {
+		m := make(map[string]bool, len(blocks))
+		for _, b := range blocks {
+			m[b.Text] = true
+		}
+		return m
 	}
-	var changed []string
+	sent, fresh := texts(first), texts(now)
+	var changed, gone []string
 	for _, b := range now {
 		if b.Kind == model.Text && !sent[b.Text] {
 			changed = append(changed, b.Text)
 		}
 	}
-	if len(changed) == 0 {
+	for _, b := range first {
+		if b.Kind == model.Text && !fresh[b.Text] && !strings.HasPrefix(b.Text, "Today is ") {
+			gone = append(gone, b.Text)
+		}
+	}
+	if len(changed) == 0 && len(gone) == 0 {
 		return nil
 	}
-	return []model.Block{{Kind: model.Text, Text: SinceNote + "\n\n" + strings.Join(changed, "\n\n")}}
+	text := SinceNote
+	if len(changed) > 0 {
+		text += "\n\n" + strings.Join(changed, "\n\n")
+	}
+	if len(gone) > 0 {
+		text += "\n\n" + GoneNote + "\n\n" + strings.Join(gone, "\n\n")
+	}
+	return []model.Block{{Kind: model.Text, Text: text}}
 }
 
 // Today is a run's date line, in UTC, as the dates beside a vendor's times
