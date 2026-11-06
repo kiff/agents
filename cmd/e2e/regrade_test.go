@@ -23,6 +23,10 @@ const (
 	morningRewrite = "testdata/regrade/42176052141-one-clause.md"
 	night          = "testdata/regrade/42146041790.md"
 	nightRewrite   = "testdata/regrade/42146041790-one-clause.md"
+	// nightMsg8 is the night's transcript with msg 8 completed by the words its
+	// judge quoted, named as reconstructed in its first line: the bucket cut the
+	// answer before them, and the run's sessions are gone (qa-kiff on #347).
+	nightMsg8 = "testdata/regrade/42146041790-msg8-reconstructed.md"
 )
 
 func readFile(t *testing.T, path string) string {
@@ -47,6 +51,7 @@ func TestTheSavedTranscriptsReadBack(t *testing.T) {
 		{morningRewrite, 9, "Check charge ch_e2e_checked_1106-0646: can 700 cents of it be refunded? Don't refund it yet."},
 		{night, 8, "Check charge ch_e2e_checked_1106-0151: can 700 cents of it be refunded? Don't refund it yet."},
 		{nightRewrite, 8, "Check charge ch_e2e_checked_1106-0151: can 700 cents of it be refunded? Don't refund it yet."},
+		{nightMsg8, 8, "Check charge ch_e2e_checked_1106-0151: can 700 cents of it be refunded? Don't refund it yet."},
 	} {
 		lines := readTafLines(readFile(t, c.file) + "owner: after the end → taf: not an answer the judges read\n")
 		if len(lines) != c.answers {
@@ -64,6 +69,16 @@ func TestTheSavedTranscriptsReadBack(t *testing.T) {
 		if !strings.HasSuffix(lines[2].owner, heldApproved) {
 			t.Fatalf("%s: answer 3's hold: %q", c.file, lines[2].owner)
 		}
+	}
+	// The reconstruction differs from the bucket's only in msg 8, completed by its judge's words.
+	kept, rebuilt := readTafLines(readFile(t, night)), readTafLines(readFile(t, nightMsg8))
+	for i := range kept {
+		if i != 7 && kept[i] != rebuilt[i] {
+			t.Fatalf("the reconstruction changed answer %d: %+v", i+1, rebuilt[i])
+		}
+	}
+	if !strings.HasPrefix(rebuilt[7].said, strings.TrimSuffix(kept[7].said, "onc…")) || !strings.HasSuffix(rebuilt[7].said, "The charge look-up isn't in this run's record.") {
+		t.Fatalf("msg 8 rebuilt as %q", rebuilt[7].said)
 	}
 	// The failing sentences are the bucket's, word for word.
 	if s := readFile(t, morning); !strings.Contains(s, "Antes lo revisé: el cobro era de €1.000 y no tenía reembolsos previos.") ||
@@ -207,10 +222,10 @@ func TestRegradeNeverRunsInCI(t *testing.T) {
 // The re-grade itself, with the Eval's judge on the Claude API: both saved
 // transcripts fail concise as they did, on their narrated look-ups; the
 // morning's with only those changed passes, and so do the night's answers as
-// the rules ask, the clause after the approval included. Last night's
-// "isn't in this run's record" fails AfterApproval when the transcript has it
-// whole: the bucket's line is cut before it. It costs a few cents, so it runs
-// only when asked: E2E_REGRADE=1 with ANTHROPIC_API_KEY.
+// the rules ask, the clause after the approval included. Last night's msg 8,
+// completed with the words its judge quoted, still fails AfterApproval. It
+// costs a few cents, so it runs only when asked: E2E_REGRADE=1 with
+// ANTHROPIC_API_KEY.
 func TestRegradeWithTheJudges(t *testing.T) {
 	if os.Getenv("E2E_REGRADE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("E2E_REGRADE=1 and ANTHROPIC_API_KEY run the judges on the saved transcripts")
@@ -238,8 +253,15 @@ func TestRegradeWithTheJudges(t *testing.T) {
 		if c.concise && (r.afterApproval == nil || !r.afterApproval.Pass) {
 			t.Errorf("%s: the answer after the approval didn't pass", c.file)
 		}
-		if c.file == night && strings.Contains(readFile(t, c.file), "this run's record") && (r.afterApproval == nil || r.afterApproval.Pass) {
-			t.Errorf("%s: \"isn't in this run's record\" passed AfterApproval", c.file)
-		}
+	}
+	r, err := regrade(context.Background(), j, readFile(t, nightMsg8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	r.print(&out)
+	t.Logf("%s:\n%s", filepath.Base(nightMsg8), out.String())
+	if r.afterApproval == nil || r.afterApproval.Pass {
+		t.Errorf("%s: \"The charge look-up isn't in this run's record.\" passed AfterApproval", nightMsg8)
 	}
 }
