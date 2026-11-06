@@ -97,4 +97,17 @@ func TestAToolThatAsksForTheSessionGetsTheRunsOwn(t *testing.T) {
 	if _, has := sent["stripe_refund"][kiff.SessionArg]; has || sent["stripe_refund"]["charge"] != "ch_1" {
 		t.Fatalf("a tool that didn't ask got it: %v", sent["stripe_refund"])
 	}
+	// Nor written with JSON escapes, which decode to the same key (agentgabo on #342).
+	if _, err := refund.Call(inRun, json.RawMessage(`{"charge":"ch_2","agent\u005fsession":"s_chat_a"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := sent["stripe_refund"][kiff.SessionArg]; has || sent["stripe_refund"]["charge"] != "ch_2" {
+		t.Fatalf("an escaped key got through: %v", sent["stripe_refund"])
+	}
+	if _, err := look.Call(inRun, json.RawMessage(`{"agent\u005fsession":"s_someone_else"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent["app_look"][kiff.SessionArg]; got != "s_coach_chat" {
+		t.Fatalf("an escaped key on a tool that asked: %v", sent["app_look"])
+	}
 }

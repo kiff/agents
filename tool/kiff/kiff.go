@@ -225,7 +225,9 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	// so a model never names a chat to a tool whose stored schema predates the
 	// argument (qa-kiff on #342). Set before the operation ID, so a model's value
 	// never makes two operations of one action.
-	if t.session || bytes.Contains(input, []byte(SessionArg)) {
+	{
+		// Decoded, never matched as bytes: a key written with JSON escapes
+		// ("agent\u005fsession") is the same key (agentgabo on #342).
 		session := ""
 		if ref, ok := run.RefFrom(ctx); ok && t.session {
 			session = ref.Session
