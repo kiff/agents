@@ -53,15 +53,15 @@ const (
 // "isn't in this run's record", which the owner reads as unchecked (Eval
 // 42146041790). Told then "if you mention it, say it was checked earlier", it
 // gave the look-up a sentence of its own ("I had checked the charge earlier
-// in this conversation: …"), which a judge fails as narration: what a look-up
-// found goes, at most, in one short clause of the sentence that says what was
-// done, the shape kiff/tafs' chat rule gives it (Eval 42176052141).
+// in this conversation: …"), which a judge fails as narration. After a hold
+// the owner answered, the check made before asking gets no word, as kiff/tafs'
+// chat rule says (Eval 42176052141, kiff/tafs#560).
 const RecordNote = "What this run did, from its record, call by call, in order. " +
 	"It's for you, not the owner, who never sees runs or records: tell them what was done, in your rules' words, and never what a run or a record holds. " +
 	"Say what was done from this record, not from what earlier messages said would be done. " +
 	"A line that says \"looked up\" is this run reading that item before it asked for anything: it is the look-up your rules ask for, made. " +
 	"So is a read of the same item earlier in this conversation, made in an earlier message. " +
-	"Neither gets a sentence of its own: what a look-up found goes, if anywhere, in one short clause of the sentence that says what was done. " +
+	"Neither gets a word in your answer: it was made before the owner answered. " +
 	"Never say a step was skipped, or an item went unchecked, that this record or the conversation shows was made."
 
 // outcome is what came of a call, from its result. answer is KIFF's answer

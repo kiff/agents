@@ -14,7 +14,10 @@ import (
 )
 
 // The two transcripts the taf failed in, as the bucket keeps them (agentgabo,
-// 6 Nov), and each with the one-clause rewrites of its narrated look-ups.
+// 6 Nov). The morning's rewrite changes only its narrated look-ups, every other
+// word the bucket's, cut endings and all: passing, it shows they were its only
+// concise fault. The night's is the answers the rules ask for, msg 8 with the
+// one clause a judge may pass after a hold.
 const (
 	morning        = "testdata/regrade/42176052141.md"
 	morningRewrite = "testdata/regrade/42176052141-one-clause.md"
@@ -147,7 +150,9 @@ func TestTheRulesAgreeOnOneShape(t *testing.T) {
 		}},
 		{"AfterApproval", AfterApproval, []string{"leaving the check out passes", "one short clause of the sentence that says the refund went through"}},
 		{"AfterRefusal", AfterRefusal, []string{"leaving it out passes", "one short clause of the sentence that says the refund wasn't made"}},
-		{"RecordNote", agent.RecordNote, []string{"Neither gets a sentence of its own", "one short clause of the sentence that says what was done"}},
+		// After a hold the owner answered, the check gets no word, as kiff/tafs#560's chat rule says;
+		// the judges stay no stricter than the rule and pass a clause (qa-kiff on #347).
+		{"RecordNote", agent.RecordNote, []string{"Neither gets a word in your answer: it was made before the owner answered."}},
 	} {
 		for _, s := range c.says {
 			if !strings.Contains(c.text, s) {
@@ -155,8 +160,34 @@ func TestTheRulesAgreeOnOneShape(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(agent.RecordNote, "say it was checked earlier") {
-		t.Error("the record note still asks for a sentence about the check")
+	for _, invite := range []string{"say it was checked earlier", "if anywhere", "one short clause"} {
+		if strings.Contains(agent.RecordNote, invite) {
+			t.Errorf("the record note still invites a word on the check: %q", invite)
+		}
+	}
+}
+
+// The Eval's own concise check asks TafConcise, each answer beside the owner's
+// message it answers: put back Concise over the answers alone, and this fails
+// (qa-kiff on #347).
+func TestTheTafsAnswersAreJudgedBesideTheOwnersMessages(t *testing.T) {
+	v := &verdicts{}
+	var log, transcript strings.Builder
+	tt := &test{cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{Model: v, ModelID: "judge"}}, out: &redacting{w: &log}}
+	tt.answered("Check charge ch_1, then refund 300 cents of it.", "I refunded €3 on the €1,000 charge, which had nothing refunded before.")
+	tt.answered("Refund it."+heldApproved, "You approved the €7 refund on that charge, and it went through once.")
+	if err := tt.tafConcise(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "1. Owner: Check charge ch_1, then refund 300 cents of it.\nTaf: I refunded €3 on the €1,000 charge, which had nothing refunded before.\n" +
+		"2. Owner: Refund it." + heldApproved + "\nTaf: You approved the €7 refund on that charge, and it went through once.\n"
+	if len(v.asked) != eval.Votes {
+		t.Fatalf("asked %d times", len(v.asked))
+	}
+	for _, p := range v.asked {
+		if !strings.Contains(p, TafConcise) || !strings.Contains(p, want) || strings.Contains(p, Concise) {
+			t.Fatalf("the judge was asked:\n%s", p)
+		}
 	}
 }
 
@@ -174,9 +205,12 @@ func TestRegradeNeverRunsInCI(t *testing.T) {
 }
 
 // The re-grade itself, with the Eval's judge on the Claude API: both saved
-// transcripts fail concise as they did, on their narrated look-ups, and their
-// one-clause rewrites pass both judges. It costs a few cents, so it runs only
-// when asked: E2E_REGRADE=1 with ANTHROPIC_API_KEY.
+// transcripts fail concise as they did, on their narrated look-ups; the
+// morning's with only those changed passes, and so do the night's answers as
+// the rules ask, the clause after the approval included. Last night's
+// "isn't in this run's record" fails AfterApproval when the transcript has it
+// whole: the bucket's line is cut before it. It costs a few cents, so it runs
+// only when asked: E2E_REGRADE=1 with ANTHROPIC_API_KEY.
 func TestRegradeWithTheJudges(t *testing.T) {
 	if os.Getenv("E2E_REGRADE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("E2E_REGRADE=1 and ANTHROPIC_API_KEY run the judges on the saved transcripts")
@@ -202,7 +236,10 @@ func TestRegradeWithTheJudges(t *testing.T) {
 			t.Errorf("%s: concise passed %v, want %v", c.file, r.concise.Pass, c.concise)
 		}
 		if c.concise && (r.afterApproval == nil || !r.afterApproval.Pass) {
-			t.Errorf("%s: the one-clause answer after the approval didn't pass", c.file)
+			t.Errorf("%s: the answer after the approval didn't pass", c.file)
+		}
+		if c.file == night && strings.Contains(readFile(t, c.file), "this run's record") && (r.afterApproval == nil || r.afterApproval.Pass) {
+			t.Errorf("%s: \"isn't in this run's record\" passed AfterApproval", c.file)
 		}
 	}
 }
