@@ -594,6 +594,10 @@ func modeClaim(s said, m modes) string {
 	pinned := m.allTest && len(m.live) == 0
 	for _, text := range s.beforeTest {
 		for _, sentence := range sentences(text) {
+			// A sentence that only asks or supposes states nothing, whatever it names.
+			if strings.TrimSpace(asStated(sentence)) == "" {
+				continue
+			}
 			if pinned {
 				if clean, found := pinnedCalls(sentence); found {
 					if clean {
@@ -681,6 +685,35 @@ var orOther = regexp.MustCompile(`(?i)^\s+(?:or|o)\s`)
 // mode." and "Before you go on, your Stripe is in live mode." still state it
 // (agentgabo on Eval 42125870057; qa-kiff and agentgabo on #335).
 func asStated(sentence string) string {
+	// Both modes offered as alternatives ("¿Modo de prueba o real?", "test or live") state
+	// neither: the owner picks. One mode said alone, even in a question, is still read
+	// (PM and agentgabo on Eval 42132590612).
+	sentence = bothModes.ReplaceAllString(sentence, "")
+	// A question asks, and states nothing; what comes before it is still stated. In
+	// Spanish, before its ¿ ("Tu cuenta está en modo real, ¿no?"); in English, a question
+	// that doesn't open with a question word states its first clause ("Your Stripe is
+	// live, right?", "Since your Stripe is live, which mode?") (qa-kiff on Eval 42132590612).
+	t := strings.TrimSpace(sentence)
+	// A question that names the vendor or the account with a mode still says what it's in
+	// ("Did you know your Stripe is in live mode?", "¿Quieres mantener tu cuenta en modo
+	// real?"), unless the vendor is only where the calls go ("¿Fijo cada llamada a tu Stripe
+	// en modo de prueba?"). Both modes offered were taken out above (qa-kiff on #340).
+	if q := strings.Contains(t, "¿") || strings.HasSuffix(t, "?"); q && modeWord.MatchString(t) &&
+		(vendorWord.MatchString(callsAt.ReplaceAllString(t, "")) || accountWord.MatchString(t)) {
+		return strings.Trim(t, "¿?")
+	}
+	if i := strings.Index(t, "¿"); i >= 0 {
+		if strings.Trim(t[:i], " ,;:") == "" {
+			return ""
+		}
+		sentence = t[:i]
+	} else if strings.HasSuffix(t, "?") {
+		i := strings.IndexAny(t, ",;:")
+		if askWord.MatchString(t) || i < 0 {
+			return ""
+		}
+		sentence = t[:i]
+	}
 	if conditional.MatchString(sentence) {
 		i := strings.IndexAny(sentence, ",:;")
 		if i < 0 {
@@ -697,6 +730,21 @@ func asStated(sentence string) string {
 	}
 	return sentence[:loc[0]]
 }
+
+// callsAt is the vendor named as where the calls go ("every call to your Stripe",
+// "cada llamada a tu Stripe", "las llamadas de Stripe"), which says nothing of its mode.
+var callsAt = regexp.MustCompile(`(?i)\b(?:calls?|llamadas?)\s+(?:to|on|for|a|de|en|para)\s+(?:(?:your|the|this|tu|su|la|esta)\s+)?(?:stripe|connection|conexi\x{f3}n)\b`)
+
+// askWord opens an English question that asks, from its first word: it states
+// nothing ("Shall we start in test mode?", "Which one, test or live?").
+var askWord = regexp.MustCompile(`(?i)^\W*(?:do|does|did|is|are|was|were|should|shall|would|will|can|could|may|might|must|have|has|which|what|how|when|where|who|why|want|ready)\b`)
+
+// bothModes is both modes offered as alternatives, in either order: "modo de
+// prueba o real", "test mode or live mode", "test / live", "real o prueba".
+var bothModes = regexp.MustCompile(`(?i)` + modeOption + `\s*,?\s*(?:or|o|u|/)\s+` + modeOption)
+
+// modeOption is one mode as an option: "modo de prueba", "test mode", "live", "el modo real".
+const modeOption = `(?:(?:el|la|in|en)\s+)?(?:modo\s+(?:de\s+)?)?\b(?:prueba|test|real|live|sandbox|producción|production)\b(?:\s+mode)?`
 
 // statesMode is the first of texts with a sentence that states a mode
 // claimsMode counts, as it states it (asStated); "" when none.
@@ -731,14 +779,20 @@ func namesMode(sentence string) bool {
 // sentenceEnd ends a sentence: a full stop, an exclamation or a question.
 var sentenceEnd = regexp.MustCompile(`[.!?](\s+|$)`)
 
-// sentences splits a text into its sentences and lines.
+// sentences splits a text into its sentences and lines, each with its closing
+// mark, so a question can be told from a statement (qa-kiff on Eval 42132590612).
 func sentences(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
-		for _, part := range sentenceEnd.Split(line, -1) {
-			if strings.TrimSpace(part) != "" {
-				out = append(out, strings.TrimSpace(part))
+		start := 0
+		for _, m := range sentenceEnd.FindAllStringIndex(line, -1) {
+			if part := strings.TrimSpace(line[start : m[0]+1]); part != "" {
+				out = append(out, part)
 			}
+			start = m[1]
+		}
+		if rest := strings.TrimSpace(line[start:]); rest != "" {
+			out = append(out, rest)
 		}
 	}
 	return out
