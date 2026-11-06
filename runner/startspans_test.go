@@ -16,7 +16,7 @@ import (
 )
 
 // A run's start is recorded on its first turn step by step, in order, and
-// logged once with times only: no id, no input (kiff-cloud#1487's latency
+// logged once with times only: no id, no input (the latency
 // hunt). The steps add up to the start.
 func TestARunsStartIsRecordedStepByStep(t *testing.T) {
 	ctx := context.Background()

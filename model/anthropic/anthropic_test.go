@@ -358,7 +358,7 @@ func TestCacheMarksThePrefixAndTheLastMessage(t *testing.T) {
 		"no history": {model.Request{Model: "m", MaxTokens: 1, System: "be brief", Tools: tools, Messages: msgs, Cache: true, HistoryEnd: 0},
 			"system,message 2 block 0"},
 		// Where the run before put its history's end, too: read back exactly
-		// there, however many blocks that run added (kiff-cloud#1487). Four
+		// there, however many blocks that run added. Four
 		// breakpoints, the most a request may carry.
 		"the history's end, and the run before's": {model.Request{Model: "m", MaxTokens: 1, System: "s", Cache: true, HistoryEnd: 4, HistoryPrev: 2, Messages: append([]model.Message{
 			{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "first"}}},

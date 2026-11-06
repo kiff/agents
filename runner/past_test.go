@@ -243,7 +243,7 @@ func TestASummaryThatFailsSaysTheEarlierPartIsMissing(t *testing.T) {
 // A chat's next run marks for the cache exactly where the run before put its
 // history's end, so it reads that prefix back even after a long run: each
 // call a run made adds a line to the history, and the provider looks back
-// only 20 blocks from a breakpoint (kiff-cloud#1487: after a long run, Coach's
+// only 20 blocks from a breakpoint (after a long run, Coach's
 // next one rewrote the whole history).
 func TestTheNextRunReadsBackWhereTheRunBeforeCached(t *testing.T) {
 	many := model.Reply{Stop: model.CallTools}

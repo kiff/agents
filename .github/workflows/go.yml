@@ -10,6 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: No private references
+        # A private tracker is never named in this public repo: not in the tree, not in a pull
+        # request's added lines. The pattern is split so this file never matches it.
+        run: |
+          pattern='kiff-cloud''#|kiff/kiff''-cloud'
+          if git grep -nE "$pattern" -- .; then
+            echo "::error::a private reference is in the tree: name the gap or describe it instead"; exit 1
+          fi
+          if [ -n "$BASE" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+            if git diff "origin/$BASE" HEAD | grep -E '^\+' | grep -E "$pattern"; then
+              echo "::error::a private reference is in this pull request's diff"; exit 1
+            fi
+          fi
+        env:
+          BASE: ${{ github.base_ref }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

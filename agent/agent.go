@@ -138,7 +138,7 @@ type Agent struct {
 	Now func() time.Time
 	// Reload, when set, is read before each model turn: text to follow the
 	// system prompt from this turn on (a skill the session gained
-	// mid-conversation, kiff-cloud#1487). Appended, never inserted, so
+	// mid-conversation). Appended, never inserted, so
 	// the cached prefix holds; empty, nothing changes. It never reaches a
 	// tool's result.
 	Reload func(ctx context.Context) (string, error)

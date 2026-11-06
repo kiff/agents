@@ -67,7 +67,7 @@ func (t *test) setupTimings(ctx context.Context) {
 			continue
 		}
 		t.logf("setup message %d: first words after %s", i+1, w.Round(10*time.Millisecond))
-		// Where the wait went, in times and counts: the log too (kiff-cloud#1487's latency hunt).
+		// Where the wait went, in times and counts: the log too (the latency work).
 		if i < len(splits) && splits[i].wait >= 0 {
 			fmt.Fprintf(t.cfg.log, "setup message %d: %s\n", i+1, splits[i].line())
 		}
@@ -123,8 +123,8 @@ type clockTurn struct {
 	// broke is where the turn's request first differed from the turn
 	// before's, short of where that one ended: the system prompt, the
 	// tools, or a message, with its kinds and sizes, never a word. Empty
-	// when the request only grew, which the cache keeps (kiff-cloud#1487:
-	// two turns rewrote 9k tokens of cache, and nothing said why).
+	// when the request only grew, which the cache keeps (two turns
+	// rewrote 9k tokens of cache, and nothing said why).
 	broke          string
 	first          time.Duration // to its first streamed content
 	prompt, cached int64         // its prompt's tokens, and those read from the cache

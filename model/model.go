@@ -162,7 +162,7 @@ type Request struct {
 	// that prefix back however much that run added to the history. The
 	// provider looks back only so far from a breakpoint (Anthropic: 20
 	// blocks), and a run's calls, cards and answers each add a block
-	// (kiff-cloud#1487: long runs left the next one rewriting the history).
+	// (long runs left the next one rewriting the history).
 	// Zero, or not before HistoryEnd, marks nothing.
 	HistoryPrev int
 	// Web offers the provider's own web search and fetch on this turn, for

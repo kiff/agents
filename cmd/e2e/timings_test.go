@@ -142,7 +142,7 @@ func TestWordsClockKeepsSetupsNotes(t *testing.T) {
 // Each message's wait for Setup's first words splits into the run's start,
 // whole turns before the words' turn, the tools between them, and in the
 // words' turn its first content, then the words: the parts add up to the
-// wait (kiff-cloud#1487's latency hunt). A message with no words has none.
+// wait (the latency work). A message with no words has none.
 func TestAWaitSplitsWhereItWent(t *testing.T) {
 	t0 := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
 	at := func(ms int) time.Time { return t0.Add(time.Duration(ms) * time.Millisecond) }

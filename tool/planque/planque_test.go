@@ -534,7 +534,7 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 		seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"`+made.Agent+`"}` {
 		t.Fatalf("request by entry: %s %v", text, seen)
 	}
-	// With the tools search found that the taf will use: planque narrows the sign-in to them (kiff-cloud#1487, gap 5).
+	// With the tools search found that the taf will use: planque narrows the sign-in to them (gap 5 of kiff/tafs#476).
 	text, isErr = call(t, tl, `{"action":"request","entry":"connector:composio:quickbooks","agent":"invoices-a1","uses":["QUICKBOOKS_LIST_INVOICES","QUICKBOOKS_GET_INVOICE"]}`)
 	if isErr || seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"invoices-a1","tools":["QUICKBOOKS_LIST_INVOICES","QUICKBOOKS_GET_INVOICE"]}` {
 		t.Fatalf("request with uses: %s %v", text, seen)

@@ -203,7 +203,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		Entry  string          `json:"entry"`
 		// Uses are the app's tools the taf will use, as search named them
 		// (their slugs), with request {entry}: the sign-in asks for only what
-		// they need (kiff-cloud#1487, gap 5).
+		// they need (gap 5 of kiff/tafs#476).
 		Uses []string `json:"uses"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`

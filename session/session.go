@@ -55,7 +55,7 @@ type Session struct {
 	Archived bool `json:"archived,omitempty"`
 	// Skills are the agent's skills this session loaded ("name@version"),
 	// in the order they were added: named on its first run, or added
-	// mid-conversation (kiff-cloud#1487, the lighter Coach). Each turn's
+	// mid-conversation (the lighter Coach). Each turn's
 	// context carries their bodies after the agent's instructions, in the
 	// definition's order; a skill is added once.
 	Skills []string `json:"skills,omitempty"`
@@ -264,7 +264,7 @@ type markKey struct{}
 
 // WithMark is ctx carrying mark, the start's span marker, so a step deep in
 // it can split its span: the gateway's MCP handshake out of "connect", for
-// where a run's first second goes (kiff-cloud#1487's latency hunt).
+// where a run's first second goes (the latency work).
 func WithMark(ctx context.Context, mark func(name string)) context.Context {
 	return context.WithValue(ctx, markKey{}, mark)
 }
@@ -288,7 +288,7 @@ type ToolTiming struct {
 	NotMade bool `json:"not_made,omitempty"`
 	// InputHash is a digest of the call's input (InputHash), never the input:
 	// a later call of the same tool with the same digest is a retry of this
-	// one, which a reader may fold into the retry's outcome (kiff-cloud#1487).
+	// one, which a reader may fold into the retry's outcome.
 	InputHash string `json:"input_hash,omitempty"`
 }
 
