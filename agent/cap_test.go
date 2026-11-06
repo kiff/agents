@@ -8,6 +8,7 @@ import (
 
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/show"
 )
 
 func TestALongToolResultIsCutAndSaysSo(t *testing.T) {
@@ -35,11 +36,11 @@ func TestReadResultsAreClearedTogether(t *testing.T) {
 		return model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: id, Result: text}}}
 	}
 	msgs := []model.Message{use("a", "list_charges"), result("a", big), use("b", "list_charges"), result("b", big)}
-	if got := clearRead(msgs, 48<<10); got[1].Blocks[0].Result != big || got[3].Blocks[0].Result != big {
+	if got := clearRead(msgs, 48<<10, nil); got[1].Blocks[0].Result != big || got[3].Blocks[0].Result != big {
 		t.Fatal("cleared under the threshold: only one read result is 30 KB")
 	}
 	msgs = append(msgs, use("c", "get_charge"), result("c", "ch_1"))
-	got := clearRead(msgs, 48<<10)
+	got := clearRead(msgs, 48<<10, nil)
 	if want := fmt.Sprintf(ClearedNote, "list_charges", 30); got[1].Blocks[0].Result != want || got[3].Blocks[0].Result != want {
 		t.Fatalf("read results = %q, %q; want both cleared", got[1].Blocks[0].Result, got[3].Blocks[0].Result)
 	}
@@ -51,7 +52,7 @@ func TestReadResultsAreClearedTogether(t *testing.T) {
 	}
 	// Once cleared, the notes don't count: nothing is cleared again until
 	// more is read.
-	if again := clearRead(got, 48<<10); again[5].Blocks[0].Result != "ch_1" {
+	if again := clearRead(got, 48<<10, nil); again[5].Blocks[0].Result != "ch_1" {
 		t.Fatal("cleared again with nothing new read")
 	}
 }
@@ -102,7 +103,7 @@ func TestAToolsImagesComeAndGoWithItsResult(t *testing.T) {
 		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c2", Tool: "app_look"}}},
 		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c2", Result: "new", Images: img}}},
 	}
-	got := clearRead(msgs, 48<<10)
+	got := clearRead(msgs, 48<<10, nil)
 	if got[1].Blocks[0].Images != nil || !cleared(got[1].Blocks[0].Result) {
 		t.Fatalf("a cleared result kept its images: %+v", got[1].Blocks[0])
 	}
@@ -111,5 +112,40 @@ func TestAToolsImagesComeAndGoWithItsResult(t *testing.T) {
 	}
 	if len(msgs[1].Blocks[0].Images) != 1 {
 		t.Fatal("clearing changed the messages it was given")
+	}
+}
+
+// The owner's answer to a card is never cleared: the show tool's result is
+// their decision, and nothing the agent wrote since restates it. Coach lost the
+// owner's "modo: test" to a clearing, then told them they never chose it (Eval
+// 42141761407, agentgabo). Other results the model read are cleared as before.
+func TestAnOwnersAnswerIsNeverCleared(t *testing.T) {
+	answer := `{"answer":{"conectar":{"value":"si"},"limite":{"value":"50"},"modo":{"value":"test"},"origen":{"value":"chat"}},"words":"modo: Prueba (recomendado para empezar)"}`
+	big := strings.Repeat("x", 49<<10)
+	msgs := []model.Message{
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "q1", Tool: "show"}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "q1", Result: answer}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "planque"}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: big}}},
+		{Role: model.Assistant, Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c2", Tool: "planque"}}},
+		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c2", Result: "new"}}},
+	}
+	keep := func(name string) bool { return name == "show" }
+	got := clearRead(msgs, 48<<10, keep)
+	if got[1].Blocks[0].Result != answer {
+		t.Fatalf("the owner's answer was cleared: %q", got[1].Blocks[0].Result)
+	}
+	if !cleared(got[3].Blocks[0].Result) || got[5].Blocks[0].Result != "new" {
+		t.Fatalf("the other results: %q, %q", got[3].Blocks[0].Result, got[5].Blocks[0].Result)
+	}
+	// A kept result never counts toward the clearing: a large answer alone clears nothing.
+	long := strings.Repeat("y", 49<<10)
+	only := []model.Message{msgs[0], {Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "q1", Result: long}}}, msgs[4], msgs[5]}
+	if again := clearRead(only, 48<<10, keep); again[1].Blocks[0].Result != long {
+		t.Fatal("a kept result was cleared, or counted toward a clearing")
+	}
+	// The show tool is the one kept: it puts components in the owner's chat.
+	if !shows(show.New()) {
+		t.Fatal("the show tool doesn't say it shows")
 	}
 }

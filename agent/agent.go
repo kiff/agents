@@ -795,7 +795,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			}
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
-		msgs = clearRead(msgs, ClearAfter)
+		msgs = clearRead(msgs, ClearAfter, func(name string) bool { return shows(byName[name]) })
 	}
 }
 
@@ -808,23 +808,16 @@ const ClearAfter = 48 << 10
 // clearRead is msgs with every tool result the model has already read (all
 // but the last message's) replaced by a one-line note, once those pass
 // after bytes. The last message's results are new: the next turn reads
-// them whole.
-func clearRead(msgs []model.Message, after int) []model.Message {
+// them whole. A result of a tool keep names is never cleared, nor counted:
+// the owner's answer to a card (the show tool's result) is their decision,
+// small, and nothing the agent wrote since restates it (Eval 42141761407:
+// Coach lost the owner's "modo: test" to a clearing, then told them they
+// never chose it; agentgabo).
+func clearRead(msgs []model.Message, after int, keep func(tool string) bool) []model.Message {
 	if len(msgs) < 2 {
 		return msgs
 	}
 	read := msgs[:len(msgs)-1]
-	size := 0
-	for _, m := range read {
-		for _, b := range m.Blocks {
-			if b.Kind == model.ToolResult && !cleared(b.Result) {
-				size += len(b.Result)
-			}
-		}
-	}
-	if size <= after {
-		return msgs
-	}
 	tools := map[string]string{} // call id → tool
 	for _, m := range read {
 		for _, b := range m.Blocks {
@@ -833,11 +826,25 @@ func clearRead(msgs []model.Message, after int) []model.Message {
 			}
 		}
 	}
+	clearable := func(b model.Block) bool {
+		return b.Kind == model.ToolResult && !cleared(b.Result) && (keep == nil || !keep(tools[b.CallID]))
+	}
+	size := 0
+	for _, m := range read {
+		for _, b := range m.Blocks {
+			if clearable(b) {
+				size += len(b.Result)
+			}
+		}
+	}
+	if size <= after {
+		return msgs
+	}
 	out := slices.Clone(msgs)
 	for i := range out[:len(out)-1] {
 		blocks := slices.Clone(out[i].Blocks)
 		for j, b := range blocks {
-			if b.Kind == model.ToolResult && !cleared(b.Result) {
+			if clearable(b) {
 				blocks[j].Result = fmt.Sprintf(ClearedNote, tools[b.CallID], (len(b.Result)+1023)>>10)
 				// Its images go with its text, in the same clearing: one cache break, not two.
 				blocks[j].Images = nil

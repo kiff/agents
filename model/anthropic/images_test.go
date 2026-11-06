@@ -103,3 +103,33 @@ func TestTheOldestImagesLeaveInSteps(t *testing.T) {
 		}
 	}
 }
+
+// A tag of the model's format, split across two text deltas as it streamed,
+// reaches neither the owner's live text nor the stored reply (Eval
+// 42141761407: "antml:final_answer_dialog Falta que apruebes un acceso…").
+func TestALeakedTagReachesNoOwner(t *testing.T) {
+	tagged := []string{
+		`{"type":"message_start","message":{"id":"msg_t","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"antml:final_"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer_dialog Falta que apruebes un acceso…"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}`,
+		`{"type":"message_stop"}`,
+	}
+	m, _ := serve(t, tagged)
+	var live strings.Builder
+	reply, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 512,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Sigue."}}}}},
+		func(s string) { live.WriteString(s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "Falta que apruebes un acceso…"
+	if live.String() != want {
+		t.Fatalf("live text %q", live.String())
+	}
+	if len(reply.Blocks) != 1 || reply.Blocks[0].Text != want {
+		t.Fatalf("stored reply %+v", reply.Blocks)
+	}
+}
