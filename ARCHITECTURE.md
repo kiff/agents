@@ -73,7 +73,8 @@ COMPLETED, ERROR and CANCELLED are final.
   sends all of it as it was sent, so the cache holds up to the held calls'
   results; a thinking block whose conversation changed is dropped by the
   provider (block binding's `drop_block`), and what changed since the preface
-  (where things stand, the date) goes after the results.
+  (where things stand, the date, and a line that went away) goes after the
+  results.
   Requirements
   and that turn belong to the run, not to its events, so the keep rules never
   drop them before the run ends: continuing never depends on what was kept.
