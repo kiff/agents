@@ -138,3 +138,75 @@ func TestWordsClockKeepsSetupsNotes(t *testing.T) {
 		t.Fatalf("notes %q", got)
 	}
 }
+
+// Each message's wait for Setup's first words splits into the run's start,
+// whole turns before the words' turn, the tools between them, and in the
+// words' turn its first content, then the words: the parts add up to the
+// wait (kiff-cloud#1487's latency hunt). A message with no words has none.
+func TestAWaitSplitsWhereItWent(t *testing.T) {
+	t0 := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
+	at := func(ms int) time.Time { return t0.Add(time.Duration(ms) * time.Millisecond) }
+	turns := []clockTurn{
+		// Message 1: a turn with no words and a tool call, then the words.
+		{began: at(500), ended: at(4000), first: 1500 * time.Millisecond, prompt: 21000, cached: 20000, output: 300, written: 400},
+		{began: at(5000), ended: at(9000), words: at(8000), first: 2000 * time.Millisecond, prompt: 22000, cached: 21500, output: 200, written: 200},
+		// Message 2: the words in its first turn.
+		{began: at(20400), ended: at(24000), words: at(23000), first: 1600 * time.Millisecond, prompt: 31000, cached: 21000, output: 120, written: 80},
+		// Message 3: a turn, and no words before the end.
+		{began: at(40300), ended: at(41000), first: 700 * time.Millisecond, output: 10},
+	}
+	sp := splitWaits([]time.Time{t0, at(20000), at(40000)}, turns, at(60000))
+	if len(sp) != 3 {
+		t.Fatalf("%d splits", len(sp))
+	}
+	one := sp[0]
+	if one.wait != 8*time.Second || one.start != 500*time.Millisecond || one.before != 1 || one.turns != 3500*time.Millisecond ||
+		one.between != time.Second || one.first != 2*time.Second || one.toWords != time.Second || one.thinking != (300-100)+(200-50) ||
+		one.prompt != 21000 || one.cached != 20000 {
+		t.Fatalf("message 1: %+v", one)
+	}
+	if one.start+one.turns+one.between+one.first+one.toWords != one.wait {
+		t.Fatalf("message 1's parts don't add up: %+v", one)
+	}
+	two := sp[1]
+	if two.wait != 3*time.Second || two.start != 400*time.Millisecond || two.before != 0 || two.turns != 0 || two.first != 1600*time.Millisecond || two.toWords != time.Second {
+		t.Fatalf("message 2: %+v", two)
+	}
+	if sp[2].wait != -1 {
+		t.Fatalf("message 3 had no words: %+v", sp[2])
+	}
+	if got := two.line(); got != "first words after 3s: start 400ms, 0 turns before 0s, tools 0s, first token 1.6s, then the words 1s; thinking about 100 tokens; prompt 31000 tokens, 67% from the cache" {
+		t.Fatalf("line %q", got)
+	}
+	med, n := medianSplit(sp)
+	if n != 2 || med.wait != 8*time.Second || med.first != 2*time.Second {
+		t.Fatalf("medians over %d: %+v", n, med)
+	}
+}
+
+// The clock keeps Setup's turns, with their times and usage, and no other
+// agent's.
+func TestWordsClockKeepsSetupsTurns(t *testing.T) {
+	w := &wordsClock{Model: usageOf{deltas{"(note) Miro la cuenta…"}, model.Usage{InputTokens: 10, CacheRead: 900, CacheWrite: 90, OutputTokens: 40}}, setup: "You are Coach."}
+	for _, system := range []string{"You are Coach.\n\nskills…", "You are the Refunds taf."} {
+		if _, err := w.Turn(context.Background(), model.Request{System: system}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turns := w.setupTurns()
+	if len(turns) != 1 || turns[0].words.IsZero() || turns[0].ended.Before(turns[0].words) || turns[0].prompt != 1000 || turns[0].cached != 900 || turns[0].output != 40 {
+		t.Fatalf("turns %+v", turns)
+	}
+}
+
+// usageOf is a model that reports usage for each turn.
+type usageOf struct {
+	model.Model
+	usage model.Usage
+}
+
+func (u usageOf) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
+	r, err := u.Model.Turn(ctx, req, onText)
+	r.Usage = u.usage
+	return r, err
+}

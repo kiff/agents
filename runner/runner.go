@@ -13,7 +13,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kiff/agents/agent"
@@ -97,9 +100,53 @@ type Runner struct {
 	Access run.AccessFunc
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
+	// Log, when set, gets one line per run that starts: where its start
+	// went, step by step, in milliseconds, and whether it was this
+	// process's first (cold). Never an id, an input or a word.
+	Log *slog.Logger
 }
 
 var _ server.Runner = (*Runner)(nil)
+
+// started is whether this process has started a run: the first is cold.
+var started atomic.Bool
+
+// steps times the steps of a run's start, in order (session.TurnTiming.Start).
+type steps struct {
+	now  func() time.Time
+	last time.Time
+	list []session.Span
+}
+
+func (s *steps) mark(name string) {
+	t := s.now()
+	s.list = append(s.list, session.Span{Name: name, MS: t.Sub(s.last).Milliseconds()})
+	s.last = t
+}
+
+// add puts the build's own steps in, after the runner's, and marks what of
+// the build they don't cover.
+func (s *steps) add(name string, inner []session.Span) {
+	t := s.now()
+	total := t.Sub(s.last).Milliseconds()
+	for _, sp := range inner {
+		total -= sp.MS
+	}
+	s.list = append(append(s.list, inner...), session.Span{Name: name, MS: max(0, total)})
+	s.last = t
+}
+
+// logStart writes a run's start to Log, when set.
+func (rn *Runner) logStart(r run.Run, kind session.Kind, took time.Duration, spans []session.Span) {
+	if rn.Log == nil {
+		return
+	}
+	attrs := []any{"trigger", string(r.Trigger), "chat", kind == session.KindChat, "cold", !started.Swap(true), "start_ms", took.Milliseconds()}
+	for _, sp := range spans {
+		attrs = append(attrs, strings.ReplaceAll(sp.Name, " ", "_")+"_ms", sp.MS)
+	}
+	rn.Log.Info("run started", attrs...)
+}
 
 func (rn *Runner) now() time.Time {
 	if rn.Now != nil {
@@ -332,6 +379,8 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	loop, cancelLoop := context.WithDeadline(ctx, deadline.Add(-StopTimeout))
 	defer cancelLoop()
 
+	// Where the start goes, step by step, from this invocation's first read.
+	sp := &steps{now: rn.now, last: rn.now()}
 	r, err := rn.Runs.Get(ctx, tenant, id)
 	if err != nil {
 		return run.Run{}, err
@@ -339,6 +388,11 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if r.Status == run.Pending && r.After != "" {
 		return r, run.ErrQueued // the sweep starts it once the thread's run before it is done
 	}
+	if !r.Created.IsZero() {
+		// Before this invocation read it: the request that made it, and any wait.
+		sp.list = append(sp.list, session.Span{Name: "before", MS: max(0, sp.last.Sub(r.Created).Milliseconds())})
+	}
+	sp.mark("run")
 	paused := r.Status == run.Paused
 	if holds, _, resumes := splitCards(r.Requirements); paused && len(holds)+len(resumes) > 0 && rn.Collect == nil {
 		return r, ErrNoCollect // a run that waits only on cards has their answers already
@@ -347,6 +401,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if r, err = run.Claim(ctx, rn.Runs, tenant, id, x.claim, deadline, rn.now()); err != nil {
 		return r, err
 	}
+	sp.mark("claim")
 	// The lease reaches run.LeaseSpan ahead and is renewed on a heartbeat
 	// while the invocation goes, a model turn or a tool call in flight
 	// included: a dead invocation is seen by the sweep within that span,
@@ -362,6 +417,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 			return x.notRun(ctx, r, paused, nil, FailedSwitching, err)
 		}
 	}
+	sp.mark("switching")
 
 	// Checked once the run is claimed too, as the switch is: a halt cancels
 	// the agent's active runs once it is stored, so either it saw this one,
@@ -370,7 +426,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// KIFF send it, and a halt holds here even when KIFF can't be asked. It
 	// records each held call as not sent and ends at its first checkpoint,
 	// before any model turn.
-	if err := rn.notHalted(ctx, tenant, r.Agent, r.Created); err != nil {
+	err = rn.notHalted(ctx, tenant, r.Agent, r.Created)
+	sp.mark("halted")
+	if err != nil {
 		x.halted = paused
 		if !paused {
 			next, serr := x.saveStop(ctx, func(n *run.Run) error {
@@ -398,7 +456,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// The member who asked must still be able to use the agent (#221): a run
 	// of someone who lost it ends CANCELLED, never started; a paused one
 	// stops at its first checkpoint, as a halted one does.
-	if err := rn.mayUse(ctx, tenant, r.Agent, r.Requester); err != nil {
+	err = rn.mayUse(ctx, tenant, r.Agent, r.Requester)
+	sp.mark("access")
+	if err != nil {
 		x.noAccess = true
 		if !paused {
 			next, serr := x.saveStop(ctx, func(n *run.Run) error {
@@ -425,6 +485,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
+	sp.add("build", a.StartSpans)
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
 	a.Checkpoint = x.checkpoint
@@ -437,6 +498,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its session: %w", err))
 	}
+	sp.mark("session")
 	// The session's skills, their bodies after the instructions in the
 	// definition's order (kiff-cloud#1487): one added mid-conversation is
 	// read before each turn and appended, never inserted, so the cached
@@ -447,6 +509,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 			return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its skills: %w", err))
 		}
 		a.System += text
+		sp.mark("session skills")
 	}
 	a.Reload = x.addedSkills(d, sess.Skills)
 	if sess.Kind == session.KindChat {
@@ -456,6 +519,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	if err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("reading its history: %w", err))
 	}
+	sp.mark("history")
 	a.Fast = fast(d, r.Trigger, events)
 	rec, err := session.NewRecorderAt(rn.Sessions, d.Keep, rn.now)
 	if err != nil {
@@ -468,14 +532,21 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		if err != nil {
 			return x.notRun(ctx, r, false, d.Keep, FailedStart, fmt.Errorf("starting its recording: %w", err))
 		}
+		sp.mark("recording")
 		if len(p.fold) > 0 {
 			a.Spent = rn.fold(loop, a, recording, &p)
+			sp.mark("fold")
 		}
 		history, _ := p.history()
+		a.HistoryPrev = p.prevEnd(history)
 		a.Preface = p.preface(loop, a.Tools, rn.now())
 		// From the run's creation to its first model turn: the claim, the
-		// build, the session's read and any cold start, on that turn's Usage.
+		// build, the session's read and any cold start, on that turn's Usage,
+		// with where it went step by step (its spans), logged too.
 		a.Started = rn.now().Sub(r.Created)
+		sp.mark("preface")
+		a.StartSpans = sp.list
+		rn.logStart(r, sess.Kind, a.Started, sp.list)
 		out, msgs, err := agent.Run(loop, a, recording, history, r.Input, emit)
 		out, err = x.more(loop, a, recording, msgs, out, err, emit)
 		return x.stop(ctx, recording, d.Keep, out, err)
@@ -539,6 +610,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// start stopped before it got to recording it.
 	a.Restarted = slices.ContainsFunc(events, func(e session.Event) bool { return e.Run == r.ID && e.Kind == session.OwnerMessage })
 	history, _ := p.history()
+	a.HistoryPrev = p.prevEnd(history)
 	a.Preface = p.preface(loop, a.Tools, rn.now())
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
 	out, err = x.more(loop, a, recording, msgs, out, err, emit)

@@ -104,8 +104,10 @@ type Agent struct {
 	// Nil: none are loaded, so every file reads as out of view.
 	Load func(context.Context, []model.Message) error
 	// Started is how long the run took from its creation to its first model
-	// turn, recorded on that turn's Usage; 0 when unknown.
-	Started time.Duration
+	// turn, recorded on that turn's Usage; 0 when unknown. StartSpans is
+	// where it went, step by step (session.TurnTiming.Start).
+	Started    time.Duration
+	StartSpans []session.Span
 	// Spent is what the run spent before its loop, such as on a summary, in
 	// millionths of a US dollar: it counts toward MaxCost.
 	Spent int64
@@ -134,6 +136,11 @@ type Agent struct {
 	// the cached prefix holds; empty, nothing changes. It never reaches a
 	// tool's result.
 	Reload func(ctx context.Context) (string, error)
+
+	// HistoryPrev is how many of the history's messages were the history of
+	// the run before this one, as the runner rendered it then: marked for
+	// the cache again (model.Request.HistoryPrev). Zero: none.
+	HistoryPrev int
 
 	// history is how many of a run's messages are its history (Run, Continue):
 	// the prefix the next run renders the same way, cached apart.
@@ -1171,7 +1178,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 			system += more
 		}
 	}
-	req := model.Request{Model: a.ModelID, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history,
+	req := model.Request{Model: a.ModelID, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history, HistoryPrev: a.HistoryPrev,
 		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) },
 		OnUpdate: func(s string) { emit(Event{Kind: Update, Text: s}) }}
 	began := time.Now()
@@ -1220,7 +1227,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 func (a Agent) turnTiming(reply model.Reply, took time.Duration, first bool, waited []session.ToolTiming) *session.TurnTiming {
 	t := &session.TurnTiming{MS: took.Milliseconds(), FirstMS: reply.FirstToken.Milliseconds(), ThinkingBytes: reply.ThinkingBytes, Waited: waited, Resumed: a.resumed}
 	if first {
-		t.StartMS = a.Started.Milliseconds()
+		t.StartMS, t.Start = a.Started.Milliseconds(), a.StartSpans
 	}
 	for _, b := range reply.Blocks {
 		switch b.Kind {

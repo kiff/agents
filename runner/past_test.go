@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -237,4 +238,56 @@ func TestASummaryThatFailsSaysTheEarlierPartIsMissing(t *testing.T) {
 	if got[0] != "user: "+runner.DroppedNote || got[1] != "user: "+runner.OpeningNote+long("a") {
 		t.Fatalf("after a failed summary, the run saw %q", got)
 	}
+}
+
+// A chat's next run marks for the cache exactly where the run before put its
+// history's end, so it reads that prefix back even after a long run: each
+// call a run made adds a line to the history, and the provider looks back
+// only 20 blocks from a breakpoint (kiff-cloud#1487: after a long run, Coach's
+// next one rewrote the whole history).
+func TestTheNextRunReadsBackWhereTheRunBeforeCached(t *testing.T) {
+	many := model.Reply{Stop: model.CallTools}
+	for i := range 24 {
+		many.Blocks = append(many.Blocks, model.Block{Kind: model.ToolUse, CallID: fmt.Sprintf("c%d", i), Tool: "get_charge", Input: json.RawMessage(fmt.Sprintf(`{"charge":"ch_%d"}`, i))})
+	}
+	f := newFixture(t, say("Hello."), many, say("Checked all 24."), say("Glad to help."))
+	f.extra = []tool.Tool{statelessRead{}}
+	r1 := f.execute(f.start(server.Start{Input: "hi"}))
+	f.execute(f.start(server.Start{Session: r1.Session, Input: "check them all"}))
+	f.execute(f.start(server.Start{Session: r1.Session, Input: "thanks"}))
+
+	reqs := f.model.requests()
+	if len(reqs) != 4 {
+		t.Fatalf("%d model turns", len(reqs))
+	}
+	two, three := reqs[1], reqs[3]
+	if two.HistoryPrev != 0 || two.HistoryEnd != 2 {
+		t.Fatalf("the second run's history ends at %d, the one before's at %d", two.HistoryEnd, two.HistoryPrev)
+	}
+	if three.HistoryPrev != two.HistoryEnd || three.HistoryEnd != 4 {
+		t.Fatalf("the third run marks %d and %d; the run before cached up to %d", three.HistoryPrev, three.HistoryEnd, two.HistoryEnd)
+	}
+	if !reflect.DeepEqual(three.Messages[:three.HistoryPrev], two.Messages[:two.HistoryEnd]) {
+		t.Fatalf("what the third run marks isn't what the second cached:\n%+v\n%+v", three.Messages[:three.HistoryPrev], two.Messages[:two.HistoryEnd])
+	}
+	added := 0
+	for _, m := range three.Messages[three.HistoryPrev:three.HistoryEnd] {
+		added += len(m.Blocks)
+	}
+	if added <= 20 {
+		t.Fatalf("the long run added %d blocks to the history: the test needs more than 20", added)
+	}
+}
+
+// statelessRead is a read through KIFF's gateway that keeps nothing: a turn's
+// reads run at once.
+type statelessRead struct{}
+
+func (statelessRead) Spec() model.ToolSpec {
+	return model.ToolSpec{Name: "get_charge", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (statelessRead) Access() tool.Access { return tool.Read }
+func (statelessRead) Gateway() bool       { return true }
+func (statelessRead) Call(context.Context, json.RawMessage) (tool.Result, error) {
+	return tool.Result{Text: "50.00 EUR"}, nil
 }
