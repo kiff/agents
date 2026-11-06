@@ -2,7 +2,8 @@ package anthropic
 
 import (
 	"regexp"
-	"strings"
+
+	"github.com/kiff/agents/model"
 )
 
 // A reply's text can carry a tag of the model's own format, leaked into the
@@ -12,23 +13,13 @@ import (
 // tafs builds from it all read from. Only the model's reply text is: never an
 // owner's words, a tool's result or a thinking block, which goes back signed.
 
-// leakedTag is one tag, whole: bracketed, opening or closing, the prefix and a
-// name with anything up to its ">"; or bare, with any emphasis around
-// it and one space after it ("antml:final_answer_dialog ", "**antml:foo** ").
-var leakedTag = regexp.MustCompile(`(?i)</?antml:[a-z_][a-z0-9_]*[^<>]*>|[*_]*\bantml:[a-z_][a-z0-9_]*\b[*_]*[ \t]?`)
-
-// stripTags is s without the leaked tags in it.
-func stripTags(s string) string {
-	if !strings.Contains(strings.ToLower(s), "antml:") {
-		return s
-	}
-	return leakedTag.ReplaceAllString(s, "")
-}
+// stripTags is s without the leaked tags in it (model.StripLeakedTags).
+func stripTags(s string) string { return model.StripLeakedTags(s) }
 
 // maybeTag is a text's end that could be the start of a tag still coming: a
 // "<" not yet closed that could open one ("<", "</a", "<fin"), or the
 // bare word's start ("a", "ant", "antml:final_"), with any emphasis before it.
-var maybeTag = regexp.MustCompile(`(?i)(?:</?(?:a(?:n(?:t(?:m(?:l(?::[a-z0-9_]*[^<>]*)?)?)?)?)?)?|[*_]*\ba(?:n(?:t(?:m(?:l(?::[a-z0-9_]*[*_]*)?)?)?)?)?)$`)
+var maybeTag = regexp.MustCompile(`(?i)(?:</?(?:a(?:n(?:t(?:m(?:l(?::[a-z0-9_-]*[^<>]*)?)?)?)?)?)?|[*_]*\ba(?:n(?:t(?:m(?:l(?::[a-z0-9_-]*[*_]*)?)?)?)?)?)$`)
 
 // tagFilter passes a reply's streamed text on without the leaked tags, which
 // can come split across deltas ("antml:final_" then "answer_dialog"): it holds

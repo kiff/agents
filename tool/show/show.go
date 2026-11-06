@@ -258,7 +258,36 @@ func (Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error
 	return tool.Result{Text: "shown: " + c.Type + " " + c.ID, Component: b}, nil
 }
 
-// Parse checks one component against contract 1 and returns it.
+// clean takes any tag of the model's format out of the words the owner reads on
+// the card, before it's checked, recorded and shown: its title, text, note,
+// buttons, steps, options, questions and a result's taf words (Eval
+// 42141761407; qa-kiff on #345). Values, ids and references are left as they
+// are. Parse does it, so the words recorded with the owner's answer, which the
+// server takes from the card it parses again, are the ones the owner saw.
+func (c *Component) clean() {
+	s := model.StripLeakedTags
+	c.Title, c.Text, c.Note, c.Yes, c.No = s(c.Title), s(c.Text), s(c.Note), s(c.Yes), s(c.No)
+	for i := range c.Steps {
+		c.Steps[i].Label = s(c.Steps[i].Label)
+	}
+	cleanOptions := func(os []Option) {
+		for i := range os {
+			os[i].Label, os[i].Description = s(os[i].Label), s(os[i].Description)
+		}
+	}
+	cleanOptions(c.Options)
+	for i := range c.Questions {
+		c.Questions[i].Text, c.Questions[i].Note = s(c.Questions[i].Text), s(c.Questions[i].Note)
+		cleanOptions(c.Questions[i].Options)
+	}
+	if t := c.Taf; t != nil {
+		t.Name, t.Summary, t.Note, t.Notes = s(t.Name), s(t.Summary), s(t.Note), s(t.Notes)
+		t.Kickoff, t.Instructions = s(t.Kickoff), s(t.Instructions)
+	}
+}
+
+// Parse checks one component against contract 1 and returns it, cleaned of
+// leaked tags: a field that held only a tag is then empty, and checked so.
 func Parse(input json.RawMessage) (Component, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(input, &raw); err != nil {
@@ -281,6 +310,7 @@ func Parse(input json.RawMessage) (Component, error) {
 			return Component{}, fmt.Errorf("a %s has no field %q; it takes %s", c.Type, k, strings.Join(fields[c.Type], ", "))
 		}
 	}
+	c.clean()
 	if err := c.check(); err != nil {
 		return Component{}, fmt.Errorf("%s %s: %w", c.Type, c.ID, err)
 	}

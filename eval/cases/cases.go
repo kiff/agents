@@ -332,21 +332,21 @@ func (s Scenario) holdPending(f facts) bool {
 	})
 }
 
-// holdWords say a write waits on a hold or the owner's approval, in English or Spanish.
+// holdWords name a hold or the owner's approval, and waitWords that something
+// still waits on it, in English or Spanish: "approved" alone is a past
+// approval, not a wait (qa-kiff on #345).
 var holdWords = []string{"hold", "held", "approv", "pause", "retenid", "aprob", "pausa"}
+var waitWords = []string{"once", "after", "will", "wait", "pending", "until", "cuando", "espera", "pendiente", "después", "hasta"}
 
-// leftForHold reports whether the report's own sentence about item says it waits
-// for a hold or the owner's approval: the item named, and why it isn't done.
+// leftForHold reports whether the report's own line about item says it waits
+// for a hold or the owner's approval: the item named, a hold, and the wait.
 func (s Scenario) leftForHold(report, item string) bool {
-	for _, sentence := range strings.FieldsFunc(report, func(r rune) bool { return r == '\n' }) {
-		if !s.names(sentence, item) {
-			continue
-		}
-		l := strings.ToLower(sentence)
-		for _, w := range holdWords {
-			if strings.Contains(l, w) {
-				return true
-			}
+	has := func(l string, words []string) bool {
+		return slices.ContainsFunc(words, func(w string) bool { return strings.Contains(l, w) })
+	}
+	for _, line := range strings.FieldsFunc(report, func(r rune) bool { return r == '\n' }) {
+		if l := strings.ToLower(line); s.names(line, item) && has(l, holdWords) && has(l, waitWords) {
+			return true
 		}
 	}
 	return false

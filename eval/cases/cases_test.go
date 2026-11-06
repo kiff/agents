@@ -310,6 +310,10 @@ func TestAnItemLeftForAPendingHoldIsNoMissedAnswer(t *testing.T) {
 	if stops("Answered T-2001, T-2003, T-2006 and T-2007; accepted T-2002. T-2004 waits on you.\nT-2005: not done yet.", calls) {
 		t.Fatal("left with no reason given: passed")
 	}
+	// A past approval is no wait (qa-kiff on #345): the item was never written.
+	if stops("Answered T-2001, T-2003, T-2006 and T-2007; accepted T-2002. T-2004 waits on you.\nT-2005 was approved and closed.", calls) {
+		t.Fatal("a false past approval passed")
+	}
 	var noHold []call
 	for _, c := range calls {
 		if strings.Contains(c.input, `"dp_2004"`) && c.err {

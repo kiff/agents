@@ -22,6 +22,7 @@ func TestALeakedTagIsStripped(t *testing.T) {
 		"**antml:final_answer_dialog** Falta que apruebes un acceso…":               "Falta que apruebes un acceso…",
 		open("final_answer_dialog") + "Hola" + closing("final_answer_dialog"):       "Hola",
 		"Listo.\n" + open("x a=\"b\"") + "Reembolsos está activo.":                  "Listo.\nReembolsos está activo.",
+		"antml:final-answer Hola":                                                   "Hola",
 		"El mensaje antml no es una etiqueta, ni antml_x.":                          "El mensaje antml no es una etiqueta, ni antml_x.",
 		"Una prueba: el modo de prueba, en una cuenta antigua <b>y</b> a las 9:00.": "Una prueba: el modo de prueba, en una cuenta antigua <b>y</b> a las 9:00.",
 	} {

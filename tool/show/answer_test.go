@@ -156,3 +156,44 @@ func TestADriveCardWaitsForTheOwnersApproval(t *testing.T) {
 		}
 	}
 }
+
+// A tag of the model's format never reaches the owner on a card: Coach's own
+// words on it (its text, a question, an option) are cleaned before it's recorded
+// and shown, and its values are left alone (Eval 42141761407; qa-kiff on #345).
+func TestACardCarriesNoLeakedTag(t *testing.T) {
+	tag := "antml:final_answer_dialog "
+	raw := `{"type":"questions","id":"setup","text":"` + tag + `Para preparar Reembolsos necesito saber esto:","questions":[` +
+		`{"id":"modo","text":"` + tag + `¿Modo de prueba o real?","options":[{"value":"test","label":"` + tag + `Prueba (recomendado para empezar)"},{"value":"live","label":"Real"}]}]}`
+	res, err := show.Tool{}.Call(t.Context(), json.RawMessage(raw))
+	if err != nil || res.IsError {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	var shown show.Component
+	if err := json.Unmarshal(res.Component, &shown); err != nil {
+		t.Fatal(err)
+	}
+	q := shown.Questions[0]
+	if shown.Text != "Para preparar Reembolsos necesito saber esto:" || q.Text != "¿Modo de prueba o real?" || q.Options[0].Label != "Prueba (recomendado para empezar)" {
+		t.Fatalf("shown %q / %q / %q", shown.Text, q.Text, q.Options[0].Label)
+	}
+	if q.Options[0].Value != "test" || strings.Contains(string(res.Component), "antml") {
+		t.Fatalf("the component: %s", res.Component)
+	}
+
+	// The server answers from the card's input, parsed again: the words recorded
+	// with the owner's answer are the ones the owner saw.
+	again, err := show.Parse(json.RawMessage(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered, err := show.Answer(again, json.RawMessage(`{"modo":{"value":"test"}}`))
+	if err != nil || strings.Contains(answered.Words, "antml") || !strings.Contains(answered.Words, "Prueba (recomendado para empezar)") {
+		t.Fatalf("answered %q, %v", answered.Words, err)
+	}
+
+	// A label that was only a tag is empty once cleaned, and refused as such.
+	onlyTag := `{"type":"confirm","id":"go","text":"Seguimos?","options":[{"value":"yes","label":"` + tag + `"},{"value":"no","label":"No"}]}`
+	if res, _ := (show.Tool{}).Call(t.Context(), json.RawMessage(onlyTag)); !res.IsError {
+		t.Fatalf("a label that was only a tag passed: %s", res.Component)
+	}
+}
