@@ -43,10 +43,21 @@ const (
 
 // RecordNote follows a continued run's held calls' results: what the run did,
 // from its record. The model says what was done from it, never from its
-// memory of the chat.
-const RecordNote = "This run's record, call by call, in order. Say what was done from this record, with its amounts and ids, not from earlier messages in the chat. " +
+// memory of the chat. It's for the model: the owner never sees runs or
+// records, and a read of the item in an earlier message (its Called line in
+// the conversation) is the look-up as much as one in this run; the note
+// itself never carries CalledMark, which only the runner's lines do. Told to
+// report "from this record, with its amounts and ids, not from earlier
+// messages", a taf opened with "This run made one call: a €7.00 (700 cents)
+// refund on charge ch_…" and said the look-up made in the message before
+// "isn't in this run's record", which the owner reads as unchecked (Eval
+// 42146041790).
+const RecordNote = "What this run did, from its record, call by call, in order. " +
+	"It's for you, not the owner, who never sees runs or records: tell them what was done, in your rules' words, and never what a run or a record holds. " +
+	"Say what was done from this record, not from what earlier messages said would be done. " +
 	"A line that says \"looked up\" is this run reading that item before it asked for anything: it is the look-up your rules ask for, made. " +
-	"Never say a step was skipped, or an item went unchecked, that this record shows was made."
+	"So is a read of the same item earlier in this conversation, made in an earlier message: if you mention it, say it was checked earlier. " +
+	"Never say a step was skipped, or an item went unchecked, that this record or the conversation shows was made."
 
 // outcome is what came of a call, from its result. answer is KIFF's answer
 // to its hold, when it was held and has been answered. The result decides:
