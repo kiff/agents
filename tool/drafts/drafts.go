@@ -11,6 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/kiff/agents/drafts"
@@ -41,7 +44,7 @@ func (t *Tool) Spec() model.ToolSpec {
 		Name: Name,
 		Description: "Submit a taf's KIFF draft: its agent and its Cards, as KIFF takes them. It grants nothing until the owner confirms it on their phone: " +
 			"show an approval naming the draft (and the taf's planque grant). submit {agent_id, label, cards}: returns the draft's id, agent and status. " +
-			"Each Card's id is kept under the agent's own name: \"reads\" goes as \"<agent_id>-reads\", so it never names another taf's Card. " +
+			"A Card named by an id the agent holds alone revises that Card. An id KIFF refuses as a Card the agent doesn't hold alone and in force goes again under the agent's name (\"reads\" as \"<agent_id>-reads\"), a new Card, and the result says so. " +
 			"You never get the taf's key; tafs cloud has it claimed once the owner has confirmed.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"action":{"type":"string","enum":["submit"]},` +
@@ -98,26 +101,39 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 	return b.String(), nil
 }
 
-// ownCardIDs is cards with each Card's id under its agent's own name
-// ("refunds-s7zax3qf-reads" for "reads"), so a draft never names a Card of
-// another agent's: an account keeps the Cards of tafs made before (an Eval's
-// earlier runs), and KIFF refuses a draft naming one (409), which cost the
-// setup a turn each time (Eval 42206117004). An id already under the agent's
-// name stays, so a taf's own Card is revised as before. The rest of each
-// Card goes as it came.
-func ownCardIDs(agent string, raw json.RawMessage) ([]map[string]json.RawMessage, error) {
-	var cards []map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &cards); err != nil {
-		return nil, err
+// takenID is KIFF's refusal of a draft's Card whose id is a Card the agent
+// doesn't hold alone and in force (kiff-cloud's draftCards), naming it by
+// its place in the draft.
+var takenID = regexp.MustCompile(`^card (\d+): a Card with this id exists, and it isn't this agent's`)
+
+// refusedCard is the place in the draft of the Card KIFF refused for its id
+// (takenID), or -1 for any other answer.
+func refusedCard(err error) int {
+	var ke *kiffapi.Error
+	if !errors.As(err, &ke) || ke.Status != http.StatusConflict {
+		return -1
 	}
-	for _, c := range cards {
-		var id string
-		if json.Unmarshal(c["id"], &id) != nil || id == "" || id == agent || strings.HasPrefix(id, agent+"-") {
-			continue
-		}
-		c["id"], _ = json.Marshal(agent + "-" + id)
+	m := takenID.FindStringSubmatch(ke.Message)
+	if m == nil {
+		return -1
 	}
-	return cards, nil
+	i, err := strconv.Atoi(m[1])
+	if err != nil {
+		return -1
+	}
+	return i
+}
+
+// underAgent puts card's id under agent's own name ("refunds-s7zax3qf-reads"
+// for "reads") and says what it was, unless it is there already: then there
+// is nothing to rename, and KIFF's refusal goes to the model.
+func underAgent(agent string, card map[string]json.RawMessage) (string, bool) {
+	var id string
+	if json.Unmarshal(card["id"], &id) != nil || id == "" || id == agent || strings.HasPrefix(id, agent+"-") {
+		return "", false
+	}
+	card["id"], _ = json.Marshal(agent + "-" + id)
+	return id, true
 }
 
 // Call submits the draft. What KIFF refuses comes back as a result the
@@ -137,19 +153,38 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	if in.AgentID == "" || len(in.Cards) == 0 || in.Cards[0] != '[' {
 		return tool.Result{Text: "submit needs agent_id and cards (an array)", IsError: true}, nil
 	}
-	cards, err := ownCardIDs(in.AgentID, in.Cards)
-	if err != nil {
+	var cards []map[string]json.RawMessage
+	if err := json.Unmarshal(in.Cards, &cards); err != nil {
 		return tool.Result{Text: "cards is an array of Cards, each an object with its id", IsError: true}, nil
 	}
-	body, _ := json.Marshal(map[string]any{"agent_id": in.AgentID, "label": in.Label, "cards": cards})
-	d, err := t.svc.Submit(ctx, t.tenant, t.key, body)
-	var ke *kiffapi.Error
-	if errors.As(err, &ke) {
-		return tool.Result{Text: ke.Error(), IsError: true}, nil
+	// Each id goes as the model named it, so a Card the agent holds is
+	// revised. An account keeps the Cards of tafs made before (an Eval's
+	// earlier runs), and KIFF refuses a draft naming one (409), which cost the
+	// setup a turn each time (Eval 42206117004): the Card KIFF names goes
+	// again under the agent's own name, once each, never a Card it accepted.
+	var renamed []string
+	for {
+		body, _ := json.Marshal(map[string]any{"agent_id": in.AgentID, "label": in.Label, "cards": cards})
+		d, err := t.svc.Submit(ctx, t.tenant, t.key, body)
+		if i := refusedCard(err); i >= 0 && i < len(cards) {
+			if was, ok := underAgent(in.AgentID, cards[i]); ok {
+				renamed = append(renamed, strconv.Quote(was))
+				continue
+			}
+		}
+		var ke *kiffapi.Error
+		if errors.As(err, &ke) {
+			return tool.Result{Text: ke.Error(), IsError: true}, nil
+		}
+		if err != nil {
+			return tool.Result{}, err
+		}
+		b, _ := json.Marshal(d)
+		text := string(b)
+		if len(renamed) > 0 {
+			text += fmt.Sprintf("\nKIFF has a Card with the id %s that this agent doesn't hold alone and in force, so the draft names it under the agent's name (%s-…): "+
+				"a new Card, not a revision of that one.", strings.Join(renamed, ", "), in.AgentID)
+		}
+		return tool.Result{Text: text}, nil
 	}
-	if err != nil {
-		return tool.Result{}, err
-	}
-	b, _ := json.Marshal(d)
-	return tool.Result{Text: string(b)}, nil
 }
