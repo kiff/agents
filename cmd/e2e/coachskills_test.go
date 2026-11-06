@@ -281,6 +281,17 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Tu cuenta está en modo real, ¿o prefieres prueba?",
 		"Stripe is in test mode. Shall we go on?",
 		"Since your Stripe is live, which mode do you want?",
+		// A question that presupposes the account's or the vendor's mode (qa-kiff and agentgabo on #340).
+		"Did you know your Stripe is in live mode?",
+		"Do you want to keep your Stripe in live mode?",
+		"¿Sabías que tu Stripe está en modo real?",
+		"¿Quieres mantener tu cuenta en modo real?",
+		"Is it OK that your account is in live mode?",
+		"Should I leave Stripe in live mode, since it already is?",
+		"¿Sabías que tu cuenta está en modo real?",
+		"Did you know your Stripe is live?",
+		"Your account is live so which mode?",
+		"Your Stripe is in live mode?",
 		// A "no" that doesn't deny the money.
 		"No te preocupes, esto mueve dinero real.",
 	} {
@@ -322,6 +333,10 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Shall we start in test mode?",
 		"Should every call be pinned to test, or to live?",
 		"¿Real o prueba?",
+		// The vendor or the account with both modes offered, or the vendor as where the calls go, still asks.
+		"¿Tu cuenta, modo de prueba o real?",
+		"¿Fijo cada llamada a tu Stripe en modo de prueba?",
+		"Should every call to your Stripe be pinned to test mode?",
 		// The prescribed second sentence, with "mode" in its next step (Eval 42125870057).
 		"Cada llamada va fijada en modo de prueba, como elegiste. Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a modo real.",
 		calls + " Whether the account itself is test or live, check it before going to live mode.",

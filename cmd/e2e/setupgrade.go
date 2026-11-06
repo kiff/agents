@@ -694,6 +694,14 @@ func asStated(sentence string) string {
 	// that doesn't open with a question word states its first clause ("Your Stripe is
 	// live, right?", "Since your Stripe is live, which mode?") (qa-kiff on Eval 42132590612).
 	t := strings.TrimSpace(sentence)
+	// A question that names the vendor or the account with a mode still says what it's in
+	// ("Did you know your Stripe is in live mode?", "¿Quieres mantener tu cuenta en modo
+	// real?"), unless the vendor is only where the calls go ("¿Fijo cada llamada a tu Stripe
+	// en modo de prueba?"). Both modes offered were taken out above (qa-kiff on #340).
+	if q := strings.Contains(t, "¿") || strings.HasSuffix(t, "?"); q && modeWord.MatchString(t) &&
+		(vendorWord.MatchString(callsAt.ReplaceAllString(t, "")) || accountWord.MatchString(t)) {
+		return strings.Trim(t, "¿?")
+	}
 	if i := strings.Index(t, "¿"); i >= 0 {
 		if strings.Trim(t[:i], " ,;:") == "" {
 			return ""
@@ -722,6 +730,10 @@ func asStated(sentence string) string {
 	}
 	return sentence[:loc[0]]
 }
+
+// callsAt is the vendor named as where the calls go ("every call to your Stripe",
+// "cada llamada a tu Stripe", "las llamadas de Stripe"), which says nothing of its mode.
+var callsAt = regexp.MustCompile(`(?i)\b(?:calls?|llamadas?)\s+(?:to|on|for|a|de|en|para)\s+(?:(?:your|the|this|tu|su|la|esta)\s+)?(?:stripe|connection|conexi\x{f3}n)\b`)
 
 // askWord opens an English question that asks, from its first word: it states
 // nothing ("Shall we start in test mode?", "Which one, test or live?").
