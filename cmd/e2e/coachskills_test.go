@@ -340,6 +340,12 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		// The prescribed second sentence, with "mode" in its next step (Eval 42125870057).
 		"Cada llamada va fijada en modo de prueba, como elegiste. Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a modo real.",
 		calls + " Whether the account itself is test or live, check it before going to live mode.",
+		// "al", "set", "queda": the same sentence in the words Coach used (Eval 42136777522, qa-kiff).
+		"Cada llamada va fijada al modo de prueba, como elegiste. Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a real.",
+		"Every call is set to test mode, as you chose.",
+		"Every call is kept in test mode, as you chose.",
+		"Cada llamada queda en modo de prueba, como elegiste.",
+		"Cada llamada queda fijada al modo de prueba.",
 		// The active voice (agentgabo on #325).
 		"I pinned every call to test mode, as you chose.",
 		"Fijé cada llamada en modo de prueba, como elegiste.",

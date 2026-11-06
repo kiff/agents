@@ -511,3 +511,25 @@ func TestARunReadAgainCountsOnce(t *testing.T) {
 		t.Fatalf("messages %q, lines %q", tt.said.messages, tt.said.lines)
 	}
 }
+
+// The one short line Setup writes before it works reaches the chat as text when
+// a card or a pause comes before it writes again. It's what the line rule asks
+// for, so the concise judge never reads it as a message's opening (Eval
+// 42136777522, the desk). A short message that says something stays judged.
+func TestAProgressLineIsNoMessageForTheConciseJudge(t *testing.T) {
+	msgs := []string{
+		"I'm checking which tools your account already connects…",
+		"Miro las últimas ejecuciones de Reembolsos...",
+		"Falta que apruebes la conexión con tu proveedor de pagos.",
+		"Checking…\nThen I'll ask you two things.",
+		strings.Repeat("a long status that keeps going ", 4) + "…",
+	}
+	got := withoutProgressLines(msgs)
+	want := []string{msgs[2], msgs[3], msgs[4]}
+	if !slices.Equal(got, want) {
+		t.Fatalf("judged %q, want %q", got, want)
+	}
+	if len(withoutProgressLines(msgs[:2])) != 0 {
+		t.Fatal("two progress lines left something to judge")
+	}
+}

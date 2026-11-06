@@ -309,11 +309,19 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	add("in the owner's language", g)
 
 	// 2. Concise, as judged for what each message had to say. Its lines
-	// aren't messages: a message opens with the outcome, never with one.
-	if g, err = j.AskMajority(ctx, Concise, numbered(s.messages)); err != nil {
-		return nil, err
+	// aren't messages: a message opens with the outcome, never with one. Nor is
+	// the one short line Setup writes before it works, when a card or a pause
+	// came before it wrote again, so it reached the chat as text (Eval
+	// 42136777522: "I'm checking which tools your account already connects…",
+	// then a card): it's what the line rule asks for, never a message's opening.
+	if judged := withoutProgressLines(s.messages); len(judged) == 0 {
+		add("concise", eval.Grade{Pass: true})
+	} else {
+		if g, err = j.AskMajority(ctx, Concise, numbered(judged)); err != nil {
+			return nil, err
+		}
+		add("concise", g)
 	}
-	add("concise", g)
 	add("says what it's doing in one short line", shortLines(s.lines))
 
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in
@@ -617,11 +625,11 @@ func modeClaim(s said, m modes) string {
 // callsPinned is the prescribed sentence's fixed parts: the calls ("every
 // call", "every Stripe call", "cada llamada", "las llamadas"), then pinned
 // or fixed ("fijada"), then to test ("to test mode", "en modo de prueba").
-var callsPinned = regexp.MustCompile(`(?i)\b(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\b(?:pinned|fixed|fijad[ao]s?)\s+(?:to|in|on|at|en|a)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
+var callsPinned = regexp.MustCompile(`(?i)\b(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\b(?:pinned|fixed|set|kept|locked|fijad[ao]s?|quedan?)\s+(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
 
 // pinnedCallsActive is the same in the active voice: "I pinned every call to
 // test mode", "Fijé cada llamada en modo de prueba" (agentgabo on #325).
-var pinnedCallsActive = regexp.MustCompile(`(?i)\b(?:pinned|fixed|fij[ée]|fijamos|he fijado)\s+(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\s*\b(?:to|in|on|at|en|a)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
+var pinnedCallsActive = regexp.MustCompile(`(?i)\b(?:pinned|fixed|set|kept|locked|fij[ée]|fijamos|he fijado|dej[ée])\s+(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\s*\b(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
 
 // nextStep is what comes after, not what is ("until you switch it to live",
 // "hasta que elijas pasar a real"), and noMoney what a test call doesn't
@@ -793,6 +801,27 @@ func sentences(text string) []string {
 		}
 		if rest := strings.TrimSpace(line[start:]); rest != "" {
 			out = append(out, rest)
+		}
+	}
+	return out
+}
+
+// progressLine reports whether a message is the one short line Setup writes
+// about what it's doing now, as the core rule asks: one line, at most MaxLine
+// characters, ending in "…" (or "..."), as tafs cloud's live line shows it.
+func progressLine(m string) bool {
+	m = strings.TrimSpace(m)
+	return m != "" && !strings.Contains(m, "\n") && len([]rune(m)) <= MaxLine &&
+		(strings.HasSuffix(m, "…") || strings.HasSuffix(m, "..."))
+}
+
+// withoutProgressLines is messages without the progress lines among them: the
+// ones the concise judge reads.
+func withoutProgressLines(messages []string) []string {
+	var out []string
+	for _, m := range messages {
+		if !progressLine(m) {
+			out = append(out, m)
 		}
 	}
 	return out
