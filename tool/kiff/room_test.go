@@ -49,7 +49,8 @@ func TestCardRoomReadsWhatEachLimitHasLeft(t *testing.T) {
 	  {"id":"c-update","grants":[{"action":"update_dispute"}],"on_exceed":"owner","limits":[
 	    {"quantity":"sum(amount)","window":"calendar_day","limit":1000000,"remaining":1000,"forecast":{"resets_at":"2026-10-19T00:00:00Z"}}]},
 	  {"id":"c-reads","grants":[{"action":"list_disputes"},{"action":"retrieve_dispute"}],"limits":[
-	    {"quantity":"count","window":"calendar_day","limit":500,"remaining":378,"forecast":{}}]}]}`, false)
+	    {"quantity":"count","window":"calendar_day","limit":500,"remaining":378,"forecast":{}},
+	    {"quantity":"count","window":"rolling_7d","limit":1,"per":"dispute","status":"per_item"}]}]}`, false)
 	rooms, err := kiff.New(srv.URL, testKey, srv.Client()).CardRoom(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +61,7 @@ func TestCardRoomReadsWhatEachLimitHasLeft(t *testing.T) {
 		{Card: "c-reads", Action: "list_disputes", Quantity: "count", Window: "calendar_day", Limit: 500, Remaining: 378},
 		{Card: "c-reads", Action: "retrieve_dispute", Quantity: "count", Window: "calendar_day", Limit: 500, Remaining: 378},
 	}
+	// A total for each item apart has no room to read: it's left out, never read as none left.
 	if !reflect.DeepEqual(rooms, want) {
 		t.Fatalf("rooms %+v", rooms)
 	}

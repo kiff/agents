@@ -38,7 +38,10 @@ func (c *Client) CardRoom(ctx context.Context) ([]Room, error) {
 					Window    string `json:"window"`
 					Limit     int64  `json:"limit"`
 					Remaining int64  `json:"remaining"`
-					Forecast  struct {
+					// Status "per_item": a total for each item apart, with no single
+					// remaining; KIFF checks it on each call.
+					Status   string `json:"status"`
+					Forecast struct {
 						ResetsAt string `json:"resets_at"`
 					} `json:"forecast"`
 				} `json:"limits"`
@@ -54,6 +57,10 @@ func (c *Client) CardRoom(ctx context.Context) ([]Room, error) {
 	var out []Room
 	for _, card := range res.Structured.Cards {
 		for _, l := range card.Limits {
+			if l.Status == "per_item" {
+				// One total for each item apart: no room to read, never "none left".
+				continue
+			}
 			var resets time.Time
 			if l.Forecast.ResetsAt != "" {
 				t, err := time.Parse(time.RFC3339Nano, l.Forecast.ResetsAt)
