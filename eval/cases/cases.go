@@ -293,6 +293,12 @@ func (s Scenario) stops(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, 
 			return s.write(c) && s.touches(c, item) && !f.idReused(c) && !f.notMade(c)
 		})
 		if first < 0 {
+			// Left for after a pending hold, and said so: the taf's instructions put a write
+			// that may need the owner last, and a held call pauses its run (Eval 42141761407:
+			// "I'll make that call once the T-2004 hold is resolved"; agentgabo).
+			if item != s.Held && s.holdPending(f) && s.leftForHold(f.report, item) {
+				continue
+			}
 			why = append(why, fmt.Sprintf("never wrote %s, so never met KIFF's answer", item))
 			continue
 		}
@@ -311,6 +317,39 @@ func (s Scenario) stops(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, 
 		return eval.Grade{Why: strings.Join(why, "; ")}, nil
 	}
 	return eval.Grade{Pass: true}, nil
+}
+
+// holdPending reports whether KIFF held a write on the scenario's held item in
+// this run: a made call on it that came back as an error, the hold that pauses
+// the run.
+func (s Scenario) holdPending(f facts) bool {
+	if s.Held == "" {
+		return false
+	}
+	return slices.ContainsFunc(f.calls, func(c eval.ToolCallBody) bool {
+		r, ok := f.results[c.CallID]
+		return s.write(c) && s.touches(c, s.Held) && ok && r.IsError && !r.NotMade
+	})
+}
+
+// holdWords name a hold or the owner's approval, and waitWords that something
+// still waits on it, in English or Spanish: "approved" alone is a past
+// approval, not a wait (qa-kiff on #345).
+var holdWords = []string{"hold", "held", "approv", "pause", "retenid", "aprob", "pausa"}
+var waitWords = []string{"once", "after", "will", "wait", "pending", "until", "cuando", "espera", "pendiente", "después", "hasta"}
+
+// leftForHold reports whether the report's own line about item says it waits
+// for a hold or the owner's approval: the item named, a hold, and the wait.
+func (s Scenario) leftForHold(report, item string) bool {
+	has := func(l string, words []string) bool {
+		return slices.ContainsFunc(words, func(w string) bool { return strings.Contains(l, w) })
+	}
+	for _, line := range strings.FieldsFunc(report, func(r rune) bool { return r == '\n' }) {
+		if l := strings.ToLower(line); s.names(line, item) && has(l, holdWords) && has(l, waitWords) {
+			return true
+		}
+	}
+	return false
 }
 
 // notMade reports whether the agent turned c back unmade: nothing reached KIFF.
