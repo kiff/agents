@@ -474,12 +474,19 @@ type Turn struct {
 	Reply   model.Message `json:"reply"`
 	Results []model.Block `json:"results,omitempty"`
 	// Before is what the run did before the turn it paused in, since its
-	// input: its earlier turns and their results, thinking left out (see
-	// agent.Continue). Without them a continued run didn't know what it had
-	// already done: it looked a payment up, the refund was held and approved,
-	// and it then said it had refunded without looking (kiff/tafs, the 755
-	// device test). Empty for a run that paused in its first turn.
+	// input: its earlier turns and their results, their thinking as it was
+	// sent (see agent.Continue). Without them a continued run didn't know
+	// what it had already done: it looked a payment up, the refund was held
+	// and approved, and it then said it had refunded without looking
+	// (kiff/tafs, the 755 device test). Empty for a run that paused in its
+	// first turn.
 	Before []model.Message `json:"before,omitempty"`
+	// Preface is what the run's input was first sent with (agent.Preface):
+	// a continuation sends it as it was, so the conversation's start still
+	// reads from the cache, and says what changed since after its results.
+	// Kept with the turn, and gone with it once the run ends. Empty for a
+	// turn stored before it was kept: that continuation makes its own.
+	Preface []model.Block `json:"preface,omitempty"`
 }
 
 // NewID returns a new run ID.

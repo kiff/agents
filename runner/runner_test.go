@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -616,7 +617,8 @@ func texts(msgs []model.Message) []string {
 	var out []string
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
-			if b.Kind == model.Text && !strings.HasPrefix(b.Text, "Today is ") {
+			// The runner's own lines, the date and what changed since a pause, aren't the conversation.
+			if b.Kind == model.Text && !strings.HasPrefix(b.Text, "Today is ") && !strings.HasPrefix(b.Text, runner.SinceNote) {
 				out = append(out, string(m.Role)+": "+b.Text)
 			}
 		}
@@ -719,6 +721,47 @@ func TestAPausedRunContinues(t *testing.T) {
 	s, _, _ := f.store.Read(ctx, "t1", r.Session)
 	if st := f.state(r); !st.Ended || len(s.Held) != 0 {
 		t.Fatalf("recording %+v, session %+v: want ended and no longer held", st, s)
+	}
+}
+
+// A continued run sends the preface its run first sent, its date as of then,
+// and what changed since after the held calls' results: everything it sent
+// before them is byte for byte what the run's last request before the pause
+// sent, so the cache holds. Before, it rebuilt the preface, and a new minute
+// or a state note that appeared changed the conversation's first message:
+// nothing after it read from the cache (the Eval after kiff/agents#359,
+// turn 8: 0% of 26.8k tokens).
+func TestAContinuedRunSendsItsFirstPrefaceAndThenWhatChanged(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Waiting for approval."))
+	r := f.start(server.Start{Input: "refund order 42"})
+	first := runner.Today(f.clock.now())
+	if paused := f.pause(r); paused.Paused == nil || !slices.ContainsFunc(paused.Paused.Preface, func(b model.Block) bool { return b.Text == first }) {
+		t.Fatalf("the paused turn kept %+v", paused.Paused)
+	}
+	f.clock.add(3 * time.Minute)
+	now := runner.Today(f.clock.now())
+	if now == first {
+		t.Fatal("the clock didn't move to another minute")
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded", State: "allowed"}}}, nil
+	}
+	f.model.add(say("Refunded order 42."))
+	if got, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil || got.Status != run.Completed {
+		t.Fatalf("continued: %+v, %v", got, err)
+	}
+	reqs := f.model.requests()
+	last, cont := reqs[len(reqs)-2].Messages, reqs[len(reqs)-1].Messages
+	n := len(last) - 1 // up to the results: the continuation's news
+	was, _ := json.Marshal(last[:n])
+	sent, _ := json.Marshal(cont[:n])
+	if len(cont) != len(last) || !bytes.Equal(was, sent) {
+		t.Fatalf("the continuation changed what was sent:\nwas  %s\nsent %s", was, sent)
+	}
+	results := cont[n].Blocks
+	if tail := results[len(results)-1].Text; tail != runner.SinceNote+"\n\n"+now {
+		t.Fatalf("after the results: %q, want the date now under %q", tail, runner.SinceNote)
 	}
 }
 

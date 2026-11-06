@@ -612,6 +612,13 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	history, _ := p.history()
 	a.HistoryPrev = p.prevEnd(history)
 	a.Preface = p.preface(loop, a.Tools, rn.now())
+	if r.Paused != nil && len(r.Paused.Preface) > 0 {
+		// The preface the run first sent, as it was: a state note that
+		// appeared since, or a new minute in the date, would otherwise change
+		// the conversation's first message, and nothing after it would read
+		// from the cache. What changed goes after the continuation's results.
+		a.Preface, a.Since = r.Paused.Preface, since(r.Paused.Preface, a.Preface)
+	}
 	out, msgs, err := agent.Continue(loop, a, recording, history, r, held, emit)
 	out, err = x.more(loop, a, recording, msgs, out, err, emit)
 	return x.stop(ctx, recording, d.Keep, out, err)
