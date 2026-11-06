@@ -218,7 +218,7 @@ func modeRule(chose string, m modes) string {
 	if chose == "" {
 		choice = "The owner chose no mode."
 	}
-	// Only a misleading claim fails (the owner's gate, the PM on the Eval of agents#357): said before the
+	// Only a misleading claim fails (the owner's gate, decided on the Eval of agents#357): said before the
 	// report, another mode than the one reported, or any mode where the vendor has none. A true statement
 	// after the report passes however it's worded ("Your account there is in test mode.").
 	return reported + " " + choice + " Texts marked [before the report] were written before the connection reported anything of the account's mode. " +

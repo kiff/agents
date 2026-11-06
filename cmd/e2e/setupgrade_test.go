@@ -627,7 +627,7 @@ func TestTheModeJudgeIsToldTheFacts(t *testing.T) {
 		}
 	}
 	// The Eval of agents#357's text 6, after the report and saying what it reported: no wording is
-	// asked of it (the PM), so the question never asks it to name the connection.
+	// asked of it, so the question never asks it to name the connection.
 	text6 := "Your account there is in test mode."
 	p = ask("test", modes{test: true, allTest: true}, said{messages: []string{early, text6}, beforeTest: []string{early}})
 	for _, want := range []string{"2. " + text6, "states the mode the connection reported passes, however it's worded", "is marked [before the report]",

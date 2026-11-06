@@ -14,7 +14,7 @@ func closing(name string) string { return "</" + prefix + name + ">" }
 
 // A tag of the model's own format leaked into a reply's text never reaches the
 // owner: "antml:final_answer_dialog Falta que apruebes…" did in Eval
-// 42141761407 (the PM, qa-kiff). Whole, bracketed or bare, with emphasis or not;
+// 42141761407. Whole, bracketed or bare, with emphasis or not;
 // anything else is left as it is.
 func TestALeakedTagIsStripped(t *testing.T) {
 	for in, want := range map[string]string{
