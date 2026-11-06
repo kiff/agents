@@ -626,6 +626,19 @@ func TestTheModeJudgeIsToldTheFacts(t *testing.T) {
 			t.Errorf("the question lacks %q:\n%s", want, p)
 		}
 	}
+	// The Eval of agents#357's text 6, after the report and saying what it reported: no wording is
+	// asked of it (the PM), so the question never asks it to name the connection.
+	text6 := "Your account there is in test mode."
+	p = ask("test", modes{test: true, allTest: true}, said{messages: []string{early, text6}, beforeTest: []string{early}})
+	for _, want := range []string{"2. " + text6, "states the mode the connection reported passes, however it's worded", "is marked [before the report]",
+		"states another mode than the one the connection reported"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the question lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "[before the report] "+text6) || strings.Contains(p, "unless it says what the connection reported") {
+		t.Errorf("the question still asks for the report's words, or marks text 6:\n%s", p)
+	}
 	p = ask("", modes{none: true}, said{messages: []string{"The desk runs in live mode."}})
 	for _, want := range []string{"The vendor has no test or live mode at all", "The owner chose no mode."} {
 		if !strings.Contains(p, want) {
