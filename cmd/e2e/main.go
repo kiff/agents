@@ -305,7 +305,7 @@ type test struct {
 	sent  []time.Time
 	// taken is, by run, how many of its messages and lines are in said: a
 	// run read again counts only what's new (take).
-	taken map[string][2]int
+	taken map[string][3]int
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
 	// result is Setup's result that waits for what came of the hand-over:
@@ -877,11 +877,11 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			t.logf("agent: %s", oneLine(text))
 		}
 		if t.cfg.judge != nil {
-			msgs, lines, err := t.messagesOf(ctx, ch.Session, r.ID)
+			msgs, lines, intros, err := t.messagesOf(ctx, ch.Session, r.ID)
 			if err != nil {
 				return "", "", err
 			}
-			t.take(r.ID, msgs, lines)
+			t.take(r.ID, msgs, lines, intros)
 			if err := t.noteTestReport(ctx, ch.Session, r.ID); err != nil {
 				return "", "", err
 			}
@@ -1080,26 +1080,27 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 
 // messagesOf is what the agent wrote in one run, in order, as -grade reads
 // it (latest keeps only the last message): its messages, and its lines.
-func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (messages, lines []string, err error) {
+func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (messages, lines, intros []string, err error) {
 	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	messages, lines = splitLines(events, runID)
-	return messages, lines, nil
+	messages, lines, intros = splitLines(events, runID)
+	return messages, lines, intros, nil
 }
 
 // take adds what a run wrote to what Setup said, once: a run read again after
 // it went on (a held call answered, a card's answer) has its earlier messages
 // and lines again, first and in the same order, and only the new ones count.
-func (t *test) take(runID string, messages, lines []string) {
+func (t *test) take(runID string, messages, lines, intros []string) {
 	if t.taken == nil {
-		t.taken = map[string][2]int{}
+		t.taken = map[string][3]int{}
 	}
 	had := t.taken[runID]
 	t.said.messages = append(t.said.messages, messages[min(had[0], len(messages)):]...)
 	t.said.lines = append(t.said.lines, lines[min(had[1], len(lines)):]...)
-	t.taken[runID] = [2]int{max(had[0], len(messages)), max(had[1], len(lines))}
+	t.said.intros = append(t.said.intros, intros[min(had[2], len(intros)):]...)
+	t.taken[runID] = [3]int{max(had[0], len(messages)), max(had[1], len(lines)), max(had[2], len(intros))}
 }
 
 // splitLines parts what an agent wrote in one run into its messages and its
@@ -1111,7 +1112,13 @@ func (t *test) take(runID string, messages, lines []string) {
 // que apruebes la conexión…", then the call the run waits on) is the run's
 // message, as tafs cloud shows it. The agent records a turn's text before its
 // calls, and marks the first turn after a pause (TurnTiming.Resumed).
-func splitLines(events []session.Event, runID string) (messages, lines []string) {
+//
+// intros are those messages that are one short line: the line Setup writes
+// before it works, which reached the chat as text only because a card, a pause
+// or the end came before the run wrote again. They are the line rule's, never a
+// message's opening for the concise judge, however they end (Eval 42141761407:
+// "I'm checking which apps your account already connects.", qa-kiff).
+func splitLines(events []session.Event, runID string) (messages, lines, intros []string) {
 	pending := ""       // the latest text, nothing after it yet
 	var called []string // texts calls followed, the run not having written since
 	for _, e := range events {
@@ -1137,7 +1144,7 @@ func splitLines(events []session.Event, runID string) (messages, lines []string)
 			pending = ""
 		case session.Component:
 			// A card shown before the run writes again: what its calls followed introduced it.
-			messages = append(messages, called...)
+			messages, intros = append(messages, called...), append(intros, oneLiners(called)...)
 			called = nil
 		case session.Usage:
 			// The first turn after a pause: the run waited on the owner after them, so they were its messages.
@@ -1145,16 +1152,29 @@ func splitLines(events []session.Event, runID string) (messages, lines []string)
 				Timing *session.TurnTiming `json:"timing"`
 			}
 			if json.Unmarshal(e.Body, &b) == nil && b.Timing != nil && b.Timing.Resumed {
-				messages = append(messages, called...)
+				messages, intros = append(messages, called...), append(intros, oneLiners(called)...)
 				called = nil
 			}
 		}
 	}
 	messages = append(messages, called...) // nothing written after them: the run's messages
+	intros = append(intros, oneLiners(called)...)
 	if strings.TrimSpace(pending) != "" {
 		messages = append(messages, pending)
 	}
-	return messages, lines
+	return messages, lines, intros
+}
+
+// oneLiners are the texts among texts that are one short line: one line, at most
+// MaxLine characters, however they end.
+func oneLiners(texts []string) []string {
+	var out []string
+	for _, x := range texts {
+		if t := strings.TrimSpace(x); t != "" && !strings.Contains(t, "\n") && len([]rune(t)) <= MaxLine {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // refusedReadsOf are the tools planque refused, in a run of the setup agent,
@@ -2184,11 +2204,11 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 		t.logf("agent: %s", oneLine(text))
 	}
 	if t.cfg.judge != nil {
-		msgs, lines, err := t.messagesOf(ctx, w.session, w.run)
+		msgs, lines, intros, err := t.messagesOf(ctx, w.session, w.run)
 		if err != nil {
 			return err
 		}
-		t.take(w.run, msgs, lines)
+		t.take(w.run, msgs, lines, intros)
 	}
 	return nil
 }

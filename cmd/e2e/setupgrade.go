@@ -97,9 +97,14 @@ type said struct {
 	// words (language, ids, planque, a mode), never as messages: the owner
 	// sees them on the live line.
 	lines []string
-	cards map[string]component // by id, its latest version
-	order []string             // card ids, as first shown
-	plans map[string][]string  // a steps card's labels, as first shown, by id
+	// intros are the messages that are the line Setup writes before it works:
+	// one short line its tool calls followed, which reached the chat as text only
+	// because a card, a pause or the end came next (splitLines). Never given to
+	// the concise judge as a message's opening.
+	intros []string
+	cards  map[string]component // by id, its latest version
+	order  []string             // card ids, as first shown
+	plans  map[string][]string  // a steps card's labels, as first shown, by id
 	// writesAsReads are tools Setup asked planque for as read-only that the
 	// vendor doesn't mark so, which planque refused (kiff/agents#139).
 	writesAsReads []string
@@ -314,7 +319,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	// came before it wrote again, so it reached the chat as text (Eval
 	// 42136777522: "I'm checking which tools your account already connects…",
 	// then a card): it's what the line rule asks for, never a message's opening.
-	if judged := withoutProgressLines(s.messages); len(judged) == 0 {
+	if judged := withoutIntros(s.messages, s.intros); len(judged) == 0 {
 		add("concise", eval.Grade{Pass: true})
 	} else {
 		if g, err = j.AskMajority(ctx, Concise, numbered(judged)); err != nil {
@@ -806,23 +811,21 @@ func sentences(text string) []string {
 	return out
 }
 
-// progressLine reports whether a message is the one short line Setup writes
-// about what it's doing now, as the core rule asks: one line, at most MaxLine
-// characters, ending in "…" (or "..."), as tafs cloud's live line shows it.
-func progressLine(m string) bool {
-	m = strings.TrimSpace(m)
-	return m != "" && !strings.Contains(m, "\n") && len([]rune(m)) <= MaxLine &&
-		(strings.HasSuffix(m, "…") || strings.HasSuffix(m, "..."))
-}
-
-// withoutProgressLines is messages without the progress lines among them: the
-// ones the concise judge reads.
-func withoutProgressLines(messages []string) []string {
+// withoutIntros is messages without the intros among them, each taken out
+// once: the ones the concise judge reads. Where a line sits decides it, never
+// how it ends (qa-kiff on Eval 42141761407).
+func withoutIntros(messages, intros []string) []string {
+	left := map[string]int{}
+	for _, i := range intros {
+		left[i]++
+	}
 	var out []string
 	for _, m := range messages {
-		if !progressLine(m) {
-			out = append(out, m)
+		if left[m] > 0 {
+			left[m]--
+			continue
 		}
+		out = append(out, m)
 	}
 	return out
 }

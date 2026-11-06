@@ -431,7 +431,7 @@ func TestPreToolTextIsALine(t *testing.T) {
 		ev("r2", session.AgentMessage, map[string]string{"text": "Another run's."}), call,
 		text("Reembolsos está lista. Falta que apruebes la conexión."),
 	}
-	messages, lines := splitLines(events, "r1")
+	messages, lines, _ := splitLines(events, "r1")
 	if !slices.Equal(messages, []string{"Reembolsos está lista. Falta que apruebes la conexión."}) ||
 		!slices.Equal(lines, []string{"Miro las últimas ejecuciones de Reembolsos…"}) {
 		t.Fatalf("messages %q, lines %q", messages, lines)
@@ -449,11 +449,11 @@ func TestATextTheRunWaitsOnIsAMessage(t *testing.T) {
 	}
 	text := func(s string) session.Event { return ev(session.AgentMessage, map[string]string{"text": s}) }
 	show := ev(session.ToolCall, map[string]string{"call_id": "c1", "tool": "show"})
-	messages, lines := splitLines([]session.Event{text("Falta que apruebes la conexión con tu proveedor de pagos."), show}, "r1")
+	messages, lines, _ := splitLines([]session.Event{text("Falta que apruebes la conexión con tu proveedor de pagos."), show}, "r1")
 	if !slices.Equal(messages, []string{"Falta que apruebes la conexión con tu proveedor de pagos."}) || lines != nil {
 		t.Fatalf("waited on: messages %q, lines %q", messages, lines)
 	}
-	messages, lines = splitLines([]session.Event{
+	messages, lines, _ = splitLines([]session.Event{
 		text("Miro la cuenta…"), show, ev(session.ToolResult, map[string]string{"call_id": "c1"}),
 		text("Reviso los límites…"), show, ev(session.Component, map[string]string{"type": "steps"}),
 		text("Falta que apruebes la conexión."), show,
@@ -463,7 +463,7 @@ func TestATextTheRunWaitsOnIsAMessage(t *testing.T) {
 	}
 	// The run waits on the owner, then goes on and writes again: the text it waited on stays its message.
 	resumed := ev(session.Usage, map[string]any{"timing": map[string]any{"ms": 900, "resumed": true}})
-	messages, lines = splitLines([]session.Event{
+	messages, lines, _ = splitLines([]session.Event{
 		text("Falta que lo apruebes."), ev(session.ToolCall, map[string]string{"call_id": "c2", "tool": "planque"}),
 		resumed, text("Conectado. Ya puede reembolsar."),
 	}, "r1")
@@ -503,33 +503,51 @@ func TestLinesAreReadButNotJudgedAsMessages(t *testing.T) {
 // confirming Eval listed "Falta que apruebes la conexión…" four times.
 func TestARunReadAgainCountsOnce(t *testing.T) {
 	tt := &test{}
-	tt.take("r1", []string{"Falta que apruebes la conexión."}, []string{"Miro la cuenta…"})
-	tt.take("r1", []string{"Falta que apruebes la conexión.", "Conectado."}, []string{"Miro la cuenta…"})
-	tt.take("r2", []string{"Falta que apruebes la conexión."}, nil)
+	tt.take("r1", []string{"Falta que apruebes la conexión."}, []string{"Miro la cuenta…"}, []string{"Falta que apruebes la conexión."})
+	tt.take("r1", []string{"Falta que apruebes la conexión.", "Conectado."}, []string{"Miro la cuenta…"}, []string{"Falta que apruebes la conexión."})
+	tt.take("r2", []string{"Falta que apruebes la conexión."}, nil, nil)
 	if !slices.Equal(tt.said.messages, []string{"Falta que apruebes la conexión.", "Conectado.", "Falta que apruebes la conexión."}) ||
-		!slices.Equal(tt.said.lines, []string{"Miro la cuenta…"}) {
-		t.Fatalf("messages %q, lines %q", tt.said.messages, tt.said.lines)
+		!slices.Equal(tt.said.lines, []string{"Miro la cuenta…"}) || !slices.Equal(tt.said.intros, []string{"Falta que apruebes la conexión."}) {
+		t.Fatalf("messages %q, lines %q, intros %q", tt.said.messages, tt.said.lines, tt.said.intros)
 	}
 }
 
 // The one short line Setup writes before it works reaches the chat as text when
-// a card or a pause comes before it writes again. It's what the line rule asks
-// for, so the concise judge never reads it as a message's opening (Eval
-// 42136777522, the desk). A short message that says something stays judged.
+// a card, a pause or the end comes before it writes again. Where it sits decides
+// it, however it ends, so the concise judge never reads it as a message's
+// opening (Eval 42136777522's "…" and Eval 42141761407's ".", the desk; qa-kiff).
+// A short message that ends a turn with no call after it stays judged.
 func TestAProgressLineIsNoMessageForTheConciseJudge(t *testing.T) {
-	msgs := []string{
-		"I'm checking which tools your account already connects…",
-		"Miro las últimas ejecuciones de Reembolsos...",
-		"Falta que apruebes la conexión con tu proveedor de pagos.",
-		"Checking…\nThen I'll ask you two things.",
-		strings.Repeat("a long status that keeps going ", 4) + "…",
+	ev := func(kind session.EventKind, body any) session.Event {
+		b, _ := json.Marshal(body)
+		return session.Event{Run: "r1", Kind: kind, Body: b}
 	}
-	got := withoutProgressLines(msgs)
-	want := []string{msgs[2], msgs[3], msgs[4]}
-	if !slices.Equal(got, want) {
-		t.Fatalf("judged %q, want %q", got, want)
+	text := func(s string) session.Event { return ev(session.AgentMessage, map[string]string{"text": s}) }
+	call := ev(session.ToolCall, map[string]string{"call_id": "c1", "tool": "planque"})
+	result := ev(session.ToolResult, map[string]string{"call_id": "c1"})
+	card := ev(session.Component, map[string]string{"type": "questions"})
+	for _, line := range []string{
+		"I'm checking which apps your account already connects.",  // Eval 42141761407, the desk
+		"I'm checking which tools your account already connects…", // Eval 42136777522, the desk
+		"Miro qué apps conecta ya tu cuenta",                      // no closing mark at all
+	} {
+		messages, _, intros := splitLines([]session.Event{text(line), call, result, card}, "r1")
+		if !slices.Equal(messages, []string{line}) || !slices.Equal(intros, []string{line}) {
+			t.Fatalf("%q: messages %q, intros %q", line, messages, intros)
+		}
+		if judged := withoutIntros(messages, intros); len(judged) != 0 {
+			t.Fatalf("%q reached the concise judge", line)
+		}
 	}
-	if len(withoutProgressLines(msgs[:2])) != 0 {
-		t.Fatal("two progress lines left something to judge")
+	// A short closing message, with no call after it, is judged; so is a long text before a card.
+	closing := "Listo. Reembolsos está activo."
+	long := "Revisé tus cuentas, los cobros de la última semana, las reglas de reembolso y lo que ya conecta tu cuenta."
+	messages, _, intros := splitLines([]session.Event{text(long), call, result, card, text(closing)}, "r1")
+	if judged := withoutIntros(messages, intros); !slices.Equal(judged, []string{long, closing}) {
+		t.Fatalf("judged %q (messages %q, intros %q)", judged, messages, intros)
+	}
+	// An intro is taken out once: the same words said again as a message are judged.
+	if judged := withoutIntros([]string{"Miro la cuenta.", "Miro la cuenta."}, []string{"Miro la cuenta."}); len(judged) != 1 {
+		t.Fatalf("judged %q", judged)
 	}
 }
