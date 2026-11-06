@@ -726,3 +726,42 @@ func TestStateReadsTheGrantsAtOnce(t *testing.T) {
 		}
 	}
 }
+
+// The taf's name goes to planque as agent_name, on one line, for the words
+// the owner reads ("Connect Stripe for Overdue invoice reminders"), on every
+// kind of request; without one, the request is as before (kiff/tafs#476).
+func TestARequestNamesTheTaf(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"grant":{"id":"grt_9","status":"pending","text":"Connect…","request":{}},"id":"grt_9","status":"pending","text":"Connect…","request":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	for _, in := range []string{
+		`{"action":"request","server":"https://mcp.stripe.com","name":"reminders","taf_name":" Overdue invoice\nreminders "}`,
+		`{"action":"request","entry":"connector:composio:agentmail","agent":"reminders-5mgnsmce","taf_name":"Overdue invoice reminders"}`,
+		`{"action":"request","api":{"url":"https://x.example/openapi.json","base":"https://x.example","auth":{"in":"header","name":"X-Key"}},"name":"reminders","taf_name":"Overdue invoice reminders"}`,
+	} {
+		if text, isErr := call(t, tl, in); isErr {
+			t.Fatalf("%s: %s", in, text)
+		}
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("sent %d requests", len(bodies))
+	}
+	for _, b := range bodies {
+		if b["agent_name"] != "Overdue invoice reminders" {
+			t.Fatalf("sent %v", b)
+		}
+	}
+	if _, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","name":"reminders"}`); isErr {
+		t.Fatal("a request without a name")
+	}
+	if _, ok := bodies[3]["agent_name"]; ok {
+		t.Fatalf("a request without a name sent one: %v", bodies[3])
+	}
+}
