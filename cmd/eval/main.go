@@ -507,6 +507,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	fs.SetOutput(stderr)
 	idsPath := fs.String("ids", "", "the seed's Stripe ids by item reference (JSON)")
 	basePath := fs.String("baseline", "", "results to compare against (JSON); a lower score fails")
+	gate := fs.Bool("gate", false, "fail when a gate check fails in any run, whatever the score: the Eval's gate for the Upgrade. Advisory checks never fail it")
 	outPath := fs.String("out", "", "also write the results here (JSON)")
 	judgeModel := fs.String("judge-model", "", "the judge's model id; without it, judged checks are skipped")
 	judgePrice := fs.String("judge-price", "", "the judge's input,output price in millionths of a dollar per million tokens")
@@ -731,7 +732,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	if len(lower) > 0 {
 		return fmt.Errorf("lower than the baseline: %s", strings.Join(lower, "; "))
 	}
+	// With -gate, every gate check holds in every run: a result is a fact, so
+	// one run that got it wrong is enough. Advisory checks never fail it.
+	if *gate {
+		if failed := gateFailures(results); len(failed) > 0 {
+			return fmt.Errorf("a gate check failed: %s", strings.Join(failed, "; "))
+		}
+	}
 	return nil
+}
+
+// gateFailures names each gate check that failed, by case and run.
+func gateFailures(results []eval.Result) []string {
+	var out []string
+	runs := map[string]int{}
+	for _, r := range results {
+		runs[r.Case]++
+		for _, name := range r.Failed() {
+			out = append(out, fmt.Sprintf("%s run %d: %s", r.Case, runs[r.Case], name))
+		}
+	}
+	return out
 }
 
 // printResult says how one run graded. A public log (-public) shows no
@@ -757,6 +778,8 @@ func printResult(stderr io.Writer, res eval.Result, public bool) {
 		switch {
 		case c.Skipped:
 			mark = "skip"
+		case !c.Pass && c.Advisory:
+			mark = "advice" // words or tone: reported, never failing the run
 		case !c.Pass:
 			mark = "FAIL"
 		}

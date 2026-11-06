@@ -46,6 +46,27 @@ func TestGradeScoresGradedChecksAndCosts(t *testing.T) {
 	}
 }
 
+// An advisory check, words or tone, is listed and never counted: not in the
+// score, and not among the gate checks that failed (the owner, 6 Nov 2026).
+func TestAnAdvisoryCheckIsListedNotCounted(t *testing.T) {
+	advice := check("tone", eval.Grade{Why: "wordy"})
+	advice.Advisory = true
+	c := eval.Case{Name: "c", Checks: []eval.Check{check("result", eval.Grade{Pass: true}), advice, check("fact", eval.Grade{Why: "wrong"})}}
+	res, err := c.Grade(context.Background(), eval.Run{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Passed != 1 || res.Graded != 2 || res.Score != 0.5 {
+		t.Errorf("passed %d of %d, score %v; want 1 of 2: the advisory check isn't counted", res.Passed, res.Graded, res.Score)
+	}
+	if len(res.Checks) != 3 || !res.Checks[1].Advisory || res.Checks[1].Pass {
+		t.Errorf("checks %+v: want the advisory one listed, failed", res.Checks)
+	}
+	if f := res.Failed(); !slices.Equal(f, []string{"fact"}) {
+		t.Errorf("failed %v; want the gate check only", f)
+	}
+}
+
 func TestGradeStopsOnACheckError(t *testing.T) {
 	boom := errors.New("boom")
 	c := eval.Case{Name: "c", Checks: []eval.Check{{Name: "x", Grade: func(context.Context, eval.Run, *eval.Judge) (eval.Grade, error) {

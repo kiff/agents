@@ -95,9 +95,9 @@ func TestARegradeReadsWhatTheRunJudged(t *testing.T) {
 	var transcript, log strings.Builder
 	tt := &test{cfg: config{transcript: &transcript, log: &log}, out: &redacting{w: &log}}
 	long := strings.Repeat("palabra ", 60) + "fin."
-	tt.answered("Check charge ch_e2e_checked_x: can 700 cents of it be refunded? Don't refund it yet.", "Yes, €7 can be refunded.\nThe charge is €1,000.")
-	tt.answered("Refund it."+heldApproved, "You approved the €7 refund on that charge, and it went through once.")
-	tt.answered("How many days?", long)
+	tt.answered("chat", "run", "Check charge ch_e2e_checked_x: can 700 cents of it be refunded? Don't refund it yet.", "Yes, €7 can be refunded.\nThe charge is €1,000.")
+	tt.answered("chat", "run", "Refund it."+heldApproved, "You approved the €7 refund on that charge, and it went through once.")
+	tt.answered("chat", "run", "How many days?", long)
 	if err := tt.tafConcise(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -189,8 +189,8 @@ func TestTheTafsAnswersAreJudgedBesideTheOwnersMessages(t *testing.T) {
 	v := &verdicts{}
 	var log, transcript strings.Builder
 	tt := &test{cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{Model: v, ModelID: "judge"}}, out: &redacting{w: &log}}
-	tt.answered("Check charge ch_1, then refund 300 cents of it.", "I refunded €3 on the €1,000 charge, which had nothing refunded before.")
-	tt.answered("Refund it."+heldApproved, "You approved the €7 refund on that charge, and it went through once.")
+	tt.answered("chat", "run", "Check charge ch_1, then refund 300 cents of it.", "I refunded €3 on the €1,000 charge, which had nothing refunded before.")
+	tt.answered("chat", "run", "Refund it."+heldApproved, "You approved the €7 refund on that charge, and it went through once.")
 	if err := tt.tafConcise(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -263,5 +263,33 @@ func TestRegradeWithTheJudges(t *testing.T) {
 	t.Logf("%s:\n%s", filepath.Base(nightMsg8), out.String())
 	if r.afterApproval == nil || r.afterApproval.Pass {
 		t.Errorf("%s: \"The charge look-up isn't in this run's record.\" passed AfterApproval", nightMsg8)
+	}
+}
+
+// The taf's wording is advice (the owner, 6 Nov 2026): this morning's answers,
+// which failed the concise judge and with it Eval 42176052141, leave the run
+// going, with the advice in the log and its reason in the transcript only.
+// Advice written among the answers, after a hold the owner approved or
+// refused, doesn't end them for -regrade.
+func TestTheTafsWordingIsAdvice(t *testing.T) {
+	var log, transcript strings.Builder
+	v := &verdicts{fail: []string{TafConcise}}
+	tt := &test{cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{Model: v, ModelID: "judge"}}, out: &redacting{w: &log, ci: true}}
+	for _, l := range readTafLines(readFile(t, morning)) {
+		tt.answered("chat", "run", l.owner, l.said)
+	}
+	if err := tt.tafConcise(context.Background()); err != nil {
+		t.Fatalf("concise failed the run: %v", err)
+	}
+	if !strings.Contains(log.String(), "taf  advice: the answers aren't concise") || strings.Contains(log.String(), ": judged") ||
+		!strings.Contains(transcript.String(), "advice  taf not concise: judged") {
+		t.Fatalf("log %q\ntranscript %q", log.String(), transcript.String())
+	}
+	if n := len(readTafLines(transcript.String())); n != 9 {
+		t.Fatalf("read back %d answers, want 9", n)
+	}
+	mid := "owner: a → taf: b\nadvice  after approval: judged\nowner: c → taf: d\nadvice  after refusal: judged\nowner: e → taf: f\n" + tafAnswersEnd + "3 answers\n"
+	if n := len(readTafLines(mid)); n != 3 {
+		t.Fatalf("advice among the answers ended them at %d", n)
 	}
 }

@@ -124,7 +124,9 @@ func TestRunWithAJudge(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
 		t.Fatal(err)
 	}
-	if c := results[0].Checks[4]; !c.Pass || c.Skipped || results[0].JudgeMicroUSD != 5 {
+	// Two questions on the disclosure, whether it's there (a gate) and how it's
+	// phrased (advice), each by a majority of the judge's votes, at 5 a vote.
+	if c := results[0].Checks[4]; !c.Pass || c.Skipped || results[0].JudgeMicroUSD != 2*eval.Votes*5 {
 		t.Fatalf("disclosure %+v, judge cost %d", c, results[0].JudgeMicroUSD)
 	}
 }
@@ -882,5 +884,29 @@ func TestANightTheCardsCantFundStopsBeforeTheFirstSeed(t *testing.T) {
 	}
 	if f.seeds != 0 || len(m.asked) != 0 {
 		t.Fatalf("seeded %d times and asked the model %d times before stopping", f.seeds, len(m.asked))
+	}
+}
+
+// Every gate check holds in every run: one run's failed gate check fails the
+// command, named by case and run; an advisory one never does (the owner, 6 Nov
+// 2026: results gate, words don't).
+func TestAGateCheckFailsTheRunAndAdviceDoesnt(t *testing.T) {
+	ok := eval.Result{Case: "chargebacks", Checks: []eval.CheckResult{{Name: "does the job", Grade: eval.Grade{Pass: true}}, {Name: "phrases the disclosure as the job asks", Advisory: true}}}
+	bad := eval.Result{Case: "chargebacks", Checks: []eval.CheckResult{{Name: "stops on held and refused", Grade: eval.Grade{Why: "wrote T-2005 again"}}}}
+	if got := gateFailures([]eval.Result{ok, ok}); len(got) != 0 {
+		t.Fatalf("advice failed the run: %v", got)
+	}
+	if got := gateFailures([]eval.Result{ok, bad}); len(got) != 1 || got[0] != "chargebacks run 2: stops on held and refused" {
+		t.Fatalf("got %v", got)
+	}
+	// Only with -gate, as the Eval runs it: a run that did nothing fails "does the job".
+	withReader(t, fakeReader{"sesn_r": emptyRun("sesn_r")})
+	keys := env(map[string]string{"ANTHROPIC_API_KEY": "k"})
+	if err := run(context.Background(), []string{"refunds=sesn_r"}, io.Discard, io.Discard, keys); err != nil {
+		t.Fatalf("without -gate: %v", err)
+	}
+	err := run(context.Background(), []string{"-gate", "refunds=sesn_r"}, io.Discard, io.Discard, keys)
+	if err == nil || !strings.Contains(err.Error(), "a gate check failed: refunds run 1: does the job") {
+		t.Fatalf("with -gate: %v", err)
 	}
 }

@@ -73,47 +73,9 @@ func (t *test) hasIt(ctx context.Context, sessionID, want, what string) error {
 }
 
 // What Setup may say of a connection's mode depends on what the connection
-// reports (kiff/tafs#525's core rule). planque's fake vendor reports test (its
-// accounts read, a charge's livemode false), so saying test is what it reports,
-// and saying live or real money is a claim. The desk reports no mode at all,
-// so any mode said as fact is a claim.
-
-// statedModes and statedLive are the words that state a mode, and a live one.
-var statedModes = []string{"test mode", "modo de prueba", "no real money", "sin dinero real", "live mode", "modo real", "real money", "dinero real"}
-var statedLive = []string{"live mode", "modo real", "real money", "dinero real"}
-
-// negatedBefore ends what precedes a mode's words when they're denied: "no",
-// "sin" or "ni", or a "n't", up to two words before ("moves no real money",
-// "sin mover dinero real", "y no mueve dinero real", "doesn't move real money").
-var negatedBefore = regexp.MustCompile(`(?:\b(?:no|sin|ni)|n't)\s+(?:\pL+\s+){0,2}$`)
-
-// claimsMode is the first of Setup's texts that states a mode the connection
-// doesn't report, "" when none: with reportsTest, a live mode or real money
-// (not "no real money"); with none reported, any mode.
-func claimsMode(texts []string, reportsTest bool) string {
-	words := statedModes
-	if reportsTest {
-		words = statedLive
-	}
-	for _, t := range texts {
-		l := strings.ToLower(t)
-		for _, w := range words {
-			for i := strings.Index(l, w); i >= 0; {
-				before := l[:i]
-				negated := negatedBefore.MatchString(before)
-				if !negated || !reportsTest {
-					return t
-				}
-				next := strings.Index(l[i+len(w):], w)
-				if next < 0 {
-					break
-				}
-				i += len(w) + next
-			}
-		}
-	}
-	return ""
-}
+// reports (kiff/tafs#525's core rule): a judge decides it, told what the
+// connection reported (setupgrade.go, modeRule). planque's fake vendor reports
+// test (its accounts read, a charge's livemode false); the desk, no mode.
 
 // reportsTest is a tool result that says the account is in test mode: a
 // vendor object with livemode false, or an accounts read with mode test.
