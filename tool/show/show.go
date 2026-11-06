@@ -115,10 +115,12 @@ type Taf struct {
 	Kickoff      string `json:"kickoff,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 	Cron         string `json:"cron,omitempty"`
-	// Disclose names a new taf's tools that write to someone outside the
+	// Disclose names a taf's tools that write to someone outside the
 	// company, each with the free-text fields of its input (dotted paths):
 	// tafs puts them in the taf's definition, and the runtime ends each such
-	// call with its AI disclosure (agent.Disclosure, kiff/tafs#476).
+	// call with its AI disclosure (agent.Disclosure, kiff/tafs#476). An
+	// improvement's adds to the taf's: a tool named again is replaced, and
+	// none is ever taken away.
 	Disclose []Disclose `json:"disclose,omitempty"`
 }
 
@@ -287,7 +289,7 @@ func (Tool) Spec() model.ToolSpec {
 			`"kickoff":{"type":"string","description":"a new taf: what each run is asked to do, in one or two sentences, drafted with the owner"},` +
 			`"instructions":{"type":"string","description":"a new taf: how it works, from what was agreed with the owner, and its never rules"},` +
 			`"cron":{"type":"string","description":"a new taf with a schedule: when it runs, five POSIX cron fields in the account's time zone, such as 0 9 * * 1-5"},` +
-			`"disclose":{"type":"array","description":"a new taf: each of its tools that writes to someone outside the company (an email, a reply, evidence), by its name in KIFF, with its free-text fields' dotted paths: each such call then ends with its AI disclosure",` +
+			`"disclose":{"type":"array","description":"each of the taf's tools that writes to someone outside the company (an email, a reply, evidence), by its name in KIFF, with its free-text fields' dotted paths: each such call then ends with its AI disclosure; an improvement's adds to the taf's",` +
 			`"items":{"type":"object","properties":{"tool":{"type":"string"},"fields":{"type":"array","items":{"type":"string"}}},"required":["tool","fields"]}}},` +
 			`"required":["agent","name"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
@@ -538,8 +540,11 @@ func (c Component) check() error {
 			if c.Taf.Unscheduled {
 				return fmt.Errorf("taf.unscheduled is for a new taf: an improvement keeps its schedule")
 			}
-			if len(c.Taf.Disclose) > 0 {
-				return fmt.Errorf("taf.disclose is for a new taf: an improvement keeps the taf's")
+			// An improvement may add a disclosure, for a tool it adds or one a taf
+			// from before never had; tafs adds it to the taf's, never taking one
+			// away (agentgabo on #354).
+			if err := checkDisclose(c.Taf.Disclose); err != nil {
+				return err
 			}
 			if !refPattern.MatchString(c.Taf.Improves) {
 				return fmt.Errorf("taf.improves is the tafs id of the taf it improves")

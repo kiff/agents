@@ -214,10 +214,10 @@ func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
 		t.Fatalf("a result with its disclosure: %+v", ok)
 	}
 	for name, taf := range map[string]string{
-		"a tool with no name": `"disclose":[{"tool":"","fields":["text"]}]`,
-		"no field":            `"disclose":[{"tool":"send","fields":[]}]`,
-		"a path with a gap":   `"disclose":[{"tool":"send","fields":["a..b"]}]`,
-		"an improvement's":    `"improves":"taf-1","job":"refunds","note":"n","disclose":[{"tool":"send","fields":["text"]}]`,
+		"a tool with no name":               `"disclose":[{"tool":"","fields":["text"]}]`,
+		"no field":                          `"disclose":[{"tool":"send","fields":[]}]`,
+		"a path with a gap":                 `"disclose":[{"tool":"send","fields":["a..b"]}]`,
+		"an improvement's, without a field": `"improves":"taf-1","job":"refunds","note":"n","disclose":[{"tool":"send","fields":[]}]`,
 	} {
 		in := `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind.","cron":"0 9 * * 1-5",` + taf + `},"text":"t"}`
 		if strings.Contains(taf, "improves") {
@@ -226,5 +226,11 @@ func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
 		if r := call(t, in); !r.IsError || !strings.Contains(r.Text, "disclose") {
 			t.Errorf("%s: %+v", name, r)
 		}
+	}
+	// An improvement may add one: for a tool it adds, or a taf from before (agentgabo on #354).
+	more := call(t, `{"type":"result","id":"better","taf":{"agent":"invoices","name":"Invoices","improves":"taf-1","job":"custom","note":"Also replies",`+
+		`"disclose":[{"tool":"reply_k3f9","fields":["body"]}]},"text":"t"}`)
+	if more.IsError || !strings.Contains(string(more.Component), `"disclose":[{"tool":"reply_k3f9","fields":["body"]}]`) {
+		t.Fatalf("an improvement's disclosure: %+v", more)
 	}
 }
