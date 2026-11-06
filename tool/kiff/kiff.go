@@ -30,6 +30,7 @@ import (
 
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
 )
 
@@ -95,6 +96,8 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 	if err := c.init(ctx); err != nil {
 		return nil, err
 	}
+	// Where a run's start goes: the handshake apart from the tool list (session.Mark).
+	session.Mark(ctx, "handshake")
 	var out []tool.Tool
 	cursor := ""
 	for {
