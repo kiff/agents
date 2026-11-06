@@ -219,6 +219,13 @@ type Tool interface {
 	Call(ctx context.Context, input json.RawMessage) (Result, error)
 }
 
+// ResultSchemer is a tool that says what its results hold: the JSON Schema
+// of a result (MCP's outputSchema), when the vendor gives one. The agent
+// reads which of a result's fields are times by it (agent.dated).
+type ResultSchemer interface {
+	ResultSchema() json.RawMessage
+}
+
 // ErrUngoverned means a tool can change something outside the agent without
 // going through KIFF's gateway.
 var ErrUngoverned = errors.New("tool: a write tool must go through KIFF's gateway")

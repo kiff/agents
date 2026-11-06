@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/tool"
@@ -97,7 +98,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"where url is the vendor's published OpenAPI description (JSON), base the URL its operations' paths start from, and auth where the key goes " +
 			"(in: header or query, name: the header or parameter the vendor's docs name). The owner gives the key on their phone, with the approval, straight to planque; never ask for it. " +
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. support): the tool makes the agent's id from it, with a random part so it is new, " +
-			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
+			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. " +
+			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
 			"Every argument's path is a field the vendor's operation takes, read from the vendor's own description of it (its OpenAPI description, or the vendor tool that describes an operation's fields), never made up: " +
@@ -138,6 +140,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"auth":{"type":"object","properties":{"in":{"type":"string","enum":["header","query"]},"name":{"type":"string"}},"required":["in","name"]}},"required":["url","base","auth"]},` +
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
+			`"taf_name":{"type":"string","description":"the taf's name as the owner will read it, on one line (request): the approval names the taf by it"},` +
 			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
@@ -160,14 +163,16 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		API    json.RawMessage `json:"api"`
 		Agent  string          `json:"agent"`
 		Name   string          `json:"name"`
-		Tools  json.RawMessage `json:"tools"`
-		Grant  string          `json:"grant"`
-		Tool   string          `json:"tool"`
-		Cursor string          `json:"cursor"`
-		Args   json.RawMessage `json:"arguments"`
-		Q      string          `json:"q"`
-		Apps   []string        `json:"apps"`
-		Entry  string          `json:"entry"`
+		// TafName is the taf's name for people, sent as agent_name.
+		TafName string          `json:"taf_name"`
+		Tools   json.RawMessage `json:"tools"`
+		Grant   string          `json:"grant"`
+		Tool    string          `json:"tool"`
+		Cursor  string          `json:"cursor"`
+		Args    json.RawMessage `json:"arguments"`
+		Q       string          `json:"q"`
+		Apps    []string        `json:"apps"`
+		Entry   string          `json:"entry"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`
 	}
@@ -218,7 +223,11 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if in.Name != "" {
 				agent = AgentID(in.Name)
 			}
-			body, _ := json.Marshal(map[string]any{"agent": agent})
+			ask := map[string]any{"agent": agent}
+			if n := tafName(in.TafName); n != "" {
+				ask["agent_name"] = n
+			}
+			body, _ := json.Marshal(ask)
 			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
 			if err != nil || refused != nil {
 				return deref(refused), err
@@ -252,6 +261,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			// planque reads the description into a snapshot the owner approves,
 			// and takes the key from the owner's phone (kiff/planque#64).
 			ask = map[string]any{"kind": "api_key", "api": in.API, "agent": agent, "tools": tools}
+		}
+		if n := tafName(in.TafName); n != "" {
+			ask["agent_name"] = n
 		}
 		body, _ := json.Marshal(ask)
 		res, err := t.grant(ctx, http.MethodPost, path, body)
@@ -405,6 +417,16 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 		b.WriteString(l)
 	}
 	return b.String(), nil
+}
+
+// tafName is the taf's name as planque takes it (agent_name): one line, its
+// spaces trimmed, at most 60 characters, or "" for none.
+func tafName(s string) string {
+	s = strings.Join(strings.FieldsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }), " ")
+	if r := []rune(s); len(r) > 60 {
+		s = strings.TrimSpace(string(r[:60]))
+	}
+	return s
 }
 
 // AgentID is a new KIFF agent id from the name the model gave: the name as

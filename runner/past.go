@@ -304,12 +304,21 @@ func state(ctx context.Context, tools []tool.Tool, shown []json.RawMessage) stri
 }
 
 // preface is what goes before the run's input, in the same message: what
-// leads the conversation when there is none, where things stand, and the
-// kept reads. It is never recorded: each run makes its own.
+// leads the conversation when there is none, where things stand, the kept
+// reads, and today's date, which a run otherwise never has (kiff/tafs#476:
+// "I couldn't read today's date"). It is never recorded: each run makes its
+// own.
 func (p past) preface(ctx context.Context, tools []tool.Tool, now time.Time) []model.Block {
 	_, out := p.history()
 	if s := state(ctx, tools, p.shown); s != "" {
 		out = append(out, model.Block{Kind: model.Text, Text: s})
 	}
-	return out
+	return append(out, model.Block{Kind: model.Text, Text: Today(now)})
+}
+
+// Today is a run's date line, in UTC, as the dates beside a vendor's times
+// are: "Today is Friday 6 November 2026 (2026-11-06), 10:15 UTC."
+func Today(now time.Time) string {
+	u := now.UTC()
+	return "Today is " + u.Format("Monday 2 January 2006") + " (" + u.Format("2006-01-02") + "), " + u.Format("15:04") + " UTC."
 }

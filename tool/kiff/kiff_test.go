@@ -69,7 +69,8 @@ func gateway(t *testing.T, sse bool) (*httptest.Server, *[]string) {
 			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
 		case "tools/list":
 			result = map[string]any{"tools": []any{
-				map[string]any{"name": "stripe_get_charge", "inputSchema": map[string]any{"type": "object"}, "annotations": map[string]any{"readOnlyHint": true}},
+				map[string]any{"name": "stripe_get_charge", "inputSchema": map[string]any{"type": "object"}, "annotations": map[string]any{"readOnlyHint": true},
+					"outputSchema": map[string]any{"type": "object", "properties": map[string]any{"created": map[string]any{"type": "integer", "format": "unix-time"}}}},
 				map[string]any{"name": "stripe_refund", "description": "Refund a charge", "inputSchema": map[string]any{"type": "object"}},
 			}}
 		case "tools/call":
@@ -213,6 +214,13 @@ func TestListsAndCallsToolsThroughTheGateway(t *testing.T) {
 			}
 			if err := tool.Check(tools); err != nil {
 				t.Fatal(err)
+			}
+			// What a result holds, as the gateway lists it: the agent dates its times by it.
+			if s, ok := tools[0].(tool.ResultSchemer); !ok || !strings.Contains(string(s.ResultSchema()), `"format":"unix-time"`) {
+				t.Fatalf("the read's result schema: %v", tools[0])
+			}
+			if s := tools[1].(tool.ResultSchemer).ResultSchema(); len(s) != 0 {
+				t.Fatalf("a schema for a tool that lists none: %s", s)
 			}
 			got, err := tools[0].Call(context.Background(), json.RawMessage(`{"charge":"ch_1"}`))
 			if err != nil || got.Text != `{"id":"ch_1"}` || got.IsError || got.Held() || got.Hold != nil || got.Invocation != "" {

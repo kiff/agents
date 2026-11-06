@@ -485,6 +485,42 @@ func TestHistoryIsTheSessionsFinishedRuns(t *testing.T) {
 	}
 }
 
+// Each run reads today's date, by the runner's clock in UTC, just before its
+// input: a run never works a date out (kiff/tafs#476). It's never recorded,
+// so the next run's history has the input alone, and only its own date.
+func TestARunKnowsTodaysDate(t *testing.T) {
+	f := newFixture(t, say("Hi."), say("Again."))
+	first := f.start(server.Start{Input: "hello"})
+	if _, err := f.r.Execute(ctx, "t1", first.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	day := runner.Today(f.clock.now())
+	msgs := f.model.requests()[0].Messages
+	if blocks := msgs[len(msgs)-1].Blocks; len(blocks) < 2 || blocks[len(blocks)-2].Text != day || blocks[len(blocks)-1].Text != "hello" {
+		t.Fatalf("the run's message was %+v, want %q before its input", blocks, day)
+	}
+	second := f.start(server.Start{Session: first.Session, Input: "again"})
+	if _, err := f.r.Execute(ctx, "t1", second.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.model.requests()
+	var dates []string
+	for _, m := range reqs[len(reqs)-1].Messages {
+		for _, b := range m.Blocks {
+			if strings.HasPrefix(b.Text, "Today is ") {
+				dates = append(dates, b.Text)
+			}
+		}
+	}
+	if len(dates) != 1 {
+		t.Fatalf("the second run read %q, want only its own date", dates)
+	}
+	at := time.Date(2026, 11, 6, 11, 15, 0, 0, time.FixedZone("CET", 3600))
+	if got := runner.Today(at); got != "Today is Friday 6 November 2026 (2026-11-06), 10:15 UTC." {
+		t.Fatalf("the line reads %q", got)
+	}
+}
+
 // A run still going in the session isn't history either.
 func TestHistoryLeavesOutARunStillGoing(t *testing.T) {
 	talk := use("c1", "stripe_refund", `{}`)
@@ -574,11 +610,13 @@ func TestHistoryIsBoundedByTheDefinition(t *testing.T) {
 	}
 }
 
+// texts is what the messages carried, by role, without each run's date
+// line (TestARunKnowsTodaysDate has it).
 func texts(msgs []model.Message) []string {
 	var out []string
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
-			if b.Kind == model.Text {
+			if b.Kind == model.Text && !strings.HasPrefix(b.Text, "Today is ") {
 				out = append(out, string(m.Role)+": "+b.Text)
 			}
 		}

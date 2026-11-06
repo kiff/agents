@@ -107,7 +107,9 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 				Name        string          `json:"name"`
 				Description string          `json:"description"`
 				InputSchema json.RawMessage `json:"inputSchema"`
-				Annotations *struct {
+				// OutputSchema is what its results hold, when the vendor says.
+				OutputSchema json.RawMessage `json:"outputSchema"`
+				Annotations  *struct {
 					ReadOnlyHint bool `json:"readOnlyHint"`
 				} `json:"annotations"`
 			} `json:"tools"`
@@ -126,7 +128,7 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 				access = tool.Read
 			}
 			schema, session := withoutSessionArg(schema)
-			out = append(out, &gatewayTool{c: c, access: access, session: session,
+			out = append(out, &gatewayTool{c: c, access: access, session: session, result: t.OutputSchema,
 				spec: model.ToolSpec{Name: t.Name, Description: t.Description, InputSchema: schema}})
 		}
 		if page.NextCursor == "" {
@@ -153,6 +155,8 @@ type gatewayTool struct {
 	// session: the tool declared SessionArg, so each call carries the run's
 	// session in it.
 	session bool
+	// result is the tool's outputSchema, when the gateway lists one.
+	result json.RawMessage
 }
 
 // withoutSessionArg is a tool's schema without SessionArg, and whether it
@@ -213,6 +217,9 @@ func withSession(input json.RawMessage, session string) (json.RawMessage, error)
 func (t *gatewayTool) Spec() model.ToolSpec { return t.spec }
 func (t *gatewayTool) Access() tool.Access  { return t.access }
 func (t *gatewayTool) Gateway() bool        { return true }
+
+// ResultSchema is the tool's outputSchema, as the gateway listed it.
+func (t *gatewayTool) ResultSchema() json.RawMessage { return t.result }
 
 // Call calls the tool through the gateway and reads the gateway's state from
 // the result's _meta.

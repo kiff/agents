@@ -1376,7 +1376,12 @@ func call(ctx context.Context, t tool.Tool, c model.Block, max int) tool.Result 
 	if err != nil {
 		return tool.Result{Text: "the call failed, and whether it took effect is unknown: " + err.Error(), IsError: true}
 	}
-	r.Text = capResult(compactJSON(r.Text), max)
+	text := compactJSON(r.Text)
+	if t.Gateway() {
+		// A vendor's times as dates, beside the numbers it gave.
+		text = dated(text, timeUnits(t))
+	}
+	r.Text = capResult(text, max)
 	return r
 }
 
