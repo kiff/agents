@@ -132,6 +132,10 @@ type Definition struct {
 	// FollowUps gives the agent the follow_up tool: its own one-off
 	// follow-ups, bounded by the server. Off unless set.
 	FollowUps bool `json:"follow_ups,omitempty"`
+	// Disclose puts a line saying an AI agent wrote it in each call that
+	// writes outside the company, in the fields it names, whatever the model
+	// wrote (agent.Disclosure). Nil: none.
+	Disclose *agent.Disclosure `json:"disclose,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -410,6 +414,9 @@ func (d Definition) Check() error {
 		if p == "" || len(p) > 64 {
 			return errors.New("registry: a deferred tool prefix is 1 to 64 characters")
 		}
+	}
+	if err := d.Disclose.Check(); err != nil {
+		return fmt.Errorf("registry: %w", err)
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
 	// several times longer (a control character becomes six bytes).
@@ -777,7 +784,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	mark("tools and skills")
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast, StartSpans: spans,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
-		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText}
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}

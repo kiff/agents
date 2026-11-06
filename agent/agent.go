@@ -137,6 +137,11 @@ type Agent struct {
 	// tool's result.
 	Reload func(ctx context.Context) (string, error)
 
+	// Disclose, when set, puts its line in each call that writes outside the
+	// company, in the fields it names (Disclosure.Into): what the call sends
+	// and the record keeps carry it; the model's own turn stays as it wrote it.
+	Disclose *Disclosure
+
 	// HistoryPrev is how many of the history's messages were the history of
 	// the run before this one, as the runner rendered it then: marked for
 	// the cache again (model.Request.HistoryPrev). Zero: none.
@@ -1268,6 +1273,12 @@ func (a Agent) say(rec *session.Recording, text string, last bool) error {
 // callTools records the calls in order, runs them in parallel, and records
 // their results in the order of the calls.
 func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map[string]tool.Tool, calls []model.Block, emit func(Event)) ([]ToolResultBody, error) {
+	// The disclosure goes in before anything sees the call: its record, KIFF, a
+	// hold's stored input, and so a retry, all carry the same input.
+	calls = slices.Clone(calls)
+	for i := range calls {
+		calls[i].Input = a.Disclose.Into(calls[i].Tool, calls[i].Input)
+	}
 	for _, c := range calls {
 		server := ""
 		if t, ok := byName[c.Tool]; ok && t.Gateway() {
