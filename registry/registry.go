@@ -136,6 +136,11 @@ type Definition struct {
 	// writes outside the company, in the fields it names, whatever the model
 	// wrote (agent.Disclosure). Nil: none.
 	Disclose *agent.Disclosure `json:"disclose,omitempty"`
+	// Credit puts a line crediting what the taf was built with ("Built with
+	// tafs.") in the calls it names, after the disclosure: its own line and
+	// its own check, so neither is added twice and either can be left out of
+	// a tool (no credit in evidence for a bank). Checked as Disclose is.
+	Credit *agent.Disclosure `json:"credit,omitempty"`
 
 	// Version is the number of the stored version this is (kiff/tafs#107),
 	// set by the store: the live one on Get, 0 for an agent with no versions
@@ -416,6 +421,9 @@ func (d Definition) Check() error {
 		}
 	}
 	if err := d.Disclose.Check(); err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	if err := d.Credit.Check(); err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
@@ -784,7 +792,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	mark("tools and skills")
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast, StartSpans: spans,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
-		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose}
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose, Credit: d.Credit}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}

@@ -112,7 +112,7 @@ func TestARESTVendorIsAskedForByKey(t *testing.T) {
 		`{"action":"request","agent":"a","tools":[]}`,
 		`{"action":"request","api":null,"agent":"a","tools":[]}`,
 	} {
-		if text, isErr := call(t, tl, in); !isErr || !strings.Contains(text, "not both") {
+		if text, isErr := call(t, tl, in); !isErr || !strings.Contains(text, "not two") {
 			t.Errorf("%s: %s %v", in, text, isErr)
 		}
 	}
@@ -763,5 +763,39 @@ func TestARequestNamesTheTaf(t *testing.T) {
 	}
 	if _, ok := bodies[3]["agent_name"]; ok {
 		t.Fatalf("a request without a name sent one: %v", bodies[3])
+	}
+}
+
+// A new taf reuses the account's sign-in to a vendor it already connects: the
+// request names the connected grant, and nothing else of how to reach it
+// (kiff/tafs#476, gap 2: three recipes, three extra sign-ins).
+func TestARequestReusesASignIn(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, map[string]any{"path": r.URL.Path, "body": b})
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"grt_10","status":"pending","text":"You're already signed in: no second sign-in.","request":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	if text, isErr := call(t, tl, `{"action":"request","reuse":"grt_9","name":"offers","taf_name":"Cancellation offers","tools":[{"tool":"list_subscriptions","read_only":true}]}`); isErr {
+		t.Fatalf("reuse: %s", text)
+	}
+	sent := bodies[0]["body"].(map[string]any)
+	if bodies[0]["path"] != "/v1/accounts/tnt_1/grants" || sent["reuse"] != "grt_9" || sent["agent_name"] != "Cancellation offers" || sent["server"] != nil || sent["api"] != nil {
+		t.Fatalf("sent %v", bodies[0])
+	}
+	for _, in := range []string{
+		`{"action":"request","reuse":"grt_9","server":"https://mcp.stripe.com","name":"offers"}`,
+		`{"action":"request","reuse":"../grt_9","name":"offers"}`,
+	} {
+		if _, isErr := call(t, tl, in); !isErr {
+			t.Fatalf("not refused: %s", in)
+		}
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("a refused request reached planque: %v", bodies)
 	}
 }

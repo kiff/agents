@@ -234,3 +234,27 @@ func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
 		t.Fatalf("an improvement's disclosure: %+v", more)
 	}
 }
+
+// Evidence for a bank carries the disclosure alone (credit false), and the
+// taf writes for the name the owner gave, on one line (kiff/tafs#476: the
+// owner's calls at 11:32, gaps 16 and 18).
+func TestAResultSaysWhoItWritesForAndWhereNoCreditGoes(t *testing.T) {
+	ok := call(t, `{"type":"result","id":"done","taf":{"agent":"disputes","name":"Chargebacks","draft":"drf_01","kickoff":"Answer each dispute.","cron":"0 9 * * 1-5",`+
+		`"writes_for":"Kiff Agents OÜ","disclose":[{"tool":"update_dispute","fields":["evidence.uncategorized_text"],"credit":false},{"tool":"send_reply","fields":["body"]}]},"text":"Chargebacks is ready."}`)
+	if ok.IsError || !strings.Contains(string(ok.Component), `{"tool":"update_dispute","fields":["evidence.uncategorized_text"],"credit":false},{"tool":"send_reply","fields":["body"]}`) ||
+		!strings.Contains(string(ok.Component), `"writes_for":"Kiff Agents OÜ"`) {
+		t.Fatalf("a result with its credit and name: %+v", ok)
+	}
+	for name, w := range map[string]string{
+		"two lines": `"Kiff\nAgents"`, "padded": `" Kiff Agents"`, "too long": `"` + strings.Repeat("x", show.MaxWritesFor+1) + `"`,
+	} {
+		in := `{"type":"result","id":"done","taf":{"agent":"disputes","name":"Chargebacks","draft":"drf_01","kickoff":"Answer.","cron":"0 9 * * 1-5","writes_for":` + w + `},"text":"t"}`
+		if r := call(t, in); !r.IsError || !strings.Contains(r.Text, "writes_for") {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	// An improvement may say it too, for a taf from before.
+	if r := call(t, `{"type":"result","id":"b","taf":{"agent":"disputes","name":"Chargebacks","improves":"taf-1","job":"custom","note":"n","writes_for":"Kiff Agents OÜ"},"text":"t"}`); r.IsError {
+		t.Fatalf("an improvement's name: %+v", r)
+	}
+}

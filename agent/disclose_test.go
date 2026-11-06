@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -95,5 +96,48 @@ func TestADisclosureIsChecked(t *testing.T) {
 	}
 	if err := evidence.Check(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The credit ("Built with tafs.") is a line of its own, with its own check:
+// after the disclosure on the same line when the text ends with it, in a
+// paragraph of its own otherwise, once each; and only in the calls it names,
+// so evidence for a bank carries the disclosure alone (the owner's call,
+// 11:32 on #476).
+func TestTheCreditFollowsTheDisclosureInTheCallsItNames(t *testing.T) {
+	reply := []DisclosureIn{{Tool: "send_reply", Fields: []string{"body"}}}
+	disclose := &Disclosure{Line: line, In: append(slices.Clone(reply), evidence.In...)}
+	credit := &Disclosure{Line: "Built with tafs.", After: line, In: reply}
+	both := func(tool, in string) map[string]any {
+		var out map[string]any
+		if err := json.Unmarshal(credit.Into(tool, disclose.Into(tool, json.RawMessage(in))), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if got := both("send_reply", `{"to":"a@b.example","body":"Your refund is on its way."}`)["body"]; got != "Your refund is on its way.\n\n"+line+" Built with tafs." {
+		t.Fatalf("body %q", got)
+	}
+	// The model wrote the disclosure itself: the credit follows it, once.
+	said := `{"body":"Refunded.\n\n` + line + `"}`
+	if got := both("send_reply", said)["body"]; got != "Refunded.\n\n"+line+" Built with tafs." {
+		t.Fatalf("body %q", got)
+	}
+	// It wrote both: nothing is added.
+	if got := both("send_reply", `{"body":"Refunded. `+line+` Built with tafs."}`)["body"]; got != "Refunded. "+line+" Built with tafs." {
+		t.Fatalf("body %q", got)
+	}
+	// Its own words for the disclosure: the credit goes in a paragraph of its own.
+	if got := both("send_reply", `{"body":"Refunded. Written by our AI."}`)["body"]; got != "Refunded. Written by our AI.\n\n"+line+" Built with tafs." {
+		t.Fatalf("body %q", got)
+	}
+	// Evidence names no credit: the disclosure alone.
+	ev := both("update_dispute", `{"evidence":{"uncategorized_text":"Delivered."}}`)["evidence"].(map[string]any)
+	if ev["uncategorized_text"] != "Delivered.\n\n"+line {
+		t.Fatalf("evidence %v", ev)
+	}
+	// A credit with no disclosure before it: a paragraph of its own.
+	if got := credit.Into("send_reply", json.RawMessage(`{"body":"Hi."}`)); !strings.Contains(string(got), `Hi.\n\nBuilt with tafs.`) {
+		t.Fatalf("credit alone %s", got)
 	}
 }

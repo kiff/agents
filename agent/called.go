@@ -22,7 +22,18 @@ type CalledBody struct {
 	Tool    string          `json:"tool"`
 	Input   json.RawMessage `json:"input,omitempty"`
 	Outcome string          `json:"outcome"`
+	// Reason is what the call's result said when it wasn't done (the
+	// vendor's refusal as KIFF passed it on, or KIFF's own words), on one
+	// line, at most CalledReasonMax. It outlives the result, which a run
+	// drops when it ends, so a later run, and Coach, can say why a call
+	// failed (kiff/tafs#476, gap 10: "my tool results from earlier runs
+	// aren't kept").
+	Reason string `json:"reason,omitempty"`
 }
+
+// CalledReasonMax is the most of a failed call's result a Called event
+// keeps, in characters: a reason, never a payload.
+const CalledReasonMax = 300
 
 // CalledInputMax is the most of a call's input a Called event keeps, in
 // bytes: enough for the ids and amounts a call acts on.
@@ -91,12 +102,28 @@ func outcome(r ToolResultBody, answer string) string {
 	return OutcomeDone
 }
 
-// recordCalled records a call to a tool outside the agent and its outcome.
-func recordCalled(rec *session.Recording, t tool.Tool, name string, input json.RawMessage, oc string) error {
+// recordCalled records a call to a tool outside the agent and its outcome,
+// with why it wasn't done when its result says.
+func recordCalled(rec *session.Recording, t tool.Tool, name string, input json.RawMessage, oc, reason string) error {
 	if t != nil && t.Access() == tool.Own {
 		return nil
 	}
-	return rec.Record(session.Called, CalledBody{Tool: name, Input: cutInput(input), Outcome: oc})
+	return rec.Record(session.Called, CalledBody{Tool: name, Input: cutInput(input), Outcome: oc, Reason: reason})
+}
+
+// reasonOf is why a call wasn't done, from its result, for its Called
+// event: the result's words when it's an error that was sent or refused,
+// on one line and cut to CalledReasonMax; "" for a call that was done, held,
+// or not made (its outcome says why).
+func reasonOf(r ToolResultBody) string {
+	if !r.IsError || r.NotMade || r.Held() {
+		return ""
+	}
+	text := strings.Join(strings.Fields(r.Text), " ")
+	if c := []rune(text); len(c) > CalledReasonMax {
+		text = strings.TrimSpace(string(c[:CalledReasonMax-1])) + "…"
+	}
+	return text
 }
 
 // OwnRefusedBody is the body of an OwnRefused event: a call to one of the
@@ -180,13 +207,18 @@ func AnsweredLine(b AnsweredBody) string {
 }
 
 // CalledLine is a Called event as the model reads it: the only text that
-// carries CalledMark.
+// carries CalledMark. A failed call's reason is the result's words, quoted
+// as its answer: data, like any tool's result.
 func CalledLine(b CalledBody) string {
 	line := CalledMark + " " + Unforged(b.Tool)
 	if len(b.Input) > 0 {
 		line += " " + Unforged(string(b.Input))
 	}
-	return line + " → " + b.Outcome
+	line += " → " + b.Outcome
+	if b.Reason != "" {
+		line += "; its answer: " + Unforged(b.Reason)
+	}
+	return line
 }
 
 // NoteLine is a call as the record note says it: a read named as the

@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kiff/agents/model"
@@ -119,16 +120,29 @@ type Taf struct {
 	// company, each with the free-text fields of its input (dotted paths):
 	// tafs puts them in the taf's definition, and the runtime ends each such
 	// call with its AI disclosure (agent.Disclosure, kiff/tafs#476). An
-	// improvement's adds to the taf's: a tool named again is replaced, and
-	// none is ever taken away.
+	// improvement's adds to the taf's: a tool named again adds its fields,
+	// and none is ever taken away.
 	Disclose []Disclose `json:"disclose,omitempty"`
+	// WritesFor is the name the taf writes for, as the owner answered who
+	// its messages come from (the account's company unless they said
+	// otherwise): its disclosure names it ("Written by an AI agent for
+	// Kiff Agents OÜ."), one line (kiff/tafs#476, gaps 16 and 18).
+	WritesFor string `json:"writes_for,omitempty"`
 }
+
+// MaxWritesFor bounds the name a taf writes for.
+const MaxWritesFor = 100
 
 // Disclose is one tool of a result's taf.disclose: its name in KIFF, and the
 // paths of the fields its disclosure goes in, in order of preference.
 type Disclose struct {
 	Tool   string   `json:"tool"`
 	Fields []string `json:"fields"`
+	// Credit false leaves "Built with tafs." out of the tool's calls, which
+	// carry the disclosure alone: evidence or a filing, for a bank or a
+	// card network. Left out, a message to people carries both (the owner's
+	// call, kiff/tafs#476).
+	Credit *bool `json:"credit,omitempty"`
 }
 
 // MaxDisclose bounds a result's taf.disclose: tools, each one's fields, and
@@ -154,6 +168,15 @@ func checkDisclose(ds []Disclose) error {
 		}
 	}
 	return nil
+}
+
+// writesFor says what's wrong with a result's taf.writes_for, if anything:
+// a name on one line, at most MaxWritesFor characters.
+func writesFor(s string) error {
+	if s != "" && (strings.TrimSpace(s) != s || strings.ContainsFunc(s, unicode.IsControl)) {
+		return fmt.Errorf("taf.writes_for is a name on one line, such as the account's company")
+	}
+	return text("taf.writes_for", s, false, MaxWritesFor)
 }
 
 // MaxNotes bounds an improvement's instructions from the owner.
@@ -290,7 +313,9 @@ func (Tool) Spec() model.ToolSpec {
 			`"instructions":{"type":"string","description":"a new taf: how it works, from what was agreed with the owner, and its never rules"},` +
 			`"cron":{"type":"string","description":"a new taf with a schedule: when it runs, five POSIX cron fields in the account's time zone, such as 0 9 * * 1-5"},` +
 			`"disclose":{"type":"array","description":"each of the taf's tools that writes to someone outside the company (an email, a reply, evidence), by its name in KIFF, with its free-text fields' dotted paths: each such call then ends with its AI disclosure; an improvement's adds to the taf's",` +
-			`"items":{"type":"object","properties":{"tool":{"type":"string"},"fields":{"type":"array","items":{"type":"string"}}},"required":["tool","fields"]}}},` +
+			`"items":{"type":"object","properties":{"tool":{"type":"string"},"fields":{"type":"array","items":{"type":"string"}},` +
+			`"credit":{"type":"boolean","description":"false for evidence or a filing, to a bank or a card network: the disclosure alone, without \"Built with tafs.\"; leave it out for messages to people"}},"required":["tool","fields"]}},` +
+			`"writes_for":{"type":"string","description":"who the taf's messages come from, as the owner answered (the account's company unless they said otherwise): its disclosure names it"}},` +
 			`"required":["agent","name"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
 			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
@@ -524,6 +549,9 @@ func (c Component) check() error {
 			if err := checkDisclose(c.Taf.Disclose); err != nil {
 				return err
 			}
+			if err := writesFor(c.Taf.WritesFor); err != nil {
+				return err
+			}
 			switch {
 			case c.Taf.Unscheduled && c.Taf.Cron != "":
 				return fmt.Errorf("taf.cron is for a taf with a schedule; an unscheduled one has none")
@@ -544,6 +572,9 @@ func (c Component) check() error {
 			// from before never had; tafs adds it to the taf's, never taking one
 			// away (agentgabo on #354).
 			if err := checkDisclose(c.Taf.Disclose); err != nil {
+				return err
+			}
+			if err := writesFor(c.Taf.WritesFor); err != nil {
 				return err
 			}
 			if !refPattern.MatchString(c.Taf.Improves) {

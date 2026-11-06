@@ -141,6 +141,10 @@ type Agent struct {
 	// company, in the fields it names (Disclosure.Into): what the call sends
 	// and the record keeps carry it; the model's own turn stays as it wrote it.
 	Disclose *Disclosure
+	// Credit, when set, puts its line in the calls it names after the
+	// disclosure ("Built with tafs."), checked on its own (registry
+	// Definition.Credit).
+	Credit *Disclosure
 
 	// HistoryPrev is how many of the history's messages were the history of
 	// the run before this one, as the runner rendered it then: marked for
@@ -462,11 +466,11 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 			if q.Answered.IsZero() {
 				oc = OutcomeNotCame
 			}
-			if err := recordCalled(rec, nil, h.Tool, q.Input, oc); err != nil {
+			if err := recordCalled(rec, nil, h.Tool, q.Input, oc, ""); err != nil {
 				return Outcome{}, history, err
 			}
 		default:
-			if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID))); err != nil {
+			if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID)), reasonOf(h)); err != nil {
 				return Outcome{}, history, err
 			}
 		}
@@ -1277,7 +1281,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 	// hold's stored input, and so a retry, all carry the same input.
 	calls = slices.Clone(calls)
 	for i := range calls {
-		calls[i].Input = a.Disclose.Into(calls[i].Tool, calls[i].Input)
+		calls[i].Input = a.Credit.Into(calls[i].Tool, a.Disclose.Into(calls[i].Tool, calls[i].Input))
 	}
 	for _, c := range calls {
 		server := ""
@@ -1324,7 +1328,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			return nil, err
 		}
 		if r.Trial == nil {
-			if err := recordCalled(rec, byName[r.Tool], r.Tool, calls[i].Input, outcome(r, "")); err != nil {
+			if err := recordCalled(rec, byName[r.Tool], r.Tool, calls[i].Input, outcome(r, ""), reasonOf(r)); err != nil {
 				return nil, err
 			}
 		}

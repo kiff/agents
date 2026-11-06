@@ -18,6 +18,10 @@ type Disclosure struct {
 	// In is where it goes: for each tool that writes outside, the free-text
 	// fields of its input, by dotted path, in order of preference.
 	In []DisclosureIn `json:"in"`
+	// After, when set, is the line this one follows on the same line, when
+	// the text ends with it: the credit ("Built with tafs.") after the AI
+	// disclosure. Otherwise, as any line, it goes in a paragraph of its own.
+	After string `json:"after,omitempty"`
 }
 
 // DisclosureIn is one tool's place for the line: Tool by its name, with or
@@ -37,6 +41,9 @@ func (d *Disclosure) Check() error {
 	}
 	if strings.TrimSpace(d.Line) == "" || len(d.Line) > MaxDisclosureLine || strings.ContainsAny(d.Line, "\n\r") {
 		return fmt.Errorf("a disclosure's line is one sentence of 1 to %d bytes", MaxDisclosureLine)
+	}
+	if d.After != "" && (len(d.After) > MaxDisclosureLine || strings.ContainsAny(d.After, "\n\r")) {
+		return fmt.Errorf("a disclosure's after is one sentence of at most %d bytes", MaxDisclosureLine)
 	}
 	if len(d.In) == 0 {
 		return errors.New("a disclosure names the tools it goes in")
@@ -127,7 +134,12 @@ func (d *Disclosure) Into(tool string, input json.RawMessage) json.RawMessage {
 	case first != nil && strings.TrimSpace(first[key].(string)) == "":
 		first[key] = d.Line
 	case first != nil:
-		first[key] = strings.TrimRight(first[key].(string), " \n") + "\n\n" + d.Line
+		text := strings.TrimRight(first[key].(string), " \n")
+		if d.After != "" && strings.HasSuffix(text, d.After) {
+			first[key] = text + " " + d.Line
+		} else {
+			first[key] = text + "\n\n" + d.Line
+		}
 	default:
 		parent, last := parentOf(call, paths[0])
 		if parent == nil {
