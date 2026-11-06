@@ -33,6 +33,14 @@ import (
 	"github.com/kiff/agents/tool"
 )
 
+// SessionArg is the argument a gateway tool declares to be told which chat a
+// call comes from: kiff/agents sets it to the run's session on every call,
+// over anything the model put there, and the model never sees it in the
+// tool's schema. A tool opts in by declaring it, so no other tool gets an
+// argument it doesn't know. KIFF forwards it like any argument, inside the
+// call's permit (kiff/tafs#544: a Coach drive is its chat's alone).
+const SessionArg = "agent_session"
+
 // MaxImages, MaxImageBytes and MaxImageSide bound the images one gateway call
 // returns (a drive's screenshot, kiff/tafs#544): what the model may read,
 // never the record, which keeps the text alone. MaxImageSide is the model's
@@ -116,7 +124,8 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 			if t.Annotations != nil && t.Annotations.ReadOnlyHint {
 				access = tool.Read
 			}
-			out = append(out, &gatewayTool{c: c, access: access,
+			schema, session := withoutSessionArg(schema)
+			out = append(out, &gatewayTool{c: c, access: access, session: session,
 				spec: model.ToolSpec{Name: t.Name, Description: t.Description, InputSchema: schema}})
 		}
 		if page.NextCursor == "" {
@@ -140,6 +149,58 @@ type gatewayTool struct {
 	c      *Client
 	spec   model.ToolSpec
 	access tool.Access
+	// session: the tool declared SessionArg, so each call carries the run's
+	// session in it.
+	session bool
+}
+
+// withoutSessionArg is a tool's schema without SessionArg, and whether it
+// declared it: the model never sees it, and kiff/agents sets it on each call.
+// A schema that doesn't parse is kept as it came.
+func withoutSessionArg(schema json.RawMessage) (json.RawMessage, bool) {
+	var s map[string]any
+	if json.Unmarshal(schema, &s) != nil {
+		return schema, false
+	}
+	props, _ := s["properties"].(map[string]any)
+	if _, ok := props[SessionArg]; !ok {
+		return schema, false
+	}
+	delete(props, SessionArg)
+	if req, ok := s["required"].([]any); ok {
+		kept := req[:0]
+		for _, r := range req {
+			if r != SessionArg {
+				kept = append(kept, r)
+			}
+		}
+		s["required"] = kept
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		return schema, false
+	}
+	return out, true
+}
+
+// withSession is a call's input with SessionArg set to session, or taken out
+// when there is none (a call outside a run): never what the model put there.
+func withSession(input json.RawMessage, session string) (json.RawMessage, error) {
+	args := map[string]json.RawMessage{}
+	if len(input) > 0 && string(input) != "null" {
+		if err := json.Unmarshal(input, &args); err != nil {
+			return nil, fmt.Errorf("its input is not a JSON object: %w", err)
+		}
+	}
+	delete(args, SessionArg)
+	if session != "" {
+		v, err := json.Marshal(session)
+		if err != nil {
+			return nil, err
+		}
+		args[SessionArg] = v
+	}
+	return json.Marshal(args)
 }
 
 func (t *gatewayTool) Spec() model.ToolSpec { return t.spec }
@@ -157,6 +218,20 @@ func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Res
 func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool.Result, meta, error) {
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)
+	}
+	// The chat the call comes from, for a tool that asked for it: the run's own
+	// session, never the model's word for it. Set before the operation ID, so a
+	// model's value never makes two operations of one action.
+	if t.session {
+		session := ""
+		if ref, ok := run.RefFrom(ctx); ok {
+			session = ref.Session
+		}
+		with, err := withSession(input, session)
+		if err != nil {
+			return tool.Result{}, meta{}, fmt.Errorf("kiff: %s: %w", t.spec.Name, err)
+		}
+		input = with
 	}
 	// A run's call goes with its own operation ID, the same each time the
 	// call is made: after a crash, KIFF gives its first outcome back rather
