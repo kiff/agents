@@ -527,3 +527,29 @@ func TestBuildGivesTheDeferredToolPrefixes(t *testing.T) {
 		t.Fatalf("deferred %v", a.Deferred)
 	}
 }
+
+// A definition's disclosure is checked, and reaches the agent it builds: the
+// runtime puts its line in each call that writes outside (Eval 42193895936).
+func TestADefinitionsDisclosureIsCheckedAndBuilt(t *testing.T) {
+	d := registrytest.Definition("t1", "payouts")
+	d.Disclose = &agent.Disclosure{Line: "Written by an AI agent for the company.", In: []agent.DisclosureIn{{Tool: "update_dispute", Fields: []string{"evidence.uncategorized_text"}}}}
+	if err := d.Check(); err != nil {
+		t.Fatal(err)
+	}
+	bad := d
+	bad.Disclose = &agent.Disclosure{Line: "Written by an AI agent for the company."}
+	if err := bad.Check(); err == nil {
+		t.Fatal("a disclosure naming no tool passed")
+	}
+	f := newFixture(t)
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Disclose == nil || a.Disclose.Line != d.Disclose.Line || len(a.Disclose.In) != 1 {
+		t.Fatalf("built with disclosure %+v", a.Disclose)
+	}
+}

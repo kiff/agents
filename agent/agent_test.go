@@ -1947,3 +1947,79 @@ func TestTheTurnCapCountsSinceTheLastPause(t *testing.T) {
 		t.Fatalf("the run's turns: %d, want 8 (7 before, 1 now)", out.Turns)
 	}
 }
+
+// inputTool keeps the input of every call it gets, through the gateway.
+type inputTool struct {
+	name string
+	mu   sync.Mutex
+	got  []string
+}
+
+func (i *inputTool) Spec() model.ToolSpec {
+	return model.ToolSpec{Name: i.name, InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (i *inputTool) Access() tool.Access { return tool.Write }
+func (i *inputTool) Gateway() bool       { return true }
+func (i *inputTool) Call(_ context.Context, in json.RawMessage) (tool.Result, error) {
+	i.mu.Lock()
+	i.got = append(i.got, string(in))
+	i.mu.Unlock()
+	return tool.Result{Text: "updated"}, nil
+}
+
+// The disclosure is in what a call sends and what its record keeps, whatever
+// the model wrote; the model's own turn goes back to it as it wrote it
+// (Eval 42193895936).
+func TestTheDisclosureIsInWhatACallSends(t *testing.T) {
+	const line = "Written by an AI agent for the company."
+	dispute := &inputTool{name: "update_dispute_k3f9"}
+	wrote := `{"dispute":"dp_1","evidence":{"product_description":"Blue mug","shipping_carrier":"UPS"}}`
+	m := &script{replies: []model.Reply{use("c1", "update_dispute_k3f9", wrote), say("Evidence sent.")}}
+	a := newAgent(m, dispute)
+	a.Disclose = &agent.Disclosure{Line: line, In: []agent.DisclosureIn{{Tool: "update_dispute", Fields: []string{"evidence.uncategorized_text", "evidence.product_description"}}}}
+	store, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), a, r, nil, "Answer dp_1.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispute.got) != 1 || !strings.Contains(dispute.got[0], `"product_description":"Blue mug\n\n`+line+`"`) {
+		t.Fatalf("the tool got %q", dispute.got)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := 0
+	for _, e := range events {
+		switch e.Kind {
+		case session.ToolCall:
+			var b agent.ToolCallBody
+			if json.Unmarshal(e.Body, &b) == nil && strings.Contains(string(b.Input), line) {
+				recorded++
+			}
+		case session.Called:
+			var b agent.CalledBody
+			if json.Unmarshal(e.Body, &b) == nil && strings.Contains(string(b.Input), line) {
+				recorded++
+			}
+		}
+	}
+	if recorded != 2 {
+		t.Fatalf("the call's record and its Called line carry the disclosure %d times, want 2", recorded)
+	}
+	// The next turn reads the model's own call, as it wrote it.
+	next := m.reqs[1].Messages
+	var replayed string
+	for _, msg := range next {
+		for _, b := range msg.Blocks {
+			if b.Kind == model.ToolUse {
+				replayed = string(b.Input)
+			}
+		}
+	}
+	if replayed != wrote {
+		t.Fatalf("the model's call went back to it as %s", replayed)
+	}
+}

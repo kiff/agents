@@ -84,6 +84,16 @@ of its eight kinds):
   (`kiff_*`) goes to the model deferred, whatever its name. A Card that
   covers a vendor's tools mid-conversation (Setup's reads) then leaves the
   cached prefix as it was, instead of starting the cache over.
+- `disclose` (optional): `{line, in: [{tool, fields}]}`. The runtime puts
+  `line` ("Written by an AI agent for the company.") in each call of a named
+  tool, a tool KIFF names with a connection's part before or after it too,
+  so a message to someone outside the company says an AI agent wrote it
+  whatever the model wrote (Eval 42193895936). It goes at the end of the
+  first of `fields` (dotted paths) the call carries as text, or as the first
+  field when the call carries its parent and none of them. A call that says
+  it already, or carries none of them, is sent as it was. What the call
+  sends, its record and a hold's stored input carry the line; the model's
+  own turn goes back to it as it wrote it.
 - `tenant` and `id` come from the verified caller and the path; a body that
   says otherwise is refused.
 - `gateway` must be on the server's own list (`Server.Gateways`), so a
