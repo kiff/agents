@@ -37,7 +37,7 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       REPORTS: kiff-agents-eval-reports
       # Whether step 9's people are signed in: a step's if can't read secrets.
@@ -112,6 +112,22 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -max-cost 3 -owner-turns 14 -transcript desk.md
+      - name: Setup in Spanish, graded, as advice
+        # The Eval's graded setup chat (eval.yml), with an owner who writes in
+        # Spanish and the taf as kiff/tafs defines it, nightly only, without
+        # the improve case. It never fails the night: the Eval's English chat
+        # gates, and what this one finds is advice, read in its transcript
+        # (setup-es.md, the private bucket). The judge is Sonnet, as there.
+        if: steps.unchanged.outputs.skip != 'true' && github.event_name == 'schedule' && (always())
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -max-cost 4 -owner-turns 14 -transcript setup-es.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       # Step 9's people, on a taf of the run's own on tafs cloud, shared with
       # Support (cmd/e2e/people.go). Nightly, and by hand unless turned off;
       # skipped while the people's sessions aren't set (infra/e2e-people-signin.sh).
@@ -142,5 +158,6 @@ jobs:
           [ -f setup.md ] && aws s3 cp --only-show-errors setup.md "s3://$REPORTS/$key/setup.md"
           [ -f people.md ] && aws s3 cp --only-show-errors people.md "s3://$REPORTS/$key/people.md"
           [ -f desk.md ] && aws s3 cp --only-show-errors desk.md "s3://$REPORTS/$key/desk.md"
+          [ -f setup-es.md ] && aws s3 cp --only-show-errors setup-es.md "s3://$REPORTS/$key/setup-es.md"
           echo "transcript: s3://$REPORTS/$key/"
 

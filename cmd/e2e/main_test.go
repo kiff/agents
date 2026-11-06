@@ -61,12 +61,14 @@ func TestTafConcise(t *testing.T) {
 	if counts.String() != "taf  words: 1, 150\n" {
 		t.Fatalf("logged %q", counts.String())
 	}
-	// With -grade the judge decides, and its reason stays out of the log.
+	// With -grade the judge decides, as advice that never fails the run, and
+	// its reason stays out of the log.
 	var log, transcript strings.Builder
 	tt = &test{cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{Model: &verdicts{fail: []string{"concise"}}, ModelID: "judge"}},
 		out: &redacting{w: &log, ci: true}, tafSaid: []string{"Great question! Let me tell you all about it."}}
 	err := tt.tafConcise(context.Background())
-	if err == nil || log.String() != "taf  words: 9\n" || !strings.Contains(transcript.String(), "not concise: judged") {
+	if err != nil || log.String() != "taf  words: 9\ntaf  advice: the answers aren't concise, as judged (the transcript says why)\n" ||
+		!strings.Contains(transcript.String(), "advice  taf not concise: judged") {
 		t.Fatalf("err = %v, log %q, transcript %q", err, log.String(), transcript.String())
 	}
 }

@@ -373,10 +373,10 @@ func TestNoModeToAskOfTheDesk(t *testing.T) {
 	}
 }
 
-// A question's options are the owner's choice, not Setup's claim: the mode
-// question offering "Modo real" states no mode, whether in the whole chat or
-// before test was reported; "Tu cuenta está en modo real" in a message, or
-// in a card's own text, still does (the opus-low Eval, 5 Nov).
+// A question's options are the owner's choice, not Setup's statement: the
+// mode question offering "Modo real" leaves its options out of what the judged
+// mode check reads, whether in the whole chat or before test was reported,
+// while the language and id checks still read them (the opus-low Eval, 5 Nov).
 func TestAModeOfferedAsAnOptionIsNoClaim(t *testing.T) {
 	ask := component{Type: "questions", ID: "modo"}
 	ask.Questions = []question{{ID: "modo", Text: "¿En qué modo empieza?",
@@ -384,33 +384,18 @@ func TestAModeOfferedAsAnOptionIsNoClaim(t *testing.T) {
 	confirm := component{Type: "confirm", ID: "mode", Title: "Test or live?", Yes: "Live mode", No: "Test mode"}
 	confirm.Options = []option{{Value: "live", Label: "Live mode (real money)"}}
 	s := said{cards: map[string]component{"modo": ask, "mode": confirm}, order: []string{"modo", "mode"}}
-	if c := claimsMode(s.statements(), true); c != "" {
-		t.Fatalf("a mode offered as an option read as a claim: %q", c)
+	if slices.Contains(s.statements(), "Modo real") || slices.Contains(s.statements(), "Live mode (real money)") {
+		t.Fatalf("an option read as Setup's statement: %q", s.statements())
 	}
 	// The options are still in the texts other checks read (the language, no ids).
 	if !slices.Contains(s.texts(), "Modo real") {
 		t.Fatal("the options left the texts the other checks read")
 	}
-	// Said, it is a claim: in a message, or as a card's own text.
-	s.messages = []string{"Tu cuenta está en modo real."}
-	if c := claimsMode(s.statements(), true); c == "" {
-		t.Fatal("the account's mode, stated in a message, wasn't a claim")
-	}
-	s.messages = nil
-	said := component{Type: "result", ID: "done", Text: "Reembolsos funciona en modo real."}
-	s.cards["done"], s.order = said, append(s.order, "done")
-	if c := claimsMode(s.statements(), true); c == "" {
-		t.Fatal("a card's own text stating the mode wasn't a claim")
-	}
-
-	// Before test was reported: the same, from the session's events.
+	// Before test was reported: the question's own text, never its options.
 	body, _ := json.Marshal(ask)
 	before, _ := beforeTestReport([]session.Event{{Run: "r1", Kind: session.Component, Body: body}}, "r1", false)
-	if c := claimsMode(before, false); c != "" {
-		t.Fatalf("the mode question, before test was reported, read as a claim: %q (%v)", c, before)
-	}
-	if !slices.Contains(before, "¿En qué modo empieza?") {
-		t.Fatalf("the question's own text left what's read before test: %v", before)
+	if !slices.Contains(before, "¿En qué modo empieza?") || slices.Contains(before, "Modo real") {
+		t.Fatalf("what's read before test: %v", before)
 	}
 }
 
@@ -583,5 +568,105 @@ func TestAProgressLineIsNoMessageForTheConciseJudge(t *testing.T) {
 	// An intro is taken out once: the same words said again as a message are judged.
 	if judged := withoutIntros([]string{"Miro la cuenta.", "Miro la cuenta."}, []string{"Miro la cuenta."}); len(judged) != 1 {
 		t.Fatalf("judged %q", judged)
+	}
+}
+
+// The mode is a fact in the grant: pinned only to what the owner chose and
+// the connection reports, or not at all (the owner, 6 Nov 2026: results gate).
+func TestThePinIsTheModeTheOwnerChose(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		chose string
+		m     modes
+		pass  bool
+		why   string
+	}{
+		{"test, as chosen and reported", "test", modes{test: true, allTest: true}, true, ""},
+		{"nothing pinned", "", modes{}, true, ""},
+		{"test chosen, nothing pinned", "test", modes{}, false, "not every tool that acts is pinned to it"},
+		{"test chosen, one acting tool unpinned", "test", modes{test: true, allTest: false}, false, "not every tool that acts is pinned to it"},
+		{"test, with no choice made", "", modes{test: true}, false, "the owner chose no mode"},
+		{"live, though test was chosen", "test", modes{live: []string{"stripe_refund"}}, false, "pinned to live mode, though the owner chose test"},
+		{"a pin on the desk, which has no mode", "test", modes{none: true, test: true}, false, "a vendor that has none"},
+		{"the desk, nothing pinned", "", modes{none: true}, true, ""},
+	} {
+		g := pinned(c.chose, c.m)
+		if g.Pass != c.pass || !strings.Contains(g.Why, c.why) {
+			t.Errorf("%s: %+v", c.name, g)
+		}
+	}
+}
+
+// The judged mode check is told what the connection reported and what the
+// owner chose, and which texts came before the report: without them a judge
+// can't tell a claim from a report (qa-kiff). It's a gate; the wording checks
+// around it are advice.
+func TestTheModeJudgeIsToldTheFacts(t *testing.T) {
+	ask := func(chose string, m modes, s said) string {
+		t.Helper()
+		v := &verdicts{}
+		s.chose = chose
+		if _, err := gradeSetup(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, owners["en"], s, "taf-refunds-x7k3", m); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range v.asked {
+			if strings.Contains(p, "states as fact which mode the owner's account itself is in") {
+				return p
+			}
+		}
+		t.Fatalf("the mode question wasn't asked: %d prompts", len(v.asked))
+		return ""
+	}
+	early := "Your account is in test mode, so nothing real moves."
+	s := said{messages: []string{early, "Every action is pinned to test mode, as you chose."}, beforeTest: []string{early}}
+	p := ask("test", modes{test: true, allTest: true}, s)
+	for _, want := range []string{"The connection reported that the owner's account is in test mode.", "The owner chose test mode for the calls.",
+		"1. [before the report] " + early, "2. Every action is pinned to test mode, as you chose."} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the question lacks %q:\n%s", want, p)
+		}
+	}
+	p = ask("", modes{none: true}, said{messages: []string{"The desk runs in live mode."}})
+	for _, want := range []string{"The vendor has no test or live mode at all", "The owner chose no mode."} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the desk's question lacks %q:\n%s", want, p)
+		}
+	}
+
+	// It gates, and the wording checks are advice.
+	checks, err := gradeSetup(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"states as fact which mode", "Is each numbered message concise?"}}, ModelID: "judge"},
+		owners["en"], said{messages: []string{early}}, "taf-refunds-x7k3", modes{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind := map[string]bool{}
+	for _, c := range checks {
+		kind[c.Name] = c.Advisory
+	}
+	if kind["states the account's mode only as the connection reports it"] || !kind["concise"] || !kind["asks test or live"] || kind["pins the mode the owner chose"] {
+		t.Fatalf("gate and advice: %v", kind)
+	}
+}
+
+// Advice is reported and never fails the setup chat; a gate check that fails
+// does (the owner, 6 Nov 2026: words and tone are never a gate).
+func TestAdviceNeverFailsTheSetup(t *testing.T) {
+	var log strings.Builder
+	tt := &test{cfg: config{log: &log, judge: &eval.Judge{}}, out: &redacting{w: &log}}
+	err := tt.reportSetup([]eval.CheckResult{
+		{Name: "concise", Advisory: true, Grade: eval.Grade{Why: "wordy"}},
+		{Name: "says what it's doing in one short line", Advisory: true, Grade: eval.Grade{Why: "line 1 (91 characters)"}},
+		{Name: "pins the mode the owner chose", Grade: eval.Grade{Pass: true}},
+	})
+	if err != nil || !strings.Contains(log.String(), "  advice  concise") || !strings.Contains(log.String(), "setup  1/1 gate, 2 advice") {
+		t.Fatalf("err %v, log %q", err, log.String())
+	}
+	log.Reset()
+	err = tt.reportSetup([]eval.CheckResult{
+		{Name: "concise", Advisory: true, Grade: eval.Grade{Why: "wordy"}},
+		{Name: "pins the mode the owner chose", Grade: eval.Grade{Why: "pinned to live mode"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "pins the mode the owner chose") || strings.Contains(err.Error(), "concise") {
+		t.Fatalf("a failed gate check: %v", err)
 	}
 }

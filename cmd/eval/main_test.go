@@ -64,10 +64,10 @@ func TestRunGradesAndComparesWithTheBaseline(t *testing.T) {
 		t.Fatalf("stdout %s: %v", stdout.String(), err)
 	}
 	r := results[0]
-	if r.Case != "refunds" || r.Session != "sesn_r" || r.CostMicroUSD != 1_400_000 || r.PerItemMicro != 200_000 || r.Passed != 3 || r.Graded != 7 { // an empty run claims no check it didn't make
+	if r.Case != "refunds" || r.Session != "sesn_r" || r.CostMicroUSD != 1_400_000 || r.PerItemMicro != 200_000 || r.Passed != 2 || r.Graded != 6 { // an empty run claims no check it didn't make
 		t.Errorf("result %+v", r)
 	}
-	if !strings.Contains(stderr.String(), "refunds  3/7  $1.4000 a run, $0.2000 an item, judge $0.0000") || !strings.Contains(stderr.String(), "FAIL  does the job: missed") {
+	if !strings.Contains(stderr.String(), "refunds  2/6  $1.4000 a run, $0.2000 an item, judge $0.0000") || !strings.Contains(stderr.String(), "FAIL  does the job: missed") {
 		t.Errorf("stderr:\n%s", stderr.String())
 	}
 	if b, _ := os.ReadFile(out); !bytes.Equal(b, stdout.Bytes()) {
@@ -81,9 +81,9 @@ func TestRunGradesAndComparesWithTheBaseline(t *testing.T) {
 		t.Fatalf("err %v; want a lower score to fail", err)
 	}
 
-	// A baseline from -repeat holds each case's mean, not its last run: 0.43
-	// is above a mean of 0.40, and below one of 0.45 (#78).
-	for scores, lower := range map[string]bool{"0.3, 0.5": false, "0.6, 0.3": true} {
+	// A baseline from -repeat holds each case's mean, not its last run: 0.33
+	// is above a mean of 0.30, and below one of 0.40 (#78).
+	for scores, lower := range map[string]bool{"0.2, 0.4": false, "0.5, 0.3": true} {
 		a, b, _ := strings.Cut(scores, ", ")
 		_ = os.WriteFile(base, []byte(`[{"case": "refunds", "score": `+a+`}, {"case": "refunds", "score": `+b+`}]`), 0o644)
 		err = run(context.Background(), []string{"-baseline", base, "refunds=sesn_r"}, io.Discard, io.Discard, env(map[string]string{"ANTHROPIC_API_KEY": "k"}))
@@ -124,7 +124,9 @@ func TestRunWithAJudge(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
 		t.Fatal(err)
 	}
-	if c := results[0].Checks[4]; !c.Pass || c.Skipped || results[0].JudgeMicroUSD != 5 {
+	// Two questions on the disclosure, whether it's there (a gate) and how it's
+	// phrased (advice), each by a majority of the judge's votes, at 5 a vote.
+	if c := results[0].Checks[4]; !c.Pass || c.Skipped || results[0].JudgeMicroUSD != 2*eval.Votes*5 {
 		t.Fatalf("disclosure %+v, judge cost %d", c, results[0].JudgeMicroUSD)
 	}
 }
@@ -757,7 +759,7 @@ func TestAPublicLogNamesNothing(t *testing.T) {
 		t.Errorf("stdout %q, want nothing", stdout.String())
 	}
 	log := stderr.String()
-	if !strings.Contains(log, "refunds  3/7  $1.4000 a run, $0.2000 an item, judge $0.0000  (…)") || !strings.Contains(log, "FAIL  does the job\n") {
+	if !strings.Contains(log, "refunds  2/6  $1.4000 a run, $0.2000 an item, judge $0.0000  (…)") || !strings.Contains(log, "FAIL  does the job\n") {
 		t.Errorf("log:\n%s", log)
 	}
 	if strings.Contains(log, "sesn_r") || strings.Contains(log, "missed") {
@@ -882,5 +884,29 @@ func TestANightTheCardsCantFundStopsBeforeTheFirstSeed(t *testing.T) {
 	}
 	if f.seeds != 0 || len(m.asked) != 0 {
 		t.Fatalf("seeded %d times and asked the model %d times before stopping", f.seeds, len(m.asked))
+	}
+}
+
+// Every gate check holds in every run: one run's failed gate check fails the
+// command, named by case and run; an advisory one never does (the owner, 6 Nov
+// 2026: results gate, words don't).
+func TestAGateCheckFailsTheRunAndAdviceDoesnt(t *testing.T) {
+	ok := eval.Result{Case: "chargebacks", Checks: []eval.CheckResult{{Name: "does the job", Grade: eval.Grade{Pass: true}}, {Name: "phrases the disclosure as the job asks", Advisory: true}}}
+	bad := eval.Result{Case: "chargebacks", Checks: []eval.CheckResult{{Name: "stops on held and refused", Grade: eval.Grade{Why: "wrote T-2005 again"}}}}
+	if got := gateFailures([]eval.Result{ok, ok}); len(got) != 0 {
+		t.Fatalf("advice failed the run: %v", got)
+	}
+	if got := gateFailures([]eval.Result{ok, bad}); len(got) != 1 || got[0] != "chargebacks run 2: stops on held and refused" {
+		t.Fatalf("got %v", got)
+	}
+	// Only with -gate, as the Eval runs it: a run that did nothing fails "does the job".
+	withReader(t, fakeReader{"sesn_r": emptyRun("sesn_r")})
+	keys := env(map[string]string{"ANTHROPIC_API_KEY": "k"})
+	if err := run(context.Background(), []string{"refunds=sesn_r"}, io.Discard, io.Discard, keys); err != nil {
+		t.Fatalf("without -gate: %v", err)
+	}
+	err := run(context.Background(), []string{"-gate", "refunds=sesn_r"}, io.Discard, io.Discard, keys)
+	if err == nil || !strings.Contains(err.Error(), "a gate check failed: refunds run 1: does the job") {
+		t.Fatalf("with -gate: %v", err)
 	}
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -163,6 +162,85 @@ type said struct {
 	factsAt     int
 	factsMarked bool
 	afterFacts  []string
+	// chose is the mode the owner chose, by answering a card that offered
+	// test and live: "test" (scripted, kiff/tafs#89), or "" when they chose none.
+	chose string
+}
+
+// reportedMode is what the connection reports of the account's mode: the fake
+// vendor and Stripe's test account report test, the desk has none.
+func reportedMode(m modes) string {
+	if m.none {
+		return ""
+	}
+	return "test"
+}
+
+// pinned is the gate's fact for the mode: what the grant pins is the mode the
+// owner chose and the connection reports, or nothing. A pin with no choice
+// made, one the owner didn't choose, or one on a vendor with no mode, fails;
+// so does a tool that acts left unpinned once the owner chose test, since on
+// a live account it would run live (agentgabo on #350).
+func pinned(chose string, m modes) eval.Grade {
+	var why []string
+	if len(m.live) > 0 {
+		why = append(why, "pinned to live mode, though the owner chose "+choseOr(chose)+": "+strings.Join(m.live, ", "))
+	}
+	if chose == "test" && reportedMode(m) != "" && !m.allTest {
+		why = append(why, "the owner chose test, but not every tool that acts is pinned to it")
+	}
+	if m.test && chose == "" {
+		why = append(why, "pinned to test mode, though the owner chose no mode")
+	}
+	if (m.test || len(m.live) > 0) && reportedMode(m) == "" {
+		why = append(why, "pinned a mode on a vendor that has none")
+	}
+	if len(why) > 0 {
+		return eval.Grade{Why: strings.Join(why, "; ")}
+	}
+	return eval.Grade{Pass: true}
+}
+
+func choseOr(chose string) string {
+	if chose == "" {
+		return "none"
+	}
+	return chose
+}
+
+// modeRule is the judged mode check's question, with the facts it needs.
+func modeRule(chose string, m modes) string {
+	reported := "The connection reported that the owner's account is in test mode."
+	if reportedMode(m) == "" {
+		reported = "The vendor has no test or live mode at all, and the connection reported none."
+	}
+	choice := "The owner chose test mode for the calls."
+	if chose == "" {
+		choice = "The owner chose no mode."
+	}
+	return reported + " " + choice + " Texts marked [before the report] were written before the connection reported anything of the account's mode. " +
+		"No numbered text states as fact which mode the owner's account itself is in, test or live, unless it says what the connection reported, after it reported it. " +
+		"Saying the calls or actions are pinned to a mode, asking which mode, offering both, a condition (\"if\", \"whether\", \"si\"), " +
+		"or a next step (\"before going live, check…\") states nothing about the account. Pass if no text does; if one does, quote it."
+}
+
+// beforeMarked is texts numbered for the judge, each written before the
+// connection reported a mode marked so.
+func beforeMarked(texts, before []string) string {
+	left := map[string]int{}
+	for _, b := range before {
+		left[b]++
+	}
+	var b strings.Builder
+	for i, t := range texts {
+		mark := ""
+		if left[t] > 0 {
+			left[t]--
+			mark = "[before the report] "
+		}
+		fmt.Fprintf(&b, "%d. %s%s\n", i+1, mark, strings.Join(strings.Fields(t), " "))
+	}
+	return b.String()
 }
 
 // refusedRead is the tool named in planque's refusal of a tool asked for as
@@ -343,10 +421,16 @@ func uncheckedMoney(tools []grantTool) []string {
 	return out
 }
 
-// gradeSetup grades what Setup wrote, and the modes it pinned.
+// gradeSetup grades what Setup wrote, and the modes it pinned. A gate check is
+// a result, from the record, or a sentence that could mislead about one; an
+// advisory one is words or tone, reported and never failing the run (the owner,
+// 6 Nov 2026).
 func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent string, m modes) ([]eval.CheckResult, error) {
 	var out []eval.CheckResult
-	add := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
+	gate := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
+	advice := func(name string, g eval.Grade) {
+		out = append(out, eval.CheckResult{Name: name, Advisory: true, Grade: g})
+	}
 
 	// 1. The owner's language, in everything Setup wrote.
 	g, err := j.AskMajority(ctx, fmt.Sprintf("Every numbered text below is written in %s. Proper names, product and company names, ids, "+
@@ -354,7 +438,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	if err != nil {
 		return nil, err
 	}
-	add("in the owner's language", g)
+	advice("in the owner's language", g)
 
 	// 2. Concise, as judged for what each message had to say. Its lines
 	// aren't messages: a message opens with the outcome, never with one. Nor is
@@ -363,14 +447,14 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	// 42136777522: "I'm checking which tools your account already connects…",
 	// then a card): it's what the line rule asks for, never a message's opening.
 	if judged := withoutIntros(s.messages, s.intros); len(judged) == 0 {
-		add("concise", eval.Grade{Pass: true})
+		advice("concise", eval.Grade{Pass: true})
 	} else {
 		if g, err = j.AskMajority(ctx, Concise, numbered(judged)); err != nil {
 			return nil, err
 		}
-		add("concise", g)
+		advice("concise", g)
 	}
-	add("says what it's doing in one short line", shortLines(s.lines))
+	advice("says what it's doing in one short line", shortLines(s.lines))
 
 	// 3. It never asks the owner for an id, a key or JSON: in a message or in
 	// a component (a confirm can ask too).
@@ -381,13 +465,13 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	if err != nil {
 		return nil, err
 	}
-	add("asks for no id", g)
+	advice("asks for no id", g)
 
 	// 4. It names the taf's agent from the taf's name (kiff/tafs#50).
 	if want := slug(o.taf); strings.Contains(tafAgent, want) {
-		add("names the agent from the taf's name", eval.Grade{Pass: true})
+		gate("names the agent from the taf's name", eval.Grade{Pass: true})
 	} else {
-		add("names the agent from the taf's name", eval.Grade{Why: fmt.Sprintf("the agent's id doesn't carry %q", want)})
+		gate("names the agent from the taf's name", eval.Grade{Why: fmt.Sprintf("the agent's id doesn't carry %q", want)})
 	}
 
 	// 5. A choice is offered as one to tap, not as a list to type back.
@@ -398,7 +482,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	if err != nil {
 		return nil, err
 	}
-	add("offers choices to tap", g)
+	advice("offers choices to tap", g)
 
 	// 6. The owner never meets planque (kiff/tafs#82): they connect tafs.
 	var named []string
@@ -408,9 +492,9 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		}
 	}
 	if len(named) > 0 {
-		add("names no planque", eval.Grade{Why: strings.Join(named, ", ") + " names planque"})
+		gate("names no planque", eval.Grade{Why: strings.Join(named, ", ") + " names planque"})
 	} else {
-		add("names no planque", eval.Grade{Pass: true})
+		gate("names no planque", eval.Grade{Pass: true})
 	}
 
 	// 7. A plan, once shown, keeps its steps: only their status moves
@@ -433,44 +517,45 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		}
 	}
 	if len(moved) > 0 {
-		add("keeps its plan", eval.Grade{Why: "the plan " + strings.Join(moved, "; ")})
+		gate("keeps its plan", eval.Grade{Why: "the plan " + strings.Join(moved, "; ")})
 	} else {
-		add("keeps its plan", eval.Grade{Pass: true})
+		gate("keeps its plan", eval.Grade{Pass: true})
 	}
 
-	// 8. Test or live is the owner's choice (kiff/tafs#89): Setup asks, with
-	// both to tap, and pins only what the owner chose (test, scripted).
+	// 8. Test or live is the owner's to choose (kiff/tafs#89, #555). The result is
+	// the grant's pins, against the owner's answer and what the connection reports:
+	// a fact. Whether Coach offered both to tap is wording, as its options say it.
 	asked := false
 	for _, id := range s.order {
 		if _, ok := modeChoice(s.cards[id]); ok {
 			asked = true
 		}
 	}
-	// Nothing is read from the owner's account before they approve the
-	// tools (kiff/planque#23), so Setup asks.
 	if asked || m.none {
-		add("asks test or live", eval.Grade{Pass: true})
+		advice("asks test or live", eval.Grade{Pass: true})
 	} else {
-		add("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap"})
+		advice("asks test or live", eval.Grade{Why: "no choice between test and live mode was shown to tap"})
 	}
-	if len(m.live) > 0 {
-		add("pins the mode the owner chose", eval.Grade{Why: "pinned to live mode, though the owner chose test: " + strings.Join(m.live, ", ")})
+	gate("pins the mode the owner chose", pinned(s.chose, m))
+	// 8b. A sentence that could mislead about a result: the account's own mode
+	// stated as fact, other than as the connection reported it. Judged by a
+	// majority, with the facts in the question, since a judge can't tell a claim
+	// from a report without them (qa-kiff). This replaced a matcher on Coach's
+	// words that kept missing its phrasings (Eval 42184043553's "Todas sus
+	// acciones…", the fourth).
+	if texts := s.statements(); len(texts) == 0 {
+		gate("states the account's mode only as the connection reports it", eval.Grade{Pass: true})
 	} else {
-		add("pins the mode the owner chose", eval.Grade{Pass: true})
-	}
-	// 8b. Setup states only the mode the connection reports (kiff/tafs#525's core rule,
-	// after recipe 3 on the owner's phone): the fake vendor reports test, the desk none.
-	// Only what Setup stated: a question's options are the owner's choice.
-	if claim := modeClaim(s, m); claim != "" {
-		add("states only the mode the connection reports", eval.Grade{Why: "a mode the connection doesn't report, stated as fact: " + oneLine(claim)})
-	} else {
-		add("states only the mode the connection reports", eval.Grade{Pass: true})
+		if g, err = j.AskMajority(ctx, modeRule(s.chose, m), beforeMarked(texts, s.beforeTest)); err != nil {
+			return nil, err
+		}
+		gate("states the account's mode only as the connection reports it", g)
 	}
 	// 8c. A limit the owner gave is asked once (recipe 3 asked "past 20 a day" twice):
 	// graded against the limits the owner of this conversation gave, on what Setup wrote
 	// only after the owner gave them; Coach's question for them comes before, and isn't one.
 	if len(s.afterFacts) == 0 {
-		add("asks each limit once", eval.Grade{Pass: true})
+		advice("asks each limit once", eval.Grade{Pass: true})
 	} else {
 		g, err = j.AskMajority(ctx, fmt.Sprintf("In this conversation, and only this one, the owner told Setup these limits once, in their own words: %q. "+
 			"Every numbered text below is what Setup wrote after the owner gave them. Setup does not ask the owner again for a limit they already gave. "+
@@ -479,25 +564,25 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		if err != nil {
 			return nil, err
 		}
-		add("asks each limit once", g)
+		advice("asks each limit once", g)
 	}
 
 	// 9. A tool that changes something is never asked for as one that only
 	// reads (kiff/agents#139): the approval would tell the owner it reads.
 	// planque refuses it, so this counts the attempts.
 	if len(s.writesAsReads) > 0 {
-		add("marks no write read-only", eval.Grade{Why: "asked for as read-only, though the vendor doesn't mark it so: " + strings.Join(s.writesAsReads, ", ")})
+		gate("marks no write read-only", eval.Grade{Why: "asked for as read-only, though the vendor doesn't mark it so: " + strings.Join(s.writesAsReads, ", ")})
 	} else {
-		add("marks no write read-only", eval.Grade{Pass: true})
+		gate("marks no write read-only", eval.Grade{Pass: true})
 	}
 
 	// 10. A tool that moves money names what it acts on and the read that
 	// says its currency, so KIFF never counts one currency as another
 	// and the owner's record names the payment.
 	if len(m.unchecked) > 0 {
-		add("names each payment and its currency", eval.Grade{Why: "moves money without its resource and currency read: " + strings.Join(m.unchecked, ", ")})
+		gate("names each payment and its currency", eval.Grade{Why: "moves money without its resource and currency read: " + strings.Join(m.unchecked, ", ")})
 	} else {
-		add("names each payment and its currency", eval.Grade{Pass: true})
+		gate("names each payment and its currency", eval.Grade{Pass: true})
 	}
 
 	// 11. Questions that don't depend on each other are asked together, in
@@ -512,9 +597,9 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 		if err != nil {
 			return nil, err
 		}
-		add("asks its questions together", g)
+		advice("asks its questions together", g)
 	} else {
-		add("asks its questions together", eval.Grade{Pass: true})
+		advice("asks its questions together", eval.Grade{Pass: true})
 	}
 	return out, nil
 }
@@ -631,227 +716,6 @@ func choice(text string, options []option) string {
 		labels = append(labels, o.Label)
 	}
 	return strings.TrimSpace(text + " [" + strings.Join(labels, " | ") + "]")
-}
-
-// modeClaim is the first text where Setup states a mode the connection
-// doesn't report, "" when none (kiff/tafs#525's core rule). The fake vendor
-// reports test; the desk reports none (m.none). Only what Setup stated
-// counts: a question's options are the owner's choice. Test is reported once
-// a tool result said so (said.beforeTest holds what came before), so before
-// it any mode is a claim, with one exception: when every tool that acts is
-// pinned to test, as the owner chose, the sentence Coach's rule prescribes
-// (tafs#542: "Every call is pinned to test mode, as you chose.") is what the
-// calls do. Only that sentence, matched on its fixed parts: any other that
-// names a mode before the first read is a claim (agentgabo on #325).
-func modeClaim(s said, m modes) string {
-	if claim := statesMode(s.statements(), !m.none); claim != "" || m.none {
-		return claim
-	}
-	pinned := m.allTest && len(m.live) == 0
-	for _, text := range s.beforeTest {
-		for _, sentence := range sentences(text) {
-			// A sentence that only asks or supposes states nothing, whatever it names.
-			if strings.TrimSpace(asStated(sentence)) == "" {
-				continue
-			}
-			if pinned {
-				if clean, found := pinnedCalls(sentence); found {
-					if clean {
-						continue
-					}
-					return text
-				}
-			}
-			if namesMode(sentence) {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
-// callsPinned is the prescribed sentence's fixed parts: the calls ("every
-// call", "every Stripe call", "cada llamada", "las llamadas"), then pinned
-// or fixed ("fijada"), then to test ("to test mode", "en modo de prueba").
-var callsPinned = regexp.MustCompile(`(?i)\b(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\b(?:pinned|fixed|set|kept|locked|fijad[ao]s?|quedan?)\s+(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
-
-// pinnedCallsActive is the same in the active voice: "I pinned every call to
-// test mode", "Fijé cada llamada en modo de prueba" (agentgabo on #325).
-var pinnedCallsActive = regexp.MustCompile(`(?i)\b(?:pinned|fixed|set|kept|locked|fij[ée]|fijamos|he fijado|dej[ée])\s+(?:(?:every|each|all(?: the)?)\s+(?:\pL+\s+)?calls?|(?:cada|todas las|las)\s+llamadas?)\b(.*?)\s*\b(?:to|in|on|at|en|a|al)\s+(?:(?:the\s+)?(?:test|sandbox)(?:\s+mode)?|modo\s+(?:de\s+)?(?:prueba|test|sandbox)|prueba)\b`)
-
-// nextStep is what comes after, not what is ("until you switch it to live",
-// "hasta que elijas pasar a real"), and noMoney what a test call doesn't
-// move ("no real money", "sin mover dinero real", "nothing real moves").
-var nextStep = regexp.MustCompile(`(?i)\b(?:until|before|once|when|hasta que|antes de|cuando)\b.*$`)
-var noMoney = regexp.MustCompile(`(?i)\b(?:no|sin|ni)\s+(?:\pL+\s+){0,2}(?:real money|dinero real)\b|n't\s+move\s+(?:any\s+)?real money\b|\b(?:nothing|nada)\s+real\b`)
-
-// modeWord is any mode named, vendorWord the vendor (by the fake's name) or
-// its connection, accountWord the owner's account.
-var modeWord = regexp.MustCompile(`(?i)\b(?:test|live|prueba|real|sandbox)\b`)
-var vendorWord = regexp.MustCompile(`(?i)\b(?:stripe|connection|conexi\x{f3}n)\b`)
-var accountWord = regexp.MustCompile(`(?i)\b(?:account|cuenta)\b`)
-
-// pinnedCalls reports whether a sentence has the prescribed sentence's fixed
-// parts (found), and whether it says nothing else of a mode (clean): before
-// the calls no mode, vendor or account; between the calls and "pinned" only
-// where they go; and after it no mode, vendor or account, but for a next step
-// that names neither, or the money a test call doesn't move. So "Your Stripe
-// is in test mode, and every call…", "…, and your Stripe is in test mode",
-// "…; your Stripe too", "…, as is your Stripe" and "…, as it was when your
-// Stripe was in test mode" are claims (qa-kiff on #325).
-func pinnedCalls(sentence string) (clean, found bool) {
-	loc := callsPinned.FindStringSubmatchIndex(sentence)
-	if loc == nil {
-		loc = pinnedCallsActive.FindStringSubmatchIndex(sentence)
-	}
-	if loc == nil {
-		return false, false
-	}
-	before, between, rest := sentence[:loc[0]], sentence[loc[2]:loc[3]], sentence[loc[1]:]
-	if modeWord.MatchString(before) || vendorWord.MatchString(before) || accountWord.MatchString(before) ||
-		modeWord.MatchString(between) || accountWord.MatchString(between) {
-		return false, true
-	}
-	if step := nextStep.FindString(rest); step != "" && !vendorWord.MatchString(step) && !accountWord.MatchString(step) {
-		rest = strings.TrimSuffix(rest, step)
-	}
-	rest = noMoney.ReplaceAllString(rest, "")
-	return !modeWord.MatchString(rest) && !vendorWord.MatchString(rest) && !accountWord.MatchString(rest), true
-}
-
-// inMode is a mode said as where something is ("Stripe answers in test"),
-// and isMode as what something is ("Stripe is live", "está en vivo"), which
-// claimsMode's phrases ("test mode") miss (qa-kiff on #325).
-var inMode = regexp.MustCompile(`(?i)\b(?:in|en)\s+(?:test|live|sandbox|prueba)\b`)
-var isMode = regexp.MustCompile(`(?i)(?:\b(?:is|are|was|were)|'s|'re)\s+(?:now\s+)?(?:live|test|sandbox)\b|\b(?:está|están|estaba|estaban)\s+(?:ya\s+)?en\s+(?:vivo|real|producción)\b|\b(?:es|son|era)\s+de\s+prueba\b`)
-
-// conditional is a sentence that opens by asking or supposing ("Whether the account
-// itself is test or live, check it", "Si la cuenta es de prueba o real…"),
-// and orOther a mode offered with its other ("test or live"): neither states
-// what something is.
-var conditional = regexp.MustCompile(`(?i)^\W*(?:whether|if|si)\b`)
-var orOther = regexp.MustCompile(`(?i)^\s+(?:or|o)\s`)
-
-// asStated is what a sentence states. An opening supposition ("Whether the
-// account itself is test or live,", "Si la cuenta…,") is dropped up to its first
-// comma or colon, and the rest is read; with nothing after it, nothing is
-// stated. A next step ("…, before going to live mode", "…antes de pasar a modo
-// real") is dropped only when something comes before it and it names neither
-// the vendor nor the account. So "If you're wondering, your Stripe is in live
-// mode." and "Before you go on, your Stripe is in live mode." still state it
-// (agentgabo on Eval 42125870057; qa-kiff and agentgabo on #335).
-func asStated(sentence string) string {
-	// Both modes offered as alternatives ("¿Modo de prueba o real?", "test or live") state
-	// neither: the owner picks. One mode said alone, even in a question, is still read
-	// (PM and agentgabo on Eval 42132590612).
-	sentence = bothModes.ReplaceAllString(sentence, "")
-	// A question asks, and states nothing; what comes before it is still stated. In
-	// Spanish, before its ¿ ("Tu cuenta está en modo real, ¿no?"); in English, a question
-	// that doesn't open with a question word states its first clause ("Your Stripe is
-	// live, right?", "Since your Stripe is live, which mode?") (qa-kiff on Eval 42132590612).
-	t := strings.TrimSpace(sentence)
-	// A question that names the vendor or the account with a mode still says what it's in
-	// ("Did you know your Stripe is in live mode?", "¿Quieres mantener tu cuenta en modo
-	// real?"), unless the vendor is only where the calls go ("¿Fijo cada llamada a tu Stripe
-	// en modo de prueba?"). Both modes offered were taken out above (qa-kiff on #340).
-	if q := strings.Contains(t, "¿") || strings.HasSuffix(t, "?"); q && modeWord.MatchString(t) &&
-		(vendorWord.MatchString(callsAt.ReplaceAllString(t, "")) || accountWord.MatchString(t)) {
-		return strings.Trim(t, "¿?")
-	}
-	if i := strings.Index(t, "¿"); i >= 0 {
-		if strings.Trim(t[:i], " ,;:") == "" {
-			return ""
-		}
-		sentence = t[:i]
-	} else if strings.HasSuffix(t, "?") {
-		i := strings.IndexAny(t, ",;:")
-		if askWord.MatchString(t) || i < 0 {
-			return ""
-		}
-		sentence = t[:i]
-	}
-	if conditional.MatchString(sentence) {
-		i := strings.IndexAny(sentence, ",:;")
-		if i < 0 {
-			return ""
-		}
-		sentence = sentence[i+1:]
-	}
-	loc := nextStep.FindStringIndex(sentence)
-	if loc == nil || strings.TrimSpace(sentence[:loc[0]]) == "" {
-		return sentence
-	}
-	if step := sentence[loc[0]:]; vendorWord.MatchString(step) || accountWord.MatchString(step) {
-		return sentence
-	}
-	return sentence[:loc[0]]
-}
-
-// callsAt is the vendor named as where the calls go ("every call to your Stripe",
-// "cada llamada a tu Stripe", "las llamadas de Stripe"), which says nothing of its mode.
-var callsAt = regexp.MustCompile(`(?i)\b(?:calls?|llamadas?)\s+(?:to|on|for|a|de|en|para)\s+(?:(?:your|the|this|tu|su|la|esta)\s+)?(?:stripe|connection|conexi\x{f3}n)\b`)
-
-// askWord opens an English question that asks, from its first word: it states
-// nothing ("Shall we start in test mode?", "Which one, test or live?").
-var askWord = regexp.MustCompile(`(?i)^\W*(?:do|does|did|is|are|was|were|should|shall|would|will|can|could|may|might|must|have|has|which|what|how|when|where|who|why|want|ready)\b`)
-
-// bothModes is both modes offered as alternatives, in either order: "modo de
-// prueba o real", "test mode or live mode", "test / live", "real o prueba".
-var bothModes = regexp.MustCompile(`(?i)` + modeOption + `\s*,?\s*(?:or|o|u|/)\s+` + modeOption)
-
-// modeOption is one mode as an option: "modo de prueba", "test mode", "live", "el modo real".
-const modeOption = `(?:(?:el|la|in|en)\s+)?(?:modo\s+(?:de\s+)?)?\b(?:prueba|test|real|live|sandbox|producción|production)\b(?:\s+mode)?`
-
-// statesMode is the first of texts with a sentence that states a mode
-// claimsMode counts, as it states it (asStated); "" when none.
-func statesMode(texts []string, reportsTest bool) string {
-	for _, text := range texts {
-		for _, sentence := range sentences(text) {
-			if s := asStated(sentence); s != "" && claimsMode([]string{s}, reportsTest) != "" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
-// namesMode reports whether a sentence states a mode as fact.
-func namesMode(sentence string) bool {
-	sentence = asStated(sentence)
-	if sentence == "" {
-		return false
-	}
-	if claimsMode([]string{sentence}, false) != "" || inMode.MatchString(sentence) {
-		return true
-	}
-	for _, m := range isMode.FindAllStringIndex(sentence, -1) {
-		if !orOther.MatchString(sentence[m[1]:]) {
-			return true
-		}
-	}
-	return false
-}
-
-// sentenceEnd ends a sentence: a full stop, an exclamation or a question.
-var sentenceEnd = regexp.MustCompile(`[.!?](\s+|$)`)
-
-// sentences splits a text into its sentences and lines, each with its closing
-// mark, so a question can be told from a statement (qa-kiff on Eval 42132590612).
-func sentences(text string) []string {
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		start := 0
-		for _, m := range sentenceEnd.FindAllStringIndex(line, -1) {
-			if part := strings.TrimSpace(line[start : m[0]+1]); part != "" {
-				out = append(out, part)
-			}
-			start = m[1]
-		}
-		if rest := strings.TrimSpace(line[start:]); rest != "" {
-			out = append(out, rest)
-		}
-	}
-	return out
 }
 
 // withoutIntros is messages without the intros among them, each taken out

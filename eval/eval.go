@@ -43,6 +43,11 @@ type Grade struct {
 // Check grades one thing a good run does.
 type Check struct {
 	Name string
+	// Advisory is a check of words or tone: reported, never failing the run.
+	// The gate tests results, from the run's record, and the sentences that
+	// could mislead about them; how the agent phrases the rest is advice (the
+	// owner, 6 Nov 2026).
+	Advisory bool
 	// Grade reads the run. j is nil when no judge is configured; a check that
 	// needs one returns a skipped Grade.
 	Grade func(ctx context.Context, r Run, j *Judge) (Grade, error)
@@ -63,11 +68,24 @@ type Case struct {
 // CheckResult is a check's name and its grade.
 type CheckResult struct {
 	Name string `json:"name"`
+	// Advisory: reported, never counted in the score nor failing the run.
+	Advisory bool `json:"advisory,omitempty"`
 	Grade
 }
 
-// Result is a case graded on one run. Score is the share of graded checks
-// that passed, from 0 to 1. Costs are in millionths of a US dollar: the run's,
+// Failed is the gate checks of r that failed: graded, not advisory.
+func (r Result) Failed() []string {
+	var out []string
+	for _, c := range r.Checks {
+		if !c.Advisory && !c.Skipped && !c.Pass {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// Result is a case graded on one run. Score is the share of graded gate
+// checks that passed, from 0 to 1: an advisory check is listed, not counted. Costs are in millionths of a US dollar: the run's,
 // the run's per item, and the judge's, kept apart so judging never counts
 // against the agent.
 type Result struct {
@@ -155,8 +173,8 @@ func (c Case) Grade(ctx context.Context, r Run, j *Judge) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("eval: %s: %s: %w", c.Name, ch.Name, err)
 		}
-		res.Checks = append(res.Checks, CheckResult{Name: ch.Name, Grade: g})
-		if g.Skipped {
+		res.Checks = append(res.Checks, CheckResult{Name: ch.Name, Advisory: ch.Advisory, Grade: g})
+		if g.Skipped || ch.Advisory {
 			continue
 		}
 		res.Graded++

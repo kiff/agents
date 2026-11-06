@@ -5,8 +5,12 @@ run-name: ${{ (inputs.model != '' || inputs.effort != '') && format('Eval, overr
 # The eval loop (#78): each night, the Chargebacks case runs on this commit's
 # runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
-# eval/baseline.json. The agent's KIFF key, the model and Stripe's test mode
-# are real.
+# eval/baseline.json, or on any gate check that fails in either run (-gate).
+# The agent's KIFF key, the model and Stripe's test mode are real.
+#
+# The gate tests results, and the sentences that could mislead about them:
+# what was done, what the record says, what the grant pins. Words and tone
+# are advice, reported and never failing the run (the owner, 6 Nov 2026).
 #
 # This log is public, and so are a public repository's artifacts. So the eval
 # prints only each run's score, cost and failed checks' names (-public), and
@@ -129,22 +133,27 @@ jobs:
           EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
         run: |
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat "${{ inputs.repeat || '2' }}" \
-            -baseline eval/baseline.json \
+            -baseline eval/baseline.json -gate \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results.json -report report.md chargebacks
-      - name: Setup, in Spanish, graded
+      - name: Setup with the taf, in English, graded
         # The setup agent as kiff/tafs defines it (setup.json), against prod
         # KIFF, planque and the fake vendor, with the test phone's signed
-        # approvals (cmd/e2e). The owner writes in Spanish; the chat is
-        # graded: the owner's language, concise messages, no id asked, the agent
-        # named from the taf's name, choices to tap. The taf the owner then uses
-        # is kiff/tafs' Refunds (refunds.json), whose answers in the chat must be
-        # concise. The chat's transcript (setup.md) goes only to the private
-        # bucket, so a failed chat can be read afterwards. Then the improve
-        # case (kiff/tafs#107): Setup makes the taf's next version, a trial
-        # decides it, the owner switches, it runs. A failed check fails the
-        # night. Coach runs at the standard output, as kiff/tafs defines it
-        # since 5 Nov 2026; the judge is Sonnet, as for chargebacks.
+        # approvals (cmd/e2e). The owner writes in English. The gate is the
+        # results: what the grant pins (the mode the owner chose, and only
+        # one the connection reports), its plan kept, no planque named, no
+        # mode stated as the account's that the connection didn't report,
+        # and the taf's answers in the chat, each judged against its record:
+        # nothing said done, or not done, that the record contradicts. The
+        # taf is kiff/tafs' Refunds (refunds.json). The words (concise, one
+        # short line, choices to tap, no id asked, each limit asked once, the
+        # wording after a hold) are advice. The chat's transcript (setup.md)
+        # goes only to the private bucket, so a failed chat can be read
+        # afterwards. Then the improve case (kiff/tafs#107): Setup makes the
+        # taf's next version, a trial decides it, the owner switches, it
+        # runs. Coach runs at the standard output, as kiff/tafs defines it;
+        # the judge is Sonnet, as for chargebacks, and its judged checks take
+        # a majority of three.
         if: steps.unchanged.outputs.skip != 'true' && (always())
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -153,7 +162,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner es -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner en -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Setup on the second vendor, a desk by its key
         # The same Setup on a vendor that isn't payments and has no MCP server
         # (kiff/agents#293): the fake vendor's support desk, by its REST API and
