@@ -258,3 +258,34 @@ func TestAResultSaysWhoItWritesForAndWhereNoCreditGoes(t *testing.T) {
 		t.Fatalf("an improvement's name: %+v", r)
 	}
 }
+
+// A taf shows its own card alone: ask_coach, a setting's request for Coach,
+// which waits for nothing; Coach's tool, as it was, shows none (kiff/tafs#476,
+// gap 15).
+func TestATafShowsOnlyItsOwnCards(t *testing.T) {
+	taf := show.New(show.AskCoach)
+	spec := taf.Spec()
+	if !strings.Contains(string(spec.InputSchema), `"enum":["ask_coach"]`) || strings.Contains(spec.Description, "confirm") {
+		t.Fatalf("a taf's spec: %s %s", spec.InputSchema, spec.Description)
+	}
+	r, err := taf.Call(context.Background(), json.RawMessage(`{"type":"ask_coach","id":"key","text":"Reconnect Agent Mail with a new key"}`))
+	if err != nil || r.IsError || r.State != "" || !strings.Contains(string(r.Component), `"text":"Reconnect Agent Mail with a new key"`) || strings.Contains(string(r.Component), `"waits"`) {
+		t.Fatalf("ask_coach: %+v %v", r, err)
+	}
+	for _, in := range []string{
+		`{"type":"confirm","id":"c","text":"Refund?","options":[{"value":"y","label":"Yes"},{"value":"n","label":"No"}]}`,
+		`{"type":"ask_coach","id":"k","text":""}`,
+		`{"type":"ask_coach","id":"k","text":"` + strings.Repeat("x", show.MaxAsk+1) + `"}`,
+	} {
+		if r, _ := taf.Call(context.Background(), json.RawMessage(in)); !r.IsError {
+			t.Errorf("a taf showed %s", in)
+		}
+	}
+	coach := show.New()
+	if r, _ := coach.Call(context.Background(), json.RawMessage(`{"type":"ask_coach","id":"k","text":"x"}`)); !r.IsError {
+		t.Fatal("Coach showed ask_coach")
+	}
+	if strings.Contains(coach.Spec().Description, "ask_coach") || strings.Contains(string(coach.Spec().InputSchema), "ask_coach") {
+		t.Fatal("Coach's spec changed")
+	}
+}

@@ -124,6 +124,14 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
 - A failed run is stored ERROR with a public message (`runner.FailedBuild`,
   `FailedStart`, `FailedRun`, `FailedTime`); the cause is returned, never
   stored.
+- **Why a call failed, after the run.** A run drops its calls' results when
+  it ends, but each call's `Called` line is kept, and a call that wasn't done
+  keeps its result's words as its `reason`: on one line, at most 300
+  characters, with anything shaped like a credential hidden first (a key's
+  known prefix, a Bearer token, a JWT, a run of 24 or more base64 or hex
+  characters). Later runs read it on the record line, quoted as the tool's
+  answer: data, never what was done. It can still name what the vendor's
+  error named, such as a customer, as the result did while the run lived.
 - **Dates.** Each run reads today's date just before its input, in UTC:
   "Today is Friday 6 November 2026 (2026-11-06), 10:15 UTC."
   (`runner.Today`). It's never recorded, so a later run reads only its own.

@@ -94,6 +94,11 @@ of its eight kinds):
   it already, or carries none of them, is sent as it was. What the call
   sends, its record and a hold's stored input carry the line; the model's
   own turn goes back to it as it wrote it.
+- `show_types` (optional, with `show`): the cards the agent shows instead
+  of Coach's set, from a taf's own: `ask_coach`, a line and an Ask Coach
+  button that opens Coach on the taf with the owner's request written in.
+  A taf shows it for a setting only Coach changes (a connection or its key,
+  its Card, tools or schedule). It waits for nothing.
 - `credit` (optional): `{line, after, in: [{tool, fields}]}`, as `disclose`
   but its own line ("Built with tafs."), with its own check, so neither line
   is added twice. It goes in after the disclosure: on the same line when the

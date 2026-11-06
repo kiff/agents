@@ -40,8 +40,21 @@ const (
 	MaxQuestionOptions = 5
 )
 
-// Types are the components the app draws.
+// Types are the components the app draws, the ones an agent shows unless
+// its definition names others (New).
 var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result", "knob", "drive"}
+
+// AskCoach is a taf's card for a setting only Coach changes: a line, and an
+// Ask Coach button that opens Coach on the taf with the owner's request
+// written in (kiff/tafs#476, gap 15). It waits for nothing.
+const AskCoach = "ask_coach"
+
+// TafTypes are the cards a definition may name for its agent alone, in
+// place of Types (registry Definition.ShowTypes).
+var TafTypes = []string{AskCoach}
+
+// MaxAsk bounds an ask_coach card's request.
+const MaxAsk = 500
 
 var (
 	idPattern  = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
@@ -255,13 +268,23 @@ var fields = map[string][]string{
 	"result":    {"taf", "text", "tools", "yes"},
 	"knob":      {"taf_id", "version"}, // no agent words: the app draws the dial's draft as tafs cloud words it
 	"drive":     {"text"},              // the request, in the owner's words: the app's approval prompt names it (kiff/tafs#544)
+	AskCoach:    {"text"},              // the owner's request for Coach, in their words: the app writes it into Coach's box
 }
 
-// Tool shows components.
-type Tool struct{}
+// Tool shows components: those of types, or Types when it names none.
+type Tool struct{ types []string }
 
-// New returns the show tool.
-func New() Tool { return Tool{} }
+// New returns the show tool, for types alone when given (a taf's
+// ask_coach); with none, for Types, as Coach has it.
+func New(types ...string) Tool { return Tool{types: types} }
+
+// allowed are the types t shows.
+func (t Tool) allowed() []string {
+	if len(t.types) == 0 {
+		return Types
+	}
+	return t.types
+}
 
 // Access: showing changes only the agent's own chat.
 func (Tool) Access() tool.Access { return tool.Own }
@@ -270,7 +293,10 @@ func (Tool) Gateway() bool       { return false }
 // Shows: the show tool's components go to the owner's chat.
 func (Tool) Shows() bool { return true }
 
-func (Tool) Spec() model.ToolSpec {
+func (t Tool) Spec() model.ToolSpec {
+	if len(t.types) > 0 {
+		return t.tafSpec()
+	}
 	return model.ToolSpec{
 		Name: Name,
 		Description: "Show the owner a component in the chat; the app draws it. Showing an id again replaces that component in place (to advance steps). " +
@@ -329,10 +355,13 @@ func (Tool) Spec() model.ToolSpec {
 
 // Call checks the component and returns it to be recorded. A component that
 // doesn't fit is an error result naming what to fix.
-func (Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+func (t Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
 	c, err := Parse(input)
 	if err != nil {
 		return tool.Result{Text: err.Error(), IsError: true}, nil
+	}
+	if !slices.Contains(t.allowed(), c.Type) {
+		return tool.Result{Text: "type must be one of " + strings.Join(t.allowed(), ", "), IsError: true}, nil
 	}
 	if err := stepsDone(c, tool.OutcomesFrom(ctx)); err != nil {
 		return tool.Result{Text: err.Error(), IsError: true}, nil
@@ -378,6 +407,30 @@ func (c *Component) clean() {
 	}
 }
 
+// tafSpec is the show tool for a taf's own cards: ask_coach alone, today.
+func (t Tool) tafSpec() model.ToolSpec {
+	return model.ToolSpec{
+		Name: Name,
+		Description: "Show the owner a card in your chat; the app draws it. " +
+			"ask_coach {id, text}: when the owner asks you to change a setting (connect an app or give it a new key, change your Card, your tools or your schedule), " +
+			"that's Coach's to do, never yours: say so in one line, and show this card with their request, in their words, as text. " +
+			"The app's Ask Coach button opens Coach on you with it written in, for the owner to send. It waits for nothing.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
+			`"type":{"type":"string","enum":` + mustJSON(t.types) + `},` +
+			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _"},` +
+			`"text":{"type":"string","description":"the owner's request for Coach, in their words and language"}},` +
+			`"required":["type","id","text"]}`),
+	}
+}
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 // Parse checks one component against contract 1 and returns it, cleaned of
 // leaked tags: a field that held only a tag is then empty, and checked so.
 func Parse(input json.RawMessage) (Component, error) {
@@ -391,7 +444,7 @@ func Parse(input json.RawMessage) (Component, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Component{}, fmt.Errorf("the component has a field of the wrong shape or an unknown one: %v", err)
 	}
-	if !slices.Contains(Types, c.Type) {
+	if !slices.Contains(Types, c.Type) && !slices.Contains(TafTypes, c.Type) {
 		return Component{}, fmt.Errorf("type must be one of %s", strings.Join(Types, ", "))
 	}
 	if !idPattern.MatchString(c.ID) {
@@ -447,6 +500,9 @@ func (c Component) check() error {
 	case "drive":
 		// The request the owner approves, in their words: the prompt names it (kiff/tafs#544).
 		return text("text", c.Text, true, MaxLabel)
+	case AskCoach:
+		// The owner's request for Coach, in their words: the app writes it into Coach's box.
+		return text("text", c.Text, true, MaxAsk)
 	case "notice":
 		if !slices.Contains(tones, c.Tone) {
 			return fmt.Errorf("tone is one of %s", strings.Join(tones, ", "))
