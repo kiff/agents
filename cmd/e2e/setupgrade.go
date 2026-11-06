@@ -178,11 +178,16 @@ func reportedMode(m modes) string {
 
 // pinned is the gate's fact for the mode: what the grant pins is the mode the
 // owner chose and the connection reports, or nothing. A pin with no choice
-// made, one the owner didn't choose, or one on a vendor with no mode, fails.
+// made, one the owner didn't choose, or one on a vendor with no mode, fails;
+// so does a tool that acts left unpinned once the owner chose test, since on
+// a live account it would run live (agentgabo on #350).
 func pinned(chose string, m modes) eval.Grade {
 	var why []string
 	if len(m.live) > 0 {
 		why = append(why, "pinned to live mode, though the owner chose "+choseOr(chose)+": "+strings.Join(m.live, ", "))
+	}
+	if chose == "test" && reportedMode(m) != "" && !m.allTest {
+		why = append(why, "the owner chose test, but not every tool that acts is pinned to it")
 	}
 	if m.test && chose == "" {
 		why = append(why, "pinned to test mode, though the owner chose no mode")

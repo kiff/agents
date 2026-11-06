@@ -583,6 +583,8 @@ func TestThePinIsTheModeTheOwnerChose(t *testing.T) {
 	}{
 		{"test, as chosen and reported", "test", modes{test: true, allTest: true}, true, ""},
 		{"nothing pinned", "", modes{}, true, ""},
+		{"test chosen, nothing pinned", "test", modes{}, false, "not every tool that acts is pinned to it"},
+		{"test chosen, one acting tool unpinned", "test", modes{test: true, allTest: false}, false, "not every tool that acts is pinned to it"},
 		{"test, with no choice made", "", modes{test: true}, false, "the owner chose no mode"},
 		{"live, though test was chosen", "test", modes{live: []string{"stripe_refund"}}, false, "pinned to live mode, though the owner chose test"},
 		{"a pin on the desk, which has no mode", "test", modes{none: true, test: true}, false, "a vendor that has none"},
