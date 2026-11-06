@@ -159,6 +159,12 @@ type gatewayTool struct {
 // declared it: the model never sees it, and kiff/agents sets it on each call.
 // A schema that doesn't parse is kept as it came.
 func withoutSessionArg(schema json.RawMessage) (json.RawMessage, bool) {
+	// Most tools don't ask: their schema is kept as it came, never decoded, so
+	// listing tools costs what it did (the bench gate on #342). A schema that
+	// spells the key with escapes counts as not asking, which grants nothing.
+	if !bytes.Contains(schema, []byte(SessionArg)) {
+		return schema, false
+	}
 	var s map[string]any
 	if json.Unmarshal(schema, &s) != nil {
 		return schema, false
