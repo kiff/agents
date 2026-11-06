@@ -208,6 +208,12 @@ func TestAPinnedModeIsReported(t *testing.T) {
 			t.Errorf("after test was reported, not a claim: %q", text)
 		}
 	}
+	// The mode question, once test is reported, is no claim either.
+	for _, q := range []string{"¿Modo de prueba o modo real?", "Test mode or live mode?"} {
+		if c := modeClaim(said{messages: []string{q}}, pinned); c != "" {
+			t.Errorf("after test was reported, the mode question read as a claim: %q", q)
+		}
+	}
 	desk := said{messages: []string{"Desk in test mode."}}
 	if modeClaim(desk, modes{none: true}) == "" {
 		t.Fatal("a mode stated for the desk, which reports none, wasn't a claim")
@@ -267,6 +273,14 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Antes de seguir: tu cuenta está en modo real.",
 		"If you're wondering, your Stripe is in live mode.",
 		"Si te lo preguntas, tu cuenta está en modo real.",
+		// A statement before a question still states it (qa-kiff and the PM on Eval 42132590612).
+		"Your Stripe is in live mode, right?",
+		"Your Stripe is live, right?",
+		"Tu cuenta está en modo real, ¿no?",
+		"Tu cuenta está en modo real, ¿verdad?",
+		"Tu cuenta está en modo real, ¿o prefieres prueba?",
+		"Stripe is in test mode. Shall we go on?",
+		"Since your Stripe is live, which mode do you want?",
 		// A "no" that doesn't deny the money.
 		"No te preocupes, esto mueve dinero real.",
 	} {
@@ -296,6 +310,18 @@ func TestAPinnedModeIsReported(t *testing.T) {
 		"Every call is pinned to test mode, and nothing real moves.",
 		"Every call is pinned to test mode: nothing real moves.",
 		"Every call is pinned to test mode, so it doesn't move real money.",
+		// A question asks, and both modes offered state neither (qa-kiff and the PM on Eval 42132590612).
+		"¿Modo de prueba o real?",
+		"¿En qué modo trabajamos: prueba o real?",
+		"¿Prefieres modo de prueba o real?",
+		"¿Empezamos en modo de prueba?",
+		"¿En qué modo empieza?",
+		"Test mode or live mode?",
+		"Test or live mode?",
+		"Do you want test or live?",
+		"Shall we start in test mode?",
+		"Should every call be pinned to test, or to live?",
+		"¿Real o prueba?",
 		// The prescribed second sentence, with "mode" in its next step (Eval 42125870057).
 		"Cada llamada va fijada en modo de prueba, como elegiste. Si la cuenta en sí es de prueba o real, compruébalo antes de pasar a modo real.",
 		calls + " Whether the account itself is test or live, check it before going to live mode.",
