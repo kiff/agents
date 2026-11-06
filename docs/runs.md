@@ -124,6 +124,19 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
 - A failed run is stored ERROR with a public message (`runner.FailedBuild`,
   `FailedStart`, `FailedRun`, `FailedTime`); the cause is returned, never
   stored.
+- **Dates.** Each run reads today's date just before its input, in UTC:
+  "Today is Friday 6 November 2026 (2026-11-06), 10:15 UTC."
+  (`runner.Today`). It's never recorded, so a later run reads only its own.
+  A vendor's times in a gateway call's result are dated beside their
+  numbers, which stay as they came: `"due_date":1793892934 (2026-11-05)`.
+  - A number is dated when the tool's `outputSchema` marks its field as a
+    time: format `unix-time`, `timestamp` or `date-time` on a number, or a
+    unit in its description.
+  - Otherwise, when the field's name reads as one: `*_at`, the word `date`,
+    `created`, `due…`, `expires…`, `period_…` (a `period`'s `start` too) or
+    `timestamp`, in snake_case or camelCase.
+  - Only between 2000 and 2100, in seconds or milliseconds. Never an id or an
+    amount, nor a time given as text.
 
 Runnable: [`runner/example_test.go`](../runner/example_test.go).
 

@@ -33,7 +33,8 @@ func (e *echo) Turn(_ context.Context, req model.Request, onText func(string)) (
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.reqs = append(e.reqs, req)
-	last := req.Messages[len(req.Messages)-1].Blocks[0]
+	blocks := req.Messages[len(req.Messages)-1].Blocks
+	last := blocks[len(blocks)-1] // the input, after the run's date line
 	if last.Kind != model.ToolResult && strings.HasPrefix(last.Text, "Refund") {
 		return model.Reply{Blocks: []model.Block{{Kind: model.ToolUse, CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{}`)}},
 			Stop: model.CallTools}, nil
@@ -98,11 +99,14 @@ func (e env) chat(agentID string) *chat.Chat {
 	return &chat.Chat{Runner: e.runner, Tenant: "t1", Agent: agentID}
 }
 
+// texts is what the messages carried, without each run's date line.
 func texts(msgs []model.Message) []string {
 	var out []string
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
-			out = append(out, b.Text)
+			if !strings.HasPrefix(b.Text, "Today is ") {
+				out = append(out, b.Text)
+			}
 		}
 	}
 	return out

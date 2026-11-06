@@ -254,8 +254,9 @@ func TestRunACaseOnThisRuntime(t *testing.T) {
 		!strings.Contains(first.System, "Every write goes through KIFF.") {
 		t.Errorf("the agent was asked with model %q, system %q", first.Model, first.System)
 	}
-	if got := first.Messages[0].Blocks[0].Text; got != cases.Refunds.Input {
-		t.Errorf("the run's input %q, want the case's", got)
+	// The input is the message's last block, after the run's date line.
+	if blocks := first.Messages[0].Blocks; blocks[len(blocks)-1].Text != cases.Refunds.Input {
+		t.Errorf("the run's input %q, want the case's", blocks[len(blocks)-1].Text)
 	}
 }
 
