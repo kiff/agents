@@ -147,8 +147,8 @@ func TestAWaitSplitsWhereItWent(t *testing.T) {
 	t0 := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
 	at := func(ms int) time.Time { return t0.Add(time.Duration(ms) * time.Millisecond) }
 	turns := []clockTurn{
-		// Message 1: a turn with no words and a tool call, then the words.
-		{began: at(500), ended: at(4000), first: 1500 * time.Millisecond, prompt: 21000, cached: 20000, output: 300, written: 400},
+		// Message 1: a turn with no words that shows a card, then the words.
+		{began: at(500), ended: at(4000), shown: at(4000), first: 1500 * time.Millisecond, prompt: 21000, cached: 20000, output: 300, written: 400},
 		{began: at(5000), ended: at(9000), words: at(8000), first: 2000 * time.Millisecond, prompt: 22000, cached: 21500, output: 200, written: 200},
 		// Message 2: the words in its first turn.
 		{began: at(20400), ended: at(24000), words: at(23000), first: 1600 * time.Millisecond, prompt: 31000, cached: 21000, output: 120, written: 80},
@@ -168,14 +168,21 @@ func TestAWaitSplitsWhereItWent(t *testing.T) {
 	if one.start+one.turns+one.between+one.first+one.toWords != one.wait {
 		t.Fatalf("message 1's parts don't add up: %+v", one)
 	}
+	// The owner saw its card at 4 s, before the words at 8 s.
+	if one.seen != 4*time.Second {
+		t.Fatalf("message 1 first seen after %s, want its card's 4s", one.seen)
+	}
 	two := sp[1]
 	if two.wait != 3*time.Second || two.start != 400*time.Millisecond || two.before != 0 || two.turns != 0 || two.first != 1600*time.Millisecond || two.toWords != time.Second {
 		t.Fatalf("message 2: %+v", two)
 	}
-	if sp[2].wait != -1 {
-		t.Fatalf("message 3 had no words: %+v", sp[2])
+	if sp[2].wait != -1 || sp[2].seen != -1 {
+		t.Fatalf("message 3 had nothing seen: %+v", sp[2])
 	}
-	if got := two.line(); got != "first words after 3s: start 400ms, 0 turns before 0s, tools 0s, first token 1.6s, then the words 1s; thinking about 100 tokens; prompt 31000 tokens, 67% from the cache" {
+	if two.seen != two.wait {
+		t.Fatalf("message 2's words were the first thing seen: %+v", two)
+	}
+	if got := two.line(); got != "first seen after 3s; first words after 3s: start 400ms, 0 turns before 0s, tools 0s, first token 1.6s, then the words 1s; thinking about 100 tokens; prompt 31000 tokens, 67% from the cache" {
 		t.Fatalf("line %q", got)
 	}
 	med, n := medianSplit(sp)
@@ -209,4 +216,46 @@ func (u usageOf) Turn(ctx context.Context, req model.Request, onText func(string
 	r, err := u.Model.Turn(ctx, req, onText)
 	r.Usage = u.usage
 	return r, err
+}
+
+// The clock says where a turn's prompt stopped matching the turn before's,
+// short of its end: the system prompt, the tools, or a message with its
+// kinds and sizes, never a word; and nothing when the prompt only grew.
+func TestTheClockSaysWhereAPromptBroke(t *testing.T) {
+	user := func(text string) model.Message {
+		return model.Message{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: text}}}
+	}
+	base := model.Request{System: "You are Coach.", Tools: []model.ToolSpec{{Name: "show"}}, Messages: []model.Message{user("Set up refunds"), user("[called] list → done")}}
+	grew := base
+	grew.Messages = append(slices.Clone(base.Messages), user("Yes"))
+	if got := prefixBroke(&base, grew); got != "" {
+		t.Fatalf("a prompt that only grew: %q", got)
+	}
+	if got := prefixBroke(nil, base); got != "" {
+		t.Fatalf("the first turn: %q", got)
+	}
+	changed := grew
+	changed.Messages = slices.Clone(grew.Messages)
+	changed.Messages[1] = user("[called] list → done; the tool answered…")
+	if got := prefixBroke(&base, changed); got != "message 2 of 2 (user, block 1: text 22 bytes → text 44 bytes)" {
+		t.Fatalf("a changed message: %q", got)
+	}
+	if strings.Contains(prefixBroke(&base, changed), "called") {
+		t.Fatal("a word of the chat in the line")
+	}
+	skills := base
+	skills.System += " Skill: halting"
+	if got := prefixBroke(&base, skills); got != "system (14 → 29 bytes)" {
+		t.Fatalf("the system prompt: %q", got)
+	}
+	deferred := base
+	deferred.Tools = []model.ToolSpec{{Name: "show", Defer: true}}
+	if got := prefixBroke(&base, deferred); got != "tools (1 → 1)" {
+		t.Fatalf("the tools: %q", got)
+	}
+	short := base
+	short.Messages = base.Messages[:1]
+	if got := prefixBroke(&base, short); got != "message 2 of 2 (gone)" {
+		t.Fatalf("a message gone: %q", got)
+	}
 }

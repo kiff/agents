@@ -604,3 +604,30 @@ func TestADefinitionNamesItsCards(t *testing.T) {
 		t.Fatalf("built tools %v", a.Tools)
 	}
 }
+
+// A run's start splits the gateway's handshake from its tool list, when the
+// gateway's client marks it: where the start's second goes (kiff-cloud#1487).
+func TestTheStartSplitsTheGatewaysHandshake(t *testing.T) {
+	f := newFixture(t)
+	connect := f.b.Connect
+	f.b.Connect = func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+		session.Mark(ctx, "handshake")
+		return connect(ctx, gateway, key)
+	}
+	if err := f.agents.Put(ctx, registrytest.Definition("t1", "payouts")); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, sp := range a.StartSpans {
+		names = append(names, sp.Name)
+	}
+	if i := slices.Index(names, "handshake"); i < 0 || i+1 >= len(names) || names[i+1] != "connect" {
+		t.Fatalf("spans %v: want the handshake, then connect", names)
+	}
+	// Without a marker, Mark does nothing.
+	session.Mark(context.Background(), "nothing")
+}

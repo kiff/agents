@@ -260,6 +260,22 @@ type Span struct {
 	MS   int64  `json:"ms"`
 }
 
+type markKey struct{}
+
+// WithMark is ctx carrying mark, the start's span marker, so a step deep in
+// it can split its span: the gateway's MCP handshake out of "connect", for
+// where a run's first second goes (kiff-cloud#1487's latency hunt).
+func WithMark(ctx context.Context, mark func(name string)) context.Context {
+	return context.WithValue(ctx, markKey{}, mark)
+}
+
+// Mark ends a span named name on ctx's span marker, when it carries one.
+func Mark(ctx context.Context, name string) {
+	if mark, ok := ctx.Value(markKey{}).(func(string)); ok {
+		mark(name)
+	}
+}
+
 // ToolTiming is one tool call's time, its result's size, and how many calls
 // ran beside it in the same turn (Batch, itself included).
 type ToolTiming struct {

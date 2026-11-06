@@ -41,8 +41,17 @@ func TestSubmit(t *testing.T) {
 	if strings.Contains(r.Text, "kiff_claim") || !strings.Contains(r.Text, `"id":"drf_1"`) {
 		t.Fatalf("the model read %s", r.Text)
 	}
-	if auth != "Bearer kiff_key_setup" || body != `{"agent_id":"agt_refunds","cards":[{"id":"c1"}],"label":"Refunds"}` {
+	// Its Card is under the agent's own name: never another taf's (Eval 42206117004's 409).
+	if auth != "Bearer kiff_key_setup" || body != `{"agent_id":"agt_refunds","cards":[{"id":"agt_refunds-c1"}],"label":"Refunds"}` {
 		t.Fatalf("sent %s with %q", body, auth)
+	}
+	// An id already under its name stays, so a revision names its Card as before; the rest goes as it came.
+	if _, err := tl.Call(context.Background(), json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[`+
+		`{"id":"agt_refunds-c1","subject":"agt_refunds","aggregates":[{"quantity":"count","limit":20,"window":"rolling_7d"}]},{"id":"agt_refunds"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if body != `{"agent_id":"agt_refunds","cards":[{"aggregates":[{"quantity":"count","limit":20,"window":"rolling_7d"}],"id":"agt_refunds-c1","subject":"agt_refunds"},{"id":"agt_refunds"}],"label":"Refunds"}` {
+		t.Fatalf("sent %s", body)
 	}
 	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Secret != "kiff_claim_s3cret" {
 		t.Fatalf("kept %+v", rec)
@@ -52,7 +61,8 @@ func TestSubmit(t *testing.T) {
 	if err != nil || !r.IsError || !strings.Contains(r.Text, "at least one grant") {
 		t.Fatalf("refused: %+v %v", r, err)
 	}
-	for _, in := range []string{`{"action":"claim","agent_id":"a","cards":[]}`, `{"action":"submit","cards":[]}`, `{"action":"submit","agent_id":"a","cards":{}}`, `{"action":"submit","agent_id":"a","cards":[],"secret":"x"}`} {
+	for _, in := range []string{`{"action":"claim","agent_id":"a","cards":[]}`, `{"action":"submit","cards":[]}`, `{"action":"submit","agent_id":"a","cards":{}}`, `{"action":"submit","agent_id":"a","cards":[],"secret":"x"}`,
+		`{"action":"submit","agent_id":"a","cards":[1]}`} {
 		if r, _ := tl.Call(context.Background(), json.RawMessage(in)); !r.IsError {
 			t.Errorf("%s was accepted", in)
 		}

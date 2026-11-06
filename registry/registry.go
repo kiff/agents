@@ -760,7 +760,8 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		return agent.Agent{}, d, fmt.Errorf("registry: the agent's KIFF key: %w", err)
 	}
 	mark("key")
-	tools, err := b.Connect(ctx, d.Gateway, key)
+	// The gateway client marks its handshake ("handshake"); "connect" is then the rest: its tool list.
+	tools, err := b.Connect(session.WithMark(ctx, mark), d.Gateway, key)
 	if err != nil {
 		return agent.Agent{}, d, err
 	}

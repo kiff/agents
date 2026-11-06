@@ -41,6 +41,7 @@ func (t *Tool) Spec() model.ToolSpec {
 		Name: Name,
 		Description: "Submit a taf's KIFF draft: its agent and its Cards, as KIFF takes them. It grants nothing until the owner confirms it on their phone: " +
 			"show an approval naming the draft (and the taf's planque grant). submit {agent_id, label, cards}: returns the draft's id, agent and status. " +
+			"Each Card's id is kept under the agent's own name: \"reads\" goes as \"<agent_id>-reads\", so it never names another taf's Card. " +
 			"You never get the taf's key; tafs cloud has it claimed once the owner has confirmed.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
 			`"action":{"type":"string","enum":["submit"]},` +
@@ -97,6 +98,28 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 	return b.String(), nil
 }
 
+// ownCardIDs is cards with each Card's id under its agent's own name
+// ("refunds-s7zax3qf-reads" for "reads"), so a draft never names a Card of
+// another agent's: an account keeps the Cards of tafs made before (an Eval's
+// earlier runs), and KIFF refuses a draft naming one (409), which cost the
+// setup a turn each time (Eval 42206117004). An id already under the agent's
+// name stays, so a taf's own Card is revised as before. The rest of each
+// Card goes as it came.
+func ownCardIDs(agent string, raw json.RawMessage) ([]map[string]json.RawMessage, error) {
+	var cards []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cards); err != nil {
+		return nil, err
+	}
+	for _, c := range cards {
+		var id string
+		if json.Unmarshal(c["id"], &id) != nil || id == "" || id == agent || strings.HasPrefix(id, agent+"-") {
+			continue
+		}
+		c["id"], _ = json.Marshal(agent + "-" + id)
+	}
+	return cards, nil
+}
+
 // Call submits the draft. What KIFF refuses comes back as a result the
 // model can read and correct.
 func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
@@ -114,7 +137,11 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	if in.AgentID == "" || len(in.Cards) == 0 || in.Cards[0] != '[' {
 		return tool.Result{Text: "submit needs agent_id and cards (an array)", IsError: true}, nil
 	}
-	body, _ := json.Marshal(map[string]any{"agent_id": in.AgentID, "label": in.Label, "cards": in.Cards})
+	cards, err := ownCardIDs(in.AgentID, in.Cards)
+	if err != nil {
+		return tool.Result{Text: "cards is an array of Cards, each an object with its id", IsError: true}, nil
+	}
+	body, _ := json.Marshal(map[string]any{"agent_id": in.AgentID, "label": in.Label, "cards": cards})
 	d, err := t.svc.Submit(ctx, t.tenant, t.key, body)
 	var ke *kiffapi.Error
 	if errors.As(err, &ke) {
