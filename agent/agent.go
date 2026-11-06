@@ -653,7 +653,7 @@ func requirementInput(r run.Run, id string) json.RawMessage {
 
 func resultBlock(r ToolResultBody) model.Block {
 	// A vendor's answer can carry anyone's text: never a line of the record.
-	return model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: Unforged(r.Text), IsError: r.IsError}
+	return model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: Unforged(r.Text), IsError: r.IsError, Images: r.Images}
 }
 
 // loop runs model turns on msgs until the run stops, counting on from out.
@@ -839,6 +839,8 @@ func clearRead(msgs []model.Message, after int) []model.Message {
 		for j, b := range blocks {
 			if b.Kind == model.ToolResult && !cleared(b.Result) {
 				blocks[j].Result = fmt.Sprintf(ClearedNote, tools[b.CallID], (len(b.Result)+1023)>>10)
+				// Its images go with its text, in the same clearing: one cache break, not two.
+				blocks[j].Images = nil
 			}
 		}
 		out[i].Blocks = blocks

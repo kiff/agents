@@ -65,7 +65,23 @@ type Block struct {
 	MediaType string `json:"media_type,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Bytes     []byte `json:"-"`
+	// Images belong to a ToolResult block: what the tool showed besides its
+	// text (a screenshot of the app it drives, kiff/tafs#544). Like a
+	// file's Bytes they live only while the run does, never in a stored
+	// message or event: the record keeps the text.
+	Images []Image `json:"-"`
 }
+
+// Image is a picture a tool returned, as the model reads it.
+type Image struct {
+	MediaType string // image/jpeg, image/png or image/gif
+	Bytes     []byte
+}
+
+// ImageTypes are the media types a tool's image may have: the ones the model
+// reads that the standard library can check (a tool's image is decoded before
+// it's kept, so a bad one never reaches the model; qa-kiff on #339).
+var ImageTypes = []string{"image/jpeg", "image/png", "image/gif"}
 
 // Message is one turn of the conversation.
 type Message struct {

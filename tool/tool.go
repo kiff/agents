@@ -75,6 +75,10 @@ type Result struct {
 	// kiff/agents#91). The run records it as its own event, kept like the
 	// agent's messages; it is not part of the tool's recorded result.
 	Component json.RawMessage `json:"-"`
+	// Images are what the tool showed besides its text (a screenshot of the
+	// app Coach drives, kiff/tafs#544): the model reads them with the text
+	// while the run lives; the record keeps the text alone.
+	Images []model.Image `json:"-"`
 }
 
 // TrialDecision is what KIFF would have done with a trial's write.

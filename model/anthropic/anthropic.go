@@ -226,6 +226,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 		p.System = []sdk.TextBlockParam{{Text: req.System}}
 	}
 	unsent := unsentServer(req)
+	seen, dropBefore := 0, imagesDropped(req)
 	for _, msg := range req.Messages {
 		var blocks []sdk.ContentBlockParamUnion
 		for _, b := range msg.Blocks {
@@ -238,7 +239,7 @@ func toParams(req model.Request) (sdk.MessageNewParams, error) {
 			case model.ToolUse:
 				blocks = append(blocks, sdk.NewToolUseBlock(b.CallID, b.Input, b.Tool))
 			case model.ToolResult:
-				blocks = append(blocks, sdk.NewToolResultBlock(b.CallID, b.Result, b.IsError))
+				blocks = append(blocks, toolResultBlock(b, &seen, dropBefore))
 			case model.Thinking: // back exactly as it came: dropping or editing it breaks the turn
 				blocks = append(blocks, sdk.NewThinkingBlock(b.Signature, b.Text))
 			case model.RedactedThinking:
@@ -564,6 +565,58 @@ func fromMessage(msg sdk.Message) model.Reply {
 		r.Stop = model.Other
 	}
 	return r
+}
+
+// ImagesKept is how many of a run's tool images the model reads at most, and
+// ImagesDropStep how many leave at once past that: the oldest go in steps,
+// not one a turn, so the cached prefix stays the same for that many turns
+// (dropping one each turn would rewrite the cache every turn, which costs
+// more than reading the images again; kiff/tafs#544). At 20, a request never
+// holds more than 20 images, past which the model applies a stricter bound to
+// every image's size, and a turn uploads about half as much (agentgabo and
+// qa-kiff on #339).
+const (
+	ImagesKept     = 20
+	ImagesDropStep = 10
+)
+
+// imagesDropped is how many of the request's tool images, oldest first, the
+// model no longer reads: none up to ImagesKept, then a whole ImagesDropStep
+// at a time, so the count only changes every ImagesDropStep images.
+func imagesDropped(req model.Request) int {
+	n := 0
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			if b.Kind == model.ToolResult {
+				n += len(b.Images)
+			}
+		}
+	}
+	if n <= ImagesKept {
+		return 0
+	}
+	return ((n-ImagesKept-1)/ImagesDropStep + 1) * ImagesDropStep
+}
+
+// toolResultBlock is a tool's result as the model reads it: its text, and
+// its images, each an image block in the result, but for the oldest ones
+// past ImagesKept, each a line saying so. seen counts the images so far.
+func toolResultBlock(b model.Block, seen *int, dropBefore int) sdk.ContentBlockParamUnion {
+	if len(b.Images) == 0 {
+		return sdk.NewToolResultBlock(b.CallID, b.Result, b.IsError)
+	}
+	content := []sdk.ToolResultBlockParamContentUnion{{OfText: &sdk.TextBlockParam{Text: b.Result}}}
+	for _, img := range b.Images {
+		*seen++
+		if *seen <= dropBefore {
+			content = append(content, sdk.ToolResultBlockParamContentUnion{OfText: &sdk.TextBlockParam{Text: "[a screenshot from earlier, no longer in view]"}})
+			continue
+		}
+		content = append(content, sdk.ToolResultBlockParamContentUnion{OfImage: &sdk.ImageBlockParam{
+			Source: sdk.ImageBlockParamSourceUnion{OfBase64: &sdk.Base64ImageSourceParam{Data: base64.StdEncoding.EncodeToString(img.Bytes), MediaType: sdk.Base64ImageSourceMediaType(img.MediaType)}},
+		}})
+	}
+	return sdk.ContentBlockParamUnion{OfToolResult: &sdk.ToolResultBlockParam{ToolUseID: b.CallID, Content: content, IsError: sdk.Bool(b.IsError)}}
 }
 
 // fileBlock is a file the owner attached, as the model reads it: a photo as

@@ -345,6 +345,13 @@ func cloneBlocks(blocks []model.Block) []model.Block {
 	out := make([]model.Block, len(blocks))
 	for i, b := range blocks {
 		b.Input, b.Bytes = bytes.Clone(b.Input), bytes.Clone(b.Bytes)
+		if b.Images != nil {
+			images := make([]model.Image, len(b.Images))
+			for j, img := range b.Images {
+				images[j] = model.Image{MediaType: img.MediaType, Bytes: bytes.Clone(img.Bytes)}
+			}
+			b.Images = images
+		}
 		out[i] = b
 	}
 	return out

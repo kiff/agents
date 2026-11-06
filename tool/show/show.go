@@ -40,7 +40,7 @@ const (
 )
 
 // Types are the components the app draws.
-var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result", "knob"}
+var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result", "knob", "drive"}
 
 var (
 	idPattern  = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
@@ -167,6 +167,7 @@ var fields = map[string][]string{
 	"sign_in":   {"grant", "service", "title", "text", "yes", "no", "note"},
 	"result":    {"taf", "text", "tools", "yes"},
 	"knob":      {"taf_id", "version"}, // no agent words: the app draws the dial's draft as tafs cloud words it
+	"drive":     {"text"},              // the request, in the owner's words: the app's approval prompt names it (kiff/tafs#544)
 }
 
 // Tool shows components.
@@ -193,7 +194,8 @@ func (Tool) Spec() model.ToolSpec {
 			"[questions <id>] then a JSON object from each question's id to {value}, {values} (multi) or {own} (the owner's own words); " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
 			"sign_in {grant, service}: the owner signs in at the vendor again; " +
-			"knob {taf_id, version}: the dial version you drafted for a taf (taf_dial's answer), which the app draws from tafs cloud's words, with the switch to it; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds or access) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
+			"knob {taf_id, version}: the dial version you drafted for a taf (taf_dial's answer), which the app draws from tafs cloud's words, with the switch to it; " +
+			"drive {text}: ask to drive the app on the owner's phone for one request, text naming it in their words; they approve it with their fingerprint, and the answer is \"approved: the drive is on\" or \"declined\"; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds or access) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
 			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?, summary?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
 			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
 			"A result waits while the taf or its version is made for the owner; what came of it is the call's result: {taf_id} (set up), {version} (the new version) or {failed} (why not): then say why, and hand over again once it's fixed. " +
@@ -201,7 +203,7 @@ func (Tool) Spec() model.ToolSpec {
 			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result","knob"]},` +
+			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result","knob","drive"]},` +
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
@@ -320,6 +322,9 @@ func (c Component) check() error {
 				return fmt.Errorf("a step's status is one of %s", strings.Join(statuses, ", "))
 			}
 		}
+	case "drive":
+		// The request the owner approves, in their words: the prompt names it (kiff/tafs#544).
+		return text("text", c.Text, true, MaxLabel)
 	case "notice":
 		if !slices.Contains(tones, c.Tone) {
 			return fmt.Errorf("tone is one of %s", strings.Join(tones, ", "))

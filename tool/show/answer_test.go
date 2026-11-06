@@ -128,3 +128,31 @@ func TestAResultIsAnsweredWithWhatCameOfIt(t *testing.T) {
 		}
 	}
 }
+
+// A drive card (kiff/tafs#544) asks to drive the app for one request, named
+// in the owner's words. The run waits for it; tafs cloud answers it approved
+// only once the approval key signed, and the owner may decline it.
+func TestADriveCardWaitsForTheOwnersApproval(t *testing.T) {
+	res, err := show.Tool{}.Call(t.Context(), json.RawMessage(`{"type":"drive","id":"d1","text":"Run Chargebacks"}`))
+	if err != nil || res.IsError || !res.Waits() {
+		t.Fatalf("drive card = %+v, %v", res, err)
+	}
+	if _, err := show.Parse(json.RawMessage(`{"type":"drive","id":"d1"}`)); err == nil {
+		t.Fatal("a drive card with no request was taken")
+	}
+	if _, err := show.Parse(json.RawMessage(`{"type":"drive","id":"d1","text":"x","grant":"g_1"}`)); err == nil {
+		t.Fatal("a drive card took a field it doesn't have")
+	}
+	c := card(t, `{"type":"drive","id":"d1","text":"Run Chargebacks"}`)
+	for answer, words := range map[string]string{`"approved: the drive is on"`: "Approved", `"declined"`: "Not now"} {
+		got, err := show.Answer(c, json.RawMessage(answer))
+		if err != nil || got.Words != words {
+			t.Errorf("%s: %+v, %v", answer, got, err)
+		}
+	}
+	for _, bad := range []string{`"approved"`, `"yes"`, `{"approved":true}`} {
+		if _, err := show.Answer(c, json.RawMessage(bad)); err == nil || !strings.Contains(err.Error(), "drive") {
+			t.Errorf("%s was taken: %v", bad, err)
+		}
+	}
+}
