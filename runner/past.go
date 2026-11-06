@@ -316,6 +316,30 @@ func (p past) preface(ctx context.Context, tools []tool.Tool, now time.Time) []m
 	return append(out, model.Block{Kind: model.Text, Text: Today(now)})
 }
 
+// SinceNote opens what changed after a continued run's preface was first
+// sent: where things stand and the date, as they are now.
+const SinceNote = "Since this run paused, as things stand now:"
+
+// since is what a continuation's fresh preface says that the one its run
+// first sent doesn't: each such block's text under SinceNote, one block, or
+// nothing when nothing changed.
+func since(first, now []model.Block) []model.Block {
+	sent := make(map[string]bool, len(first))
+	for _, b := range first {
+		sent[b.Text] = true
+	}
+	var changed []string
+	for _, b := range now {
+		if b.Kind == model.Text && !sent[b.Text] {
+			changed = append(changed, b.Text)
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	return []model.Block{{Kind: model.Text, Text: SinceNote + "\n\n" + strings.Join(changed, "\n\n")}}
+}
+
 // Today is a run's date line, in UTC, as the dates beside a vendor's times
 // are: "Today is Friday 6 November 2026 (2026-11-06), 10:15 UTC."
 func Today(now time.Time) string {

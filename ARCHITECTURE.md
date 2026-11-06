@@ -66,9 +66,14 @@ COMPLETED, ERROR and CANCELLED are final.
   input), its `kiff_operation_id` (the outcome is collected by repeating the
   call with it), KIFF's exception ID (what alerts name and withdraw takes) and
   the hold's expiry. It also keeps the turn it paused in: the
-  model's message and the results of the calls KIFF didn't hold, and its own
-  earlier turns since its input (their thinking left out, the latest 24 within
-  512 KiB, a long result cut at 8 KiB), so a continued run knows what it already did.
+  model's message and the results of the calls KIFF didn't hold, its own
+  earlier turns since its input (their thinking as it was sent, the latest 24
+  within 512 KiB, a long result cut at 8 KiB), so a continued run knows what it
+  already did, and the preface its input was first sent with. A continued run
+  sends all of it as it was sent, so the cache holds up to the held calls'
+  results; a thinking block whose conversation changed is dropped by the
+  provider (block binding's `drop_block`), and what changed since the preface
+  (where things stand, the date) goes after the results.
   Requirements
   and that turn belong to the run, not to its events, so the keep rules never
   drop them before the run ends: continuing never depends on what was kept.

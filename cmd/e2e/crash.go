@@ -63,8 +63,8 @@ func (t *test) crashMidRefund(ctx context.Context, tafID string, refunds []strin
 	crashing.Runs = store
 	builder := *t.rn.Builder
 	connect := builder.Connect
-	builder.Connect = func(ctx context.Context, gateway, k string) ([]tool.Tool, error) {
-		tools, err := connect(ctx, gateway, k)
+	builder.Connect = func(ctx context.Context, tenant, agent, gateway, k string) ([]tool.Tool, error) {
+		tools, err := connect(ctx, tenant, agent, gateway, k)
 		for i, x := range tools {
 			tools[i] = stopsAfterSend{Tool: x, charge: charge, refunds: refunds, note: note,
 				sent: func() { once.Do(func() { close(sent) }) }, stuck: stuck}

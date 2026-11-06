@@ -69,8 +69,10 @@ type Client struct {
 	key  string
 	http *http.Client
 
-	mu    sync.Mutex // held while initializing
-	ready bool
+	mu sync.Mutex // held while initializing
+	// ready is whether the session was opened: read without mu, so a warm
+	// session's holder (Sessions) never waits on a handshake under way.
+	ready atomic.Bool
 	// trials is whether the gateway said it decides a call without sending
 	// it (TrialCapability). A trial's call goes to a gateway that said so,
 	// or nowhere: one that didn't would send it.
@@ -79,6 +81,20 @@ type Client struct {
 
 	smu     sync.Mutex
 	session string // Mcp-Session-Id, once the gateway gives one
+
+	// refused, when set (Sessions), is told of any answer the gateway
+	// refused or failed, so a kept session isn't reused after it. It may be
+	// called while mu is held (a failed handshake), so it must take no lock
+	// that waits on a handshake: Sessions' only sets a flag.
+	refused func()
+}
+
+// fail tells refused of a failed answer, and returns err.
+func (c *Client) fail(err error) error {
+	if c.refused != nil {
+		c.refused()
+	}
+	return err
 }
 
 // New returns a client for the gateway at url, as the agent whose KIFF key is
@@ -468,7 +484,7 @@ const RunGrantHeader = "KIFF-Run-Grant"
 func (c *Client) init(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.ready {
+	if c.ready.Load() {
 		return nil
 	}
 	params := map[string]any{
@@ -489,7 +505,7 @@ func (c *Client) init(ctx context.Context) error {
 	if err := c.read(ctx, "notifications/initialized", nil, false, nil); err != nil {
 		return err
 	}
-	c.ready = true
+	c.ready.Store(true)
 	return nil
 }
 
@@ -597,7 +613,7 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	c.smu.Unlock()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key))
+		return c.fail(fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key)))
 	}
 	defer resp.Body.Close()
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -607,14 +623,14 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	}
 	if resp.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &HTTPError{Method: method, Status: resp.StatusCode, Body: c.redact(strings.TrimSpace(string(snippet)))}
+		return c.fail(&HTTPError{Method: method, Status: resp.StatusCode, Body: c.redact(strings.TrimSpace(string(snippet)))})
 	}
 	if !withID {
 		return nil
 	}
 	raw, err := readResponse(resp, id)
 	if err != nil {
-		return fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key))
+		return c.fail(fmt.Errorf("kiff: %s: %w", method, scrub(err, c.key)))
 	}
 	var rpc struct {
 		Result json.RawMessage `json:"result"`
@@ -627,7 +643,7 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 		return fmt.Errorf("kiff: %s: %w", method, err)
 	}
 	if rpc.Error != nil {
-		return &Error{Method: method, Code: rpc.Error.Code, Message: c.redact(rpc.Error.Message)}
+		return c.fail(&Error{Method: method, Code: rpc.Error.Code, Message: c.redact(rpc.Error.Message)})
 	}
 	if out == nil {
 		return nil

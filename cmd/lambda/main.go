@@ -212,11 +212,15 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		claims = &drafts.Service{Store: secretsmanager.NewDrafts(secrets, dp), Keys: secretsmanager.NewKeys(keys, secrets),
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
+	warm := &kiff.Sessions{}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
 		Agents: agents, Secrets: keys, Skills: skills,
 		Model: llm, Gateways: gateways,
-		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
-			return kiff.New(gateway, key, nil).Tools(ctx)
+		// A chat's next message reuses its agent's gateway session for up to two
+		// minutes, keyed by tenant, agent and key (kiff.Sessions): its handshake
+		// is skipped, and its tools are listed afresh each run.
+		Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
+			return warm.Tools(ctx, gateway, tenant, agent, key)
 		},
 		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
 		Drafts:   draftTool(claims),

@@ -121,7 +121,7 @@ func TestSkillsReadThroughTheRunner(t *testing.T) {
 	sessions := memory.New()
 	rn := &runner.Runner{Runs: memory.NewRuns(), Sessions: sessions, Builder: &registry.Builder{
 		Agents: agents, Secrets: fixedKey{}, Model: m, Gateways: []string{"https://gateway.test/mcp"}, Skills: skills,
-		Connect: func(context.Context, string, string) ([]tool.Tool, error) { return nil, nil },
+		Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) { return nil, nil },
 	}}
 	ch := &chat.Chat{Runner: rn, Tenant: "t1", Agent: "setup"}
 	r, err := ch.Send(ctx, "[improve taf taf-1]\nLet it refund up to 10 euros.", nil)

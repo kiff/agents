@@ -314,7 +314,9 @@ type test struct {
 	keys     *memory.Drafts // the agents' KIFF keys, by reference, and taf drafts
 	sessions *memory.Store
 	rn       *runner.Runner
-	agents   *memory.Agents
+	// warm keeps each agent's gateway session for its next run, as the Lambda does.
+	warm   kiff.Sessions
+	agents *memory.Agents
 
 	secrets []string // every secret value the runs must never record
 	grants  []string // planque grants this run connected
@@ -565,8 +567,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 	t.words = &wordsClock{Model: m}
 	t.rn = &runner.Runner{Runs: memory.NewRuns(), Sessions: t.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
 		Agents: t.agents, Secrets: keyring{t.keys}, Model: t.words, Gateways: []string{kiff.URL}, Skills: skills,
-		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
-			return kiff.New(gateway, key, nil).Tools(ctx)
+		// As the Lambda does: a chat's next message reuses its agent's gateway session (kiff.Sessions).
+		Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
+			return t.warm.Tools(ctx, gateway, tenant, agent, key)
 		},
 		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(t.sessions, tenant, agent)} },
 		Planques: []string{strings.TrimRight(t.cfg.planque, "/")},

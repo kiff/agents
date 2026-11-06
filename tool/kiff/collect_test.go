@@ -126,7 +126,7 @@ func heldRun(t *testing.T, input string) (*runner.Runner, *replies, run.Run) {
 	runs := memory.NewRuns()
 	rn := &runner.Runner{Runs: runs, Sessions: memory.New(), Collect: kiff.Collect,
 		Builder: &registry.Builder{Agents: agents, Secrets: secrets{}, Model: m, Gateways: []string{d.Gateway},
-			Connect: func(ctx context.Context, _, key string) ([]tool.Tool, error) {
+			Connect: func(ctx context.Context, _, _, _, key string) ([]tool.Tool, error) {
 				return kiff.New(srv.URL, key, srv.Client()).Tools(ctx)
 			}}}
 	r, err := rn.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "Refund ch_big."})

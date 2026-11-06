@@ -124,7 +124,9 @@ func TestARunThatStopsAfterItActedRepeatsNothing(t *testing.T) {
 	stuck, inFlow := make(chan struct{}), make(chan struct{})
 	t.Cleanup(func() { close(stuck) })
 	read := &lookUp{name: "stripe_read", onCall: func() { close(inFlow); <-stuck }}
-	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{k, read}, nil }
+	f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+		return []tool.Tool{k, read}, nil
+	}
 	r := f.start(server.Start{Input: "refund pi_1"})
 	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
 	<-inFlow
@@ -133,7 +135,7 @@ func TestARunThatStopsAfterItActedRepeatsNothing(t *testing.T) {
 	}
 	f.clock.add(runner.MaxRun + run.LeaseGrace + time.Second)
 	fresh := f.newRunner()
-	fresh.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) {
+	fresh.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) {
 		return []tool.Tool{k, &lookUp{name: "stripe_read"}}, nil
 	}
 	asked := 0
@@ -167,7 +169,7 @@ func TestACrashedRunRefundsExactlyOnce(t *testing.T) {
 			f := newFixture(t, use("c1", "stripe_refund", c.input), say("Refunded pi_1."))
 			k := newKIFFRefund(crash)
 			t.Cleanup(func() { close(k.stuck) })
-			f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }
+			f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }
 			r := f.start(server.Start{Input: "refund pi_1"})
 			go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
 			<-k.inFlow
@@ -215,7 +217,7 @@ func TestAnUnknownOutcomeIsSettledBeforeTheRunReadsIt(t *testing.T) {
 	f := newFixture(t, use("c1", "stripe_refund", `{"payment":"pi_1"}`), say("Refunded pi_1."))
 	k := newKIFFRefund("after")
 	t.Cleanup(func() { close(k.stuck) })
-	f.r.Builder.Connect = func(context.Context, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }
+	f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }
 	r := f.start(server.Start{Input: "refund pi_1"})
 	go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
 	<-k.inFlow

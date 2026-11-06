@@ -320,8 +320,9 @@ func (r Run) clone() Run {
 		}
 		c.Requirements = append(c.Requirements, q)
 	}
-	// Every part of a turn, Before included: a copy without it would give the
-	// continued run no memory of its earlier turns (the R-3005 test).
+	// Every part of a turn, Before and Preface included: a copy without them
+	// would give the continued run no memory of its earlier turns (the R-3005
+	// test), or a first message other than the one its run sent.
 	c.Paused, c.Acting = r.Paused.clone(), r.Acting.clone()
 	return c
 }
@@ -331,7 +332,7 @@ func (t *Turn) clone() *Turn {
 	if t == nil {
 		return nil
 	}
-	c := Turn{Reply: model.Message{Role: t.Reply.Role, Blocks: cloneBlocks(t.Reply.Blocks)}, Results: cloneBlocks(t.Results)}
+	c := Turn{Reply: model.Message{Role: t.Reply.Role, Blocks: cloneBlocks(t.Reply.Blocks)}, Results: cloneBlocks(t.Results), Preface: cloneBlocks(t.Preface)}
 	for _, m := range t.Before {
 		c.Before = append(c.Before, model.Message{Role: m.Role, Blocks: cloneBlocks(m.Blocks)})
 	}

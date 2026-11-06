@@ -130,8 +130,8 @@ b := &registry.Builder{
 	Secrets:  secretsmanager.New(sm.NewFromConfig(cfg), "agents/"),
 	Model:    anthropic.New(),
 	Gateways: []string{kiff.URL},
-	Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
-		return kiff.New(gateway, key, nil).Tools(ctx)
+	Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
+		return warm.Tools(ctx, gateway, tenant, agent, key) // warm := &kiff.Sessions{}
 	},
 }
 a, def, err := b.Build(ctx, "t1", "rae")
@@ -144,7 +144,11 @@ a, def, err := b.Build(ctx, "t1", "rae")
 2. refuses a gateway not on `Gateways`, **before** looking up any key;
 3. looks up the key with `Secrets.Key(ctx, "t1", "kiff/rae")`;
 4. lists the gateway's tools with that key, so a run sees what its Cards
-   reach today;
+   reach today. `kiff.Sessions` keeps the gateway session (its handshake) for
+   the agent's next run, for at most two minutes, per gateway, tenant, agent
+   and key, and never across any of them: a new key replaces it, and any
+   refusal or failure drops it. The tools are still listed each run, so a Card
+   that changed shows at once;
 5. adds the run's workspace tool when the definition asks for one; `BuildRun`
    names the run, and without a run or a server `Workspace` it refuses
    (`ErrNoWorkspace`) rather than build the agent without it;

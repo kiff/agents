@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -343,10 +344,10 @@ func paused(t *testing.T, store *memory.Store, rec *session.Recorder, a agent.Ag
 }
 
 // A run that looked something up before the turn KIFF held continues knowing
-// it did (kiff/tafs, the 755 device test): its earlier turns, without their
-// thinking, come between its input and the paused turn. Before, the continued
-// run saw only the refund it asked for, and said it had refunded without
-// looking the payment up.
+// it did (kiff/tafs, the 755 device test): its earlier turns, their thinking
+// as it was sent, come between its input and the paused turn. Before, the
+// continued run saw only the refund it asked for, and said it had refunded
+// without looking the payment up.
 func TestAContinuedRunSeesWhatItDidBeforeThePause(t *testing.T) {
 	store := memory.New()
 	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
@@ -360,7 +361,7 @@ func TestAContinuedRunSeesWhatItDidBeforeThePause(t *testing.T) {
 	a := newAgent(m, lookupTool(), heldRefund())
 	stored, s := paused(t, store, rec, a)
 	want := []model.Message{
-		{Role: model.Assistant, Blocks: use("c1", "stripe_get", `{"charge":"ch_big"}`).Blocks},
+		{Role: model.Assistant, Blocks: lookup.Blocks},
 		{Role: model.User, Blocks: []model.Block{{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`}}},
 	}
 	if !reflect.DeepEqual(stored.Paused.Before, want) {
@@ -1108,7 +1109,14 @@ func TestAPausedTurnKeepsItsThinking(t *testing.T) {
 	}
 }
 
-func TestAContinuedRunSendsNoThinkingFromBeforeThePause(t *testing.T) {
+// A continued run sends what its run sent as it was sent: its input with the
+// preface it was first sent with, its earlier turns and the paused one with
+// their thinking, byte for byte, so the cache holds up to the held calls'
+// results. Before, it left every thinking block out and rebuilt the preface,
+// and the cache was written again from there (the Eval after kiff/agents#359:
+// 5 prompts broke in one setup). What changed since the preface was first
+// sent goes after the results.
+func TestAContinuedRunSendsWhatItsRunSentAsItWasSent(t *testing.T) {
 	store := memory.New()
 	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
 	if err != nil {
@@ -1118,27 +1126,48 @@ func TestAContinuedRunSendsNoThinkingFromBeforeThePause(t *testing.T) {
 	call.Blocks = append([]model.Block{thinking, {Kind: model.RedactedThinking, Data: "opaque"}}, call.Blocks...)
 	m := &script{replies: []model.Reply{call, say("Waiting for you."), say("Refunded ch_big.")}}
 	a := newAgent(m, lookupTool(), heldRefund())
+	a.Preface = []model.Block{{Kind: model.Text, Text: "Today is Friday 6 November 2026 (2026-11-06), 12:10 UTC."}}
 	stored, s := paused(t, store, rec, a)
-	if stored.Paused.Reply.Blocks[0].Kind != model.Thinking {
-		t.Fatalf("the stored turn lost its thinking: %+v", stored.Paused.Reply.Blocks)
+	if stored.Paused.Reply.Blocks[0].Kind != model.Thinking || !reflect.DeepEqual(stored.Paused.Preface, a.Preface) {
+		t.Fatalf("the stored turn: %+v, its preface %+v", stored.Paused.Reply.Blocks, stored.Paused.Preface)
 	}
 	ctx := context.Background()
 	r, err := rec.Resume(ctx, s, stored.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The runner hands the continuation the preface first sent, and what changed since.
+	a.Preface = stored.Paused.Preface
+	a.Since = []model.Block{{Kind: model.Text, Text: "Since this run paused, as things stand now:\n\nToday is Friday 6 November 2026 (2026-11-06), 12:41 UTC."}}
 	if _, _, err := agent.Continue(ctx, a, r, nil, stored, approved(), nil); err != nil {
 		t.Fatal(err)
 	}
-	sent := m.reqs[len(m.reqs)-1].Messages[1].Blocks
-	for _, b := range sent {
-		if b.Kind == model.Thinking || b.Kind == model.RedactedThinking {
-			t.Fatalf("the continued run sent the paused turn's thinking: %+v", sent)
-		}
+	// The run's last request before it paused: its input, then the paused turn and the calls' results as they stood.
+	last, cont := m.reqs[1].Messages, m.reqs[len(m.reqs)-1].Messages
+	n := len(last) - 1 // up to the results, which are the continuation's news
+	if len(cont) != len(last) {
+		t.Fatalf("continued with %d messages, after %d", len(cont), len(last))
 	}
-	if len(sent) != 3 || sent[0].Kind != model.Text || sent[1].CallID != "c1" || sent[2].CallID != "c2" {
-		t.Fatalf("the paused turn as sent: %+v", sent)
+	was, sent := marshal(t, last[:n]), marshal(t, cont[:n])
+	if !bytes.Equal(was, sent) {
+		t.Fatalf("the continuation changed what was sent:\nwas  %s\nsent %s", was, sent)
 	}
+	if !reflect.DeepEqual(cont[1].Blocks[0], thinking) || cont[1].Blocks[1].Kind != model.RedactedThinking {
+		t.Fatalf("the paused turn as sent: %+v", cont[1].Blocks)
+	}
+	results := cont[n].Blocks
+	if !reflect.DeepEqual(results[len(results)-1], a.Since[0]) {
+		t.Fatalf("what changed since isn't after the results: %+v", results)
+	}
+}
+
+func marshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // A turn a safety classifier refused stops the run as refused, with the

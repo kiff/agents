@@ -93,9 +93,15 @@ type Agent struct {
 	Cancel func(ctx context.Context) (bool, error)
 	// Preface is what the run reads before its input, in the same message:
 	// what stands for the session's earlier part, where things stand now,
-	// what it read earlier (the runner makes it, kiff/tafs#138). It is
-	// never recorded, so each run, and each continuation, reads its own.
+	// and today's date (the runner makes it, kiff/tafs#138). It is never
+	// recorded in the session. Each run reads its own; a continuation reads
+	// the one its run first sent (run.Turn.Preface), byte for byte, so the
+	// cache holds from the conversation's start.
 	Preface []model.Block
+	// Since is what changed after a continued run's preface was first sent:
+	// where things stand and the date, as they are now. It goes after the
+	// continuation's results, never into the preface.
+	Since []model.Block
 	// Attachments are the files the person sent with the run's input
 	// (kiff/tafs#209): they follow it, fenced (attach.FileNote).
 	Attachments []attach.Ref
@@ -490,7 +496,14 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if note := a.recordNote(r, held); note != "" {
 		results = append(results, model.Block{Kind: model.Text, Text: note})
 	}
-	msgs = append(msgs, withoutThinking(r.Paused.Reply), model.Message{Role: model.User, Blocks: results})
+	// What changed since the preface was first sent goes here, after the
+	// results: the conversation before them is the one the run sent.
+	results = append(results, a.Since...)
+	// The paused turn as it was sent, its thinking too: with nothing changed
+	// before it, the provider takes it, and the cache holds up to here; with
+	// something changed, the provider drops the block (block binding's
+	// drop_block), where this used to drop it for every continuation.
+	msgs = append(msgs, r.Paused.Reply, model.Message{Role: model.User, Blocks: results})
 	a.history = len(history)
 	if err := a.load(ctx, msgs); err != nil {
 		return Outcome{}, msgs, err
@@ -563,23 +576,6 @@ func (a Agent) outcomesIn(msgs []model.Message) map[string]string {
 		}
 	}
 	return latest
-}
-
-// withoutThinking is a paused turn's reply as a continued run sends it: its
-// thinking left out. A thinking block is valid only in the conversation it
-// was made in, and a continued run's is another one: its tools are listed
-// again, and what the owner wrote meanwhile follows its input. The model
-// provider refuses such a block (a 400, so the run would end in ERROR), and
-// asks for it to be removed.
-func withoutThinking(m model.Message) model.Message {
-	blocks := make([]model.Block, 0, len(m.Blocks))
-	for _, b := range m.Blocks {
-		if b.Kind != model.Thinking && b.Kind != model.RedactedThinking {
-			blocks = append(blocks, b)
-		}
-	}
-	m.Blocks = blocks
-	return m
 }
 
 // merge is the paused turn's results with held's, in the order of the
@@ -775,7 +771,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 
 		var acting *run.Turn
 		if a.Checkpoint != nil && slices.ContainsFunc(calls, func(c model.Block) bool { return acts(byName[c.Tool], c.Input) }) {
-			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history)}
+			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history), Preface: slices.Clone(a.Preface)}
 			if err := a.Checkpoint(ctx, *acting); err != nil {
 				return out, msgs, fmt.Errorf("agent: storing the turn before it acts: %w", err)
 			}
@@ -937,6 +933,7 @@ func (a Agent) steer(ctx context.Context, rec *session.Recording, msgs *[]model.
 func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, specs []model.ToolSpec, emit func(Event)) (Outcome, []model.Message, error) {
 	turn.Results = nil
 	turn.Before = before(msgs, a.history)
+	turn.Preface = slices.Clone(a.Preface)
 	blocks := make([]model.Block, len(results))
 	cards, waits := false, false
 	for i, r := range results {
@@ -1022,6 +1019,8 @@ const (
 // turn's reply, and the run's input is at index start. A turn too long ago
 // is left out from the oldest, a whole assistant turn and its results at a
 // time, as are turns past the byte budget, and a long result keeps its start.
+// Each turn keeps its thinking as it was sent: the continuation sends it back
+// unchanged, and the provider drops a block whose conversation changed.
 func before(msgs []model.Message, start int) []model.Message {
 	if start+1 >= len(msgs)-1 {
 		return nil
@@ -1032,7 +1031,6 @@ func before(msgs []model.Message, start int) []model.Message {
 	}
 	out := make([]model.Message, 0, len(turns))
 	for _, m := range turns {
-		m = withoutThinking(m)
 		blocks := slices.Clone(m.Blocks)
 		for i, b := range blocks {
 			if b.Kind == model.ToolResult && len(b.Result) > BeforeResultMax {

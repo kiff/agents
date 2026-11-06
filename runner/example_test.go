@@ -60,7 +60,7 @@ func newRunner(m *replies, result tool.Result) *runner.Runner {
 		Builder: &registry.Builder{
 			Agents: agents, Secrets: secrets{}, Model: m,
 			Gateways: []string{"https://mcp.kiff.dev/mcp"},
-			Connect: func(context.Context, string, string) ([]tool.Tool, error) {
+			Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) {
 				return []tool.Tool{refund{result}}, nil
 			},
 		},

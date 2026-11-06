@@ -73,7 +73,7 @@ func run() error {
 		return err
 	}
 	builder := &registry.Builder{Agents: agents, Secrets: envKey(key), Model: anthropic.New(), Gateways: []string{*gateway},
-		Connect: func(ctx context.Context, gateway, key string) ([]tool.Tool, error) {
+		Connect: func(ctx context.Context, _, _, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
 		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} }}
