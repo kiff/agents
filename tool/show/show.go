@@ -115,6 +115,45 @@ type Taf struct {
 	Kickoff      string `json:"kickoff,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 	Cron         string `json:"cron,omitempty"`
+	// Disclose names a taf's tools that write to someone outside the
+	// company, each with the free-text fields of its input (dotted paths):
+	// tafs puts them in the taf's definition, and the runtime ends each such
+	// call with its AI disclosure (agent.Disclosure, kiff/tafs#476). An
+	// improvement's adds to the taf's: a tool named again is replaced, and
+	// none is ever taken away.
+	Disclose []Disclose `json:"disclose,omitempty"`
+}
+
+// Disclose is one tool of a result's taf.disclose: its name in KIFF, and the
+// paths of the fields its disclosure goes in, in order of preference.
+type Disclose struct {
+	Tool   string   `json:"tool"`
+	Fields []string `json:"fields"`
+}
+
+// MaxDisclose bounds a result's taf.disclose: tools, each one's fields, and
+// a name's or a path's length.
+var MaxDisclose = struct{ Tools, Fields, Length int }{10, 5, 120}
+
+// checkDisclose says what's wrong with a result's taf.disclose, if anything.
+func checkDisclose(ds []Disclose) error {
+	if len(ds) > MaxDisclose.Tools {
+		return fmt.Errorf("taf.disclose names at most %d tools", MaxDisclose.Tools)
+	}
+	for _, d := range ds {
+		if d.Tool == "" || len(d.Tool) > MaxDisclose.Length {
+			return fmt.Errorf("each of taf.disclose names its tool as KIFF names it")
+		}
+		if len(d.Fields) == 0 || len(d.Fields) > MaxDisclose.Fields {
+			return fmt.Errorf("each of taf.disclose has 1 to %d fields", MaxDisclose.Fields)
+		}
+		for _, f := range d.Fields {
+			if f == "" || len(f) > MaxDisclose.Length || slices.Contains(strings.Split(f, "."), "") {
+				return fmt.Errorf("a field of taf.disclose is a dotted path, such as body or evidence.uncategorized_text, not %q", f)
+			}
+		}
+	}
+	return nil
 }
 
 // MaxNotes bounds an improvement's instructions from the owner.
@@ -249,7 +288,9 @@ func (Tool) Spec() model.ToolSpec {
 			`"unscheduled":{"type":"boolean","description":"a new taf whose tools can't find its work by themselves: no schedule, the owner hands it work in its chat"},` +
 			`"kickoff":{"type":"string","description":"a new taf: what each run is asked to do, in one or two sentences, drafted with the owner"},` +
 			`"instructions":{"type":"string","description":"a new taf: how it works, from what was agreed with the owner, and its never rules"},` +
-			`"cron":{"type":"string","description":"a new taf with a schedule: when it runs, five POSIX cron fields in the account's time zone, such as 0 9 * * 1-5"}},` +
+			`"cron":{"type":"string","description":"a new taf with a schedule: when it runs, five POSIX cron fields in the account's time zone, such as 0 9 * * 1-5"},` +
+			`"disclose":{"type":"array","description":"each of the taf's tools that writes to someone outside the company (an email, a reply, evidence), by its name in KIFF, with its free-text fields' dotted paths: each such call then ends with its AI disclosure; an improvement's adds to the taf's",` +
+			`"items":{"type":"object","properties":{"tool":{"type":"string"},"fields":{"type":"array","items":{"type":"string"}}},"required":["tool","fields"]}}},` +
 			`"required":["agent","name"]},` +
 			`"tools":{"type":"array","items":{"type":"string"}},` +
 			`"yes":{"type":"string","description":"the main button's label (sign_in, result)"},` +
@@ -480,6 +521,9 @@ func (c Component) check() error {
 			if err := text("taf.instructions", c.Taf.Instructions, false, MaxJob); err != nil {
 				return err
 			}
+			if err := checkDisclose(c.Taf.Disclose); err != nil {
+				return err
+			}
 			switch {
 			case c.Taf.Unscheduled && c.Taf.Cron != "":
 				return fmt.Errorf("taf.cron is for a taf with a schedule; an unscheduled one has none")
@@ -495,6 +539,12 @@ func (c Component) check() error {
 			}
 			if c.Taf.Unscheduled {
 				return fmt.Errorf("taf.unscheduled is for a new taf: an improvement keeps its schedule")
+			}
+			// An improvement may add a disclosure, for a tool it adds or one a taf
+			// from before never had; tafs adds it to the taf's, never taking one
+			// away (agentgabo on #354).
+			if err := checkDisclose(c.Taf.Disclose); err != nil {
+				return err
 			}
 			if !refPattern.MatchString(c.Taf.Improves) {
 				return fmt.Errorf("taf.improves is the tafs id of the taf it improves")
