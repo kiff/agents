@@ -126,8 +126,8 @@ func TestAReportNotTakenIsKeptAndSentAgainUntilTaken(t *testing.T) {
 	// Each try not taken waits longer, until the last.
 	for try := 2; try <= len(run.UsageWaits); try++ {
 		clock = clock.Add(run.UsageWaits[try-2])
-		if err := runs.Again(ctx, stored); err != nil {
-			t.Fatal(err)
+		if err := runs.Again(ctx, stored); !errors.Is(err, run.ErrNotTaken) {
+			t.Fatalf("try %d not taken: %v", try, err)
 		}
 		stored, _ = runs.Get(ctx, "t1", r.ID)
 		if stored.UsageTries != try || !stored.UsageRetry.Equal(clock.Add(run.UsageWaits[try-1])) {
@@ -155,8 +155,8 @@ func TestAReportNotTakenIsKeptAndSentAgainUntilTaken(t *testing.T) {
 	r2, _ = runs.Get(ctx, "t1", r2.ID)
 	r2.UsageTries = len(run.UsageWaits)
 	logged = nil
-	if err := runs.Again(ctx, r2); err != nil {
-		t.Fatal(err)
+	if err := runs.Again(ctx, r2); !errors.Is(err, run.ErrNotTaken) {
+		t.Fatalf("the last try not taken: %v", err)
 	}
 	if stored, _ := runs.Get(ctx, "t1", r2.ID); !stored.UsageRetry.IsZero() || len(logged) != 1 || logged[0] != "run: a usage report was given up after its last try" {
 		t.Fatalf("past its last try: retry %v, logged %q", stored.UsageRetry, logged)
@@ -208,5 +208,49 @@ func TestTheSweepSendsAKeptReportAgain(t *testing.T) {
 	}
 	if stored, _ := runs.Get(ctx, "t1", r.ID); !stored.UsageRetry.IsZero() || stored.Status != run.Completed {
 		t.Fatalf("after the sweep: %+v", stored)
+	}
+}
+
+// While KIFF is down, a sweep sends one owed report, and leaves the rest for
+// its next look, still owed as they were: it never spends its time on them.
+func TestASweepStopsSendingReportsKIFFDoesntTake(t *testing.T) {
+	ctx := context.Background()
+	k := &reports{fail: true}
+	sends := 0
+	now := time.Now().UTC().Truncate(time.Second)
+	runs := run.Reporting{Runs: memory.NewRuns(), Now: func() time.Time { return now },
+		Report: func(ctx context.Context, r run.Run) error { sends++; return k.send(ctx, r) }}
+	for _, s := range []string{"s1", "s2", "s3"} {
+		r := run.New("t1", "refunds", s, run.ByOwner, "go", now)
+		if err := runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		r = moveTo(t, runs, r, now, run.Running, 0)
+		moveTo(t, runs, r, now, run.Completed, 9_000)
+	}
+	sends = 0
+	sw := run.Sweeper{Runs: runs, Usage: runs.Again}
+	later := now.Add(run.UsageWaits[0] + time.Second)
+	n, err := sw.Sweep(ctx, later, 10)
+	if err != nil || sends != 1 || n != 1 {
+		t.Fatalf("with KIFF down: %d handled, %d sent, %v; want 1 and 1, no error", n, sends, err)
+	}
+	owed, untouched := 0, 0
+	list, _ := runs.List(ctx, "t1", "refunds", 10)
+	for _, r := range list {
+		if !r.UsageRetry.IsZero() {
+			owed++
+		}
+		if r.UsageTries == 1 {
+			untouched++
+		}
+	}
+	if owed != 3 || untouched != 2 {
+		t.Fatalf("%d reports still owed and %d untouched, want 3 and 2", owed, untouched)
+	}
+	// KIFF is back: the next look sends them all.
+	k.fail, sends = false, 0
+	if n, err := sw.Sweep(ctx, later.Add(run.UsageWaits[1]+time.Second), 10); err != nil || sends != 3 || n != 3 {
+		t.Fatalf("with KIFF back: %d handled, %d sent, %v; want 3", n, sends, err)
 	}
 }

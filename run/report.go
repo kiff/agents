@@ -50,19 +50,30 @@ func (rp Reporting) Put(ctx context.Context, prev, next Run) error {
 	return nil
 }
 
+// ErrNotTaken is Again's answer when KIFF didn't take the report: it's kept
+// for its next try, or given up past its last. The sweep sends no other
+// report until its next look (Sweeper.Usage).
+var ErrNotTaken = errors.New("run: KIFF didn't take the usage report")
+
 // Again sends r's kept report again, from the sweep. Taken, it's no longer
-// kept; not taken, it waits for its next try, or is given up past the last.
+// kept; not taken, it waits for its next try, or is given up past the last,
+// and Again answers ErrNotTaken.
 func (rp Reporting) Again(ctx context.Context, r Run) error {
 	if rp.Report == nil || !Reported(r) {
 		return rp.keep(ctx, r, 0)
 	}
 	if err := rp.Report(ctx, r); err != nil {
+		tries := r.UsageTries + 1
 		if r.UsageTries >= len(UsageWaits) {
 			rp.log("run: a usage report was given up after its last try", err)
-			return rp.keep(ctx, r, 0)
+			tries = 0
+		} else {
+			rp.log("run: a usage report was not sent again; it's kept", err)
 		}
-		rp.log("run: a usage report was not sent again; it's kept", err)
-		return rp.keep(ctx, r, r.UsageTries+1)
+		if err := rp.keep(ctx, r, tries); err != nil {
+			return err
+		}
+		return ErrNotTaken
 	}
 	return rp.keep(ctx, r, 0)
 }

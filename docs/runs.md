@@ -122,8 +122,9 @@ turn, isn't reported.
 whichever path makes it: the run itself, a cancel or the sweep. A report KIFF doesn't take
 (no 2xx within 5 s) never fails the write. It's kept on the run (`usage_tries`,
 `usage_retry`), and the sweep sends it again after 5 min, 20 min and 1 h (`run.UsageWaits`),
-then gives it up and logs it. KIFF keeps a run's first report, so one sent twice changes
-nothing. A run whose agent was removed can't be reported, since its key went with it.
+then gives it up and logs it. Once KIFF doesn't take one in a sweep, that sweep sends no other,
+and the rest wait for its next look, so a sweep never spends its time on a KIFF that's down. KIFF
+keeps a run's first report, so one sent twice changes nothing. A run whose agent was removed can't be reported, since its key went with it.
 
 ## Statuses
 

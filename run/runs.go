@@ -589,6 +589,22 @@ const NeverStarted = "It couldn't start: no invocation picked it up after 3 trie
 func (sw Sweeper) Sweep(ctx context.Context, now time.Time, limit int) (int, error) {
 	var errs []error
 	done := 0
+	if usage := sw.Usage; usage != nil {
+		// Once KIFF doesn't take a report, the rest wait for the next look:
+		// one sweep never spends its time on a KIFF that's down.
+		down := false
+		sw.Usage = func(ctx context.Context, r Run) error {
+			if down {
+				return errLeftForNext
+			}
+			err := usage(ctx, r)
+			if errors.Is(err, ErrNotTaken) {
+				down = true
+				return nil
+			}
+			return err
+		}
+	}
 	for _, due := range []func(context.Context, time.Time, int) ([]Run, error){sw.Runs.Due, sw.Runs.DuePaused} {
 		runs, err := due(ctx, now, limit)
 		if err != nil {
@@ -608,6 +624,10 @@ func (sw Sweeper) Sweep(ctx context.Context, now time.Time, limit int) (int, err
 	return done, errors.Join(errs...)
 }
 
+// errLeftForNext is a usage report the sweep didn't send, since KIFF didn't
+// take one earlier in the same sweep: it's still owed, for the next look.
+var errLeftForNext = errors.New("run: the usage report waits for the next sweep")
+
 // SweepClaim is the claim the sweep holds on a PAUSED run it gives up on,
 // while it ends the run's recording.
 const SweepClaim = "sweep"
@@ -626,7 +646,12 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 	case sw.Note != nil && !r.NoteRetry.IsZero() && r.NoteRetry.Before(now):
 		return true, sw.Note(ctx, r)
 	case sw.Usage != nil && !r.UsageRetry.IsZero() && r.UsageRetry.Before(now):
-		return true, sw.Usage(ctx, r)
+		if err := sw.Usage(ctx, r); errors.Is(err, errLeftForNext) {
+			return false, nil
+		} else if err != nil {
+			return true, err
+		}
+		return true, nil
 	case r.Status == Pending && r.After != "" && sw.Continue != nil:
 		return sw.queued(ctx, r, now)
 	case r.Status == Pending && !r.Cancel && sw.Continue != nil && r.Resumes < MaxResumes:
