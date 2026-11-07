@@ -894,6 +894,14 @@ func TestUnworkedFiringsAreKeptAsFailing(t *testing.T) {
 	if got.Failing == nil || got.Failing.Firings != 1 || !got.Failing.Since.Equal(monday) || got.Input != "Reconcile today's payouts." {
 		t.Fatalf("failing %+v, input %q", got.Failing, got.Input)
 	}
+	// A late delivery of an older firing (Friday's), after Monday's was counted, isn't counted.
+	friday := monday.AddDate(0, 0, -3)
+	if err := f.sv.Fire(ctx, "t1", "morning", friday); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 1 || !got.Failing.Last.Equal(monday) {
+		t.Fatalf("a late delivery of an older firing counted: %+v", got.Failing)
+	}
 	// A repeated delivery of that firing is the same failure: counted once.
 	if err := f.sv.Fire(ctx, "t1", "morning", monday); err != nil {
 		t.Fatal(err)
@@ -910,12 +918,45 @@ func TestUnworkedFiringsAreKeptAsFailing(t *testing.T) {
 		got.Failing.Run != (schedule.Firing{Tenant: "t1", Schedule: "morning", Due: tuesday}).Key() {
 		t.Fatalf("a second firing: %+v", got.Failing)
 	}
+	// A late delivery of Monday's firing, after Tuesday's was counted, is counted already.
+	if err := f.sv.Fire(ctx, "t1", "morning", monday); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 2 || !got.Failing.Last.Equal(tuesday) {
+		t.Fatalf("a late delivery of an older firing counted again: %+v", got.Failing)
+	}
 	works = true
 	if err := f.sv.Fire(ctx, "t1", "morning", tuesday.AddDate(0, 0, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing != nil || got.Input != "Reconcile today's payouts." {
 		t.Fatalf("after a run that worked: failing %+v, input %q", got.Failing, got.Input)
+	}
+}
+
+// A failing stored before its last firing's due time was kept (Last zero)
+// counts on as before: a new firing is one more, a repeat of the last isn't.
+func TestAFailingFromBeforeLastCountsOn(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "morning")
+	paris, _ := time.LoadLocation("Europe/Paris")
+	monday := time.Date(2026, 11, 9, 9, 0, 0, 0, paris)
+	tuesday := monday.AddDate(0, 0, 1)
+	s.Failing = &schedule.Failing{Since: monday, Firings: 1, Run: (schedule.Firing{Tenant: "t1", Schedule: "morning", Due: monday}).Key()}
+	if err := f.store.Put(ctx, s); err != nil { // as stored then, the service's own field
+		t.Fatal(err)
+	}
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrUnworked
+	}
+	for _, due := range []time.Time{monday, tuesday} {
+		if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 2 || !got.Failing.Since.Equal(monday) || !got.Failing.Last.Equal(tuesday) {
+		t.Fatalf("failing %+v", got.Failing)
 	}
 }
 

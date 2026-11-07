@@ -135,6 +135,16 @@ type textField struct {
 
 func (f textField) text() string { return f.parent[f.key].(string) }
 
+// html says whether the field is a message's html part: its name says so
+// ("html", "body_html", "htmlBody"), or its text is a whole html document.
+func (f textField) html() bool {
+	if strings.Contains(strings.ToLower(f.key), "html") {
+		return true
+	}
+	t := strings.ToLower(strings.TrimLeft(f.text(), space))
+	return strings.HasPrefix(t, "<!doctype") || strings.HasPrefix(t, "<html")
+}
+
 // First is input as the call sends it, with the line first in each of the
 // tool's fields the call carries as text, or as the first field when the call
 // carries its parent and none of them. That's the AI disclosure's place:
@@ -183,7 +193,10 @@ func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 	line := d.lineFor(strings.Join(rest, "\n\n"))
 	for i, f := range texts {
 		next := line
-		if strings.TrimSpace(rest[i]) != "" {
+		switch {
+		case f.html():
+			next = withHTMLLine(rest[i], line)
+		case strings.TrimSpace(rest[i]) != "":
 			next += "\n\n" + rest[i]
 		}
 		if next != f.text() {
@@ -204,17 +217,15 @@ func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 }
 
 // lines is the line in every language it has, each also as html writes it
-// ("&amp;" for "&"), longest first so none is taken out as part of another.
+// ("&amp;" for "&") and as an html part's paragraph of its own (htmlLine),
+// longest first so none is taken out as part of another.
 func (d *Disclosure) lines() []string {
 	var out []string
 	for _, l := range append([]string{d.Line}, slices.Collect(maps.Values(d.Lines))...) {
 		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
-		out = append(out, l)
-		if e := html.EscapeString(l); e != l {
-			out = append(out, e)
-		}
+		out = append(out, l, html.EscapeString(l), "<p>"+l+"</p>", htmlLine(l))
 	}
 	slices.SortFunc(out, func(a, b string) int { return cmp.Or(len(b)-len(a), strings.Compare(a, b)) })
 	return slices.Compact(out)
@@ -231,16 +242,52 @@ func (d *Disclosure) lineFor(text string) string {
 // space is what separates a line from the text around it.
 const space = " \t\r\n"
 
+// htmlLine is the line as an html part shows it: a paragraph of its own,
+// escaped, so it never runs into the message's first sentence.
+func htmlLine(line string) string { return "<p>" + html.EscapeString(line) + "</p>" }
+
+// beforeContent are the tags the line goes just after in an html part, in
+// order of preference: inside its body; else after its head, its html tag or
+// its doctype. Text before a doctype would put a browser in quirks mode.
+var beforeContent = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)<body\b[^>]*>`),
+	regexp.MustCompile(`(?i)</head\s*>`),
+	regexp.MustCompile(`(?i)<html\b[^>]*>`),
+	regexp.MustCompile(`(?i)^<!doctype[^>]*>`),
+}
+
+// withHTMLLine is an html part with the line first in what it shows.
+func withHTMLLine(text, line string) string {
+	p := htmlLine(line)
+	for _, re := range beforeContent {
+		if at := re.FindStringIndex(text); at != nil {
+			return text[:at[1]] + p + text[at[1]:]
+		}
+	}
+	return p + text
+}
+
 // without is text with each of lines taken out wherever it is, with the space
 // around it: one that starts or ends the text takes the space after or before
-// it, and one between two runs of space leaves the longer. The rest of the
-// text is as it was, so a text with none of them is unchanged.
+// it, and one between two runs of space leaves the longer. One in a quote of
+// an earlier message stays (quoted). The rest of the text is as it was, so a
+// text with none of them is unchanged.
 func without(text string, lines []string) string {
 	for _, l := range lines {
 		if l == "" {
 			continue
 		}
-		for i := strings.Index(text, l); i >= 0; i = strings.Index(text, l) {
+		for from := 0; ; {
+			j := strings.Index(text[from:], l)
+			if j < 0 {
+				break
+			}
+			i := from + j
+			if quoted(text, i) {
+				from = i + len(l)
+				continue
+			}
+			from = 0
 			before, after := text[:i], text[i+len(l):]
 			head, tail := strings.TrimRight(before, space), strings.TrimLeft(after, space)
 			switch gap, gapAfter := before[len(head):], after[:len(after)-len(tail)]; {
@@ -257,6 +304,18 @@ func without(text string, lines []string) string {
 		}
 	}
 	return text
+}
+
+// quoted says whether the text at i is in a quote of an earlier message: on a
+// line that starts with ">", or inside an html blockquote. A quote is the
+// earlier message as it was sent, its line included.
+func quoted(text string, i int) bool {
+	start := strings.LastIndexByte(text[:i], '\n') + 1
+	if strings.HasPrefix(strings.TrimLeft(text[start:i], " \t"), ">") {
+		return true
+	}
+	lower := strings.ToLower(text[:i])
+	return strings.LastIndex(lower, "<blockquote") > strings.LastIndex(lower, "</blockquote")
 }
 
 // commonWords are frequent short words of each language whose line a

@@ -80,12 +80,17 @@ type Schedule struct {
 }
 
 // Failing is a schedule's firings in a row whose runs failed before any
-// turn: since the first's due time, how many, and the last one's run. What
-// they were handed waits for a run that works (a check's items go back).
+// turn: since the first's due time, how many, the last one's run, and its due
+// time. What they were handed waits for a run that works (a check's items go
+// back).
 type Failing struct {
 	Since   time.Time `json:"since"`
 	Firings int       `json:"firings"`
 	Run     string    `json:"run,omitempty"`
+	// Last is the due time of the last firing counted: one no later than it
+	// (a repeated delivery, or a late one of an older firing) is counted
+	// already. Zero on a failing stored before it was kept.
+	Last time.Time `json:"last,omitzero"`
 }
 
 // How a schedule fires. The plain forms the dial shows (daily,
@@ -718,12 +723,13 @@ func (sv *Service) unworked(ctx context.Context, s Schedule, f Firing, now time.
 		return err
 	}
 	switch {
-	case stored.Failing != nil && stored.Failing.Run == f.Key():
-		// A repeated delivery of a firing counted already.
+	case stored.Failing != nil && (stored.Failing.Run == f.Key() || !f.Due.After(stored.Failing.Last)):
+		// A repeated delivery of a firing counted already, or a late one of
+		// an older firing, delivered after a newer one was counted.
 	case stored.Failing != nil:
-		stored.Failing = &Failing{Since: stored.Failing.Since, Firings: stored.Failing.Firings + 1, Run: f.Key()}
+		stored.Failing = &Failing{Since: stored.Failing.Since, Firings: stored.Failing.Firings + 1, Run: f.Key(), Last: f.Due}
 	default:
-		stored.Failing = &Failing{Since: f.Due, Firings: 1, Run: f.Key()}
+		stored.Failing = &Failing{Since: f.Due, Firings: 1, Run: f.Key(), Last: f.Due}
 	}
 	offOnce(&stored, f.Due)
 	if err := sv.Store.Put(ctx, stored); err != nil {

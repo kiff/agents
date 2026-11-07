@@ -122,9 +122,9 @@ nothing, so the firing used up nothing:
 - **a check's cursor stays where it was,** so the next firing hands the same
   items to a new run, with anything new since;
 - **the schedule's `failing` says so,** kept by the service and shown on every
-  read: `{since, firings, run}`, the first such firing's due time, how many in
-  a row, and the last one's run. A run that works ends it. A body that sets
-  `failing` is ignored, and an update keeps it.
+  read: `{since, firings, run, last}`, the first such firing's due time, how
+  many in a row, and the last one's run and due time. A run that works ends it.
+  A body that sets `failing` is ignored, and an update keeps it.
 
 A run counts as doing nothing only when the runner itself stored its error
 (it ended the run, or stopped it before its loop) with no turn done, and the
@@ -133,7 +133,9 @@ and its turns may be behind what it did, so it never counts.
 
 A run that failed after it acted keeps today's rule: what it was handed is
 used up, so nothing is done twice. A repeated delivery of a firing whose run
-did nothing does nothing either, says the same, and counts once in `failing`.
+did nothing does nothing either, says the same, and counts once in `failing`,
+and so does a late delivery of an older firing that comes after a newer one
+was counted.
 
 **A `once` schedule is off after its firing, whatever came of it,** this one
 included. An agent's own follow-ups are `once` schedules. A follow-up whose run
