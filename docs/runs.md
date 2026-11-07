@@ -74,7 +74,56 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
   together stay within `MaxDoneBytes` (64 KB), so the run fits its store item.
   Past that, a call is still listed, without its `input`.
 - `source`: set when a schedule or an event started the run (the schedule's ID).
+- `ended`: when the run moved to a final status, kept however it's written after.
+- `refused`, `declined`: how many of its calls KIFF refused outright (outside the
+  Card), and how many it held that the owner then refused, over all its parts.
+- `usage_tries`, `usage_retry`: its usage report KIFF hasn't taken yet
+  ([What a run reports to KIFF](#what-a-run-reports-to-kiff)).
 - `version`: every change is a compare-and-set on it.
+
+## What a run reports to KIFF
+
+Every run that ends having used AI (`cost_micro_usd` above 0) is reported to KIFF once,
+with its agent's own key: `PUT /v1/me/runs/{run}/usage` (`kiff.UsageOf`). KIFF keeps one
+row per run and works out its credits from it, so a run's usage outlives the run, which its
+agent's keep rules may delete. A run that used no AI, such as one refused before its first
+turn, isn't reported.
+
+```json
+{
+  "agent": "rae",
+  "session": "ff4be946685b1e5b376c6966ed4d77b3",
+  "trigger": "schedule",
+  "source": "sch_7Kq2",
+  "requester": { "kind": "member", "id": "user_01" },
+  "started": "2026-11-07T08:00:00Z",
+  "ended": "2026-11-07T08:00:41Z",
+  "cost_micro_usd": 30000,
+  "turns": 4,
+  "status": "COMPLETED",
+  "stop": "answered",
+  "failed": false,
+  "refused": 1,
+  "kept_until": "2026-11-14T08:00:41Z"
+}
+```
+
+- **Only what the run recorded,** never anything the model said: what started it and who
+  asked, when it began and ended, what its turns cost, and how it ended.
+- **`failed`** is an `ERROR`: the run failed on our side (it couldn't start, or its invocation,
+  kiff/agents or the model failed it). A cap, a cancel or a refusal isn't a failure.
+- **`refused` and `declined`** don't change what the run cost: they say what was blocked.
+- **A crash isn't paid twice.** A turn of an invocation that stopped before it stored what it
+  cost isn't in `cost_micro_usd`, so a run carried on after it counts what it stored.
+- **`kept_until`** is when kiff/agents may delete the run (absent: kept until deleted). Until
+  then, whoever shows the report can open the run.
+
+**Sent from the store** (`run.Reporting`), on the write that moves the run to a final status,
+whichever path makes it: the run itself, a cancel or the sweep. A report KIFF doesn't take
+(no 2xx within 5 s) never fails the write. It's kept on the run (`usage_tries`,
+`usage_retry`), and the sweep sends it again after 5 min, 20 min and 1 h (`run.UsageWaits`),
+then gives it up and logs it. KIFF keeps a run's first report, so one sent twice changes
+nothing. A run whose agent was removed can't be reported, since its key went with it.
 
 ## Statuses
 

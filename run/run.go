@@ -230,6 +230,17 @@ type Run struct {
 	// (NoteWaits), zero once one was taken or the last try is past.
 	NoteTries int       `json:"note_tries,omitempty"`
 	NoteRetry time.Time `json:"note_retry,omitzero"`
+	// UsageTries counts the sends of the run's usage report that KIFF didn't
+	// take (Reporting); UsageRetry is when the sweep sends it again
+	// (UsageWaits), zero once KIFF took it or the last try is past.
+	UsageTries int       `json:"usage_tries,omitempty"`
+	UsageRetry time.Time `json:"usage_retry,omitzero"`
+	// Refused counts the run's calls KIFF refused outright, outside its
+	// Card; Declined those it held that the owner then refused. Over all
+	// its parts: its usage report says them beside the AI it used, which
+	// they don't change.
+	Refused  int `json:"refused,omitempty"`
+	Declined int `json:"declined,omitempty"`
 	// After is the run it waits for, in the same thread (a door message
 	// that came while the thread's run was at work): it starts once that
 	// run is no longer at work, one run at a time per thread. Wait is when
@@ -276,6 +287,10 @@ type Run struct {
 
 	Created time.Time `json:"created"`
 	Updated time.Time `json:"updated"`
+	// Ended is when the run ended (Change sets it as it moves to a final
+	// status), kept as later changes move Updated; zero for a run at work,
+	// and for one that ended before runs kept it.
+	Ended time.Time `json:"ended,omitzero"`
 	// Expires is when a run that has ended may be removed (zero: kept until
 	// deleted). It comes from the agent's keep rules; a run that hasn't
 	// ended never expires.

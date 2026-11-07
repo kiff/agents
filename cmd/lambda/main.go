@@ -191,9 +191,6 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	store := dynamodb.New(db, table)
 	agents := dynamodb.NewAgents(db, table)
 	skills := dynamodb.NewSkills(db, table)
-	// A run started with notify is announced when it ends or pauses, from
-	// any path that moves it (kiff/tafs#206).
-	runs := run.Notifying{Runs: dynamodb.NewRuns(db, table), Log: func(msg string, err error) { log.Warn(msg, "err", err) }}
 	// What each account's chats cost, for AI fair use (kiff/tafs#193): kept
 	// in the same table, counted only for the chats tafs cloud names a period
 	// for.
@@ -204,6 +201,15 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		make: func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) },
 	}
 	keys := secretsmanager.New(secrets, prefix)
+	// A run started with notify is announced when it ends or pauses, from
+	// any path that moves it (kiff/tafs#206). Every run that ends having
+	// used AI is reported to KIFF with its agent's key, which keeps it and
+	// works out its credits: run records go with their agents' keep rules.
+	runs := run.Reporting{
+		Runs:   run.Notifying{Runs: dynamodb.NewRuns(db, table), Log: func(msg string, err error) { log.Warn(msg, "err", err) }},
+		Report: kiff.UsageReporter(agents, keys, &http.Client{Timeout: usageTimeout}, kiffAPI),
+		Log:    func(msg string, err error) { log.Warn(msg, "err", err) },
+	}
 	var claims *drafts.Service
 	if dp := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); dp != "" {
 		if strings.HasPrefix(dp, prefix) || strings.HasPrefix(prefix, dp) {
@@ -392,6 +398,10 @@ func kiffAPIFor(gateways, api string) (string, error) {
 // withdrawTimeout bounds one withdrawal from KIFF: a cancel waits on each of
 // its run's held calls in turn.
 const withdrawTimeout = 15 * time.Second
+
+// usageTimeout bounds one usage report to KIFF: a run's end doesn't wait
+// longer on it, and one not taken in time is sent again by the sweep.
+const usageTimeout = 5 * time.Second
 
 func split(s string) []string {
 	var out []string

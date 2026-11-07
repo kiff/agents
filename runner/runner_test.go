@@ -1959,3 +1959,81 @@ func TestATurnNotStoredIsNotMade(t *testing.T) {
 		t.Fatalf("got %+v, %v, sent %v; want an error and nothing sent", got, err, sent)
 	}
 }
+
+// A run counts the calls KIFF refused outright and those it held that the
+// owner refused, over all its parts and pauses: its usage report says them
+// beside the AI it used, which they don't change.
+func TestARunCountsItsRefusedAndDeclinedCalls(t *testing.T) {
+	f := newFixture(t, use("c0", "stripe_refund", `{"order":41}`), use("c1", "stripe_refund", `{"order":42}`), say("Waiting for the owner."))
+	refused := tool.Result{Text: "Refused by KIFF.", IsError: true, State: tool.StateRefused}
+	held := tool.Result{Text: "KIFF holds this call for the owner", State: tool.StateHeld}
+	calls := 0
+	f.refund.onCall = func() {
+		// Order 41 is outside the Card, so KIFF refuses it outright; every
+		// other refund is held for the owner.
+		if calls++; calls == 1 {
+			f.refund.result = refused
+		} else {
+			f.refund.result = held
+		}
+	}
+	r := f.start(server.Start{Input: "refund orders 41, 42 and 43"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Paused || got.Refused != 1 || got.Declined != 0 {
+		t.Fatalf("first pause: %s, %d refused, %d declined; want 1 and 0", got.Status, got.Refused, got.Declined)
+	}
+	// The owner refuses order 42; the run then asks for 43, held again.
+	if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error {
+		n.Requirements[0].Answered, n.Requirements[0].Answer = f.clock.now(), "refused"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Collect = func(_ context.Context, _ agent.Agent, reqs []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: reqs[0].CallID, Tool: "stripe_refund", Result: tool.Result{Text: "Refused by the owner.", IsError: true, State: tool.StateRefused}}}, nil
+	}
+	f.model.add(use("c2", "stripe_refund", `{"order":43}`), say("Order 43 waits for you."))
+	if got, err = f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Paused || got.Refused != 1 || got.Declined != 1 {
+		t.Fatalf("second pause: %s, %d refused, %d declined; want 1 and 1", got.Status, got.Refused, got.Declined)
+	}
+	// The owner refuses 43 too, and the run ends.
+	if _, err := run.Change(ctx, f.runs, f.get(r.ID), f.clock.now(), func(n *run.Run) error {
+		n.Requirements[0].Answered, n.Requirements[0].Answer = f.clock.now(), "refused"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.model.add(say("None of the refunds went through."))
+	if got, err = f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != run.Completed || got.Refused != 1 || got.Declined != 2 || got.Cost == 0 {
+		t.Fatalf("ended %s with %d refused, %d declined, cost %d; want 1 and 2, its AI still counted", got.Status, got.Refused, got.Declined, got.Cost)
+	}
+}
+
+// A held call the owner approved that KIFF then refused to send (its Card
+// changed since) is KIFF's refusal, not the owner's.
+func TestAnApprovedHoldKIFFRefusedToSendCountsAsRefused(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Waiting for the owner."))
+	r := f.start(server.Start{Input: "refund order 42"})
+	f.pause(r)
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "Refused by KIFF.", IsError: true, State: tool.StateRefused}}}, nil
+	}
+	f.model.add(say("It wasn't sent."))
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Refused != 1 || got.Declined != 0 {
+		t.Fatalf("%d refused, %d declined; want 1 and 0", got.Refused, got.Declined)
+	}
+}

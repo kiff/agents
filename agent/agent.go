@@ -358,6 +358,12 @@ type Outcome struct {
 	// Done are the calls that acted and went through in this part of the
 	// run (#249), in order: the caller adds them to the run's.
 	Done []run.Done `json:"done,omitempty"`
+	// Refused counts the calls KIFF refused outright in this part of the
+	// run, outside the agent's Card, and Declined those it held that the
+	// owner then refused: the caller adds them to the run's, whose usage
+	// report says them.
+	Refused  int `json:"refused,omitempty"`
+	Declined int `json:"declined,omitempty"`
 
 	// standard: a fast agent's turn ran at standard speed, so the rest of
 	// the run does too.
@@ -510,7 +516,23 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	for _, h := range held {
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done}, emit)
+	refused, declined := refusals(r, held)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined}, emit)
+}
+
+// refusals counts the held calls of r whose outcome is in: those the owner
+// refused (declined), and those KIFF refused when it came to send them
+// (refused), its Card changed since.
+func refusals(r run.Run, held []ToolResultBody) (refused, declined int) {
+	for _, h := range held {
+		switch q, _ := requirement(r, h.CallID); {
+		case q.Answer == "refused" || q.Answer == "rejected":
+			declined++
+		case h.State == tool.StateRefused:
+			refused++
+		}
+	}
+	return refused, declined
 }
 
 // restart is Continue for a run that stopped before any turn acted (the
@@ -788,6 +810,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			held = held || r.Waits()
 			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
 				out.Done = append(out.Done, doneOf(r, calls[i].Input))
+			}
+			if r.State == tool.StateRefused {
+				out.Refused++
 			}
 			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade, InputHash: session.InputHash(calls[i].Input)}
 		}
