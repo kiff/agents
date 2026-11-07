@@ -544,3 +544,27 @@ func TestAFiringOfAHaltedAgentIsSkipped(t *testing.T) {
 		t.Fatalf("a halted agent's firing stored a run: %v", err)
 	}
 }
+
+// A firing while the account's tafs wait for credits is skipped, not
+// retried: KIFF answered, and what the firing was handed waits for the next
+// one that runs (skipped_credits). KIFF not answering is an error, so the
+// firing is tried again.
+func TestAFiringWhileTheTafsWaitIsSkipped(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	rn := f.runner.(*runner.Runner)
+	rn.Allowance = func(context.Context, string, string) (bool, string, error) { return false, "credits_used_up", nil }
+	var credits *schedule.CreditsError
+	if err := f.fire(ctx, fi); !errors.As(err, &credits) || credits.Why != "credits_used_up" {
+		t.Fatalf("a firing while the tafs wait = %v; want a schedule.CreditsError", err)
+	}
+	if _, err := runs.Get(ctx, "t1", fi.Key()); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("a refused firing stored a run: %v", err)
+	}
+	rn.Allowance = func(context.Context, string, string) (bool, string, error) { return false, "", errors.New("down") }
+	if err := f.fire(ctx, fi); err == nil || errors.As(err, &credits) {
+		t.Fatalf("KIFF down = %v; want an error the firing is tried again on", err)
+	}
+}

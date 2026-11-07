@@ -363,6 +363,32 @@ kiff/agents stops its side; KIFF refuses the agent's calls on its own.
   keeps whatever it returns. A halt stops new sends; it doesn't undo what a
   vendor did.
 
+## Credits before each run
+
+No new run starts while the account's tafs wait for credits: KIFF keeps the
+balance, and `Start` asks it before each run (`runner.Runner.Allowance`).
+
+- **The question:** `GET /v1/me/credits/allowance`, with the run's agent's own
+  key (`kiff.AllowanceChecker`). KIFF answers for that agent: a taf's run waits
+  with the balance; Coach's goes on within its fair use while a plan runs.
+- **A refusal** stores nothing, and is a `*server.CreditsRefusal` with KIFF's
+  code: `credits_used_up`, `limit_reached` or `no_plan`. The API answers 409
+  with that code; a code it doesn't know reads as `credits_used_up`. A
+  schedule's firing is `skipped_credits` (schedules.md), and isn't tried again.
+- **An allowed answer is kept a minute per agent** (`kiff.AllowanceKept`), so a
+  chat doesn't wait on KIFF each time; a refusal is never kept, so a raise or a
+  pack lets the next run start at once. For up to a minute after the balance
+  is used, a run can still start. That, and runs already going, are the only
+  ways past it.
+- **KIFF not answering** fails the start, as any KIFF outage does: the API
+  answers 502 (`kiff_unanswered`), and a firing is tried again by the
+  scheduler. A KIFF from before credits has no such route (404), and every run
+  may start, so the order the two deploy in can't stop every taf.
+- **A run already going finishes**, and a run stored before (a repeated
+  delivery of a firing, a paused run carried on) asks nothing.
+- A chat's AI bound (`ai`), from before, is ignored: nothing is counted toward
+  a period, and `GET /usage/ai` reads what was.
+
 ## Chat
 
 ```go

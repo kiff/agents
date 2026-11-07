@@ -99,6 +99,11 @@ type Runner struct {
 	// may not; no answer is no. Runs no member asked for aren't checked. Nil:
 	// nothing is checked.
 	Access run.AccessFunc
+	// Allowance answers whether a new run of the tenant's agent may start:
+	// KIFF's balance, asked with the agent's own key (kiff.AllowanceChecker).
+	// A refusal is a *server.CreditsRefusal, with KIFF's code; KIFF not
+	// answering fails the start, as any KIFF outage does. Nil asks nothing.
+	Allowance func(ctx context.Context, tenant, agent string) (allowed bool, why string, err error)
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Log, when set, gets one line per run that starts: where its start
@@ -189,6 +194,21 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		// Nothing of an agent that is switching versions runs (kiff/tafs#107).
 		if err := rn.notSwitching(ctx, s.Tenant, s.Agent); err != nil {
 			return run.Run{}, err
+		}
+	}
+	// No new run starts while the account's tafs wait for credits; a run
+	// already going finishes. KIFF's answer is the agent's: Coach's within
+	// its fair use goes on.
+	if rn.Allowance != nil {
+		ok, why, err := rn.Allowance(ctx, s.Tenant, s.Agent)
+		if err != nil {
+			if rn.Log != nil {
+				rn.Log.Warn("KIFF didn't say whether a run may start", "err", err)
+			}
+			return run.Run{}, server.KIFFUnanswered("KIFF didn't say whether a run may start")
+		}
+		if !ok {
+			return run.Run{}, &server.CreditsRefusal{Why: why}
 		}
 	}
 	// A person's files, theirs and unsent, read back and checked before

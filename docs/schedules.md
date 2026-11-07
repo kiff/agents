@@ -113,6 +113,14 @@ schedule and due time, so a repeated delivery replaces it.
 | `skipped_too_large` | its check found only items too large for a run |
 | `failed_unworked` | it started `run`, which failed before any turn and did nothing |
 | `skipped_halted` | its agent, or the whole account, was halted: no run, and nothing from before a halt runs, so a check's cursor moves past what it found; `failing` stays as it was |
+| `skipped_credits` | the account's tafs wait for credits (runs.md): no run, and what it was handed waits, as a check's cursor stays, for the next firing that runs; `failing` stays as it was, and `waited` says why |
+
+A schedule keeps its last firing that waited for credits, kept by the service
+and shown on every read: `waited: {due, why}`, why being KIFF's code
+(`credits_used_up`, `limit_reached` or `no_plan`). A run that starts unsets it,
+as it unsets `failing`. A once schedule (an agent's follow-up) is off after its
+firing, as always: its work doesn't run again, and its `waited` says so. A body
+that sets `waited` is ignored, and an update keeps it.
 
 ## A run that does nothing
 

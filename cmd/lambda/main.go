@@ -240,7 +240,10 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
 			return planque.New(base, tenant, key, nil).ReadThrough(kiff.New(gateway, key, nil))
 		},
-	}, Collect: kiff.Collect, Settle: kiff.Settle, Usage: use, Log: log}
+	}, Collect: kiff.Collect, Settle: kiff.Settle, Usage: use, Log: log,
+		// Before each new run, KIFF's balance, with the agent's own key: an
+		// allowed answer is kept a minute per agent, a refusal never.
+		Allowance: kiff.AllowanceChecker(agents, keys, &http.Client{Timeout: allowanceTimeout}, kiffAPI, nil)}
 	// What a chat keeps of its reads for its next messages, sealed under the
 	// tenant's own key (#172): off unless set, so nothing is kept by default.
 	if sp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")); sp != "" {
@@ -408,6 +411,11 @@ const withdrawTimeout = 15 * time.Second
 // usageTimeout bounds one usage report to KIFF: a run's end doesn't wait
 // longer on it, and one not taken in time is sent again by the sweep.
 const usageTimeout = 5 * time.Second
+
+// allowanceTimeout bounds asking KIFF whether a run may start: a chat's
+// first words wait on it, when no answer is kept. One not answered in time
+// fails the start, and a firing is tried again.
+const allowanceTimeout = 3 * time.Second
 
 func split(s string) []string {
 	var out []string
