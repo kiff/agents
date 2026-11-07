@@ -2,12 +2,14 @@ package kiff
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/kiff/agents/registry"
+	"github.com/kiff/agents/registry/secretsmanager"
 )
 
 // ArchiveSelf archives the key's own agent in KIFF: POST
@@ -41,19 +43,27 @@ func ArchiveSelf(ctx context.Context, hc *http.Client, apiURL, key string) error
 
 // Archiver is server.Server's ArchiveKIFF: it archives the agent's KIFF
 // agent with the agent's own KIFF key, as the agent is deleted. An agent
-// whose key is gone has nothing left to archive with: done.
+// already gone, or whose key is gone (tafs cloud deletes its secret when it
+// removes the taf), has nothing left to archive with: done, so a removal
+// asked again still finishes.
 func Archiver(agents registry.Agents, secrets registry.Secrets, hc *http.Client, apiURL string) func(ctx context.Context, tenant, agent string) error {
 	return func(ctx context.Context, tenant, agent string) error {
 		d, err := agents.Get(ctx, tenant, agent)
+		if errors.Is(err, registry.ErrNotFound) {
+			return nil
+		}
 		if err != nil {
-			return fmt.Errorf("kiff: archive: the agent: %v", err)
+			return fmt.Errorf("kiff: archive: the agent: %w", err)
 		}
 		if d.KeyRef == "" {
 			return nil
 		}
 		key, err := secrets.Key(ctx, tenant, d.KeyRef)
+		if errors.Is(err, secretsmanager.ErrNotFound) {
+			return nil
+		}
 		if err != nil {
-			return fmt.Errorf("kiff: archive: the agent's KIFF key: %v", err)
+			return fmt.Errorf("kiff: archive: the agent's KIFF key: %w", err)
 		}
 		return ArchiveSelf(ctx, hc, apiURL, key)
 	}

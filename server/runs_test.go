@@ -21,11 +21,13 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/registry/registrytest"
+	"github.com/kiff/agents/registry/secretsmanager"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
+	"github.com/kiff/agents/tool/kiff"
 )
 
 // runner is a server.Runner on the memory stores, as the loop's will be: it
@@ -2247,4 +2249,29 @@ func TestDeleteAgentArchivesItsKIFFAgent(t *testing.T) {
 	if _, err := f.server.Agents.Get(ctx, "t1", "payouts"); err == nil {
 		t.Fatal("the agent is still there")
 	}
+}
+
+// A removal asked again after tafs cloud deleted the taf's key secret still
+// finishes: the archive has no key left to use, which is done, and the
+// definition goes.
+func TestDeleteAgentFinishesWithItsKeyGone(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	kiffAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("asked KIFF with no key: %s", r.URL.Path)
+	}))
+	t.Cleanup(kiffAPI.Close)
+	f.server.ArchiveKIFF = kiff.Archiver(f.server.Agents, goneKeys{}, kiffAPI.Client(), kiffAPI.URL)
+	f.restart()
+	code, body := f.do("t1", "DELETE", "/agents/payouts", nil)
+	f.want(204, code, body, "delete with the key secret gone")
+	if _, err := f.server.Agents.Get(ctx, "t1", "payouts"); err == nil {
+		t.Fatal("the agent is still there")
+	}
+}
+
+type goneKeys struct{}
+
+func (goneKeys) Key(context.Context, string, string) (string, error) {
+	return "", secretsmanager.ErrNotFound
 }
