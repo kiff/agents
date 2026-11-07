@@ -2,6 +2,7 @@ package kiff_test
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,7 +59,7 @@ func TestTheAllowanceAnswer(t *testing.T) {
 	}{
 		{200, `{"allowed": true}`, true, false, ""},
 		{200, `{"allowed": false, "why": "limit_reached"}`, false, false, "limit_reached"},
-		{404, `not found`, true, false, ""},
+		{404, `not found`, true, false, kiff.NoRoute},
 		{200, `{"allowed": false}`, false, true, ""},
 		{200, `{}`, false, true, ""},
 		{200, `nope`, false, true, ""},
@@ -86,7 +87,8 @@ func TestTheAllowanceChecker(t *testing.T) {
 	api := &allowanceAPI{}
 	srv := api.server(t)
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-	check := kiff.AllowanceChecker(oneAgent{}, keys{}, srv.Client(), srv.URL, func() time.Time { return now })
+	var logged strings.Builder
+	check := kiff.AllowanceChecker(oneAgent{}, keys{}, srv.Client(), srv.URL, func() time.Time { return now }, slog.New(slog.NewTextHandler(&logged, nil)))
 	ctx := context.Background()
 
 	api.set(200, `{"allowed": false, "why": "credits_used_up"}`)
@@ -119,5 +121,13 @@ func TestTheAllowanceChecker(t *testing.T) {
 	api.set(502, `bad gateway`)
 	if ok, _, err := check(ctx, "t1", "rae"); ok || err == nil {
 		t.Fatalf("KIFF down: %v %v", ok, err)
+	}
+	// A KIFF without the route allows, and says so in the log each time.
+	if logged.Len() != 0 {
+		t.Fatalf("logged before any 404: %s", logged.String())
+	}
+	api.set(404, `not found`)
+	if ok, _, err := check(ctx, "t1", "rae"); !ok || err != nil || !strings.Contains(logged.String(), "no allowance route") {
+		t.Fatalf("no route: %v %v, logged %q", ok, err, logged.String())
 	}
 }
