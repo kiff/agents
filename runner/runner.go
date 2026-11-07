@@ -868,6 +868,18 @@ func (rn *Runner) fold(ctx context.Context, a agent.Agent, rec *session.Recordin
 	return cost
 }
 
+// Own reports whether a run's error is one this runner stored itself: when it
+// ended the run (FailedRun, FailedTime) or stopped it before its loop
+// (FailedBuild, FailedStart, FailedSwitching). Never one the sweep set for a
+// run nobody was left to end, whose stored turns may be behind what it did.
+func Own(err string) bool {
+	switch err {
+	case FailedRun, FailedTime, FailedBuild, FailedStart, FailedSwitching:
+		return true
+	}
+	return false
+}
+
 // failed is what the Error of a run whose loop failed with err says.
 func failed(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {

@@ -1104,6 +1104,8 @@ func readSchedule(r *http.Request, c Caller) (schedule.Schedule, error) {
 		return sc, bad("the tenant comes from the caller, not the body")
 	}
 	sc.Tenant = c.Tenant
+	// The service keeps it, from the firings: a body's is ignored.
+	sc.Failing = nil
 	return sc, nil
 }
 
@@ -1161,7 +1163,8 @@ func (s *Server) getSchedule(ctx context.Context, c Caller, r *http.Request) (in
 // updateSchedule replaces a schedule that exists.
 func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
-	if _, err := s.Schedules.Store.Get(ctx, c.Tenant, id); err != nil {
+	old, err := s.Schedules.Store.Get(ctx, c.Tenant, id)
+	if err != nil {
 		return 0, nil, err
 	}
 	sc, err := readSchedule(r, c)
@@ -1172,6 +1175,8 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 		return 0, nil, bad("the id in the body is not the path's")
 	}
 	sc.ID = id
+	// Its firings' run of failures stays, until a run works.
+	sc.Failing = old.Failing
 	if err := s.putSchedule(ctx, sc); err != nil {
 		return 0, nil, err
 	}

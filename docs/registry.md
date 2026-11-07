@@ -84,27 +84,41 @@ of its eight kinds):
   (`kiff_*`) goes to the model deferred, whatever its name. A Card that
   covers a vendor's tools mid-conversation (Setup's reads) then leaves the
   cached prefix as it was, instead of starting the cache over.
-- `disclose` (optional): `{line, in: [{tool, fields}]}`. The runtime puts
-  `line` ("Written by an AI agent for the company.") in each call of a named
-  tool, a tool KIFF names with a connection's part before or after it too,
-  so a message to someone outside the company says an AI agent wrote it
-  whatever the model wrote (Eval 42193895936). It goes at the end of the
-  first of `fields` (dotted paths) the call carries as text, or as the first
-  field when the call carries its parent and none of them. A call that says
-  it already, or carries none of them, is sent as it was. What the call
-  sends, its record and a hold's stored input carry the line; the model's
-  own turn goes back to it as it wrote it.
+- `disclose` (optional): `{line, lines?, in: [{tool, fields}]}`. The runtime
+  puts `line` ("Written by an AI agent for the company.") in each call of a
+  named tool, a tool KIFF names with a connection's part before or after it
+  too, so a message to someone outside the company says an AI agent wrote it,
+  and for whom, whatever the model wrote (Eval 42193895936; AI Act Art.
+  50(1)).
+  - **It goes first, in each part:** at the top of each of `fields` (dotted
+    paths) the call carries as text, or as the first field when the call
+    carries its parent and none of them. Several fields can be renderings of
+    one message (an email's `text` and its `html`) and a reader is shown one
+    of them, so each starts with the line. Whoever reads the message reads it
+    before anything else, as the Commission's guidelines show the label.
+  - **In the message's language:** `lines` is the same sentence in other
+    languages, by ISO 639-1 code (`{"es": "Escrito por un agente de IA para
+    la empresa."}`), at most 12. The line that goes first is the one in the
+    language the message is written in, told by the common words of all its
+    fields read together (html tags left out): at least two, and more than
+    any other language's. Otherwise, `line`. Every field gets the same one.
+  - **Said once, wherever the model put it:** each of the lines, in any
+    language and as html writes it (`&amp;` for `&`), is taken out of each
+    field wherever it is, with the space around it, before the right one goes
+    first. The rest of the text is as the model wrote it. A call that already
+    reads that way is sent as it was, so a second pass changes nothing. One
+    that carries none of the fields is sent as it was.
+  - What the call sends, its record and a hold's stored input carry the line;
+    the model's own turn goes back to it as it wrote it.
 - `show_types` (optional, with `show`): the cards the agent shows instead
   of Coach's set, from a taf's own: `ask_coach`, a line and an Ask Coach
   button that opens Coach on the taf with the owner's request written in.
   A taf shows it for a setting only Coach changes (a connection or its key,
   its Card, tools or schedule). It waits for nothing.
-- `credit` (optional): `{line, after, in: [{tool, fields}]}`, as `disclose`
-  but its own line ("Built with tafs."), with its own check, so neither line
-  is added twice. It goes in after the disclosure: on the same line when the
-  text ends with `after` (the disclosure's line), in a paragraph of its own
-  otherwise. Only the tools it names carry it, so evidence for a bank or a
-  card network can carry the disclosure alone.
+- `credit` (optional): `{line, after, in: [{tool, fields}]}`, checked as
+  `disclose` is and kept, and **never put in a call**. Since 7 Nov no message
+  carries a credit line ("Built with tafs."), on WhatsApp, SMS or email: the
+  owner's call. A definition that still names one saves as before.
 - `tenant` and `id` come from the verified caller and the path; a body that
   says otherwise is refused.
 - `gateway` must be on the server's own list (`Server.Gateways`), so a

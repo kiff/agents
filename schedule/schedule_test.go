@@ -796,6 +796,196 @@ func TestACheckRunsOnlyForWhatIsNew(t *testing.T) {
 	}
 }
 
+// A firing whose run failed before any turn (the model refused its first
+// call, for want of credits) did nothing, so it used up nothing: its items go
+// back, and the next firing hands them to a new run. The schedule keeps the
+// run of such firings until a run works (before, a refused run's items were
+// never handed to any later run).
+func TestAnUnworkedRunGivesItsItemsBack(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "100"}
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	result := `{"data":[{"id":"m1","created":110}]}`
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return result, nil }
+	works := false
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		if !works {
+			return schedule.ErrUnworked
+		}
+		return nil
+	}
+	at := func(m int) time.Time { return time.Date(2026, 11, 6, 13, m, 0, 0, time.UTC) }
+	fire := func(due time.Time) schedule.Schedule {
+		t.Helper()
+		if err := f.sv.Fire(ctx, "t1", "inbox", due); err != nil {
+			t.Fatalf("an unworked firing is no error: %v", err)
+		}
+		got, _ := f.store.Get(ctx, "t1", "inbox")
+		return got
+	}
+	outcome := func(due time.Time) string {
+		h, _ := f.history.Firings(ctx, "t1", "inbox", schedule.MaxHistory)
+		for _, x := range h {
+			if x.Due.Equal(due) {
+				return x.Outcome
+			}
+		}
+		return ""
+	}
+
+	got := fire(at(30))
+	if got.AppCheck.Last != "100" || outcome(at(30)) != schedule.FiredUnworked {
+		t.Fatalf("cursor %q, %s", got.AppCheck.Last, outcome(at(30)))
+	}
+	if got.Failing == nil || !got.Failing.Since.Equal(at(30)) || got.Failing.Firings != 1 || got.Failing.Run != f.started[0].Key() {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+	got = fire(at(45)) // the same item, to a new run, which does nothing either
+	if len(f.started) != 2 || !strings.Contains(f.started[1].Input, `"id":"m1"`) || f.started[1].Key() == f.started[0].Key() {
+		t.Fatalf("started %+v", f.started)
+	}
+	if got.AppCheck.Last != "100" || got.Failing.Firings != 2 || !got.Failing.Since.Equal(at(30)) || got.Failing.Run != f.started[1].Key() {
+		t.Fatalf("cursor %q, failing %+v", got.AppCheck.Last, got.Failing)
+	}
+
+	// The model answers again: the run that works takes what waited, and what's new.
+	works = true
+	result = `{"data":[{"id":"m1","created":110},{"id":"m2","created":120}]}`
+	got = fire(at(60))
+	if len(f.started) != 3 || !strings.Contains(f.started[2].Input, `"id":"m1"`) || !strings.Contains(f.started[2].Input, `"id":"m2"`) {
+		t.Fatalf("started %+v", f.started[2])
+	}
+	if got.AppCheck.Last != "120" || got.Failing != nil || outcome(at(60)) != schedule.FiredRun {
+		t.Fatalf("cursor %q, failing %+v, %s", got.AppCheck.Last, got.Failing, outcome(at(60)))
+	}
+}
+
+// A schedule without a check keeps its run of unworked firings too, and a
+// run that works ends it. The run of failures is written over a fresh read,
+// so an owner's change made while the run went stays.
+func TestUnworkedFiringsAreKeptAsFailing(t *testing.T) {
+	f := newFixture()
+	if err := f.sv.Put(ctx, scheduletest.Schedule("t1", "morning")); err != nil {
+		t.Fatal(err)
+	}
+	works := false
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		if works {
+			return nil
+		}
+		// The owner changes the input while the run goes.
+		s, _ := f.store.Get(ctx, "t1", "morning")
+		s.Input = "Reconcile today's payouts."
+		_ = f.store.Put(ctx, s)
+		return schedule.ErrUnworked
+	}
+	paris, _ := time.LoadLocation("Europe/Paris")
+	monday := time.Date(2026, 11, 9, 9, 0, 0, 0, paris)
+	if err := f.sv.Fire(ctx, "t1", "morning", monday); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.store.Get(ctx, "t1", "morning")
+	if got.Failing == nil || got.Failing.Firings != 1 || !got.Failing.Since.Equal(monday) || got.Input != "Reconcile today's payouts." {
+		t.Fatalf("failing %+v, input %q", got.Failing, got.Input)
+	}
+	// A repeated delivery of that firing is the same failure: counted once.
+	if err := f.sv.Fire(ctx, "t1", "morning", monday); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("a repeated delivery counted again: %+v", got.Failing)
+	}
+	// The next firing whose run does nothing is one more, since the first.
+	tuesday := monday.AddDate(0, 0, 1)
+	if err := f.sv.Fire(ctx, "t1", "morning", tuesday); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 2 || !got.Failing.Since.Equal(monday) ||
+		got.Failing.Run != (schedule.Firing{Tenant: "t1", Schedule: "morning", Due: tuesday}).Key() {
+		t.Fatalf("a second firing: %+v", got.Failing)
+	}
+	works = true
+	if err := f.sv.Fire(ctx, "t1", "morning", tuesday.AddDate(0, 0, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing != nil || got.Input != "Reconcile today's payouts." {
+		t.Fatalf("after a run that worked: failing %+v, input %q", got.Failing, got.Input)
+	}
+}
+
+// A once schedule (an agent's follow-up, say) whose run did nothing is off
+// for good after its firing, like any once schedule, with its failing kept:
+// what it was to do doesn't run, and its failing says so. It is turned off
+// as stored after the run, so what the owner changed meanwhile stays, and
+// one the owner moved to another time meanwhile stays on for that time.
+func TestAOnceScheduleIsTurnedOffAsStoredAfterItsRun(t *testing.T) {
+	f := newFixture()
+	due := time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC)
+	put := func(id string) {
+		t.Helper()
+		s := scheduletest.Schedule("t1", id)
+		s.Kind, s.Cron, s.At = schedule.KindOnce, "", due
+		if err := f.sv.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(id string) schedule.Schedule {
+		got, _ := f.store.Get(ctx, "t1", id)
+		return got
+	}
+	var result error
+	var meanwhile func(*schedule.Schedule) // what the owner changes while the run goes
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		if meanwhile != nil {
+			s := get(fi.Schedule)
+			meanwhile(&s)
+			_ = f.store.Put(ctx, s)
+		}
+		return result
+	}
+
+	put("followup")
+	result, meanwhile = schedule.ErrUnworked, func(s *schedule.Schedule) { s.Input = "Ask again about order 1043." }
+	if err := f.sv.Fire(ctx, "t1", "followup", due); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("followup"); got.Enabled || got.Failing == nil || got.Failing.Firings != 1 || got.Input != "Ask again about order 1043." {
+		t.Fatalf("enabled %v, failing %+v, input %q", got.Enabled, got.Failing, got.Input)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "followup", 10); len(h) != 1 || h[0].Outcome != schedule.FiredUnworked {
+		t.Fatalf("history %+v", h)
+	}
+	if err := f.sv.Fire(ctx, "t1", "followup", due); err != nil || len(f.started) != 1 {
+		t.Fatalf("a repeated delivery of a once schedule turned off started a run (err %v, %d runs)", err, len(f.started))
+	}
+
+	// Moved by its owner while a run that did nothing went: on, for the new time, until it fires then.
+	put("moved")
+	later := due.Add(2 * time.Hour)
+	meanwhile = func(s *schedule.Schedule) { s.At = later }
+	if err := f.sv.Fire(ctx, "t1", "moved", due); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("moved"); !got.Enabled || !got.At.Equal(later) || got.Failing == nil {
+		t.Fatalf("moved meanwhile: enabled %v, at %v, failing %+v", got.Enabled, got.At, got.Failing)
+	}
+	// It fires then, and its run works: off, and nothing failing any more.
+	result, meanwhile = nil, func(s *schedule.Schedule) { s.Input = "Ask about order 1043 once more." }
+	if err := f.sv.Fire(ctx, "t1", "moved", later); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("moved"); got.Enabled || got.Failing != nil || got.Input != "Ask about order 1043 once more." {
+		t.Fatalf("after its run worked: enabled %v, failing %+v, input %q", got.Enabled, got.Failing, got.Input)
+	}
+}
+
 // A check hands a run at most MaxCheckItems, oldest first, and its cursor
 // moves only past those: the rest come with the next check (review on
 // #297: the 51st item was skipped for good). Items with the same cursor go

@@ -556,6 +556,38 @@ func TestSchedules(t *testing.T) {
 	f.want(404, code, body, "after delete")
 }
 
+// A schedule's run of unworked firings is the service's: a body's is
+// ignored, an update keeps the stored one, and every view shows it.
+func TestFailingIsTheServices(t *testing.T) {
+	f := newFixture(t)
+	f.putAgent("t1", "payouts")
+	body := scheduleBody("morning")
+	body.Failing = &schedule.Failing{Since: now, Firings: 9}
+	code, got := f.do("t1", "POST", "/schedules", body)
+	f.want(201, code, got, "create")
+	if _, ok := got["failing"]; ok {
+		t.Fatalf("created with a body's failing: %v", got)
+	}
+	stored, _ := f.schedSvc.Store.Get(context.Background(), "t1", "morning")
+	stored.Failing = &schedule.Failing{Since: now, Firings: 2, Run: "run_1"}
+	if err := f.schedSvc.Store.Put(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	upd := scheduleBody("")
+	upd.ID, upd.Cron, upd.Failing = "", "30 7 * * *", nil
+	code, got = f.do("t1", "PUT", "/schedules/morning", upd)
+	f.want(200, code, got, "update")
+	failing, _ := got["failing"].(map[string]any)
+	if failing["firings"] != float64(2) || failing["run"] != "run_1" {
+		t.Fatalf("updated: %v", got)
+	}
+	code, got = f.do("t1", "GET", "/schedules/morning", nil)
+	f.want(200, code, got, "get")
+	if failing, _ := got["failing"].(map[string]any); failing["firings"] != float64(2) {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestCreateScheduleRefuses(t *testing.T) {
 	cases := map[string]schedule.Schedule{
 		"another tenant in the body": func() schedule.Schedule { s := scheduleBody("m"); s.Tenant = "t2"; return s }(),
