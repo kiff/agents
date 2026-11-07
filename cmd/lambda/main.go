@@ -300,6 +300,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// Cancelling a paused run, or removing an agent with paused runs, takes
 	// back its held calls in KIFF with the agent's own key.
 	f.api.Withdraw = kiff.Withdrawer(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
+	// Removing an agent archives its KIFF agent with the agent's own key,
+	// which revokes that key in KIFF.
+	f.api.ArchiveKIFF = kiff.Archiver(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	// A continue asks KIFF for the answers no alert has brought yet, with the
 	// agent's own key (kiff/tafs#206).
 	f.api.Answers = kiff.Answerer(agents, keys, &http.Client{Timeout: withdrawTimeout})

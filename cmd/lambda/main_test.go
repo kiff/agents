@@ -239,6 +239,9 @@ func TestSetupNeedsItsConfiguration(t *testing.T) {
 	if f.api.Answers == nil {
 		t.Error("a continue can't ask KIFF for the answers its alerts haven't brought")
 	}
+	if f.api.ArchiveKIFF == nil {
+		t.Error("removing an agent leaves its KIFF key live: nothing archives its KIFF agent")
+	}
 	if f.api.MaxActive != defaultTenantRuns {
 		t.Errorf("a tenant may have %d runs going, want %d by default", f.api.MaxActive, defaultTenantRuns)
 	}
