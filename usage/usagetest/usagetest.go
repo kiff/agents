@@ -62,6 +62,55 @@ func Run(t *testing.T, newStore func(*testing.T) usage.Store) {
 		}
 	})
 
+	t.Run("a reservation is taken only within its limit, and gives back with a negative add", func(t *testing.T) {
+		u := newStore(t)
+		for _, c := range []struct {
+			micro, limit int64
+			ok           bool
+		}{{600, 1000, true}, {400, 1000, true}, {1, 1000, false}, {2000, 1000, false}} {
+			ok, err := u.Reserve(ctx, "t1", "p1", c.micro, c.limit, until)
+			if err != nil || ok != c.ok {
+				t.Fatalf("reserve %d within %d: %v, %v; want %v", c.micro, c.limit, ok, err, c.ok)
+			}
+		}
+		if p, _ := u.Get(ctx, "t1", "p1"); p.Spent != 1000 {
+			t.Fatalf("spent %d after the refused ones, want 1000", p.Spent)
+		}
+		if err := u.Add(ctx, "t1", "p1", -700, until); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := u.Reserve(ctx, "t1", "p1", 700, 1000, until); err != nil || !ok {
+			t.Fatalf("room given back: %v, %v", ok, err)
+		}
+		// An unused period has the whole limit.
+		if ok, err := u.Reserve(ctx, "t1", "p2", 1000, 1000, until); err != nil || !ok {
+			t.Fatalf("a fresh period: %v, %v", ok, err)
+		}
+	})
+
+	t.Run("reservations at once never pass the limit together", func(t *testing.T) {
+		u := newStore(t)
+		const n = 20
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		taken := 0
+		for range n {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if ok, err := u.Reserve(ctx, "t1", "p1", 100, 550, until); err == nil && ok {
+					mu.Lock()
+					taken++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if p, _ := u.Get(ctx, "t1", "p1"); taken != 5 || p.Spent != 500 {
+			t.Fatalf("%d taken, spent %d; want 5 and 500", taken, p.Spent)
+		}
+	})
+
 	t.Run("erasing a tenant leaves others", func(t *testing.T) {
 		u := newStore(t)
 		for _, tenant := range []string{"t1", "t2"} {

@@ -24,8 +24,12 @@ type Period struct {
 // period is the caller's opaque name for it, such as its start.
 type Store interface {
 	// Add adds microUSD to the period's spend, atomically, and keeps the
-	// period until until.
+	// period until until. A negative microUSD gives some back.
 	Add(ctx context.Context, tenant, period string, microUSD int64, until time.Time) error
+	// Reserve adds microUSD to the period's spend only if it stays within
+	// limit, atomically, and keeps the period until until: false, and
+	// nothing added, when it wouldn't.
+	Reserve(ctx context.Context, tenant, period string, microUSD, limit int64, until time.Time) (bool, error)
 	// Get returns the period: zero if nothing was spent.
 	Get(ctx context.Context, tenant, period string) (Period, error)
 	// EraseTenant deletes every period of the tenant, when its account is

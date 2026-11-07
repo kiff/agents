@@ -34,16 +34,50 @@ type Sourced struct {
 }
 
 // DailyCap bounds what Backup's turns may cost in a UTC day, in millionths
-// of a US dollar, counted in Spend under a key of its own.
+// of a US dollar, counted in Spend under a key of its own. Each turn
+// reserves its worst case before it runs (WorstCase, at PriceFactor, the
+// backup's price over the list's; 0 is 1), and settles to what it cost
+// after: turns that start together can't pass the cap between them.
 type DailyCap struct {
-	MicroUSD int64
-	Spend    DaySpend
+	MicroUSD    int64
+	Spend       DaySpend
+	PriceFactor float64
 }
 
-// DaySpend keeps a day's total. Add is atomic.
+// DaySpend keeps a day's total. Reserve adds only while the total stays
+// within a limit; both are atomic, and Add takes a negative amount back.
 type DaySpend interface {
-	Spent(ctx context.Context, day string) (int64, error)
+	Reserve(ctx context.Context, day string, microUSD, limit int64) (bool, error)
 	Add(ctx context.Context, day string, microUSD int64) error
+}
+
+// MaxOutput is the output a turn is reserved for when its request names no
+// MaxTokens: the most a model writes in one turn.
+const MaxOutput = 128_000
+
+// WorstCase is the most req's turn can cost at p, times factor, in
+// millionths of a US dollar: every byte the model reads (the system prompt,
+// every tool, deferred ones included, and the messages) counted as a token
+// at the dearest of input and cache writes, plus all of MaxTokens as output.
+// A token is never shorter than a byte, so the turn's real cost is below it.
+func WorstCase(req Request, p Price, factor float64) int64 {
+	in := int64(len(req.System))
+	for _, t := range req.Tools {
+		in += int64(len(t.Name) + len(t.Description) + len(t.InputSchema))
+	}
+	in += int64(req.Size().Messages)
+	out := int64(req.MaxTokens)
+	if out <= 0 {
+		out = MaxOutput
+	}
+	worst := p.Cost(Usage{InputTokens: in, OutputTokens: out})
+	if dearer := max(p.CacheWrite, p.CacheWrite1h); dearer > p.Input {
+		worst = (in*dearer + out*p.Output + 999_999) / 1_000_000
+	}
+	if factor > 1 {
+		worst = int64(math.Ceil(float64(worst) * factor))
+	}
+	return max(worst, 1) // a turn always needs room under the cap
 }
 
 // ErrBackupOff is a turn Backup refused because it has no daily cap.
@@ -94,15 +128,18 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 		return Reply{}, ErrBackupOff
 	}
 	day := s.now().UTC().Format(time.DateOnly)
-	if !s.Exempt {
+	var reserved int64
+	capped := !s.Exempt
+	if capped {
 		if s.Cap == nil || s.Cap.MicroUSD <= 0 || s.Cap.Spend == nil {
 			return Reply{}, ErrBackupOff
 		}
-		spent, err := s.Cap.Spend.Spent(ctx, day)
+		reserved = WorstCase(req, req.Price, s.Cap.PriceFactor)
+		ok, err := s.Cap.Spend.Reserve(ctx, day, reserved, s.Cap.MicroUSD)
 		if err != nil {
-			return Reply{}, fmt.Errorf("model: reading the Bedrock backup's spend today: %w", err)
+			return Reply{}, fmt.Errorf("model: reserving the Bedrock backup's turn: %w", err)
 		}
-		if spent >= s.Cap.MicroUSD {
+		if !ok {
 			return Reply{}, ErrBackupCapped
 		}
 	}
@@ -110,11 +147,13 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 	if r.Source == "" {
 		r.Source = SourceBedrock
 	}
-	if !s.Exempt && s.Cap != nil && s.Cap.Spend != nil {
-		if cost := r.Cost(req.Price); cost > 0 {
-			if aerr := s.Cap.Spend.Add(ctx, day, cost); aerr != nil {
-				err = errors.Join(err, fmt.Errorf("model: counting the Bedrock backup's spend: %w", aerr))
-			}
+	if capped {
+		// Settled to what it cost; a turn that failed gives its reservation
+		// back. A settle that fails leaves the worst case counted, the safe
+		// side, unless the turn cost more than it, which WorstCase rules out.
+		cost := r.Cost(req.Price)
+		if serr := s.Cap.Spend.Add(ctx, day, cost-reserved); serr != nil && cost > reserved {
+			err = errors.Join(err, fmt.Errorf("model: counting the Bedrock backup's spend: %w", serr))
 		}
 	}
 	return r, err

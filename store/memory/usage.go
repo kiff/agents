@@ -30,6 +30,19 @@ func (u *Usage) Add(_ context.Context, tenant, period string, microUSD int64, _ 
 	return nil
 }
 
+// Reserve adds microUSD only while the period's total stays within limit.
+func (u *Usage) Reserve(_ context.Context, tenant, period string, microUSD, limit int64, _ time.Time) (bool, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	p := u.p[[2]string{tenant, period}]
+	if p.Spent+microUSD > limit {
+		return false, nil
+	}
+	p.Spent += microUSD
+	u.p[[2]string{tenant, period}] = p
+	return true, nil
+}
+
 // Get returns the period.
 func (u *Usage) Get(_ context.Context, tenant, period string) (usage.Period, error) {
 	u.mu.Lock()

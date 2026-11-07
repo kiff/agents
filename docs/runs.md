@@ -108,10 +108,17 @@ settings turn it on:
   usage table, at Bedrock's price (Anthropic's list ×1.1 for the EU profiles).
   Past the cap, or with none set, a turn that would go there fails with
   its own words, alongside the Claude API's.
-  - **It's a soft cap.** The day's total is read before a turn and added to once
-    it's done, so turns that start together each pass, and a day can go over
-    by as many turns' cost as ran at once. Set it below the real limit.
-  - **A run already on Bedrock** whose next turn finds the cap spent fails there,
+  - **It holds however many turns start at once.** Before a turn runs, its worst
+    case is reserved against the cap in one conditional write (`model.WorstCase`:
+    every byte it reads counted as a token at the dearest input price, plus all
+    of its `MaxTokens` as output, at Bedrock's price). A turn whose worst case
+    doesn't fit is refused before it runs. Once it's done, the day is settled
+    to what the turn cost; a turn that fails gives its reservation back.
+  - **So the cap is reached early, never passed:** a day's last turns can be
+    refused while reservations are out, though what they'd have cost fits.
+  - **A settle that fails** leaves the worst case counted, the safe side, and
+    never fails the turn: the turn's real cost is below its worst case.
+  - **A run already on Bedrock** whose next turn doesn't fit fails there,
     mid-way, with that reason: it doesn't move to the Claude API.
 - **What Bedrock doesn't serve:** fast output and Anthropic's web search and
   fetch (a turn there runs without them), and the Models API (the context

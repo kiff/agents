@@ -47,18 +47,27 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 	}
 }
 
-// The backup's day total is kept in the usage table under a key no tenant has.
+// The backup's day total is kept in the usage table under a key no tenant
+// has: a turn reserves within the cap, then settles to what it cost.
 func TestTheBackupsDayTotalIsKept(t *testing.T) {
 	use := memory.NewUsage()
 	d := daySpend{use}
-	if err := d.Add(ctx, "2026-11-07", 1_200_000); err != nil {
+	if ok, err := d.Reserve(ctx, "2026-11-07", 1_200_000, 1_500_000); err != nil || !ok {
+		t.Fatalf("a reservation within the cap: %v, %v", ok, err)
+	}
+	if ok, _ := d.Reserve(ctx, "2026-11-07", 400_000, 1_500_000); ok {
+		t.Fatal("a reservation past the cap was taken")
+	}
+	if err := d.Add(ctx, "2026-11-07", -900_000); err != nil { // the turn cost 300,000
 		t.Fatal(err)
 	}
-	_ = d.Add(ctx, "2026-11-07", 300_000)
-	if got, err := d.Spent(ctx, "2026-11-07"); err != nil || got != 1_500_000 {
-		t.Fatalf("spent %d, %v", got, err)
+	if got, err := use.Get(ctx, backupTenant, "2026-11-07"); err != nil || got.Spent != 300_000 {
+		t.Fatalf("spent %d, %v", got.Spent, err)
 	}
-	if got, _ := d.Spent(ctx, "2026-11-08"); got != 0 {
-		t.Fatalf("the next day starts at %d", got)
+	if got, _ := use.Get(ctx, backupTenant, "2026-11-08"); got.Spent != 0 {
+		t.Fatalf("the next day starts at %d", got.Spent)
+	}
+	if _, err := d.Reserve(ctx, "07/11/2026", 1, 2); err == nil {
+		t.Fatal("a day that isn't one was taken")
 	}
 }
