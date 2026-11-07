@@ -119,13 +119,17 @@ func (r Run) Active() bool { return r.Status == Pending || r.Status == Running }
 // one ResolvedGrace after its last requirement is answered or expires, or at
 // its Retry if the sweep has continued it already. A
 // paused run with an unanswered requirement that never expires is never due:
-// only an answer resolves it. A run that owes a note (NoteRetry) is due when
-// it's to be sent again, if that's sooner.
+// only an answer resolves it. A run that owes a note (NoteRetry) or its
+// usage report (UsageRetry) is due when it's to be sent again, if that's
+// sooner.
 func (r Run) Due() time.Time {
 	at := r.statusDue()
-	// A note Notify didn't take is sent again at its time, in any status.
-	if !r.NoteRetry.IsZero() && (at.IsZero() || r.NoteRetry.Before(at)) {
-		return r.NoteRetry
+	// A note Notify didn't take, or a usage report KIFF didn't, is sent
+	// again at its time, in any status.
+	for _, again := range []time.Time{r.NoteRetry, r.UsageRetry} {
+		if !again.IsZero() && (at.IsZero() || again.Before(at)) {
+			at = again
+		}
 	}
 	return at
 }
@@ -262,7 +266,8 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 		next.NoteTries, next.NoteRetry = 0, time.Time{}
 	}
 	if next.Status.Final() {
-		next.Paused = nil
+		// A final run moves no more, so this is the change that ended it.
+		next.Paused, next.Ended = nil, now.UTC()
 	}
 	next.Holds = HoldsOf(r, next)
 	next.ID, next.Tenant, next.Agent, next.Session, next.Created = r.ID, r.Tenant, r.Agent, r.Session, r.Created
@@ -543,6 +548,10 @@ type Sweeper struct {
 	// Note sends a run's note again (Notifying.Again): one Notify didn't take
 	// is kept and sent on NoteWaits, then given up. Nil: notes aren't kept.
 	Note func(ctx context.Context, r Run) error
+	// Usage sends a run's usage report again (Reporting.Again): one KIFF
+	// didn't take is kept and sent on UsageWaits, then given up. Nil:
+	// reports aren't kept.
+	Usage func(ctx context.Context, r Run) error
 }
 
 // MaxResumes is how many times the sweep carries a crashed run on from its
@@ -580,6 +589,22 @@ const NeverStarted = "It couldn't start: no invocation picked it up after 3 trie
 func (sw Sweeper) Sweep(ctx context.Context, now time.Time, limit int) (int, error) {
 	var errs []error
 	done := 0
+	if usage := sw.Usage; usage != nil {
+		// Once KIFF doesn't take a report, the rest wait for the next look:
+		// one sweep never spends its time on a KIFF that's down.
+		down := false
+		sw.Usage = func(ctx context.Context, r Run) error {
+			if down {
+				return errLeftForNext
+			}
+			err := usage(ctx, r)
+			if errors.Is(err, ErrNotTaken) {
+				down = true
+				return nil
+			}
+			return err
+		}
+	}
 	for _, due := range []func(context.Context, time.Time, int) ([]Run, error){sw.Runs.Due, sw.Runs.DuePaused} {
 		runs, err := due(ctx, now, limit)
 		if err != nil {
@@ -599,6 +624,10 @@ func (sw Sweeper) Sweep(ctx context.Context, now time.Time, limit int) (int, err
 	return done, errors.Join(errs...)
 }
 
+// errLeftForNext is a usage report the sweep didn't send, since KIFF didn't
+// take one earlier in the same sweep: it's still owed, for the next look.
+var errLeftForNext = errors.New("run: the usage report waits for the next sweep")
+
 // SweepClaim is the claim the sweep holds on a PAUSED run it gives up on,
 // while it ends the run's recording.
 const SweepClaim = "sweep"
@@ -616,6 +645,13 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		return false, nil // it moved on meanwhile
 	case sw.Note != nil && !r.NoteRetry.IsZero() && r.NoteRetry.Before(now):
 		return true, sw.Note(ctx, r)
+	case sw.Usage != nil && !r.UsageRetry.IsZero() && r.UsageRetry.Before(now):
+		if err := sw.Usage(ctx, r); errors.Is(err, errLeftForNext) {
+			return false, nil
+		} else if err != nil {
+			return true, err
+		}
+		return true, nil
 	case r.Status == Pending && r.After != "" && sw.Continue != nil:
 		return sw.queued(ctx, r, now)
 	case r.Status == Pending && !r.Cancel && sw.Continue != nil && r.Resumes < MaxResumes:

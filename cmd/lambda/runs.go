@@ -171,8 +171,10 @@ const sweepLimit = 100
 func sweeping(runs run.Runs, rn *runner.Runner, cont func(ctx context.Context, tenant, id string) error) func(ctx context.Context, now time.Time) (int, error) {
 	return func(ctx context.Context, now time.Time) (int, error) {
 		sw := run.Sweeper{Runs: runs, Ended: rn.Ended, Continue: cont, Hold: rn.Held,
-			// A note tafs cloud didn't take is sent again (run.NoteWaits), when runs keeps notes.
+			// A note tafs cloud didn't take is sent again (run.NoteWaits), when runs keeps notes,
+			// and so is a usage report KIFF didn't take (run.UsageWaits).
 			Note:    noteAgain(runs),
+			Usage:   usageAgain(runs),
 			Expires: func(r run.Run) time.Time { return rn.Expires(ctx, r, now) }}
 		return sw.Sweep(ctx, now, sweepLimit)
 	}
@@ -307,10 +309,22 @@ func outsidePrefix(secret, prefix string) error {
 }
 
 // noteAgain is how the sweep sends a kept note again: Notifying's, when runs
-// announces runs, else none.
+// announces runs (under Reporting, or not), else none.
 func noteAgain(runs run.Runs) func(ctx context.Context, r run.Run) error {
+	if rp, ok := runs.(run.Reporting); ok {
+		runs = rp.Runs
+	}
 	if n, ok := runs.(run.Notifying); ok {
 		return n.Again
+	}
+	return nil
+}
+
+// usageAgain is how the sweep sends a kept usage report again: Reporting's,
+// when runs reports runs, else none.
+func usageAgain(runs run.Runs) func(ctx context.Context, r run.Run) error {
+	if rp, ok := runs.(run.Reporting); ok {
+		return rp.Again
 	}
 	return nil
 }
