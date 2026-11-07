@@ -61,12 +61,13 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 }
 
 // sourced is the model runs use: primary alone when Bedrock isn't configured,
-// exactly as before; otherwise model.Sourced over primary and Bedrock.
-func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Store) model.Model {
+// exactly as before; otherwise model.Sourced over primary and Bedrock, which
+// says to log a turn that cost more than its worst case.
+func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Store, log func(msg string, err error)) model.Model {
 	if sc.Source != model.SourceBedrock && !sc.Fallback {
 		return primary
 	}
-	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack}
+	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack, Log: log}
 	if sc.CapMicro > 0 && use != nil {
 		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, Spend: daySpend{use}, PriceFactor: bedrock.GeoFactor}
 	}

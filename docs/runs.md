@@ -110,14 +110,17 @@ settings turn it on:
   its own words, alongside the Claude API's.
   - **It holds however many turns start at once.** Before a turn runs, its worst
     case is reserved against the cap in one conditional write (`model.WorstCase`:
-    every byte it reads counted as a token at the dearest input price, plus all
-    of its `MaxTokens` as output, at Bedrock's price). A turn whose worst case
+    its text counted a token a byte at the dearest input price, a PDF eight
+    tokens a byte with a 10,000-token floor, an image at least 4,800, the API's
+    tool instructions, and all of its `MaxTokens` as output, at Bedrock's price,
+    never more input than the model's context window). A turn whose worst case
     doesn't fit is refused before it runs. Once it's done, the day is settled
     to what the turn cost; a turn that fails gives its reservation back.
   - **So the cap is reached early, never passed:** a day's last turns can be
     refused while reservations are out, though what they'd have cost fits.
   - **A settle that fails** leaves the worst case counted, the safe side, and
-    never fails the turn: the turn's real cost is below its worst case.
+    never fails the turn: the turn's real cost is below its worst case. A turn
+    that cost more than it is logged, a bound that broke.
   - **A run already on Bedrock** whose next turn doesn't fit fails there,
     mid-way, with that reason: it doesn't move to the Claude API.
 - **What Bedrock doesn't serve:** fast output and Anthropic's web search and

@@ -167,29 +167,107 @@ func TestACostAtTheBackupsPrice(t *testing.T) {
 }
 
 // A turn's worst case: every byte read as a token at the dearest input price,
-// deferred tools included, plus all its output, at the backup's factor.
+// deferred tools included, the API's tool instructions, plus all its output,
+// at the backup's factor.
 func TestATurnsWorstCase(t *testing.T) {
 	p := Price{Input: 3_000_000, Output: 15_000_000, CacheWrite: 3_750_000, CacheWrite1h: 6_000_000}
 	req := Request{System: strings.Repeat("s", 1_000), MaxTokens: 2_000,
 		Tools:    []ToolSpec{{Name: "a", Description: strings.Repeat("d", 499), InputSchema: []byte("{}")}, {Name: "b", Defer: true, InputSchema: []byte(strings.Repeat("x", 500))}},
 		Messages: []Message{{Role: User, Blocks: []Block{{Kind: Text, Text: strings.Repeat("m", 3_000)}}}}}
-	// 1,000 + 502 + 501 + 3,000 bytes = 5,003 tokens at the hour's cache write ($6/M), and 2,000 out at $15/M.
-	in := int64(1_000 + 1 + 499 + 2 + 1 + 500 + 3_000)
+	// 1,000 + 502 + 501 + 3,000 bytes, and the tool instructions, at the hour's cache write ($6/M); 2,000 out at $15/M.
+	in := int64(1_000+1+499+2+1+500+3_000) + ToolPromptAllowance
 	want := (in*6_000_000 + 2_000*15_000_000 + 999_999) / 1_000_000
-	if got := WorstCase(req, p, 1); got != want {
+	if got := WorstCase(req, p, 1, 0); got != want {
 		t.Fatalf("worst case %d, want %d", got, want)
 	}
-	if got := WorstCase(req, p, 1.1); got != int64(math.Ceil(float64(want)*1.1)) {
+	if got := WorstCase(req, p, 1.1, 0); got != int64(math.Ceil(float64(want)*1.1)) {
 		t.Fatalf("at 1.1: %d", got)
 	}
 	// No MaxTokens: a whole turn's output; no prices: still a credit's room.
-	if got := WorstCase(Request{}, Price{Output: 1_000_000}, 1); got != MaxOutput {
+	if got := WorstCase(Request{}, Price{Output: 1_000_000}, 1, 0); got != MaxOutput {
 		t.Fatalf("no MaxTokens: %d, want %d", got, MaxOutput)
 	}
-	if got := WorstCase(Request{}, Price{}, 1); got != 1 {
+	if got := WorstCase(Request{}, Price{}, 1, 0); got != 1 {
 		t.Fatalf("unpriced: %d", got)
 	}
 }
+
+// Files count their own allowance: a PDF many times its bytes, an image at
+// least ImageAllowance (a tool's included), text a token a byte; and the
+// context window bounds it all, since the model reads no more.
+func TestFilesInATurnsWorstCase(t *testing.T) {
+	p := Price{Input: 1_000_000} // a token is a micro-dollar: the worst case reads as tokens
+	file := func(mediaType string, n int) Request {
+		return Request{Messages: []Message{{Role: User, Blocks: []Block{{Kind: File, MediaType: mediaType, Bytes: make([]byte, n)}}}}}
+	}
+	for _, c := range []struct {
+		name string
+		req  Request
+		want int64
+	}{
+		{"a PDF", file("application/pdf", 2_000), 2_000 * PDFTokensPerByte},
+		{"a small PDF", file("application/pdf", 100), PDFFloor},
+		{"a photo", file("image/jpeg", 10_000), 10_000},
+		{"a plain image, small", file("image/png", 500), ImageAllowance},
+		{"a text file", file(FileText, 1_000), 1_000},
+		{"a file no longer carried", file("application/pdf", 0), 1},
+		{"a tool's screenshot", Request{Messages: []Message{{Role: User, Blocks: []Block{{Kind: ToolResult, Result: "ok",
+			Images: []Image{{MediaType: "image/png", Bytes: make([]byte, 500)}}}}}}}, 2 + ImageAllowance},
+	} {
+		if got := WorstCase(c.req, p, 1, 0); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
+	}
+	// A 5 MB PDF reserves for its pages, up to what the model can read.
+	big := file("application/pdf", 5<<20)
+	if got := WorstCase(big, p, 1, 0); got != int64(5<<20)*PDFTokensPerByte {
+		t.Fatalf("a 5 MB PDF: %d", got)
+	}
+	if got := WorstCase(big, p, 1, 1_000_000); got != 1_000_000 {
+		t.Fatalf("a 5 MB PDF in a 1M window: %d", got)
+	}
+}
+
+// The backup's window bounds its reservation, and a turn that cost more than
+// its worst case is said.
+func TestTheBackupsWindowAndABrokenBound(t *testing.T) {
+	spend := &recording{days: days{}}
+	b := &windowed{scripted: scripted{name: "bedrock", factor: 1}, window: 10}
+	var said []string
+	s := &Sourced{Primary: &scripted{err: errCredits}, Backup: b, Fallback: true, FallsBack: fallsBack,
+		Cap: &DailyCap{MicroUSD: 50_000_000, Spend: spend}, Now: func() time.Time { return time.Date(2026, 11, 7, 13, 0, 0, 0, time.UTC) },
+		Log: func(msg string, _ error) { said = append(said, msg) }}
+	req := Request{Price: Price{Input: 1_000_000}, MaxTokens: 1, Messages: []Message{{Role: User, Blocks: []Block{{Kind: Text, Text: strings.Repeat("m", 5_000)}}}}}
+	if _, err := s.Turn(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if spend.reserved != 10 { // the window's 10 tokens, not the 5,000 bytes; no output price
+		t.Fatalf("reserved %d, want the window's 10", spend.reserved)
+	}
+	// The scripted turn read a million tokens, past its worst case: said, and counted.
+	if len(said) != 1 || said[0] != "model: a Bedrock turn cost more than its worst case" || spend.days["2026-11-07"] != 1_000_000 {
+		t.Fatalf("said %q, spend %v", said, spend.days)
+	}
+}
+
+// recording is days that remembers the last reservation asked.
+type recording struct {
+	days
+	reserved int64
+}
+
+func (r *recording) Reserve(ctx context.Context, day string, micro, limit int64) (bool, error) {
+	r.reserved = micro
+	return r.days.Reserve(ctx, day, micro, limit)
+}
+
+// windowed is a scripted backup that knows its context window.
+type windowed struct {
+	scripted
+	window int64
+}
+
+func (w *windowed) Window(context.Context, string) (int64, error) { return w.window, nil }
 
 // A turn that fails gives its reservation back; one that runs is counted at
 // what it cost, not at its worst case.
@@ -211,11 +289,11 @@ func TestATurnSettlesToWhatItCost(t *testing.T) {
 // its worst case first, and those that don't fit are refused before running.
 func TestTurnsAtOnceKeepToTheCap(t *testing.T) {
 	req := Request{Price: Price{Input: 2_000_000, Output: 10_000_000}, MaxTokens: 1_000}
-	worst := WorstCase(req, req.Price, 1.1)
+	worst := WorstCase(req, req.Price, 1.1, 0)
 	spend := &lockedDays{d: days{}}
 	start := make(chan struct{})
 	b := &blocking{start: start}
-	s := &Sourced{Primary: &scripted{err: errCredits}, Backup: b, Fallback: true, FallsBack: fallsBack,
+	s := &Sourced{Primary: refusing{}, Backup: b, Fallback: true, FallsBack: fallsBack,
 		Cap: &DailyCap{MicroUSD: 3*worst + 1, Spend: spend, PriceFactor: 1.1}, Now: func() time.Time { return time.Date(2026, 11, 7, 13, 0, 0, 0, time.UTC) }}
 	const n = 20
 	errs := make(chan error, n)
@@ -238,6 +316,13 @@ func TestTurnsAtOnceKeepToTheCap(t *testing.T) {
 	if b.calls.Load() != 3 || refused != n-3 || spend.d["2026-11-07"] != 3*2_200_000 {
 		t.Fatalf("%d ran, %d refused, spend %v", b.calls.Load(), refused, spend.d)
 	}
+}
+
+// refusing is a primary that refuses every turn for credits, safe to call at once.
+type refusing struct{}
+
+func (refusing) Turn(context.Context, Request, func(string)) (Reply, error) {
+	return Reply{}, errCredits
 }
 
 // blocking is a backup whose turns wait for start, each costing $2 of input.

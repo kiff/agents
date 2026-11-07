@@ -18,20 +18,20 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 		t.Fatalf("default %+v, %v", sc, err)
 	}
 	primary := &keyedModel{}
-	if got := sourced(primary, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage()); got != model.Model(primary) {
+	if got := sourced(primary, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil); got != model.Model(primary) {
 		t.Fatalf("nothing configured wrapped the model: %T", got)
 	}
 	sc, err = sourceConfigFrom(env(map[string]string{"AGENTS_BEDROCK_FALLBACK": "on", "AGENTS_BEDROCK_DAILY_USD": "2.50"}))
 	if err != nil || !sc.Fallback || sc.Source != model.SourceAnthropic || sc.CapMicro != 2_500_000 {
 		t.Fatalf("fallback %+v, %v", sc, err)
 	}
-	s, ok := sourced(primary, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage()).(*model.Sourced)
+	s, ok := sourced(primary, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil).(*model.Sourced)
 	if !ok || !s.Fallback || s.Cap == nil || s.Cap.MicroUSD != 2_500_000 || s.Exempt || s.FallsBack == nil {
 		t.Fatalf("sourced %+v", s)
 	}
 	// Bedrock as the source, without a cap: wired, and every turn refused.
 	sc, _ = sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock"}))
-	if s, ok := sourced(primary, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage()).(*model.Sourced); !ok || s.Source != model.SourceBedrock || s.Cap != nil {
+	if s, ok := sourced(primary, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil).(*model.Sourced); !ok || s.Source != model.SourceBedrock || s.Cap != nil {
 		t.Fatalf("source bedrock, no cap: %+v", s)
 	}
 	for _, bad := range []map[string]string{

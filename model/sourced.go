@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,9 @@ type Sourced struct {
 	Cap       *DailyCap
 	Exempt    bool
 	Now       func() time.Time
+	// Log, when set, hears of a backup turn that cost more than its worst
+	// case: a bound that broke, which the cap then lets through.
+	Log func(msg string, err error)
 }
 
 // DailyCap bounds what Backup's turns may cost in a UTC day, in millionths
@@ -55,17 +59,54 @@ type DaySpend interface {
 // MaxTokens: the most a model writes in one turn.
 const MaxOutput = 128_000
 
+// What WorstCase allows, in tokens, for what isn't text.
+const (
+	// ToolPromptAllowance is the API's own instructions for tool use, added
+	// to any turn that sends tools.
+	ToolPromptAllowance = 1_000
+	// ImageAllowance is the least an image is allowed, however small its
+	// file: the API bills an image by its pixels, which a plain one
+	// compresses far below. Three times the documented ceiling for one image.
+	ImageAllowance = 4_800
+	// PDFTokensPerByte and PDFFloor are a PDF's allowance: each page is billed
+	// as its text and as an image of it, more tokens than a compressed page
+	// has bytes.
+	PDFTokensPerByte = 8
+	PDFFloor         = 10_000
+)
+
 // WorstCase is the most req's turn can cost at p, times factor, in
-// millionths of a US dollar: every byte the model reads (the system prompt,
-// every tool, deferred ones included, and the messages) counted as a token
-// at the dearest of input and cache writes, plus all of MaxTokens as output.
-// A token is never shorter than a byte, so the turn's real cost is below it.
-func WorstCase(req Request, p Price, factor float64) int64 {
+// millionths of a US dollar: what the model reads, counted as tokens at the
+// dearest of input and cache writes, plus all of MaxTokens as output.
+//   - Text (the system prompt, every tool, deferred ones included, and each
+//     block's text, input, result and thinking) counts a token a byte: a
+//     token is never shorter than a byte.
+//   - Files count their own allowance (fileTokens), and a turn with tools the
+//     API's tool-use instructions (ToolPromptAllowance).
+//   - window, when known (more than 0), bounds the input: the model refuses,
+//     without charge, a turn that reads more than its context window.
+//
+// So the turn's real cost is below it.
+func WorstCase(req Request, p Price, factor float64, window int64) int64 {
 	in := int64(len(req.System))
+	if len(req.Tools) > 0 {
+		in += ToolPromptAllowance
+	}
 	for _, t := range req.Tools {
 		in += int64(len(t.Name) + len(t.Description) + len(t.InputSchema))
 	}
-	in += int64(req.Size().Messages)
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			in += int64(len(b.Text) + len(b.Tool) + len(b.Input) + len(b.Result) + len(b.Data) + len(b.Signature))
+			in += fileTokens(b.MediaType, len(b.Bytes))
+			for _, img := range b.Images {
+				in += max(int64(len(img.Bytes)), ImageAllowance)
+			}
+		}
+	}
+	if window > 0 {
+		in = min(in, window)
+	}
 	out := int64(req.MaxTokens)
 	if out <= 0 {
 		out = MaxOutput
@@ -78,6 +119,21 @@ func WorstCase(req Request, p Price, factor float64) int64 {
 		worst = int64(math.Ceil(float64(worst) * factor))
 	}
 	return max(worst, 1) // a turn always needs room under the cap
+}
+
+// fileTokens is a file's allowance in a turn, by its media type: a PDF its
+// bytes many times over, an image at least ImageAllowance, and text a token a
+// byte. A file whose bytes the turn doesn't carry is a line of text.
+func fileTokens(mediaType string, n int) int64 {
+	switch {
+	case n == 0:
+		return 0
+	case mediaType == "application/pdf":
+		return max(int64(n)*PDFTokensPerByte, PDFFloor)
+	case strings.HasPrefix(mediaType, "image/"):
+		return max(int64(n), ImageAllowance)
+	}
+	return int64(n)
 }
 
 // ErrBackupOff is a turn Backup refused because it has no daily cap.
@@ -134,7 +190,11 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 		if s.Cap == nil || s.Cap.MicroUSD <= 0 || s.Cap.Spend == nil {
 			return Reply{}, ErrBackupOff
 		}
-		reserved = WorstCase(req, req.Price, s.Cap.PriceFactor)
+		var window int64 // unknown: the bytes alone bound it
+		if w, ok := s.Backup.(Windower); ok {
+			window, _ = w.Window(ctx, req.Model)
+		}
+		reserved = WorstCase(req, req.Price, s.Cap.PriceFactor, window)
 		ok, err := s.Cap.Spend.Reserve(ctx, day, reserved, s.Cap.MicroUSD)
 		if err != nil {
 			return Reply{}, fmt.Errorf("model: reserving the Bedrock backup's turn: %w", err)
@@ -150,10 +210,17 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 	if capped {
 		// Settled to what it cost; a turn that failed gives its reservation
 		// back. A settle that fails leaves the worst case counted, the safe
-		// side, unless the turn cost more than it, which WorstCase rules out.
+		// side. A turn that cost more than its worst case is a bound that
+		// broke: said, and its settle's failure kept with the turn's error.
 		cost := r.Cost(req.Price)
-		if serr := s.Cap.Spend.Add(ctx, day, cost-reserved); serr != nil && cost > reserved {
-			err = errors.Join(err, fmt.Errorf("model: counting the Bedrock backup's spend: %w", serr))
+		serr := s.Cap.Spend.Add(ctx, day, cost-reserved)
+		if cost > reserved {
+			if s.Log != nil {
+				s.Log("model: a Bedrock turn cost more than its worst case", fmt.Errorf("reserved %d micro-USD, cost %d", reserved, cost))
+			}
+			if serr != nil {
+				err = errors.Join(err, fmt.Errorf("model: counting the Bedrock backup's spend: %w", serr))
+			}
 		}
 	}
 	return r, err
