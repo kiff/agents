@@ -77,6 +77,19 @@ type Schedule struct {
 	// before doing any work (FiredUnworked), up to now: unset once a run
 	// works. A caller that sets it is ignored.
 	Failing *Failing `json:"failing,omitempty"`
+	// Waited, kept by the service, is the last firing that started no run
+	// because the account's tafs wait for credits (FiredCredits): its due
+	// time and why. Unset once one of its runs starts. A caller that sets it
+	// is ignored.
+	Waited *Waited `json:"waited,omitempty"`
+}
+
+// Waited is a firing that started no run because the account's tafs wait
+// for credits: its due time, and why, KIFF's code (credits_used_up,
+// limit_reached or no_plan).
+type Waited struct {
+	Due time.Time `json:"due"`
+	Why string    `json:"why"`
 }
 
 // Failing is a schedule's firings in a row whose runs failed before any
@@ -309,6 +322,17 @@ var ErrUnworked = errors.New("schedule: the firing's run failed before doing any
 // (FiredHalted).
 var ErrHalted = errors.New("schedule: the agent is halted, so the firing starts nothing")
 
+// CreditsError is what Start returns for a firing whose run KIFF's balance
+// refused, the account's tafs waiting for credits: Why is KIFF's code. It
+// starts no run. What the firing was handed waits for the next firing that
+// runs, as after a run that did nothing, but it isn't a failure: the
+// schedule's failing doesn't move (FiredCredits).
+type CreditsError struct{ Why string }
+
+func (e *CreditsError) Error() string {
+	return "schedule: the account's tafs wait for credits (" + e.Why + "), so the firing starts nothing"
+}
+
 // ErrNoAgent means the schedule names an agent the tenant doesn't have.
 var ErrNoAgent = errors.New("schedule: the tenant has no such agent")
 
@@ -363,6 +387,11 @@ const (
 	// nothing from before a halt runs: a check's cursor moves past what it
 	// found. The schedule's failing is left as it was, since no run worked.
 	FiredHalted = "skipped_halted"
+	// FiredCredits: the account's tafs wait for credits. No run, and what
+	// it was handed waits: a check's cursor stays, and the next firing that
+	// runs hands the same items. The schedule's failing is left as it was,
+	// since nothing failed; its Waited says so.
+	FiredCredits = "skipped_credits"
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -452,6 +481,9 @@ type Service struct {
 	// ErrUnworked when that run failed before any turn: the firing then uses
 	// up nothing, and is kept as FiredUnworked. It returns ErrHalted when the
 	// agent is halted: no run starts, and the firing is kept as FiredHalted.
+	// It returns a *CreditsError when the account's tafs wait for credits:
+	// no run starts, what the firing was handed waits, and it's kept as
+	// FiredCredits.
 	Start func(ctx context.Context, f Firing) error
 	// Busy reports whether the schedule's last run, other than the firing's
 	// own (a repeated delivery), is still at work: BusySkip skips the
@@ -688,11 +720,15 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 		}
 		f.Input = input
 		halted := false
+		var credits *CreditsError
 		if err := sv.Start(ctx, f); err != nil {
 			switch {
 			case errors.Is(err, ErrUnworked):
 				// Its run did nothing: the items go back, as the cursor stays.
 				return sv.unworked(ctx, s, f, now)
+			case errors.As(err, &credits):
+				// No run: the items wait, as the cursor stays.
+				return sv.waited(ctx, s, f, now, credits.Why)
 			case errors.Is(err, ErrHalted):
 				// Nothing from before a halt runs: the cursor moves past them.
 				halted = true
@@ -708,27 +744,69 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			}
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 		}
-		s.Failing = nil
+		s.Failing, s.Waited = nil, nil
 		if err := sv.Store.Put(ctx, s); err != nil {
 			return err
 		}
 		return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
 	}
 	if err := sv.Start(ctx, f); err != nil {
+		var credits *CreditsError
 		switch {
 		case errors.Is(err, ErrUnworked):
 			return sv.unworked(ctx, s, f, now)
+		case errors.As(err, &credits):
+			return sv.waited(ctx, s, f, now, credits.Why)
 		case errors.Is(err, ErrHalted):
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 		}
 		return err
 	}
-	if s.Failing != nil {
-		if err := sv.setFailing(ctx, s, nil); err != nil {
+	if s.Failing != nil || s.Waited != nil {
+		if err := sv.ranAgain(ctx, s); err != nil {
 			return err
 		}
 	}
 	return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
+}
+
+// waited keeps a firing whose run KIFF's balance refused: FiredCredits in
+// its history, and the schedule's Waited, so whoever reads the schedule
+// sees why nothing ran. Its failing is left as it was. A check's cursor
+// stays where it was, so the next firing that runs hands the same items. A
+// once schedule (an agent's follow-up, say) is off after its firing, as
+// always (keep): its work doesn't run again, and its Waited says so. The
+// schedule is read again first, so an owner's change isn't written over.
+func (sv *Service) waited(ctx context.Context, s Schedule, f Firing, now time.Time, why string) error {
+	if err := sv.keepAs(ctx, f, Fired{Due: f.Due, At: now, Outcome: FiredCredits}); err != nil {
+		return err
+	}
+	stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	}
+	stored.Waited = &Waited{Due: f.Due.UTC(), Why: why}
+	if s.KindOf() == KindOnce {
+		offOnce(&stored, f.Due)
+	}
+	return sv.Store.Put(ctx, stored)
+}
+
+// ranAgain unsets a schedule's failing and Waited: one of its runs started,
+// and worked. The schedule is read again first.
+func (sv *Service) ranAgain(ctx context.Context, s Schedule) error {
+	stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	stored.Failing, stored.Waited = nil, nil
+	return sv.Store.Put(ctx, stored)
 }
 
 // unworked keeps a firing whose run failed before any turn: one more in the
@@ -761,21 +839,6 @@ func (sv *Service) unworked(ctx context.Context, s Schedule, f Firing, now time.
 		return err
 	}
 	return sv.keepAs(ctx, f, fired)
-}
-
-// setFailing stores the schedule's run of unworked firings, read again first
-// so an owner's change made while the run went isn't written over. A
-// schedule gone meanwhile is left gone.
-func (sv *Service) setFailing(ctx context.Context, s Schedule, failing *Failing) error {
-	stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	stored.Failing = failing
-	return sv.Store.Put(ctx, stored)
 }
 
 // Free runs the agent's waiting firing, if any, now that its run has ended.

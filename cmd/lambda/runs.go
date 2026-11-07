@@ -123,6 +123,7 @@ func unworked(r run.Run) bool {
 func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	r, err := f.runner.Start(ctx, server.Start{Tenant: fi.Tenant, Agent: fi.Agent, Trigger: run.BySchedule,
 		Source: fi.Schedule, Input: fi.Input, ID: fi.Key()})
+	var credits *server.CreditsRefusal
 	switch {
 	case errors.Is(err, run.ErrExists):
 		if r.Status != run.Pending {
@@ -144,6 +145,13 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 		// skipped_halted, never as a run.
 		f.log.InfoContext(ctx, "firing skipped: the agent is halted", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
 		return schedule.ErrHalted
+	case errors.As(err, &credits):
+		// Skipped, not retried: KIFF answered, and the account's tafs wait
+		// for credits. What the firing was handed waits for the next one
+		// that runs (skipped_credits). KIFF not answering is an error, and
+		// the firing is tried again.
+		f.log.InfoContext(ctx, "firing skipped: the account's tafs wait for credits", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent, "why", credits.Why)
+		return &schedule.CreditsError{Why: credits.Why}
 	case err != nil:
 		return err
 	}

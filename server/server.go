@@ -352,6 +352,10 @@ type kiffUnanswered struct{ msg string }
 
 func (k kiffUnanswered) Error() string { return k.msg }
 
+// KIFFUnanswered is KIFF not answering a question a run's start needs, such
+// as whether it may start: the caller is told KIFF didn't answer.
+func KIFFUnanswered(msg string) error { return kiffUnanswered{msg} }
+
 // unavailableError is a request this server isn't set up to serve.
 type unavailableError struct{ msg string }
 
@@ -369,6 +373,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var tm tooManyError
 	var fl floodError
 	var ku kiffUnanswered
+	var credits *CreditsRefusal
 	var tooBig *http.MaxBytesError
 	status, code, msg := http.StatusInternalServerError, "internal", "internal error"
 	if errors.Is(err, run.ErrNoOversight) {
@@ -398,8 +403,12 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusNotFound, "no_trial", "this agent has no open trial"
 	case errors.Is(err, registry.ErrSwitching):
 		status, code, msg = http.StatusConflict, "switching", "this agent is switching versions: nothing of it runs, and its definition stays, until the switch is done or cancelled"
-	case errors.Is(err, ErrAIFairUse):
-		status, code, msg = http.StatusConflict, "ai_fair_use", ErrAIFairUse.Error()
+	case errors.As(err, &credits):
+		code = credits.Why
+		if !slices.Contains(creditsCodes, code) {
+			code = "credits_used_up"
+		}
+		status, msg = http.StatusConflict, credits.Error()
 	case errors.Is(err, registry.ErrHalted):
 		status, code, msg = http.StatusConflict, "halted", "halted: this agent, or its whole account, is halted; nothing of it runs until it is resumed"
 	case errors.Is(err, registry.ErrSwitchChanged):
@@ -1104,8 +1113,8 @@ func readSchedule(r *http.Request, c Caller) (schedule.Schedule, error) {
 		return sc, bad("the tenant comes from the caller, not the body")
 	}
 	sc.Tenant = c.Tenant
-	// The service keeps it, from the firings: a body's is ignored.
-	sc.Failing = nil
+	// The service keeps them, from the firings: a body's are ignored.
+	sc.Failing, sc.Waited = nil, nil
 	return sc, nil
 }
 
@@ -1175,8 +1184,9 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 		return 0, nil, bad("the id in the body is not the path's")
 	}
 	sc.ID = id
-	// Its firings' run of failures stays, until a run works.
-	sc.Failing = old.Failing
+	// Its firings' run of failures stays, until a run works, and so does
+	// the last firing that waited for credits.
+	sc.Failing, sc.Waited = old.Failing, old.Waited
 	if err := s.putSchedule(ctx, sc); err != nil {
 		return 0, nil, err
 	}

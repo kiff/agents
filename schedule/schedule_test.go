@@ -1279,3 +1279,89 @@ func TestCancelFollowUpsWithoutSchedules(t *testing.T) {
 		t.Fatalf("CancelFollowUps on no schedules = %v; want nil", err)
 	}
 }
+
+// A firing while the account's tafs wait for credits starts no run, and
+// says so: skipped_credits in the history, and the schedule's waited with
+// why. What a check found waits, as the cursor stays, for the next firing
+// that runs, which hands it the same items with anything new. Nothing
+// failed, so failing stays as it was; a run that starts unsets both. A once
+// schedule is off after its firing, its waited saying why it didn't run.
+func TestAFiringWhileTheTafsWaitIsSkippedCredits(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "100"}
+	since := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	s.Failing = &schedule.Failing{Since: since, Firings: 1, Last: since}
+	if err := f.store.Put(ctx, s); err != nil { // as stored: failing is the service's own field
+		t.Fatal(err)
+	}
+	result := `{"data":[{"id":"m1","created":110}]}`
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return result, nil }
+	var refusing error = &schedule.CreditsError{Why: "credits_used_up"}
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return refusing
+	}
+	at := func(m int) time.Time { return time.Date(2026, 11, 6, 13, m, 0, 0, time.UTC) }
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(30)); err != nil {
+		t.Fatalf("a firing that waits is no error: %v", err)
+	}
+	got, _ := f.store.Get(ctx, "t1", "inbox")
+	if got.AppCheck.Last != "100" || got.Failing == nil || got.Failing.Firings != 1 ||
+		got.Waited == nil || !got.Waited.Due.Equal(at(30)) || got.Waited.Why != "credits_used_up" {
+		t.Fatalf("cursor %q, failing %+v, waited %+v", got.AppCheck.Last, got.Failing, got.Waited)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "inbox", 10); len(h) != 1 || h[0].Outcome != schedule.FiredCredits || h[0].Run != "" {
+		t.Fatalf("history %+v", h)
+	}
+	// Credits again: the run takes what waited, and what's new; failing and
+	// waited are unset.
+	refusing = nil
+	result = `{"data":[{"id":"m1","created":110},{"id":"m2","created":120}]}`
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(45)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 2 || !strings.Contains(f.started[1].Input, `"id":"m1"`) || !strings.Contains(f.started[1].Input, `"id":"m2"`) {
+		t.Fatalf("started %+v", f.started)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.AppCheck.Last != "120" || got.Failing != nil || got.Waited != nil {
+		t.Fatalf("after a run: cursor %q, failing %+v, waited %+v", got.AppCheck.Last, got.Failing, got.Waited)
+	}
+
+	// Without a check, the same; a run unsets waited.
+	plain := scheduletest.Schedule("t1", "morning")
+	if err := f.store.Put(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	refusing = &schedule.CreditsError{Why: "limit_reached"}
+	paris, _ := time.LoadLocation("Europe/Paris")
+	first := time.Date(2026, 11, 9, 9, 0, 0, 0, paris)
+	if err := f.sv.Fire(ctx, "t1", "morning", first); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Waited == nil || got.Waited.Why != "limit_reached" || got.Failing != nil {
+		t.Fatalf("waited %+v, failing %+v", got.Waited, got.Failing)
+	}
+	refusing = nil
+	if err := f.sv.Fire(ctx, "t1", "morning", first.AddDate(0, 0, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Waited != nil {
+		t.Fatalf("waited after a run: %+v", got.Waited)
+	}
+
+	// A follow-up: off after its firing, its waited saying why it didn't run.
+	once := scheduletest.Schedule("t1", "followup")
+	once.Kind, once.Cron, once.At = schedule.KindOnce, "", at(50)
+	if err := f.sv.Put(ctx, once); err != nil {
+		t.Fatal(err)
+	}
+	refusing = &schedule.CreditsError{Why: "no_plan"}
+	if err := f.sv.Fire(ctx, "t1", "followup", at(50)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "followup"); got.Enabled || got.Waited == nil || got.Waited.Why != "no_plan" || got.Failing != nil {
+		t.Fatalf("a follow-up: enabled %v, waited %+v, failing %+v", got.Enabled, got.Waited, got.Failing)
+	}
+}

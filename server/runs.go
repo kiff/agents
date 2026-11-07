@@ -20,7 +20,6 @@ import (
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool/show"
-	"github.com/kiff/agents/usage"
 )
 
 // MaxInput bounds what a run is asked, in bytes.
@@ -881,13 +880,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	if body.DedupKey != "" {
 		st.ID = RequestRunID(c.Tenant, id, body.DedupKey)
 	}
-	if body.AI != nil {
-		if err := s.fairUse(ctx, c.Tenant, *body.AI); err != nil {
-			s.fail(w, r, err)
-			return
-		}
-		st.Meter = body.AI.Period
-	}
+	// A chat's AI bound (body.AI) is no more: KIFF's balance is asked as the
+	// run starts. A tafs cloud from before still sends it, and it's ignored.
 	if st.Notify, err = s.notify(body.Notify); err != nil {
 		s.fail(w, r, err)
 		return
@@ -1626,29 +1620,19 @@ func (s *Server) scheduleFirings(ctx context.Context, c Caller, r *http.Request)
 	return http.StatusOK, map[string]any{"firings": fired}, nil
 }
 
-// ErrAIFairUse refuses a chat past its account's AI fair use for the period,
-// until the owner says go on (kiff/tafs#193).
-var ErrAIFairUse = errors.New("ai_fair_use: this period's AI use is past its bound; the owner says go on in KIFF to continue")
+// CreditsRefusal refuses a run KIFF's balance doesn't allow: the account's
+// tafs wait for credits, and no new run starts until they go on; a run
+// already going finishes. Why is KIFF's code (credits_used_up,
+// limit_reached or no_plan), which the 409 carries.
+type CreditsRefusal struct{ Why string }
 
-// fairUse refuses a chat whose period is past its bound. A run already going
-// finishes: only starting is refused. The owner's go on is KIFF's: each one
-// raises the bound tafs cloud sends.
-func (s *Server) fairUse(ctx context.Context, tenant string, ai aiBody) error {
-	if !sourceName(ai.Period) || len(ai.Period) > MaxPeriod || ai.Bound < 0 {
-		return bad("ai.period is 1 to %d of a-z, 0-9, '.', '_' or '-', and ai.bound_micro_usd isn't negative", MaxPeriod)
-	}
-	if s.Usage == nil {
-		return unavailable("this server doesn't count AI use")
-	}
-	p, err := s.Usage.Get(ctx, tenant, ai.Period)
-	if err != nil {
-		return err
-	}
-	if !usage.Allowed(p, ai.Bound) {
-		return ErrAIFairUse
-	}
-	return nil
+func (e *CreditsRefusal) Error() string {
+	return e.Why + ": the account's tafs wait for credits; no new run starts until they go on"
 }
+
+// creditsCodes are the codes a credits refusal carries; any other KIFF
+// sends reads as credits_used_up's kind: waiting.
+var creditsCodes = []string{"credits_used_up", "limit_reached", "no_plan"}
 
 // getAIUsage answers the period's spend.
 func (s *Server) getAIUsage(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
