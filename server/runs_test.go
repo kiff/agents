@@ -2216,3 +2216,35 @@ func service(by map[string]any) string {
 	}
 	return ""
 }
+
+// Removing an agent archives its KIFF agent with the agent still there for
+// its key, after everything else and before the definition goes; if KIFF
+// can't be asked, the definition stays, so asking again finishes it.
+func TestDeleteAgentArchivesItsKIFFAgent(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	var asked []string
+	fail := errors.New("KIFF down")
+	f.server.ArchiveKIFF = func(ctx context.Context, tenant, agent string) error {
+		if _, err := f.server.Agents.Get(ctx, tenant, agent); err != nil {
+			t.Errorf("archiving after the agent was deleted: %v", err)
+		}
+		asked = append(asked, tenant+"/"+agent)
+		return fail
+	}
+	f.restart()
+	code, body := f.do("t1", "DELETE", "/agents/payouts", nil)
+	f.want(500, code, body, "delete while KIFF is down")
+	if _, err := f.server.Agents.Get(ctx, "t1", "payouts"); err != nil {
+		t.Fatal("the agent was deleted although its KIFF agent wasn't archived")
+	}
+	fail = nil
+	code, body = f.do("t1", "DELETE", "/agents/payouts", nil)
+	f.want(204, code, body, "delete")
+	if want := []string{"t1/payouts", "t1/payouts"}; !slices.Equal(asked, want) {
+		t.Fatalf("archived %v, want %v", asked, want)
+	}
+	if _, err := f.server.Agents.Get(ctx, "t1", "payouts"); err == nil {
+		t.Fatal("the agent is still there")
+	}
+}

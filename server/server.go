@@ -81,6 +81,10 @@ type Server struct {
 	// (approved, refused, expired). It is safe to repeat. Nil: a paused run
 	// can't be cancelled (409).
 	Withdraw func(ctx context.Context, r run.Run, exception string) (string, error)
+	// ArchiveKIFF archives the agent's KIFF agent with its own KIFF key as
+	// the agent is removed, which revokes that key in KIFF: a removed taf's
+	// key reaches nothing. It is safe to repeat. Nil: nothing is archived.
+	ArchiveKIFF func(ctx context.Context, tenant, agent string) error
 	// Files are the files people attach to their chat messages
 	// (kiff/tafs#209). Nil: the attachment routes answer 503, and removing a
 	// session, an agent or a tenant has no files to remove.
@@ -568,8 +572,9 @@ func (s *Server) deleteAgent(ctx context.Context, c Caller, r *http.Request) (in
 
 // removeAgent deletes the agent and everything kept for it: its schedules,
 // its runs (after withdrawing the calls KIFF holds for them), its sessions
-// and notes, and its definition with its versions. The definition goes last,
-// so a removal cut short is finished by repeating it.
+// and notes, its KIFF agent (archived with its own key, which that revokes),
+// and its definition with its versions. The definition goes last, so a
+// removal cut short is finished by repeating it.
 func (s *Server) removeAgent(ctx context.Context, tenant, id string) error {
 	if err := s.Schedules.DeleteAgent(ctx, tenant, id); err != nil {
 		return err
@@ -587,6 +592,13 @@ func (s *Server) removeAgent(ctx context.Context, tenant, id string) error {
 	}
 	if err := session.Remove(ctx, s.Sessions, s.Notes, tenant, id); err != nil {
 		return err
+	}
+	// Its KIFF agent, with the key the definition names: so it runs while
+	// the definition is still here.
+	if s.ArchiveKIFF != nil {
+		if err := s.ArchiveKIFF(ctx, tenant, id); err != nil {
+			return err
+		}
 	}
 	return s.Agents.Delete(ctx, tenant, id)
 }
