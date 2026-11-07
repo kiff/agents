@@ -1027,6 +1027,57 @@ func TestAOnceScheduleIsTurnedOffAsStoredAfterItsRun(t *testing.T) {
 	}
 }
 
+// A firing of a halted agent starts no run, and says so: skipped_halted in
+// the history, with no run. Nothing from before a halt runs, so a check's
+// cursor moves past what it found, and the schedule's failing stays as it
+// was, since no run worked.
+func TestAHaltedAgentsFiringIsSkippedHalted(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "0"}
+	since := time.Date(2026, 11, 3, 8, 45, 0, 0, time.UTC)
+	s.Failing = &schedule.Failing{Since: since, Firings: 2, Last: since}
+	if err := f.store.Put(ctx, s); err != nil { // as stored then: failing is the service's own field
+		t.Fatal(err)
+	}
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+		return `{"data":[{"id":"m1","created":1},{"id":"m2","created":2}]}`, nil
+	}
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrHalted
+	}
+	due := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	if err := f.sv.Fire(ctx, "t1", "inbox", due); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := f.history.Firings(ctx, "t1", "inbox", 10)
+	if len(h) != 1 || h[0].Outcome != schedule.FiredHalted || h[0].Run != "" {
+		t.Fatalf("history %+v", h)
+	}
+	got, _ := f.store.Get(ctx, "t1", "inbox")
+	if got.AppCheck.Last != "2" || got.Failing == nil || got.Failing.Firings != 2 {
+		t.Fatalf("cursor %q, failing %+v", got.AppCheck.Last, got.Failing)
+	}
+	// Without a check: the same, and its failing stays.
+	plain := scheduletest.Schedule("t1", "morning")
+	plain.Failing = &schedule.Failing{Since: since, Firings: 1, Last: since}
+	if err := f.store.Put(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	paris, _ := time.LoadLocation("Europe/Paris")
+	if err := f.sv.Fire(ctx, "t1", "morning", time.Date(2026, 11, 9, 9, 0, 0, 0, paris)); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "morning", 10); len(h) != 1 || h[0].Outcome != schedule.FiredHalted || h[0].Run != "" {
+		t.Fatalf("history %+v", h)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+}
+
 // A check hands a run at most MaxCheckItems, oldest first, and its cursor
 // moves only past those: the rest come with the next check (review on
 // #297: the 51st item was skipped for good). Items with the same cursor go

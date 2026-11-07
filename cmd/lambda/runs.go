@@ -140,9 +140,10 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 		return nil
 	case errors.Is(err, registry.ErrHalted):
 		// Skipped, not retried: a retry would run it once resumed, and
-		// nothing from before a halt runs.
+		// nothing from before a halt runs. The schedule keeps it as
+		// skipped_halted, never as a run.
 		f.log.InfoContext(ctx, "firing skipped: the agent is halted", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
-		return nil
+		return schedule.ErrHalted
 	case err != nil:
 		return err
 	}
