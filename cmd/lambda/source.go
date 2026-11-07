@@ -61,14 +61,15 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 }
 
 // sourced is the model runs use: primary alone when Bedrock isn't configured,
-// exactly as before; otherwise model.Sourced over primary and Bedrock.
-func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Store) model.Model {
+// exactly as before; otherwise model.Sourced over primary and Bedrock, which
+// says to log a turn that cost more than its worst case.
+func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Store, log func(msg string, err error)) model.Model {
 	if sc.Source != model.SourceBedrock && !sc.Fallback {
 		return primary
 	}
-	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack}
+	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack, Log: log}
 	if sc.CapMicro > 0 && use != nil {
-		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, Spend: daySpend{use}}
+		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, Spend: daySpend{use}, PriceFactor: bedrock.GeoFactor}
 	}
 	return s
 }
@@ -80,15 +81,29 @@ const backupTenant = "#bedrock"
 // daySpend keeps Bedrock's day totals in the usage table, each for three days.
 type daySpend struct{ use usage.Store }
 
-func (d daySpend) Spent(ctx context.Context, day string) (int64, error) {
-	p, err := d.use.Get(ctx, backupTenant, day)
-	return p.Spent, err
+// Reserve adds a turn's worst case to the day only while it stays within limit.
+func (d daySpend) Reserve(ctx context.Context, day string, microUSD, limit int64) (bool, error) {
+	until, err := dayKept(day)
+	if err != nil {
+		return false, err
+	}
+	return d.use.Reserve(ctx, backupTenant, day, microUSD, limit, until)
 }
 
+// Add settles a turn: what it cost less what it reserved, often negative.
 func (d daySpend) Add(ctx context.Context, day string, microUSD int64) error {
-	t, err := time.Parse(time.DateOnly, day)
+	until, err := dayKept(day)
 	if err != nil {
 		return err
 	}
-	return d.use.Add(ctx, backupTenant, day, microUSD, t.Add(72*time.Hour))
+	return d.use.Add(ctx, backupTenant, day, microUSD, until)
+}
+
+// dayKept is how long a day's total is kept: three days past it.
+func dayKept(day string) (time.Time, error) {
+	t, err := time.Parse(time.DateOnly, day)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.Add(72 * time.Hour), nil
 }

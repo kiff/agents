@@ -227,7 +227,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
 		Agents: agents, Secrets: keys, Skills: skills,
-		Model: sourced(llm, sc, cfg, use), Gateways: gateways,
+		Model: sourced(llm, sc, cfg, use, func(msg string, err error) { log.Warn(msg, "err", err) }), Gateways: gateways,
 		// A chat's next message reuses its agent's gateway session for up to two
 		// minutes, keyed by tenant, agent and key (kiff.Sessions): its handshake
 		// is skipped, and its tools are listed afresh each run.

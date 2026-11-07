@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -35,6 +36,25 @@ func (u *Usage) Add(ctx context.Context, tenant, period string, microUSD int64, 
 		ExpressionAttributeNames:  map[string]string{"#ttl": "ttl"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{":c": n(microUSD), ":ttl": ttl(until)}})
 	return err
+}
+
+// Reserve adds microUSD to the period only while its total stays within
+// limit, in one conditional update: a reservation that would cross it adds
+// nothing, however many are made at once.
+func (u *Usage) Reserve(ctx context.Context, tenant, period string, microUSD, limit int64, until time.Time) (bool, error) {
+	if microUSD > limit {
+		return false, nil
+	}
+	_, err := u.db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &u.table, Key: pkey(usagePK(tenant), period),
+		UpdateExpression:          aws.String("ADD spent :c SET #ttl = :ttl"),
+		ConditionExpression:       aws.String("attribute_not_exists(spent) OR spent <= :room"),
+		ExpressionAttributeNames:  map[string]string{"#ttl": "ttl"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":c": n(microUSD), ":ttl": ttl(until), ":room": n(limit - microUSD)}})
+	var full *types.ConditionalCheckFailedException
+	if errors.As(err, &full) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // Get reads the period, consistently.
