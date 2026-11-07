@@ -307,15 +307,16 @@ func without(text string, lines []string) string {
 }
 
 // quoted says whether the text at i is in a quote of an earlier message: on a
-// line that starts with ">", or inside an html blockquote. A quote is the
-// earlier message as it was sent, its line included.
+// line that starts with ">", or inside an html blockquote, nested ones
+// counted, so text after an inner quote closes is still in the outer one. A
+// quote is the earlier message as it was sent, its line included.
 func quoted(text string, i int) bool {
 	start := strings.LastIndexByte(text[:i], '\n') + 1
 	if strings.HasPrefix(strings.TrimLeft(text[start:i], " \t"), ">") {
 		return true
 	}
 	lower := strings.ToLower(text[:i])
-	return strings.LastIndex(lower, "<blockquote") > strings.LastIndex(lower, "</blockquote")
+	return strings.Count(lower, "<blockquote") > strings.Count(lower, "</blockquote")
 }
 
 // commonWords are frequent short words of each language whose line a

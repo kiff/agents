@@ -112,6 +112,7 @@ schedule and due time, so a repeated delivery replaces it.
 | `quiet` | its check found nothing new |
 | `skipped_too_large` | its check found only items too large for a run |
 | `failed_unworked` | it started `run`, which failed before any turn and did nothing |
+| `skipped_halted` | its agent, or the whole account, was halted: no run, and nothing from before a halt runs, so a check's cursor moves past what it found; `failing` stays as it was |
 
 ## A run that does nothing
 

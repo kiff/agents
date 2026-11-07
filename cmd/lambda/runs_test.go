@@ -536,8 +536,9 @@ func TestAFiringOfAHaltedAgentIsSkipped(t *testing.T) {
 	}
 	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
 		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
-	if err := f.fire(ctx, fi); err != nil {
-		t.Fatalf("a firing of a halted agent = %v; want it skipped", err)
+	// Skipped, and said so: the schedule keeps it as skipped_halted, never as a run.
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrHalted) {
+		t.Fatalf("a firing of a halted agent = %v; want schedule.ErrHalted", err)
 	}
 	if _, err := runs.Get(ctx, "t1", fi.Key()); !errors.Is(err, run.ErrNotFound) {
 		t.Fatalf("a halted agent's firing stored a run: %v", err)

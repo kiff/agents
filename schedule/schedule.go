@@ -304,6 +304,11 @@ var ErrNotFound = errors.New("schedule: no such schedule")
 // turn: it did nothing, so nothing it was handed is used up (FiredUnworked).
 var ErrUnworked = errors.New("schedule: the firing's run failed before doing any work")
 
+// ErrHalted is what Start returns for a firing of a halted agent: it starts
+// no run and isn't tried again, since nothing from before a halt runs
+// (FiredHalted).
+var ErrHalted = errors.New("schedule: the agent is halted, so the firing starts nothing")
+
 // ErrNoAgent means the schedule names an agent the tenant doesn't have.
 var ErrNoAgent = errors.New("schedule: the tenant has no such agent")
 
@@ -354,6 +359,10 @@ const (
 	// FiredTooLarge: its check found only items too large for a run's
 	// input: no run, and they aren't read again.
 	FiredTooLarge = "skipped_too_large"
+	// FiredHalted: its agent, or the whole account, was halted. No run, and
+	// nothing from before a halt runs: a check's cursor moves past what it
+	// found. The schedule's failing is left as it was, since no run worked.
+	FiredHalted = "skipped_halted"
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -441,7 +450,8 @@ type Service struct {
 	Version func(ctx context.Context, tenant, agent string) (int, error)
 	// Start starts a background run for the firing, once per Key. It returns
 	// ErrUnworked when that run failed before any turn: the firing then uses
-	// up nothing, and is kept as FiredUnworked.
+	// up nothing, and is kept as FiredUnworked. It returns ErrHalted when the
+	// agent is halted: no run starts, and the firing is kept as FiredHalted.
 	Start func(ctx context.Context, f Firing) error
 	// Busy reports whether the schedule's last run, other than the firing's
 	// own (a repeated delivery), is still at work: BusySkip skips the
@@ -677,15 +687,27 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: outcome})
 		}
 		f.Input = input
+		halted := false
 		if err := sv.Start(ctx, f); err != nil {
-			if errors.Is(err, ErrUnworked) {
+			switch {
+			case errors.Is(err, ErrUnworked):
 				// Its run did nothing: the items go back, as the cursor stays.
 				return sv.unworked(ctx, s, f, now)
+			case errors.Is(err, ErrHalted):
+				// Nothing from before a halt runs: the cursor moves past them.
+				halted = true
+			default:
+				return err
 			}
-			return err
 		}
 		next.Due = f.Due
 		s.AppCheck = &next
+		if halted {
+			if err := sv.Store.Put(ctx, s); err != nil {
+				return err
+			}
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
+		}
 		s.Failing = nil
 		if err := sv.Store.Put(ctx, s); err != nil {
 			return err
@@ -693,8 +715,11 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 		return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
 	}
 	if err := sv.Start(ctx, f); err != nil {
-		if errors.Is(err, ErrUnworked) {
+		switch {
+		case errors.Is(err, ErrUnworked):
 			return sv.unworked(ctx, s, f, now)
+		case errors.Is(err, ErrHalted):
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 		}
 		return err
 	}

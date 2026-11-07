@@ -257,6 +257,9 @@ func TestWithoutTakesOnlyTheLineOut(t *testing.T) {
 		{"Thanks.\n\n> " + line + "\n> Your order shipped.", "Thanks.\n\n> " + line + "\n> Your order shipped."},
 		{line + "\n\nThanks.\n\n> " + line, "Thanks.\n\n> " + line},
 		{"<blockquote>" + line + "</blockquote><p>" + line + "</p>", "<blockquote>" + line + "</blockquote><p></p>"},
+		// Nested: the outer quote goes on after the inner one closes, and keeps its line there too.
+		{"<blockquote><p>Earlier.</p><blockquote><p>Older.</p></blockquote><p>" + line + "</p></blockquote>",
+			"<blockquote><p>Earlier.</p><blockquote><p>Older.</p></blockquote><p>" + line + "</p></blockquote>"},
 	} {
 		if got := without(c.text, []string{line}); got != c.want {
 			t.Errorf("without(%q) = %q, want %q", c.text, got, c.want)
