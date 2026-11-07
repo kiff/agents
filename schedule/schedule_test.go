@@ -799,8 +799,8 @@ func TestACheckRunsOnlyForWhatIsNew(t *testing.T) {
 // A firing whose run failed before any turn (the model refused its first
 // call, for want of credits) did nothing, so it used up nothing: its items go
 // back, and the next firing hands them to a new run. The schedule keeps the
-// run of such firings until a run works (6 Nov: two refund requests went to
-// runs the model refused, and no later run got them).
+// run of such firings until a run works (before, a refused run's items were
+// never handed to any later run).
 func TestAnUnworkedRunGivesItsItemsBack(t *testing.T) {
 	f := newFixture()
 	s := scheduletest.Schedule("t1", "inbox")
