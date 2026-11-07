@@ -210,6 +210,11 @@ type Run struct {
 	Notify Notify `json:"notify,omitzero"`
 	// Turns counts the run's model turns so far, across its pauses.
 	Turns int `json:"turns"`
+	// ModelSource and ModelRegion are where the run's turns run ("anthropic",
+	// "bedrock"; the region of the endpoint called), set by its first turn.
+	// A run stays where it started.
+	ModelSource string `json:"model_source,omitempty"`
+	ModelRegion string `json:"model_region,omitempty"`
 
 	// Requirements are what a PAUSED run waits for: one per call KIFF holds.
 	Requirements []Requirement `json:"requirements,omitempty"`

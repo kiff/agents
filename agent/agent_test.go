@@ -2179,3 +2179,51 @@ func TestAMessageCarriesTheDisclosureFirstAndNoCredit(t *testing.T) {
 		t.Fatalf("the evidence sent %q", dispute.got)
 	}
 }
+
+// A run stays where its first turn ran (model.Sourced): its later turns ask
+// for that source, its cost is at that source's price, and the outcome and
+// each turn's usage say where it ran.
+func TestARunStaysWhereItStarted(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", result: tool.Result{Text: "re_1"}}
+	first := use("c1", "stripe_refund", `{"charge":"ch_1"}`)
+	first.Source, first.Region, first.PriceFactor = model.SourceBedrock, "eu-west-1", 1.1
+	last := say("Refunded ch_1.")
+	last.Source, last.Region, last.PriceFactor = model.SourceBedrock, "eu-west-1", 1.1
+	m := &script{replies: []model.Reply{first, last}}
+	store, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m, refund), r, nil, "Work the refund queue.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.reqs[0].Source != "" || m.reqs[1].Source != model.SourceBedrock || m.reqs[0].Price != price {
+		t.Fatalf("asked %q then %q, price %+v", m.reqs[0].Source, m.reqs[1].Source, m.reqs[0].Price)
+	}
+	// 1000 millionths a turn at the definition's price, 1100 at the backup's.
+	if out.Source != model.SourceBedrock || out.Region != "eu-west-1" || out.Cost != 2200 {
+		t.Fatalf("outcome %+v", out)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, _ := store.Read(context.Background(), "t1", r.Session().ID)
+	var usage []session.UsageBody
+	for _, e := range events {
+		if e.Kind == session.Usage {
+			var u session.UsageBody
+			_ = json.Unmarshal(e.Body, &u)
+			usage = append(usage, u)
+		}
+	}
+	if len(usage) != 2 || usage[0].Source != model.SourceBedrock || usage[0].Region != "eu-west-1" || usage[0].CostMicroUSD != 1100 {
+		t.Fatalf("usage %+v", usage)
+	}
+
+	// A run that started elsewhere (its record's source) asks for it from its first turn here.
+	m = &script{replies: []model.Reply{say("Done.")}}
+	_, r = start(t, session.KindRun)
+	a := newAgent(m)
+	a.Source = model.SourceAnthropic
+	if _, _, err := agent.Run(context.Background(), a, r, nil, "Go on.", nil); err != nil || m.reqs[0].Source != model.SourceAnthropic {
+		t.Fatalf("pinned: asked %q, %v", m.reqs[0].Source, err)
+	}
+}

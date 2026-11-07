@@ -140,6 +140,12 @@ type Request struct {
 	// (its own, lower limits) runs the turn at standard speed: Reply.Fast
 	// says which it was.
 	Fast bool
+	// Source is where the run's earlier turns ran (Reply.Source), empty for
+	// its first turn: a run stays where it started (Sourced).
+	Source string `json:"-"`
+	// Price is what the definition says the model costs, for a model that
+	// counts its own spend (Sourced's daily cap on the backup).
+	Price Price `json:"-"`
 	// Cache asks the provider to cache the prompt: its stable prefix (tools
 	// and system prompt) and the conversation up to its last message, so the
 	// next turn reads them from the cache. Writing the cache costs more than
@@ -233,7 +239,24 @@ type Reply struct {
 	// Fast says the turn ran at the provider's fast speed (Request.Fast), so
 	// its Usage costs at the fast price.
 	Fast bool
+	// Source and Region say where the turn ran (SourceAnthropic,
+	// SourceBedrock; the region of the endpoint called, when known), for a
+	// model that runs turns in more than one place (Sourced). Empty from a
+	// model that runs them in one.
+	Source, Region string
+	// PriceFactor is what this turn's Usage costs against the definition's
+	// price: 1.1 on Bedrock's EU profiles. 0 means 1.
+	PriceFactor float64
 }
+
+// Where a turn runs (Reply.Source, Request.Source).
+const (
+	// SourceAnthropic is the Claude API, with KIFF's own key.
+	SourceAnthropic = "anthropic"
+	// SourceBedrock is Claude on Amazon Bedrock, in our own AWS account: a
+	// backup, off unless configured (Sourced).
+	SourceBedrock = "bedrock"
+)
 
 // Model runs one turn. onText, when set, receives the reply's text as it
 // streams; the Reply holds all of it once the turn is done.

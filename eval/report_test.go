@@ -64,3 +64,20 @@ func TestWriteReport(t *testing.T) {
 		}
 	}
 }
+
+// The report names where the turns ran, so a pass on the Bedrock backup is
+// never read as a pass on the Claude API.
+func TestTheReportNamesWhereTheTurnsRan(t *testing.T) {
+	for _, c := range []struct{ runsOn, want string }{
+		{"", "| Runs on | Claude API |"},
+		{"Amazon Bedrock, eu-west-1, EU inference profiles", "| Runs on | Amazon Bedrock, eu-west-1, EU inference profiles |"},
+	} {
+		var b strings.Builder
+		if err := eval.WriteReport(&b, []eval.Config{{Job: "refunds", RunsOn: c.runsOn, Model: "claude-sonnet-5-5"}}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), c.want) {
+			t.Errorf("runs on %q: the report lacks %q:\n%s", c.runsOn, c.want, b.String())
+		}
+	}
+}

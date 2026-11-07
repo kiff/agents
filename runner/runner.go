@@ -9,6 +9,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -611,6 +612,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	a.Restarted = slices.ContainsFunc(events, func(e session.Event) bool { return e.Run == r.ID && e.Kind == session.OwnerMessage })
 	history, _ := p.history()
 	a.HistoryPrev = p.prevEnd(history)
+	a.Source = sourceOf(r)
 	a.Preface = p.preface(loop, a.Tools, rn.now())
 	if r.Paused != nil && len(r.Paused.Preface) > 0 {
 		// The preface the run first sent, as it was: a state note that
@@ -1168,6 +1170,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			before = n.Cost
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
+			n.ModelSource, n.ModelRegion = cmp.Or(out.Source, n.ModelSource), cmp.Or(out.Region, n.ModelRegion)
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
 			n.Done = run.AddDone(n.Done, out.Done...)
 			if x.notAgain != nil {
@@ -1187,6 +1190,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 	r, err := x.saveStop(ctx, func(n *run.Run) error {
 		before = n.Cost
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
+		n.ModelSource, n.ModelRegion = cmp.Or(out.Source, n.ModelSource), cmp.Or(out.Region, n.ModelRegion)
 		n.Done = run.AddDone(n.Done, out.Done...)
 		if x.notAgain != nil {
 			n.NotAgain = x.notAgain
@@ -1282,4 +1286,14 @@ func fast(d registry.Definition, trigger run.Trigger, events []session.Event) bo
 	}
 	speed := session.SpeedOf(events)
 	return speed == "" || speed == session.SpeedFast
+}
+
+// sourceOf is where the run's earlier turns ran: its record's, or the
+// Claude API for a run with turns from before runs kept it, so a run under
+// way never moves to the backup (model.Sourced).
+func sourceOf(r run.Run) string {
+	if r.ModelSource == "" && r.Turns > 0 {
+		return model.SourceAnthropic
+	}
+	return r.ModelSource
 }
