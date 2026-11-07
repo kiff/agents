@@ -213,9 +213,15 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
 	warm := &kiff.Sessions{}
+	// Where runs' turns go: the Claude API, unless Bedrock is configured as
+	// the source or the backup (sourceConfig; off by default).
+	sc, err := sourceConfigFrom(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
 	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
 		Agents: agents, Secrets: keys, Skills: skills,
-		Model: llm, Gateways: gateways,
+		Model: sourced(llm, sc, cfg, use), Gateways: gateways,
 		// A chat's next message reuses its agent's gateway session for up to two
 		// minutes, keyed by tenant, agent and key (kiff.Sessions): its handshake
 		// is skipped, and its tools are listed afresh each run.

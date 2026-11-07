@@ -322,6 +322,10 @@ type UsageBody struct {
 	// someone waits: "fast", or "standard" when it couldn't. Empty for the
 	// others. A conversation keeps the speed it began with (SpeedOf).
 	Speed string `json:"speed,omitempty"`
+	// Source and Region are where the turn ran ("anthropic", "bedrock"; the
+	// endpoint's region), when the model said (model.Reply).
+	Source string `json:"source,omitempty"`
+	Region string `json:"region,omitempty"`
 }
 
 // The speeds a turn runs at (UsageBody.Speed).
