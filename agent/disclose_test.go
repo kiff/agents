@@ -133,6 +133,10 @@ func TestTheDisclosureIsInTheTextsLanguage(t *testing.T) {
 			t.Errorf("%q: %q", text, got)
 		}
 	}
+	// An html part's tags aren't its words, even English ones in an attribute.
+	if got := language(`<span title="the order is for you and your thanks">Hola, gracias.</span>`); got != "es" {
+		t.Errorf("tag words tipped the vote: %q", got)
+	}
 	// Its line in the text's language first already: as written. Any of them elsewhere: moved, in the text's language.
 	es := "Hecho: te hemos devuelto el importe del pedido 1043."
 	if got := body(d.Lines["es"] + "\n\n" + es); got != d.Lines["es"]+"\n\n"+es {
@@ -162,15 +166,26 @@ func TestTheDisclosureIsFirstInEachPartOfAMessage(t *testing.T) {
 	}}
 	l, es, fr := d.Line, d.Lines["es"], d.Lines["fr"]
 	hi, hola := "Hi, your refund is on its way.", "Hola, hemos recibido su pedido y el reembolso está en camino. Gracias por su paciencia."
+	// In the html part, the line is a paragraph of its own, escaped as html writes it.
+	if htmlLine(l) != "<p>Written by an AI agent for Smith &amp; Co.</p>" {
+		t.Fatalf("htmlLine %q", htmlLine(l))
+	}
+	page := "<!DOCTYPE html><html><head><title>Your refund</title></head><body style=\"margin:0\"><p>" + hi + "</p></body></html>"
 	for _, c := range []struct{ name, text, html, wantText, wantHTML string }{
-		{"the model labelled the html only", hi, "<p>" + l + "</p><p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p></p><p>" + hi + "</p>"},
-		{"the html's copy at its end", l + "\n\n" + hi, "<p>" + hi + "</p><p>" + l + "</p>", l + "\n\n" + hi, l + "\n\n<p>" + hi + "</p><p></p>"},
-		{"said twice in one part", l + "\n\n" + hi + "\n\n" + l, "<p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p>" + hi + "</p>"},
-		{"the html's copy as html writes it", hi, "<p>Written by an AI agent for Smith &amp; Co.</p><p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p></p><p>" + hi + "</p>"},
-		{"neither labelled", hi, "<p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p>" + hi + "</p>"},
-		{"a Spanish message with the English line", l + "\n\n" + hola, "<p>" + l + "</p><p>" + hola + "</p>", es + "\n\n" + hola, es + "\n\n<p></p><p>" + hola + "</p>"},
-		{"a Spanish message labelled in French", fr + "\n\n" + hola, "<p>" + hola + "</p>", es + "\n\n" + hola, es + "\n\n<p>" + hola + "</p>"},
-		{"a text part too short to tell, read with its html", "Pedido 1043.", "<p>Pedido 1043.</p><p>" + hola + "</p>", es + "\n\nPedido 1043.", es + "\n\n<p>Pedido 1043.</p><p>" + hola + "</p>"},
+		{"the model labelled the html only", hi, "<p>" + l + "</p><p>" + hi + "</p>", l + "\n\n" + hi, htmlLine(l) + "<p>" + hi + "</p>"},
+		{"the html's copy at its end", l + "\n\n" + hi, "<p>" + hi + "</p><p>" + l + "</p>", l + "\n\n" + hi, htmlLine(l) + "<p>" + hi + "</p>"},
+		{"said twice in one part", l + "\n\n" + hi + "\n\n" + l, "<p>" + hi + "</p>", l + "\n\n" + hi, htmlLine(l) + "<p>" + hi + "</p>"},
+		{"the html's copy as html writes it", hi, "<p>Written by an AI agent for Smith &amp; Co.</p><p>" + hi + "</p>", l + "\n\n" + hi, htmlLine(l) + "<p>" + hi + "</p>"},
+		{"neither labelled", hi, "<p>" + hi + "</p>", l + "\n\n" + hi, htmlLine(l) + "<p>" + hi + "</p>"},
+		{"an html part that starts inline", hi, "Hi, your refund is <b>on its way</b>.", l + "\n\n" + hi, htmlLine(l) + "Hi, your refund is <b>on its way</b>."},
+		{"a whole page: just inside its body", hi, page,
+			l + "\n\n" + hi, "<!DOCTYPE html><html><head><title>Your refund</title></head><body style=\"margin:0\">" + htmlLine(l) + "<p>" + hi + "</p></body></html>"},
+		{"a page with no body: after its doctype, never before", hi, "<!doctype html><p>" + hi + "</p>", l + "\n\n" + hi, "<!doctype html>" + htmlLine(l) + "<p>" + hi + "</p>"},
+		{"a Spanish message with the English line", l + "\n\n" + hola, "<p>" + l + "</p><p>" + hola + "</p>", es + "\n\n" + hola, htmlLine(es) + "<p>" + hola + "</p>"},
+		{"a Spanish message labelled in French", fr + "\n\n" + hola, "<p>" + hola + "</p>", es + "\n\n" + hola, htmlLine(es) + "<p>" + hola + "</p>"},
+		{"a text part too short to tell, read with its html", "Pedido 1043.", "<p>Pedido 1043.</p><p>" + hola + "</p>", es + "\n\nPedido 1043.", htmlLine(es) + "<p>Pedido 1043.</p><p>" + hola + "</p>"},
+		{"a quoted earlier message keeps its line", "Thanks!\n\n> " + l + "\n> Your order shipped.", "<p>Thanks!</p><blockquote><p>" + l + "</p><p>Your order shipped.</p></blockquote>",
+			l + "\n\nThanks!\n\n> " + l + "\n> Your order shipped.", htmlLine(l) + "<p>Thanks!</p><blockquote><p>" + l + "</p><p>Your order shipped.</p></blockquote>"},
 	} {
 		in, _ := json.Marshal(map[string]string{"text": c.text, "html": c.html})
 		var out map[string]string
@@ -180,6 +195,27 @@ func TestTheDisclosureIsFirstInEachPartOfAMessage(t *testing.T) {
 		if out["text"] != c.wantText || out["html"] != c.wantHTML {
 			t.Errorf("%s:\ntext %q\nhtml %q", c.name, out["text"], out["html"])
 		}
+	}
+}
+
+// A field whose name doesn't say html but whose text is a whole page is an
+// html part too; a plain text field with a "<" in it isn't.
+func TestAWholePageIsAnHTMLPart(t *testing.T) {
+	d := &Disclosure{Line: line, In: []DisclosureIn{{Tool: "send_email", Fields: []string{"body"}}}}
+	body := func(text string) string {
+		t.Helper()
+		in, _ := json.Marshal(map[string]string{"body": text})
+		var out map[string]string
+		if err := json.Unmarshal(d.First("send_email", in), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out["body"]
+	}
+	if got := body("<html><body><p>Hi.</p></body></html>"); got != "<html><body>"+htmlLine(line)+"<p>Hi.</p></body></html>" {
+		t.Errorf("a page: %q", got)
+	}
+	if got := body("Mug <350 ml> & lid"); got != line+"\n\nMug <350 ml> & lid" {
+		t.Errorf("text with a <: %q", got)
 	}
 }
 
@@ -197,6 +233,8 @@ func TestTheDisclosureIsPutOnce(t *testing.T) {
 		`{"text":"Votre remboursement de 42,00 EUR pour la commande 1043 a été effectué. Merci !","html":"<p>` + line + `</p><p>Votre remboursement a été effectué.</p>"}`,
 		`{"subject":"Your refund"}`,
 		`{"text":"` + line + `"}`,
+		`{"html":"<!DOCTYPE html><html><body class=\"m\"><p>Hola, hemos recibido su pedido y el reembolso está en camino.</p></body></html>"}`,
+		`{"text":"Thanks!\n\n> ` + line + `\n> Your order shipped.","html":"<blockquote><p>` + line + `</p></blockquote>"}`,
 	} {
 		once := d.First("send_email", json.RawMessage(in))
 		if twice := d.First("send_email", once); string(twice) != string(once) {
@@ -216,6 +254,9 @@ func TestWithoutTakesOnlyTheLineOut(t *testing.T) {
 		{"  " + line + "  ", ""},
 		{"Hi,\n\n\nno line here.  \n", "Hi,\n\n\nno line here.  \n"},
 		{line + line, ""},
+		{"Thanks.\n\n> " + line + "\n> Your order shipped.", "Thanks.\n\n> " + line + "\n> Your order shipped."},
+		{line + "\n\nThanks.\n\n> " + line, "Thanks.\n\n> " + line},
+		{"<blockquote>" + line + "</blockquote><p>" + line + "</p>", "<blockquote>" + line + "</blockquote><p></p>"},
 	} {
 		if got := without(c.text, []string{line}); got != c.want {
 			t.Errorf("without(%q) = %q, want %q", c.text, got, c.want)

@@ -108,6 +108,14 @@ of its eight kinds):
     first. The rest of the text is as the model wrote it. A call that already
     reads that way is sent as it was, so a second pass changes nothing. One
     that carries none of the fields is sent as it was.
+  - **In an html part** (a field whose name says html, such as `html` or
+    `body_html`, or whose text is a whole page), the line is a paragraph of its
+    own, escaped (`<p>Written by an AI agent for Smith &amp; Co.</p>`), so it
+    never runs into the first sentence. It goes just inside the page's
+    `<body>` when there is one, and never before its doctype.
+  - **A quote of an earlier message keeps its line:** on lines that start with
+    `>`, or inside an html `<blockquote>`, the earlier message is as it was
+    sent.
   - What the call sends, its record and a hold's stored input carry the line;
     the model's own turn goes back to it as it wrote it.
 - `show_types` (optional, with `show`): the cards the agent shows instead
