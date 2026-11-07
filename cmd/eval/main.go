@@ -48,6 +48,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"io"
 	"net/url"
 	"os"
@@ -67,6 +68,7 @@ import (
 	"github.com/kiff/agents/eval/seed"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
+	"github.com/kiff/agents/model/bedrock"
 	"github.com/kiff/agents/registry"
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
@@ -96,6 +98,27 @@ type reader interface {
 var newReader = func(base, key string) reader { return managed.New(base, key, nil) }
 
 var newModel = func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) }
+
+// runsOn is where the agents' and the judge's turns run, for the report, so
+// a pass on the backup is never read as a pass on the Claude API.
+var runsOn = "Claude API"
+
+// onBedrock makes every model the Eval makes run on Claude in Amazon
+// Bedrock: our AWS account's EU profiles, with AWS's default credentials, in
+// AWS_REGION (eu-west-1 when unset). The Eval has its own budget, so it
+// doesn't count against the backup's daily cap.
+func onBedrock(ctx context.Context) error {
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("-model-source bedrock: AWS's credentials: %w", err)
+	}
+	if cfg.Region == "" {
+		cfg.Region = "eu-west-1"
+	}
+	newModel = func(string) model.Model { return bedrock.New(cfg) }
+	runsOn = "Amazon Bedrock, " + cfg.Region + ", EU inference profiles"
+	return nil
+}
 
 // withdraw withdraws one of the agent's held calls at KIFF.
 var withdraw = func(ctx context.Context, apiURL, key, exception string) (kiff.Withdrawal, error) {
@@ -231,7 +254,7 @@ func (rt *runtime) config(job string, d registry.Definition) {
 		price += fmt.Sprintf(",%d,%d", p.CacheRead, p.CacheWrite)
 	}
 	sum := sha256.Sum256([]byte(d.Instructions))
-	rt.configs = append(rt.configs, eval.Config{Job: job, Source: rt.source, Model: d.Model, Effort: d.Effort, MaxTokens: d.MaxTokens,
+	rt.configs = append(rt.configs, eval.Config{Job: job, Source: rt.source, RunsOn: runsOn, Model: d.Model, Effort: d.Effort, MaxTokens: d.MaxTokens,
 		Price: price, Instructions: fmt.Sprintf("%d bytes, sha256 %x", len(d.Instructions), sum[:6]), Tools: slices.Clone(rt.tools), Skills: refs(d.Skills)})
 }
 
@@ -512,6 +535,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	judgeModel := fs.String("judge-model", "", "the judge's model id; without it, judged checks are skipped")
 	judgePrice := fs.String("judge-price", "", "the judge's input,output price in millionths of a dollar per million tokens")
 	runHere := fs.Bool("run", false, "run each case on this runtime, then grade it; arguments are case names")
+	modelSource := fs.String("model-source", os.Getenv("AGENTS_MODEL_SOURCE"), "where the agents' and the judge's turns run: anthropic (the default) or bedrock, our AWS account's EU profiles")
 	modelID := fs.String("model", "", "-run: the agent's model id")
 	price := fs.String("price", "", "-run: the agent's input,output[,cache-read,cache-write] price in millionths of a dollar per million tokens; with cache prices, turns use the prompt cache")
 	jobs := fs.String("jobs", "", "-run: the directory of the jobs' instructions, <job>.md each")
@@ -550,6 +574,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		if err := readJSON(*idsPath, &ids); err != nil {
 			return err
 		}
+	}
+	switch *modelSource {
+	case "", "anthropic":
+	case "bedrock":
+		if err := onBedrock(context.Background()); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("-model-source is anthropic or bedrock, not %q", *modelSource)
 	}
 	key := env("ANTHROPIC_API_KEY")
 	if key == "" {

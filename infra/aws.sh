@@ -410,5 +410,41 @@ fi
 [ "$failed" = 0 ] || { echo "check: the function's settings are wrong; see above" >&2; exit 1; }
 say "checked: notify URL, attachments bucket and run grants are as expected"
 
+# The Bedrock backup (model/bedrock, cmd/lambda's sourceConfig): permission for
+# the API function and the two Eval roles to call Claude through the EU
+# inference profiles, and nothing broader. Off unless AGENTS_BEDROCK=on, so
+# running this script turns nothing on by itself; the function's own settings
+# (AGENTS_MODEL_SOURCE, AGENTS_BEDROCK_FALLBACK, AGENTS_BEDROCK_DAILY_USD)
+# decide whether any turn goes there.
+#   - InvokeModel and InvokeModelWithResponseStream only;
+#   - on the two eu. profiles in $REGION, and on the models in the EU regions
+#     those profiles route to, only through a profile (a model can't be called
+#     directly in another region).
+if [ "${AGENTS_BEDROCK:-}" = "on" ]; then
+  BEDROCK_EU_REGIONS="eu-central-1 eu-north-1 eu-south-1 eu-south-2 eu-west-1 eu-west-3"
+  models=""
+  for r in $BEDROCK_EU_REGIONS; do
+    for m in anthropic.claude-sonnet-5-5 anthropic.claude-opus-5-5; do
+      models="$models\"arn:aws:bedrock:$r::foundation-model/$m\","
+    done
+  done
+  models=${models%,}
+  bedrock_policy=$(cat <<EOF
+{"Version":"2012-10-17","Statement":[
+ {"Sid":"Profiles","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
+  "Resource":["arn:aws:bedrock:$REGION:$ACCOUNT:inference-profile/eu.anthropic.claude-sonnet-5-5",
+              "arn:aws:bedrock:$REGION:$ACCOUNT:inference-profile/eu.anthropic.claude-opus-5-5"]},
+ {"Sid":"ModelsThroughAProfile","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
+  "Resource":[$models],
+  "Condition":{"StringLike":{"bedrock:InferenceProfileArn":"arn:aws:bedrock:$REGION:$ACCOUNT:inference-profile/eu.anthropic.claude-*-5-5"}}}
+]}
+EOF
+)
+  for r in "$ROLE" "$EVAL_ROLE" "$EVAL_BRANCH_ROLE"; do
+    aws iam put-role-policy --role-name "$r" --policy-name bedrock-backup --policy-document "$bedrock_policy"
+  done
+  say "Bedrock backup: $ROLE and the Eval roles may call the eu. Claude profiles"
+fi
+
 echo "api:    $(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl)"
 echo "alerts: $(aws lambda get-function-url-config --function-name "$ALERTS_FN" --query FunctionUrl)kiff/alerts"

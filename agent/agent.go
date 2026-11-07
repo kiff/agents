@@ -114,6 +114,10 @@ type Agent struct {
 	// where it went, step by step (session.TurnTiming.Start).
 	Started    time.Duration
 	StartSpans []session.Span
+	// Source is where the run's earlier turns ran, from its record: empty for
+	// a new run, which goes where the model sends it (model.Sourced), and
+	// then stays there.
+	Source string
 	// Spent is what the run spent before its loop, such as on a summary, in
 	// millionths of a US dollar: it counts toward MaxCost.
 	Spent int64
@@ -130,8 +134,10 @@ type Agent struct {
 	// they're in (unless a call was held: the pause stores it then). Before
 	// they go out it must be stored when it returns: if it fails, nothing of
 	// the turn is made and the run ends with the error. After, only a lost
-	// lease ends the run. A turn that only reads isn't stored.
-	Checkpoint func(ctx context.Context, turn run.Turn) error
+	// lease ends the run. A turn that only reads isn't stored. source and
+	// region are where the run's turns run (Outcome.Source and Region),
+	// stored with the turn: a run carried on from it stays there.
+	Checkpoint func(ctx context.Context, turn run.Turn, source, region string) error
 
 	// Now is the clock a card's wait is counted from (run.CardWait); nil is
 	// the system clock.
@@ -348,6 +354,10 @@ type Outcome struct {
 	Cost int64 `json:"cost_micro_usd"`
 	// Turns counts the run's model turns.
 	Turns int `json:"turns"`
+	// Source and Region are where the run's turns run (model.Reply), set by
+	// its first: a run stays where it started.
+	Source string `json:"model_source,omitempty"`
+	Region string `json:"model_region,omitempty"`
 	// Requirements are what a paused run waits for: one per call KIFF holds,
 	// in the order of the calls. Each names the call; KIFF's operation ID
 	// and the hold's expiry are left for the caller to fill in from KIFF.
@@ -698,6 +708,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 	if emit == nil {
 		emit = func(Event) {}
 	}
+	if out.Source == "" { // a run that went on keeps where it started
+		out.Source = a.Source
+	}
 	byName := make(map[string]tool.Tool, len(a.Tools))
 	specs := make([]model.ToolSpec, 0, len(a.Tools))
 	for _, t := range a.Tools {
@@ -791,7 +804,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		var acting *run.Turn
 		if a.Checkpoint != nil && slices.ContainsFunc(calls, func(c model.Block) bool { return acts(byName[c.Tool], c.Input) }) {
 			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history), Preface: slices.Clone(a.Preface)}
-			if err := a.Checkpoint(ctx, *acting); err != nil {
+			if err := a.Checkpoint(ctx, *acting, out.Source, out.Region); err != nil {
 				return out, msgs, fmt.Errorf("agent: storing the turn before it acts: %w", err)
 			}
 		}
@@ -824,7 +837,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			// acted, which a crash still carries on from (its calls give back
 			// their first outcomes): the run goes on. A lost lease ends it.
 			acting.Results = blocks
-			if err := a.Checkpoint(ctx, *acting); errors.Is(err, run.ErrLeaseLost) {
+			if err := a.Checkpoint(ctx, *acting, out.Source, out.Region); errors.Is(err, run.ErrLeaseLost) {
 				return out, msgs, fmt.Errorf("agent: storing what the turn did: %w", err)
 			}
 		}
@@ -1209,7 +1222,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	}
 	req := model.Request{Model: a.ModelID, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history, HistoryPrev: a.HistoryPrev,
 		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) },
-		OnUpdate: func(s string) { emit(Event{Kind: Update, Text: s}) }}
+		OnUpdate: func(s string) { emit(Event{Kind: Update, Text: s}) }, Source: out.Source, Price: a.Price}
 	began := time.Now()
 	reply, err := a.Model.Turn(ctx, req, func(s string) { emit(Event{Kind: TextDelta, Text: s}) })
 	took := time.Since(began)
@@ -1224,12 +1237,16 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	case a.Fast:
 		speed, out.standard = session.SpeedStandard, true
 	}
-	cost := price.Cost(reply.Usage)
+	cost := reply.Cost(price) // at the price where it ran
 	out.Cost += cost
 	out.Turns++
+	if out.Source == "" {
+		out.Source, out.Region = reply.Source, reply.Region
+	}
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
 		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite, CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost,
-		Context: a.context(ctx, req), Timing: a.turnTiming(reply, took, out.Turns == 1, waited), Speed: speed}); err != nil {
+		Context: a.context(ctx, req), Timing: a.turnTiming(reply, took, out.Turns == 1, waited), Speed: speed,
+		Source: reply.Source, Region: reply.Region}); err != nil {
 		return reply, err
 	}
 	if reply.Stop == model.Refused {
@@ -1487,16 +1504,19 @@ func Summarize(ctx context.Context, a Agent, rec *session.Recording, prior strin
 		}
 	}
 	b.WriteString("\nWrite the summary now.")
+	// A new run's summary goes where a new run's first turn would (a.Source
+	// is empty): it can fall back on its own, and its usage event, not the
+	// run, says where it ran. A run under way asks for its own place.
 	req := model.Request{Model: a.ModelID, System: SummarySystem, MaxTokens: SummaryMaxTokens, Effort: a.Effort,
-		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: b.String()}}}}}
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: b.String()}}}}, Source: a.Source, Price: a.Price}
 	reply, err := a.Model.Turn(ctx, req, func(string) {})
 	if err != nil {
 		return "", 0, err
 	}
-	cost := a.Price.Cost(reply.Usage)
+	cost := reply.Cost(a.Price)
 	if err := rec.Record(session.Usage, session.UsageBody{Model: a.ModelID, InputTokens: reply.Usage.InputTokens,
 		OutputTokens: reply.Usage.OutputTokens, CacheRead: reply.Usage.CacheRead, CacheWrite: reply.Usage.CacheWrite,
-		CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost}); err != nil {
+		CacheWrite1h: reply.Usage.CacheWrite1h, CostMicroUSD: cost, Source: reply.Source, Region: reply.Region}); err != nil {
 		return "", cost, err
 	}
 	var text []string

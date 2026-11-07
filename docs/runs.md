@@ -126,6 +126,59 @@ then gives it up and logs it. Once KIFF doesn't take one in a sweep, that sweep 
 and the rest wait for its next look, so a sweep never spends its time on a KIFF that's down. KIFF
 keeps a run's first report, so one sent twice changes nothing. A run whose agent was removed can't be reported, since its key went with it.
 
+## Where a run's turns run
+
+Every turn goes to the Claude API, with KIFF's key, unless the function is
+configured otherwise. **The Bedrock backup is off by default**, and only these
+settings turn it on:
+
+| Setting | What it does |
+|---|---|
+| `AGENTS_MODEL_SOURCE` | `anthropic` (the default) or `bedrock`: where new runs go |
+| `AGENTS_BEDROCK_FALLBACK` | `on`: a new run whose first turn the Claude API refuses for credits, or can't serve once its retries are spent, goes to Bedrock |
+| `AGENTS_BEDROCK_DAILY_USD` | the most Bedrock's turns may cost in a UTC day; **without it, Bedrock refuses every turn** |
+
+- **Bedrock** is Claude in Amazon Bedrock, in our own AWS account: bedrock-runtime,
+  from the function's region, through the EU inference profiles
+  (`eu.anthropic.claude-sonnet-5-5`, `eu.anthropic.claude-opus-5-5`), signed with
+  the function's own role. `infra/aws.sh` grants exactly that, with
+  `AGENTS_BEDROCK=on`.
+- **A run stays where it started.** Only a new run's first turn falls back, and
+  only before anything of it streamed. A run under way that the Claude API
+  refuses fails with its reason, as it would without a backup. That holds for a
+  run the sweep carries on after its invocation crashed too: where its turns ran
+  is stored with each turn that acts, before its calls go out. A run the sweep
+  restarts from its start (it crashed before any turn acted) sends none of its
+  earlier turns, so its next turn is a new run's first.
+- **What falls back:** the credit refusal (400 `invalid_request_error`, "credit
+  balance"), or 500, 502, 503, 504 or 529 once the SDK's retries are spent.
+  **Never** any other 400, a context too long, a refused key (401, 403), or a
+  rate limit (429).
+- **The daily cap:** Bedrock's turns count against a day's total, kept in the
+  usage table, at Bedrock's price (Anthropic's list ×1.1 for the EU profiles).
+  Past the cap, or with none set, a turn that would go there fails with
+  its own words, alongside the Claude API's.
+  - **It's a soft cap.** The day's total is read before a turn and added to once
+    it's done, so turns that start together each pass, and a day can go over
+    by as many turns' cost as ran at once. Set it below the real limit.
+  - **A run already on Bedrock** whose next turn finds the cap spent fails there,
+    mid-way, with that reason: it doesn't move to the Claude API.
+- **What Bedrock doesn't serve:** fast output and Anthropic's web search and
+  fetch (a turn there runs without them), and the Models API (the context
+  window comes from a fixed table). A fallback turn starts a fresh prompt cache.
+- **The record:** a run stores `model_source` and `model_region` (the caller's
+  region; Bedrock doesn't say where in the EU it ran), and each turn's usage
+  carries `source` and `region`. A model that runs in one place names none.
+  A run from before this, with turns or a turn it acted in, goes on on the
+  Claude API. A new run's summary of an earlier conversation that no longer
+  fits is a turn of its own, before the run's first: it can fall back on its
+  own, and its usage event, not the run, says where it ran.
+- **Errors** from Bedrock have AWS credentials (key ids, session tokens, SigV4
+  signatures) taken out of their text before they're logged.
+- **The Eval** runs on Bedrock with `-model-source bedrock` (or
+  `AGENTS_MODEL_SOURCE=bedrock`), its judge too, without the daily cap, and its
+  report names where the turns ran.
+
 ## Statuses
 
 | From | To | When |

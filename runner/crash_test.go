@@ -241,3 +241,47 @@ func TestAnUnknownOutcomeIsSettledBeforeTheRunReadsIt(t *testing.T) {
 		t.Fatalf("settled %v", settled)
 	}
 }
+
+// A run whose invocation crashed in a turn that acts goes on where its turns
+// ran: the turn stored before its calls went out keeps where the run's turns
+// ran, and the sweep's carry-on asks for the same place (model.Sourced). A
+// carry-on that asked for none would be a new run's first turn, free to move.
+func TestACrashedRunGoesOnWhereItsTurnsRan(t *testing.T) {
+	for _, c := range []struct{ source, region string }{
+		{model.SourceBedrock, "eu-west-1"},
+		{model.SourceAnthropic, ""}, // the Claude API names no region
+	} {
+		t.Run(c.source, func(t *testing.T) {
+			refund, done := use("c1", "stripe_refund", `{"payment":"pi_1"}`), say("Refunded pi_1.")
+			refund.Source, refund.Region = c.source, c.region
+			done.Source, done.Region = c.source, c.region
+			f := newFixture(t, refund, done)
+			k := newKIFFRefund("after")
+			t.Cleanup(func() { close(k.stuck) })
+			f.r.Builder.Connect = func(context.Context, string, string, string, string) ([]tool.Tool, error) { return []tool.Tool{k}, nil }
+			r := f.start(server.Start{Input: "refund pi_1"})
+			go func() { _, _ = f.r.Execute(ctx, "t1", r.ID, nil) }()
+			<-k.inFlow
+			if stuck := f.get(r.ID); stuck.Acting == nil || stuck.Turns != 0 || stuck.ModelSource != c.source || stuck.ModelRegion != c.region {
+				t.Fatalf("while it crashed: acting %v, %d turns, on %q in %q, want its turn on %q in %q",
+					stuck.Acting != nil, stuck.Turns, stuck.ModelSource, stuck.ModelRegion, c.source, c.region)
+			}
+			f.clock.add(runner.MaxRun + run.LeaseGrace + time.Second)
+			fresh := f.newRunner()
+			fresh.Builder.Connect = f.r.Builder.Connect
+			fresh.Collect = k.collect
+			restart(t, f, sweeper(f, fresh), r.ID, run.ResumeWaits[0])
+			reqs := f.model.requests()
+			if len(reqs) != 2 || reqs[0].Source != "" || reqs[1].Source != c.source {
+				var asked []string
+				for _, q := range reqs {
+					asked = append(asked, q.Source)
+				}
+				t.Fatalf("the turns asked for %q, want a new run's first, then %q", asked, c.source)
+			}
+			if got := f.get(r.ID); got.Status != run.Completed || got.ModelSource != c.source || got.ModelRegion != c.region || k.sent != 1 {
+				t.Fatalf("carried on to %s on %q in %q with %d refunds", got.Status, got.ModelSource, got.ModelRegion, k.sent)
+			}
+		})
+	}
+}

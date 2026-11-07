@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"slices"
@@ -79,6 +80,7 @@ func Means(results []Result) []Result {
 type Config struct {
 	Job          string
 	Source       string   // e.g. "kiff/tafs@1d1ed42e64e8", or "flags"
+	RunsOn       string   // where the turns ran: "Claude API", or Amazon Bedrock and its region
 	Model        string   //
 	Effort       string   // "" is the provider's default
 	MaxTokens    int64    //
@@ -105,7 +107,7 @@ func WriteReport(w io.Writer, cfgs []Config, results []Result, lower []string) e
 		tools := slices.Clone(cfg.Tools)
 		slices.Sort(tools)
 		for _, row := range [][2]string{
-			{"Definition", cfg.Source}, {"Model", cfg.Model}, {"Effort", effort},
+			{"Definition", cfg.Source}, {"Runs on", cmp.Or(cfg.RunsOn, "Claude API")}, {"Model", cfg.Model}, {"Effort", effort},
 			{"Max tokens", fmt.Sprint(cfg.MaxTokens)}, {"Price", cfg.Price},
 			{"Instructions", cfg.Instructions}, {"Tools", strings.Join(tools, ", ")}, {"Skills", strings.Join(cfg.Skills, ", ")},
 		} {
