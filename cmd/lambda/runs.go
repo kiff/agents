@@ -106,8 +106,12 @@ func (f *function) executed(ctx context.Context, tenant, id string) run.Run {
 
 // unworked reports whether r failed before any turn: the model refused its
 // first call (for want of credits, say), or it stopped before its loop. It
-// did nothing, so a firing that handed it items hasn't used them up.
-func unworked(r run.Run) bool { return r.Status == run.Error && r.Turns == 0 }
+// did nothing, so a firing that handed it items hasn't used them up. Only a
+// run never carried on by the sweep, with an error the runner stored itself:
+// a run the sweep ended may have acted with its turns not yet stored.
+func unworked(r run.Run) bool {
+	return r.Status == run.Error && r.Turns == 0 && r.Resumes == 0 && runner.Own(r.Error)
+}
 
 // fire starts the run a schedule's firing asks for, and executes it in this
 // invocation, which EventBridge Scheduler already started in the background.

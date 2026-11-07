@@ -126,12 +126,25 @@ nothing, so the firing used up nothing:
   a row, and the last one's run. A run that works ends it. A body that sets
   `failing` is ignored, and an update keeps it.
 
+A run counts as doing nothing only when the runner itself stored its error
+(it ended the run, or stopped it before its loop) with no turn done, and the
+sweep never carried it on. A run whose invocation died is ended by the sweep,
+and its turns may be behind what it did, so it never counts.
+
 A run that failed after it acted keeps today's rule: what it was handed is
 used up, so nothing is done twice. A repeated delivery of a firing whose run
-did nothing does nothing either, and says the same.
+did nothing does nothing either, says the same, and counts once in `failing`.
+
+**A `once` schedule is off after its firing, whatever came of it,** this one
+included. An agent's own follow-ups are `once` schedules. A follow-up whose run
+did nothing doesn't run again, and its `failing` stays to say so (`firings`
+1). What the owner changed while the run went is kept. One they moved to
+another time meanwhile stays on, for that time. Trying a once schedule's work
+again, later, isn't done today.
 
 The service can't reach the owner: whoever shows the schedule tells them,
-once for each run of failures (kiff/tafs alerts on `failing`).
+once for each run of failures, and at once for a `once` schedule, whose work
+won't run (kiff/tafs alerts on `failing`).
 
 The scheduler may deliver a firing more than once. Every delivery of one
 firing carries the same key, so it starts one run however often it comes.

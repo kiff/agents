@@ -33,9 +33,9 @@ func TestTheDisclosureGoesFirstInTheCall(t *testing.T) {
 	if out["product_description"] != line+"\n\nBlue mug, 350 ml" || out["shipping_tracking_number"] != "1Z999" || out["shipping_carrier"] != "UPS" {
 		t.Fatalf("the line went %v", out)
 	}
-	// The free text first, when the call carries it.
+	// First in each of the fields the call carries: whichever the reader is shown starts with it.
 	out = evidenceOf(t, evidence.First("update_dispute", json.RawMessage(`{"evidence":{"uncategorized_text":"Delivered on 2 Nov.","product_description":"Mug"}}`)))
-	if out["uncategorized_text"] != line+"\n\nDelivered on 2 Nov." || out["product_description"] != "Mug" {
+	if out["uncategorized_text"] != line+"\n\nDelivered on 2 Nov." || out["product_description"] != line+"\n\nMug" {
 		t.Fatalf("the line went %v", out)
 	}
 	// Evidence with none of the fields gets the first, with the line alone.
@@ -43,14 +43,14 @@ func TestTheDisclosureGoesFirstInTheCall(t *testing.T) {
 	if out["uncategorized_text"] != line {
 		t.Fatalf("the line went %v", out)
 	}
-	// Said first already: the call is sent as the model wrote it.
-	said := json.RawMessage(`{"evidence":{"product_description":"` + line + `\n\nMug."}}`)
+	// Said first already: the call is sent as the model wrote it, byte for byte.
+	said := json.RawMessage(`{"submit": true, "evidence": {"product_description": "` + line + `\n\nMug."}}`)
 	if got := evidence.First("update_dispute", said); string(got) != string(said) {
 		t.Fatalf("a disclosed call changed: %s", got)
 	}
-	// Said elsewhere, in any of the fields: moved to the top of the first, said once.
+	// Said elsewhere in the fields: moved to the top of each, said once.
 	out = evidenceOf(t, evidence.First("update_dispute", json.RawMessage(`{"evidence":{"uncategorized_text":"Delivered. `+line+`","product_description":"Mug.\n\n`+line+`"}}`)))
-	if out["uncategorized_text"] != line+"\n\nDelivered." || out["product_description"] != "Mug." {
+	if out["uncategorized_text"] != line+"\n\nDelivered." || out["product_description"] != line+"\n\nMug." {
 		t.Fatalf("the line went %v", out)
 	}
 	// A call that sends nothing outside (submitting what was sent before) is as it was.
@@ -133,13 +133,93 @@ func TestTheDisclosureIsInTheTextsLanguage(t *testing.T) {
 			t.Errorf("%q: %q", text, got)
 		}
 	}
-	// Any of its lines first already: as written. Any of them elsewhere: moved, in the text's language.
-	if got := body(d.Lines["es"] + "\n\nHecho."); got != d.Lines["es"]+"\n\nHecho." {
+	// Its line in the text's language first already: as written. Any of them elsewhere: moved, in the text's language.
+	es := "Hecho: te hemos devuelto el importe del pedido 1043."
+	if got := body(d.Lines["es"] + "\n\n" + es); got != d.Lines["es"]+"\n\n"+es {
 		t.Errorf("said first: %q", got)
 	}
-	es := "Hecho: te hemos devuelto el importe del pedido 1043."
 	if got := body(es + "\n\n" + d.Line); got != d.Lines["es"]+"\n\n"+es {
 		t.Errorf("moved: %q", got)
+	}
+	// A line in another language at the top (the model copied the one it saw) is put in the text's.
+	hola := "Hola, hemos recibido su pedido y el reembolso está en camino. Gracias por su paciencia."
+	if got := body(d.Line + "\n\n" + hola); got != d.Lines["es"]+"\n\n"+hola {
+		t.Errorf("English on a Spanish text: %q", got)
+	}
+	en := "Your refund of 42.00 EUR for order 1043 has been issued. Thanks!"
+	if got := body(d.Lines["es"] + "\n\n" + en); got != d.Line+"\n\n"+en {
+		t.Errorf("Spanish on an English text: %q", got)
+	}
+}
+
+// An email's text body and its html are two renderings of one message, and
+// a reader is shown one of them: each starts with the line, said once, in
+// the message's language (the parts read together).
+func TestTheDisclosureIsFirstInEachPartOfAMessage(t *testing.T) {
+	d := &Disclosure{Line: "Written by an AI agent for Smith & Co.", In: []DisclosureIn{{Tool: "send_email", Fields: []string{"text", "html"}}}, Lines: map[string]string{
+		"es": "Escrito por un agente de IA para Smith & Co.",
+		"fr": "Rédigé par un agent d'IA pour Smith & Co.",
+	}}
+	l, es, fr := d.Line, d.Lines["es"], d.Lines["fr"]
+	hi, hola := "Hi, your refund is on its way.", "Hola, hemos recibido su pedido y el reembolso está en camino. Gracias por su paciencia."
+	for _, c := range []struct{ name, text, html, wantText, wantHTML string }{
+		{"the model labelled the html only", hi, "<p>" + l + "</p><p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p></p><p>" + hi + "</p>"},
+		{"the html's copy at its end", l + "\n\n" + hi, "<p>" + hi + "</p><p>" + l + "</p>", l + "\n\n" + hi, l + "\n\n<p>" + hi + "</p><p></p>"},
+		{"said twice in one part", l + "\n\n" + hi + "\n\n" + l, "<p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p>" + hi + "</p>"},
+		{"the html's copy as html writes it", hi, "<p>Written by an AI agent for Smith &amp; Co.</p><p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p></p><p>" + hi + "</p>"},
+		{"neither labelled", hi, "<p>" + hi + "</p>", l + "\n\n" + hi, l + "\n\n<p>" + hi + "</p>"},
+		{"a Spanish message with the English line", l + "\n\n" + hola, "<p>" + l + "</p><p>" + hola + "</p>", es + "\n\n" + hola, es + "\n\n<p></p><p>" + hola + "</p>"},
+		{"a Spanish message labelled in French", fr + "\n\n" + hola, "<p>" + hola + "</p>", es + "\n\n" + hola, es + "\n\n<p>" + hola + "</p>"},
+		{"a text part too short to tell, read with its html", "Pedido 1043.", "<p>Pedido 1043.</p><p>" + hola + "</p>", es + "\n\nPedido 1043.", es + "\n\n<p>Pedido 1043.</p><p>" + hola + "</p>"},
+	} {
+		in, _ := json.Marshal(map[string]string{"text": c.text, "html": c.html})
+		var out map[string]string
+		if err := json.Unmarshal(d.First("send_email", in), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out["text"] != c.wantText || out["html"] != c.wantHTML {
+			t.Errorf("%s:\ntext %q\nhtml %q", c.name, out["text"], out["html"])
+		}
+	}
+}
+
+// A call that went through First goes through it again unchanged, byte for
+// byte: the line is put once, and the rest of the text is as the model wrote
+// it (its spaces and blank runs included).
+func TestTheDisclosureIsPutOnce(t *testing.T) {
+	d := &Disclosure{Line: line, In: []DisclosureIn{{Tool: "send_email", Fields: []string{"text", "html"}}}, Lines: map[string]string{
+		"es": "Escrito por un agente de IA para la empresa.",
+		"fr": "Rédigé par un agent d'IA pour l'entreprise.",
+	}}
+	for _, in := range []string{
+		`{"text":"Hi,\n\n\nyour refund is on its way.  \n","html":"<p>Hi,</p>\n\n\n<p>your refund is on its way.</p>"}`,
+		`{"text":"Hola, hemos recibido su pedido y el reembolso está en camino. ` + line + `"}`,
+		`{"text":"Votre remboursement de 42,00 EUR pour la commande 1043 a été effectué. Merci !","html":"<p>` + line + `</p><p>Votre remboursement a été effectué.</p>"}`,
+		`{"subject":"Your refund"}`,
+		`{"text":"` + line + `"}`,
+	} {
+		once := d.First("send_email", json.RawMessage(in))
+		if twice := d.First("send_email", once); string(twice) != string(once) {
+			t.Errorf("a second pass changed %s:\n%s\n%s", in, once, twice)
+		}
+	}
+}
+
+// without takes each line out with the space around it, and leaves the rest of the text as it was.
+func TestWithoutTakesOnlyTheLineOut(t *testing.T) {
+	for _, c := range []struct{ text, want string }{
+		{line + "\n\nHi.", "Hi."},
+		{"Hi.\n\n" + line, "Hi."},
+		{"Hi.\n\n" + line + "\nBye.", "Hi.\n\nBye."},
+		{"Delivered. " + line + " More.", "Delivered. More."},
+		{"<p>" + line + "</p><p>Hi.</p>", "<p></p><p>Hi.</p>"},
+		{"  " + line + "  ", ""},
+		{"Hi,\n\n\nno line here.  \n", "Hi,\n\n\nno line here.  \n"},
+		{line + line, ""},
+	} {
+		if got := without(c.text, []string{line}); got != c.want {
+			t.Errorf("without(%q) = %q, want %q", c.text, got, c.want)
+		}
 	}
 }
 

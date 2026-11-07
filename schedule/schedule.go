@@ -702,18 +702,34 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 }
 
 // unworked keeps a firing whose run failed before any turn: one more in the
-// schedule's run of such firings, and FiredUnworked in its history. A check's
-// cursor stays where it was, so the next firing hands the same items.
+// schedule's run of such firings, counted once however often the firing is
+// delivered, and FiredUnworked in its history. A check's cursor stays where it
+// was, so the next firing hands the same items. A once schedule (an agent's
+// follow-up, say) is off after its firing, as always (offOnce): its work
+// doesn't run again, and its failing says so. The schedule is read again
+// first, so an owner's change made while the run went isn't written over.
 func (sv *Service) unworked(ctx context.Context, s Schedule, f Firing, now time.Time) error {
-	failing := Failing{Since: f.Due, Firings: 1, Run: f.Key()}
-	if s.Failing != nil {
-		failing = Failing{Since: s.Failing.Since, Firings: s.Failing.Firings + 1, Run: f.Key()}
-	}
-	if err := sv.setFailing(ctx, s, &failing); err != nil {
+	fired := Fired{Due: f.Due, At: now, Outcome: FiredUnworked, Run: f.Key()}
+	stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return sv.keepAs(ctx, f, fired) // gone meanwhile: left gone
+	case err != nil:
 		return err
 	}
-	s.Failing = &failing
-	return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredUnworked, Run: f.Key()})
+	switch {
+	case stored.Failing != nil && stored.Failing.Run == f.Key():
+		// A repeated delivery of a firing counted already.
+	case stored.Failing != nil:
+		stored.Failing = &Failing{Since: stored.Failing.Since, Firings: stored.Failing.Firings + 1, Run: f.Key()}
+	default:
+		stored.Failing = &Failing{Since: f.Due, Firings: 1, Run: f.Key()}
+	}
+	offOnce(&stored, f.Due)
+	if err := sv.Store.Put(ctx, stored); err != nil {
+		return err
+	}
+	return sv.keepAs(ctx, f, fired)
 }
 
 // setFailing stores the schedule's run of unworked firings, read again first
@@ -835,14 +851,35 @@ func (sv *Service) keepAs(ctx context.Context, f Firing, fired Fired) error {
 // keep adds fired to the schedule's history, when there is one. A once
 // schedule is then off for good, whatever came of its firing: the Scheduler
 // deleted its own after firing, and the stored one stays, off, so its
-// history does too.
+// history does too. It is turned off as stored now (offOnce).
 func (sv *Service) keep(ctx context.Context, s Schedule, f Firing, fired Fired) error {
 	if err := sv.keepAs(ctx, f, fired); err != nil {
 		return err
 	}
-	if s.KindOf() == KindOnce {
-		s.Enabled = false
-		return sv.Store.Put(ctx, s)
+	if s.KindOf() != KindOnce {
+		return nil
 	}
-	return nil
+	stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil // removed meanwhile: left removed
+	case err != nil:
+		return err
+	case !offOnce(&stored, fired.Due):
+		return nil
+	}
+	return sv.Store.Put(ctx, stored)
+}
+
+// offOnce turns s off when it is a once schedule that still names the firing
+// due, and reports whether it did: its one firing came. s is the schedule as
+// stored now, read again after the run, so what changed while it went (an
+// owner's edit, its failing) is kept, and one its owner moved to another time
+// meanwhile stays on for that time.
+func offOnce(s *Schedule, due time.Time) bool {
+	if s.KindOf() != KindOnce || !s.names(due) {
+		return false
+	}
+	s.Enabled = false
+	return true
 }

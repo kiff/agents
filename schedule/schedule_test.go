@@ -894,12 +894,95 @@ func TestUnworkedFiringsAreKeptAsFailing(t *testing.T) {
 	if got.Failing == nil || got.Failing.Firings != 1 || !got.Failing.Since.Equal(monday) || got.Input != "Reconcile today's payouts." {
 		t.Fatalf("failing %+v, input %q", got.Failing, got.Input)
 	}
+	// A repeated delivery of that firing is the same failure: counted once.
+	if err := f.sv.Fire(ctx, "t1", "morning", monday); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("a repeated delivery counted again: %+v", got.Failing)
+	}
+	// The next firing whose run does nothing is one more, since the first.
+	tuesday := monday.AddDate(0, 0, 1)
+	if err := f.sv.Fire(ctx, "t1", "morning", tuesday); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 2 || !got.Failing.Since.Equal(monday) ||
+		got.Failing.Run != (schedule.Firing{Tenant: "t1", Schedule: "morning", Due: tuesday}).Key() {
+		t.Fatalf("a second firing: %+v", got.Failing)
+	}
 	works = true
-	if err := f.sv.Fire(ctx, "t1", "morning", monday.AddDate(0, 0, 1)); err != nil {
+	if err := f.sv.Fire(ctx, "t1", "morning", tuesday.AddDate(0, 0, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing != nil || got.Input != "Reconcile today's payouts." {
 		t.Fatalf("after a run that worked: failing %+v, input %q", got.Failing, got.Input)
+	}
+}
+
+// A once schedule (an agent's follow-up, say) whose run did nothing is off
+// for good after its firing, like any once schedule, with its failing kept:
+// what it was to do doesn't run, and its failing says so. It is turned off
+// as stored after the run, so what the owner changed meanwhile stays, and
+// one the owner moved to another time meanwhile stays on for that time.
+func TestAOnceScheduleIsTurnedOffAsStoredAfterItsRun(t *testing.T) {
+	f := newFixture()
+	due := time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC)
+	put := func(id string) {
+		t.Helper()
+		s := scheduletest.Schedule("t1", id)
+		s.Kind, s.Cron, s.At = schedule.KindOnce, "", due
+		if err := f.sv.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(id string) schedule.Schedule {
+		got, _ := f.store.Get(ctx, "t1", id)
+		return got
+	}
+	var result error
+	var meanwhile func(*schedule.Schedule) // what the owner changes while the run goes
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		if meanwhile != nil {
+			s := get(fi.Schedule)
+			meanwhile(&s)
+			_ = f.store.Put(ctx, s)
+		}
+		return result
+	}
+
+	put("followup")
+	result, meanwhile = schedule.ErrUnworked, func(s *schedule.Schedule) { s.Input = "Ask again about order 1043." }
+	if err := f.sv.Fire(ctx, "t1", "followup", due); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("followup"); got.Enabled || got.Failing == nil || got.Failing.Firings != 1 || got.Input != "Ask again about order 1043." {
+		t.Fatalf("enabled %v, failing %+v, input %q", got.Enabled, got.Failing, got.Input)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "followup", 10); len(h) != 1 || h[0].Outcome != schedule.FiredUnworked {
+		t.Fatalf("history %+v", h)
+	}
+	if err := f.sv.Fire(ctx, "t1", "followup", due); err != nil || len(f.started) != 1 {
+		t.Fatalf("a repeated delivery of a once schedule turned off started a run (err %v, %d runs)", err, len(f.started))
+	}
+
+	// Moved by its owner while a run that did nothing went: on, for the new time, until it fires then.
+	put("moved")
+	later := due.Add(2 * time.Hour)
+	meanwhile = func(s *schedule.Schedule) { s.At = later }
+	if err := f.sv.Fire(ctx, "t1", "moved", due); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("moved"); !got.Enabled || !got.At.Equal(later) || got.Failing == nil {
+		t.Fatalf("moved meanwhile: enabled %v, at %v, failing %+v", got.Enabled, got.At, got.Failing)
+	}
+	// It fires then, and its run works: off, and nothing failing any more.
+	result, meanwhile = nil, func(s *schedule.Schedule) { s.Input = "Ask about order 1043 once more." }
+	if err := f.sv.Fire(ctx, "t1", "moved", later); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("moved"); got.Enabled || got.Failing != nil || got.Input != "Ask about order 1043 once more." {
+		t.Fatalf("after its run worked: enabled %v, failing %+v, input %q", got.Enabled, got.Failing, got.Input)
 	}
 }
 

@@ -406,13 +406,58 @@ func TestAFiringWhoseRunDidNothingSaysSo(t *testing.T) {
 	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrUnworked) {
 		t.Fatalf("a repeated delivery = %v, want ErrUnworked", err)
 	}
-	acted := r
-	acted.Turns, acted.Version = 1, r.Version+1
-	if err := runs.Put(ctx, r, acted); err != nil {
-		t.Fatal(err)
+	change := func(c func(*run.Run)) {
+		t.Helper()
+		cur, err := runs.Get(ctx, "t1", fi.Key())
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := cur
+		c(&next)
+		next.Version = cur.Version + 1
+		if err := runs.Put(ctx, cur, next); err != nil {
+			t.Fatal(err)
+		}
 	}
+	// Carried on by the sweep, then ended by it: its invocation may have died
+	// after acting, before its turns were stored. A late repeated delivery
+	// doesn't hand its items to another run.
+	change(func(n *run.Run) { n.Resumes, n.Error = 1, "its lease ran out: the invocation crashed or timed out" })
+	if err := f.fire(ctx, fi); err != nil {
+		t.Fatalf("a run the sweep ended, delivered again = %v, want nil", err)
+	}
+	change(func(n *run.Run) { n.Resumes, n.Error, n.Turns = 0, runner.FailedRun, 1 })
 	if err := f.fire(ctx, fi); err != nil {
 		t.Fatalf("a run that acted, delivered again = %v, want nil", err)
+	}
+}
+
+// A run is unworked only when the runner itself ended it before any turn and
+// the sweep never carried it on. A run the sweep resumed or ended may have
+// acted with its turns not stored yet (its invocation died before it could
+// store them), so what its firing handed it is never handed again.
+func TestOnlyARunTheRunnerEndedBeforeAnyTurnIsUnworked(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		r    run.Run
+		want bool
+	}{
+		{"refused at its first call", run.Run{Status: run.Error, Error: runner.FailedRun}, true},
+		{"out of time before a reply", run.Run{Status: run.Error, Error: runner.FailedTime}, true},
+		{"not built", run.Run{Status: run.Error, Error: runner.FailedBuild}, true},
+		{"not started", run.Run{Status: run.Error, Error: runner.FailedStart}, true},
+		{"its agent switching versions", run.Run{Status: run.Error, Error: runner.FailedSwitching}, true},
+		{"a turn done", run.Run{Status: run.Error, Error: runner.FailedRun, Turns: 1}, false},
+		{"carried on by the sweep", run.Run{Status: run.Error, Error: runner.FailedRun, Resumes: 1}, false},
+		{"its lease ran out", run.Run{Status: run.Error, Error: "its lease ran out: the invocation crashed or timed out"}, false},
+		{"stopped as often as it may", run.Run{Status: run.Error, Error: run.NeedsYou, Resumes: run.MaxResumes}, false},
+		{"never picked up", run.Run{Status: run.Error, Error: run.NeverStarted, Resumes: run.MaxResumes}, false},
+		{"not continued after its held calls", run.Run{Status: run.Error, Error: "it could not continue once KIFF resolved its held calls"}, false},
+		{"completed", run.Run{Status: run.Completed}, false},
+	} {
+		if got := unworked(c.r); got != c.want {
+			t.Errorf("%s: unworked = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

@@ -2,10 +2,14 @@ package agent
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -24,7 +28,9 @@ type Disclosure struct {
 	// is in it, and as Line otherwise.
 	Lines map[string]string `json:"lines,omitempty"`
 	// In is where it goes: for each tool that writes outside, the free-text
-	// fields of its input, by dotted path, in order of preference.
+	// fields of its input, by dotted path. Each one a call carries as text
+	// starts with it; the first is where it goes alone when a call carries
+	// none of them.
 	In []DisclosureIn `json:"in"`
 	// After is what a credit's line followed (registry Definition.Credit):
 	// checked and kept for a definition that still names one. Nothing is put
@@ -129,16 +135,17 @@ type textField struct {
 
 func (f textField) text() string { return f.parent[f.key].(string) }
 
-// First is input as the call sends it, with the line first: at the top of the
-// first of the tool's fields the call carries as text, in that text's
-// language when Lines has it, or as the first field when the call carries its
-// parent and none of them. That's the AI disclosure's place: whoever reads
-// the message reads first that an AI agent wrote it, and for whom (AI Act
-// Art. 50(1); the Commission's guidelines show the label at the top). A line
-// said already elsewhere in the tool's fields is moved to the top, so it's
-// said once, first. Unchanged when the first text starts with it already,
-// when the call carries none of the fields nor the first's parent, and for
-// any other tool.
+// First is input as the call sends it, with the line first in each of the
+// tool's fields the call carries as text, or as the first field when the call
+// carries its parent and none of them. That's the AI disclosure's place:
+// whoever reads the message, in whichever of its parts they're shown (a text
+// body or its html), reads first that an AI agent wrote it, and for whom (AI
+// Act Art. 50(1); the Commission's guidelines show the label at the top). The
+// line is in the message's language when Lines has it, read from all the
+// fields together, so its parts say the same line. It is said once in each
+// field: one the model wrote anywhere in it, in any language, is taken out
+// first. Unchanged when that changes nothing, when the call carries none of
+// the fields nor the first's parent, and for any other tool.
 func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 	paths := d.fields(tool)
 	if len(paths) == 0 {
@@ -160,28 +167,31 @@ func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 			texts = append(texts, textField{parent, last})
 		}
 	}
-	lines := d.lines()
-	switch {
-	case len(texts) == 0:
+	changed := false
+	if len(texts) == 0 {
 		parent, last := parentOf(call, paths[0])
 		if parent == nil {
 			return input
 		}
-		parent[last] = d.Line
-	default:
-		first := texts[0]
-		if startsWithAny(strings.TrimLeft(first.text(), " \n"), lines) {
-			return input
+		parent[last], changed = d.Line, true
+	}
+	lines := d.lines()
+	rest := make([]string, len(texts)) // each field's text without the line
+	for i, f := range texts {
+		rest[i] = strings.TrimLeft(without(f.text(), lines), space)
+	}
+	line := d.lineFor(strings.Join(rest, "\n\n"))
+	for i, f := range texts {
+		next := line
+		if strings.TrimSpace(rest[i]) != "" {
+			next += "\n\n" + rest[i]
 		}
-		for _, f := range texts {
-			f.parent[f.key] = without(f.text(), lines)
+		if next != f.text() {
+			f.parent[f.key], changed = next, true
 		}
-		text := strings.TrimLeft(first.text(), " \n")
-		if strings.TrimSpace(text) == "" {
-			first.parent[first.key] = d.lineFor(text)
-		} else {
-			first.parent[first.key] = d.lineFor(text) + "\n\n" + text
-		}
+	}
+	if !changed {
+		return input
 	}
 	// As the model wrote it: no HTML escapes, which change the text sent but not its value (agentgabo on #352).
 	var out bytes.Buffer
@@ -193,13 +203,21 @@ func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 	return bytes.TrimRight(out.Bytes(), "\n")
 }
 
-// lines is the line in every language it has: Line first.
+// lines is the line in every language it has, each also as html writes it
+// ("&amp;" for "&"), longest first so none is taken out as part of another.
 func (d *Disclosure) lines() []string {
-	out := []string{d.Line}
-	for _, l := range d.Lines {
+	var out []string
+	for _, l := range append([]string{d.Line}, slices.Collect(maps.Values(d.Lines))...) {
+		if l = strings.TrimSpace(l); l == "" {
+			continue
+		}
 		out = append(out, l)
+		if e := html.EscapeString(l); e != l {
+			out = append(out, e)
+		}
 	}
-	return out
+	slices.SortFunc(out, func(a, b string) int { return cmp.Or(len(b)-len(a), strings.Compare(a, b)) })
+	return slices.Compact(out)
 }
 
 // lineFor is the line for a text: in its language when Lines has it, Line otherwise.
@@ -210,31 +228,35 @@ func (d *Disclosure) lineFor(text string) string {
 	return d.Line
 }
 
-func startsWithAny(text string, lines []string) bool {
-	for _, l := range lines {
-		if strings.HasPrefix(text, l) {
-			return true
-		}
-	}
-	return false
-}
+// space is what separates a line from the text around it.
+const space = " \t\r\n"
 
-// without is text with every one of lines taken out, and no blank run or
-// doubled space left where one was. Text with none of them is as it was.
+// without is text with each of lines taken out wherever it is, with the space
+// around it: one that starts or ends the text takes the space after or before
+// it, and one between two runs of space leaves the longer. The rest of the
+// text is as it was, so a text with none of them is unchanged.
 func without(text string, lines []string) string {
-	out := text
 	for _, l := range lines {
-		for _, v := range []string{l + " ", " " + l, l} {
-			out = strings.ReplaceAll(out, v, "")
+		if l == "" {
+			continue
+		}
+		for i := strings.Index(text, l); i >= 0; i = strings.Index(text, l) {
+			before, after := text[:i], text[i+len(l):]
+			head, tail := strings.TrimRight(before, space), strings.TrimLeft(after, space)
+			switch gap, gapAfter := before[len(head):], after[:len(after)-len(tail)]; {
+			case head == "":
+				text = tail
+			case tail == "":
+				text = head
+			default:
+				if len(gapAfter) > len(gap) {
+					gap = gapAfter
+				}
+				text = head + gap + tail
+			}
 		}
 	}
-	if out == text {
-		return text
-	}
-	for strings.Contains(out, "\n\n\n") {
-		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
-	}
-	return strings.TrimSpace(out)
+	return text
 }
 
 // commonWords are frequent short words of each language whose line a
@@ -247,6 +269,9 @@ var commonWords = map[string]map[string]bool{
 	"de": wordSet("der die das und ist nicht sie ihr ihre ein eine mit für auf den dem des zu wir danke bestellung wurde bitte hallo schon aber sehr mehr"),
 	"it": wordSet("il lo gli della del di che e è per non una un con sono grazie ordine suo sua tuo tua ciao già ma molto più stato"),
 }
+
+// markup is an html tag, which language reads past.
+var markup = regexp.MustCompile(`<[^<>]*>`)
 
 // languageOrder is the order languages are compared in, so a tie is decided the same way every time.
 var languageOrder = []string{"en", "es", "pt", "fr", "de", "it"}
@@ -265,6 +290,7 @@ func wordSet(words string) map[string]bool {
 // It only picks which of a disclosure's lines heads the text.
 func language(text string) string {
 	counts := map[string]int{}
+	text = markup.ReplaceAllString(text, " ") // an html part's tags aren't its words
 	for _, w := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
 		for _, lang := range languageOrder {
 			if commonWords[lang][w] {
