@@ -1141,10 +1141,23 @@ func (x *execution) heartbeat(ctx context.Context, lost context.CancelFunc, dead
 }
 
 // checkpoint stores turn as the run's last safe step (Run.Acting), under its
-// lease: a run whose invocation crashes carries on from it.
-func (x *execution) checkpoint(ctx context.Context, turn run.Turn) error {
-	_, err := x.save(ctx, func(n *run.Run) error { n.Acting = &turn; return nil })
+// lease: a run whose invocation crashes carries on from it. Where the run's
+// turns ran is stored with it, so the run carried on goes on there
+// (sourceOf): a run that crashed on the backup isn't a new run's first
+// turn when the sweep carries it on.
+func (x *execution) checkpoint(ctx context.Context, turn run.Turn, source, region string) error {
+	_, err := x.save(ctx, func(n *run.Run) error {
+		n.Acting = &turn
+		ranOn(n, source, region)
+		return nil
+	})
 	return err
+}
+
+// ranOn stores where n's turns ran: where the loop says, or where the record
+// says already (a run that went on is seeded with it).
+func ranOn(n *run.Run, source, region string) {
+	n.ModelSource, n.ModelRegion = cmp.Or(source, n.ModelSource), cmp.Or(region, n.ModelRegion)
 }
 
 // stop stores where the loop stopped. The recording is paused or ended first:
@@ -1170,7 +1183,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			before = n.Cost
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
-			n.ModelSource, n.ModelRegion = cmp.Or(out.Source, n.ModelSource), cmp.Or(out.Region, n.ModelRegion)
+			ranOn(n, out.Source, out.Region)
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
 			n.Done = run.AddDone(n.Done, out.Done...)
 			if x.notAgain != nil {
@@ -1190,7 +1203,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 	r, err := x.saveStop(ctx, func(n *run.Run) error {
 		before = n.Cost
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
-		n.ModelSource, n.ModelRegion = cmp.Or(out.Source, n.ModelSource), cmp.Or(out.Region, n.ModelRegion)
+		ranOn(n, out.Source, out.Region)
 		n.Done = run.AddDone(n.Done, out.Done...)
 		if x.notAgain != nil {
 			n.NotAgain = x.notAgain
@@ -1288,11 +1301,14 @@ func fast(d registry.Definition, trigger run.Trigger, events []session.Event) bo
 	return speed == "" || speed == session.SpeedFast
 }
 
-// sourceOf is where the run's earlier turns ran: its record's, or the
-// Claude API for a run with turns from before runs kept it, so a run under
-// way never moves to the backup (model.Sourced).
+// sourceOf is where the run's earlier turns ran, so a run under way never
+// moves (model.Sourced): its record's, stored at its first pause or its
+// first turn that acted (checkpoint), or the Claude API for a run with turns
+// from before runs kept it, paused or carried on from a crash (a paused turn
+// with a reply). A run the sweep restarts from its start (an empty paused
+// turn) sends none of its earlier turns: its next is a new run's first.
 func sourceOf(r run.Run) string {
-	if r.ModelSource == "" && r.Turns > 0 {
+	if r.ModelSource == "" && (r.Turns > 0 || r.Paused != nil && len(r.Paused.Reply.Blocks) > 0) {
 		return model.SourceAnthropic
 	}
 	return r.ModelSource

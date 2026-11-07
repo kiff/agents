@@ -134,8 +134,10 @@ type Agent struct {
 	// they're in (unless a call was held: the pause stores it then). Before
 	// they go out it must be stored when it returns: if it fails, nothing of
 	// the turn is made and the run ends with the error. After, only a lost
-	// lease ends the run. A turn that only reads isn't stored.
-	Checkpoint func(ctx context.Context, turn run.Turn) error
+	// lease ends the run. A turn that only reads isn't stored. source and
+	// region are where the run's turns run (Outcome.Source and Region),
+	// stored with the turn: a run carried on from it stays there.
+	Checkpoint func(ctx context.Context, turn run.Turn, source, region string) error
 
 	// Now is the clock a card's wait is counted from (run.CardWait); nil is
 	// the system clock.
@@ -780,7 +782,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		var acting *run.Turn
 		if a.Checkpoint != nil && slices.ContainsFunc(calls, func(c model.Block) bool { return acts(byName[c.Tool], c.Input) }) {
 			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history), Preface: slices.Clone(a.Preface)}
-			if err := a.Checkpoint(ctx, *acting); err != nil {
+			if err := a.Checkpoint(ctx, *acting, out.Source, out.Region); err != nil {
 				return out, msgs, fmt.Errorf("agent: storing the turn before it acts: %w", err)
 			}
 		}
@@ -810,7 +812,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			// acted, which a crash still carries on from (its calls give back
 			// their first outcomes): the run goes on. A lost lease ends it.
 			acting.Results = blocks
-			if err := a.Checkpoint(ctx, *acting); errors.Is(err, run.ErrLeaseLost) {
+			if err := a.Checkpoint(ctx, *acting, out.Source, out.Region); errors.Is(err, run.ErrLeaseLost) {
 				return out, msgs, fmt.Errorf("agent: storing what the turn did: %w", err)
 			}
 		}
@@ -1477,6 +1479,9 @@ func Summarize(ctx context.Context, a Agent, rec *session.Recording, prior strin
 		}
 	}
 	b.WriteString("\nWrite the summary now.")
+	// A new run's summary goes where a new run's first turn would (a.Source
+	// is empty): it can fall back on its own, and its usage event, not the
+	// run, says where it ran. A run under way asks for its own place.
 	req := model.Request{Model: a.ModelID, System: SummarySystem, MaxTokens: SummaryMaxTokens, Effort: a.Effort,
 		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: b.String()}}}}, Source: a.Source, Price: a.Price}
 	reply, err := a.Model.Turn(ctx, req, func(string) {})

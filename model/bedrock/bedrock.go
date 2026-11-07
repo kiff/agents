@@ -87,7 +87,9 @@ var credentials = []*regexp.Regexp{
 
 // Scrub is err with any AWS credential in its text taken out, so a log line
 // or a run record never carries one. Nil stays nil, and an error with none
-// is returned as it is.
+// is returned as it is. Log the scrubbed error only: it unwraps to the
+// original, whose text still has them, so what errors.As finds through it
+// (the SDK's API error) is for reading its status, never for logging.
 func Scrub(err error) error {
 	if err == nil {
 		return nil
