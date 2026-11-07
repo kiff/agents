@@ -143,14 +143,11 @@ type Agent struct {
 	// tool's result.
 	Reload func(ctx context.Context) (string, error)
 
-	// Disclose, when set, puts its line in each call that writes outside the
-	// company, in the fields it names (Disclosure.Into): what the call sends
-	// and the record keeps carry it; the model's own turn stays as it wrote it.
+	// Disclose, when set, puts its line first in each call that writes outside
+	// the company, in the fields it names (Disclosure.First): what the call
+	// sends and the record keeps carry it; the model's own turn stays as it
+	// wrote it.
 	Disclose *Disclosure
-	// Credit, when set, puts its line in the calls it names after the
-	// disclosure ("Built with tafs."), checked on its own (registry
-	// Definition.Credit).
-	Credit *Disclosure
 
 	// HistoryPrev is how many of the history's messages were the history of
 	// the run before this one, as the runner rendered it then: marked for
@@ -1279,7 +1276,7 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 	// hold's stored input, and so a retry, all carry the same input.
 	calls = slices.Clone(calls)
 	for i := range calls {
-		calls[i].Input = a.Credit.Into(calls[i].Tool, a.Disclose.Into(calls[i].Tool, calls[i].Input))
+		calls[i].Input = a.Disclose.First(calls[i].Tool, calls[i].Input)
 	}
 	for _, c := range calls {
 		server := ""

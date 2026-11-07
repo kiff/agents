@@ -111,6 +111,27 @@ schedule and due time, so a repeated delivery replaces it.
 | `skipped_by_owner` | the owner skipped this one firing |
 | `quiet` | its check found nothing new |
 | `skipped_too_large` | its check found only items too large for a run |
+| `failed_unworked` | it started `run`, which failed before any turn and did nothing |
+
+## A run that does nothing
+
+A firing's run can fail before its first turn: the model refuses its first
+call (for want of credits, say), or the run stops before its loop. It did
+nothing, so the firing used up nothing:
+- **its outcome is `failed_unworked`,** with its `run`;
+- **a check's cursor stays where it was,** so the next firing hands the same
+  items to a new run, with anything new since;
+- **the schedule's `failing` says so,** kept by the service and shown on every
+  read: `{since, firings, run}`, the first such firing's due time, how many in
+  a row, and the last one's run. A run that works ends it. A body that sets
+  `failing` is ignored, and an update keeps it.
+
+A run that failed after it acted keeps today's rule: what it was handed is
+used up, so nothing is done twice. A repeated delivery of a firing whose run
+did nothing does nothing either, and says the same.
+
+The service can't reach the owner: whoever shows the schedule tells them,
+once for each run of failures (kiff/tafs alerts on `failing`).
 
 The scheduler may deliver a firing more than once. Every delivery of one
 firing carries the same key, so it starts one run however often it comes.

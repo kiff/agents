@@ -387,6 +387,35 @@ func TestARepeatedFiringRunsWhatTheFirstLeftPending(t *testing.T) {
 	}
 }
 
+// A firing whose run the model refused at its first call (no reply left
+// here, for want of credits there) did nothing: fire says so, and so does a
+// repeated delivery, so the schedule uses up nothing it handed over. A run
+// that acted before it failed is just a run.
+func TestAFiringWhoseRunDidNothingSaysSo(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	fi := schedule.Firing{Tenant: "t1", Schedule: "inbox", Agent: "payouts", Input: "Answer the new refund requests.",
+		Due: time.Date(2026, 11, 6, 13, 30, 0, 0, time.UTC)}
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrUnworked) {
+		t.Fatalf("fire = %v, want ErrUnworked", err)
+	}
+	r, err := runs.Get(ctx, "t1", fi.Key())
+	if err != nil || r.Status != run.Error || r.Turns != 0 {
+		t.Fatalf("got %+v (%v)", r, err)
+	}
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrUnworked) {
+		t.Fatalf("a repeated delivery = %v, want ErrUnworked", err)
+	}
+	acted := r
+	acted.Turns, acted.Version = 1, r.Version+1
+	if err := runs.Put(ctx, r, acted); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.fire(ctx, fi); err != nil {
+		t.Fatalf("a run that acted, delivered again = %v, want nil", err)
+	}
+}
+
 func TestARepeatedFiringLeavesAPausedRunToItsAnswer(t *testing.T) {
 	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
 	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))

@@ -75,6 +75,13 @@ func (f *function) execute(ctx context.Context, tenant, id string) error {
 	if tenant == "" || id == "" {
 		return errors.New("lambda: a run event names no run")
 	}
+	f.executed(ctx, tenant, id)
+	return nil
+}
+
+// executed executes the run, logs how it went, frees its agent's waiting
+// firing once it's no longer at work, and returns the run as it stands.
+func (f *function) executed(ctx context.Context, tenant, id string) run.Run {
 	r, err := f.runner.Execute(ctx, tenant, id, nil)
 	if r.Agent != "" && !r.Active() && f.schedules != nil {
 		// Its agent may be free now: a firing kept waiting for it runs.
@@ -94,8 +101,13 @@ func (f *function) execute(ctx context.Context, tenant, id string) error {
 	default:
 		f.log.ErrorContext(ctx, "run", "tenant", tenant, "run", id, "status", r.Status, "err", err)
 	}
-	return nil
+	return r
 }
+
+// unworked reports whether r failed before any turn: the model refused its
+// first call (for want of credits, say), or it stopped before its loop. It
+// did nothing, so a firing that handed it items hasn't used them up.
+func unworked(r run.Run) bool { return r.Status == run.Error && r.Turns == 0 }
 
 // fire starts the run a schedule's firing asks for, and executes it in this
 // invocation, which EventBridge Scheduler already started in the background.
@@ -111,6 +123,10 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case errors.Is(err, run.ErrExists):
 		if r.Status != run.Pending {
 			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
+			// The run a first delivery started did nothing: a repeat uses up nothing either.
+			if unworked(r) {
+				return schedule.ErrUnworked
+			}
 			return nil
 		}
 	case errors.Is(err, registry.ErrSwitching):
@@ -126,7 +142,12 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case err != nil:
 		return err
 	}
-	return f.execute(ctx, r.Tenant, r.ID)
+	// A run that failed before any turn did nothing: the firing says so, and
+	// what it handed over goes back (schedule.FiredUnworked).
+	if unworked(f.executed(ctx, r.Tenant, r.ID)) {
+		return schedule.ErrUnworked
+	}
+	return nil
 }
 
 // sweepLimit bounds the runs one sweep reads, of each kind. The sweep runs

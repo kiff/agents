@@ -1996,9 +1996,9 @@ func (i *inputTool) Call(_ context.Context, in json.RawMessage) (tool.Result, er
 	return tool.Result{Text: "updated"}, nil
 }
 
-// The disclosure is in what a call sends and what its record keeps, whatever
-// the model wrote; the model's own turn goes back to it as it wrote it
-// (Eval 42193895936).
+// The disclosure is in what a call sends and what its record keeps, first,
+// whatever the model wrote; the model's own turn goes back to it as it wrote
+// it (Eval 42193895936).
 func TestTheDisclosureIsInWhatACallSends(t *testing.T) {
 	const line = "Written by an AI agent for the company."
 	dispute := &inputTool{name: "update_dispute_k3f9"}
@@ -2013,7 +2013,7 @@ func TestTheDisclosureIsInWhatACallSends(t *testing.T) {
 	if err := r.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(dispute.got) != 1 || !strings.Contains(dispute.got[0], `"product_description":"Blue mug\n\n`+line+`"`) {
+	if len(dispute.got) != 1 || !strings.Contains(dispute.got[0], `"product_description":"`+line+`\n\nBlue mug"`) {
 		t.Fatalf("the tool got %q", dispute.got)
 	}
 	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
@@ -2158,25 +2158,24 @@ func TestAFailedCallsReasonHidesSecrets(t *testing.T) {
 	}
 }
 
-// The credit goes in what a call sends, after the disclosure, only in the
-// tools it names: a reply carries both on one line, the evidence the
-// disclosure alone (the owner's call, kiff/tafs#476).
-func TestTheCreditIsInWhatAMessageSends(t *testing.T) {
+// A message carries the disclosure first and nothing after it: no credit line
+// on WhatsApp, SMS or email (the owner's call, 7 Nov). Evidence carries the
+// disclosure the same way.
+func TestAMessageCarriesTheDisclosureFirstAndNoCredit(t *testing.T) {
 	const line = "Written by an AI agent for Kiff Agents OÜ."
 	reply := &inputTool{name: "send_reply_k3f9"}
 	dispute := &inputTool{name: "update_dispute_k3f9"}
 	m := &script{replies: []model.Reply{use("c1", "send_reply_k3f9", `{"body":"Refunded."}`), use("c2", "update_dispute_k3f9", `{"evidence":{"uncategorized_text":"Delivered."}}`), say("Done.")}}
 	a := newAgent(m, reply, dispute)
 	a.Disclose = &agent.Disclosure{Line: line, In: []agent.DisclosureIn{{Tool: "send_reply", Fields: []string{"body"}}, {Tool: "update_dispute", Fields: []string{"evidence.uncategorized_text"}}}}
-	a.Credit = &agent.Disclosure{Line: "Built with tafs.", After: line, In: []agent.DisclosureIn{{Tool: "send_reply", Fields: []string{"body"}}}}
 	_, r := start(t, session.KindRun)
 	if _, _, err := agent.Run(context.Background(), a, r, nil, "Answer both.", nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(reply.got) != 1 || !strings.Contains(reply.got[0], `"body":"Refunded.\n\n`+line+` Built with tafs."`) {
+	if len(reply.got) != 1 || !strings.Contains(reply.got[0], `"body":"`+line+`\n\nRefunded."`) || strings.Contains(reply.got[0], "Built with") {
 		t.Fatalf("the reply sent %q", reply.got)
 	}
-	if len(dispute.got) != 1 || !strings.Contains(dispute.got[0], `"uncategorized_text":"Delivered.\n\n`+line+`"`) || strings.Contains(dispute.got[0], "Built with") {
+	if len(dispute.got) != 1 || !strings.Contains(dispute.got[0], `"uncategorized_text":"`+line+`\n\nDelivered."`) || strings.Contains(dispute.got[0], "Built with") {
 		t.Fatalf("the evidence sent %q", dispute.got)
 	}
 }

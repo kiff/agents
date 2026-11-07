@@ -5,22 +5,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Disclosure is the line every call that writes to someone outside the
-// company carries, saying an AI agent wrote it. The runtime puts it in the
-// call, so it never depends on the model remembering (Eval 42193895936: a
-// dispute's evidence went to the card network without it).
+// company carries first, saying an AI agent wrote it, and for whom. The
+// runtime puts it in the call, so it never depends on the model remembering
+// (Eval 42193895936: a dispute's evidence went to the card network without
+// it).
 type Disclosure struct {
 	// Line is the sentence as sent: "Written by an AI agent for the company."
 	Line string `json:"line"`
+	// Lines, when set, is the same sentence in other languages, by ISO 639-1
+	// code ("es": "Escrito por un agente de IA para la empresa."): the
+	// disclosure goes in the language of the text it heads when one of these
+	// is in it, and as Line otherwise.
+	Lines map[string]string `json:"lines,omitempty"`
 	// In is where it goes: for each tool that writes outside, the free-text
 	// fields of its input, by dotted path, in order of preference.
 	In []DisclosureIn `json:"in"`
-	// After, when set, is the line this one follows on the same line, when
-	// the text ends with it: the credit ("Built with tafs.") after the AI
-	// disclosure. Otherwise, as any line, it goes in a paragraph of its own.
+	// After is what a credit's line followed (registry Definition.Credit):
+	// checked and kept for a definition that still names one. Nothing is put
+	// after the disclosure any more.
 	After string `json:"after,omitempty"`
 }
 
@@ -34,6 +42,12 @@ type DisclosureIn struct {
 // MaxDisclosureLine bounds the line: one sentence.
 const MaxDisclosureLine = 300
 
+// MaxDisclosureLines bounds Lines: a few languages, not a dictionary.
+const MaxDisclosureLines = 12
+
+// languageCode is an ISO 639-1 code, as Lines keys it.
+var languageCode = regexp.MustCompile(`^[a-z]{2}$`)
+
 // Check reports what's wrong with d, if anything.
 func (d *Disclosure) Check() error {
 	if d == nil {
@@ -44,6 +58,17 @@ func (d *Disclosure) Check() error {
 	}
 	if d.After != "" && (len(d.After) > MaxDisclosureLine || strings.ContainsAny(d.After, "\n\r")) {
 		return fmt.Errorf("a disclosure's after is one sentence of at most %d bytes", MaxDisclosureLine)
+	}
+	if len(d.Lines) > MaxDisclosureLines {
+		return fmt.Errorf("a disclosure has its line in at most %d other languages", MaxDisclosureLines)
+	}
+	for code, l := range d.Lines {
+		if !languageCode.MatchString(code) {
+			return fmt.Errorf("a disclosure's lines are keyed by a two-letter language code, not %q", code)
+		}
+		if strings.TrimSpace(l) == "" || len(l) > MaxDisclosureLine || strings.ContainsAny(l, "\n\r") {
+			return fmt.Errorf("a disclosure's line in %s is one sentence of 1 to %d bytes", code, MaxDisclosureLine)
+		}
 	}
 	if len(d.In) == 0 {
 		return errors.New("a disclosure names the tools it goes in")
@@ -96,12 +121,25 @@ func word(s string) bool {
 	return true
 }
 
-// Into is input as the call sends it, with the line: at the end of the first
-// of the tool's fields the call carries as text, or as the first field when
-// the call carries its parent and none of them. Unchanged when one of them
-// says it already, when the call carries none of them nor the first's
-// parent (it sends nothing to disclose), and for any other tool.
-func (d *Disclosure) Into(tool string, input json.RawMessage) json.RawMessage {
+// textField is one of a call's fields that carries text: its parent object and its key.
+type textField struct {
+	parent map[string]any
+	key    string
+}
+
+func (f textField) text() string { return f.parent[f.key].(string) }
+
+// First is input as the call sends it, with the line first: at the top of the
+// first of the tool's fields the call carries as text, in that text's
+// language when Lines has it, or as the first field when the call carries its
+// parent and none of them. That's the AI disclosure's place: whoever reads
+// the message reads first that an AI agent wrote it, and for whom (AI Act
+// Art. 50(1); the Commission's guidelines show the label at the top). A line
+// said already elsewhere in the tool's fields is moved to the top, so it's
+// said once, first. Unchanged when the first text starts with it already,
+// when the call carries none of the fields nor the first's parent, and for
+// any other tool.
+func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 	paths := d.fields(tool)
 	if len(paths) == 0 {
 		return input
@@ -112,40 +150,38 @@ func (d *Disclosure) Into(tool string, input json.RawMessage) json.RawMessage {
 	if dec.Decode(&call) != nil || call == nil {
 		return input
 	}
-	var first map[string]any // the parent of the first text field found
-	var key string
+	var texts []textField // the tool's fields the call carries as text, in order
 	for _, path := range paths {
 		parent, last := parentOf(call, path)
 		if parent == nil {
 			continue
 		}
-		s, ok := parent[last].(string)
-		if !ok {
-			continue
-		}
-		if strings.Contains(s, d.Line) {
-			return input
-		}
-		if first == nil {
-			first, key = parent, last
+		if _, ok := parent[last].(string); ok {
+			texts = append(texts, textField{parent, last})
 		}
 	}
+	lines := d.lines()
 	switch {
-	case first != nil && strings.TrimSpace(first[key].(string)) == "":
-		first[key] = d.Line
-	case first != nil:
-		text := strings.TrimRight(first[key].(string), " \n")
-		if d.After != "" && strings.HasSuffix(text, d.After) {
-			first[key] = text + " " + d.Line
-		} else {
-			first[key] = text + "\n\n" + d.Line
-		}
-	default:
+	case len(texts) == 0:
 		parent, last := parentOf(call, paths[0])
 		if parent == nil {
 			return input
 		}
 		parent[last] = d.Line
+	default:
+		first := texts[0]
+		if startsWithAny(strings.TrimLeft(first.text(), " \n"), lines) {
+			return input
+		}
+		for _, f := range texts {
+			f.parent[f.key] = without(f.text(), lines)
+		}
+		text := strings.TrimLeft(first.text(), " \n")
+		if strings.TrimSpace(text) == "" {
+			first.parent[first.key] = d.lineFor(text)
+		} else {
+			first.parent[first.key] = d.lineFor(text) + "\n\n" + text
+		}
 	}
 	// As the model wrote it: no HTML escapes, which change the text sent but not its value (agentgabo on #352).
 	var out bytes.Buffer
@@ -155,6 +191,100 @@ func (d *Disclosure) Into(tool string, input json.RawMessage) json.RawMessage {
 		return input
 	}
 	return bytes.TrimRight(out.Bytes(), "\n")
+}
+
+// lines is the line in every language it has: Line first.
+func (d *Disclosure) lines() []string {
+	out := []string{d.Line}
+	for _, l := range d.Lines {
+		out = append(out, l)
+	}
+	return out
+}
+
+// lineFor is the line for a text: in its language when Lines has it, Line otherwise.
+func (d *Disclosure) lineFor(text string) string {
+	if l, ok := d.Lines[language(text)]; ok {
+		return l
+	}
+	return d.Line
+}
+
+func startsWithAny(text string, lines []string) bool {
+	for _, l := range lines {
+		if strings.HasPrefix(text, l) {
+			return true
+		}
+	}
+	return false
+}
+
+// without is text with every one of lines taken out, and no blank run or
+// doubled space left where one was. Text with none of them is as it was.
+func without(text string, lines []string) string {
+	out := text
+	for _, l := range lines {
+		for _, v := range []string{l + " ", " " + l, l} {
+			out = strings.ReplaceAll(out, v, "")
+		}
+	}
+	if out == text {
+		return text
+	}
+	for strings.Contains(out, "\n\n\n") {
+		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(out)
+}
+
+// commonWords are frequent short words of each language whose line a
+// disclosure may have, enough to tell which one a message is written in.
+var commonWords = map[string]map[string]bool{
+	"en": wordSet("the and is are you your to of for with we our this that it was has have been will be not on at by from thanks thank order please"),
+	"es": wordSet("el la los las del de que y en por para con una un su sus tu tus te le es está están hemos ha han gracias pedido hola usted ya pero muy más"),
+	"pt": wordSet("o os as do da dos das de que e em por para com uma um seu sua você não é está foi obrigado obrigada pedido olá já mas muito mais"),
+	"fr": wordSet("le la les des du de et est pour pas vous nous une un que dans avec sur votre vos merci commande été sont bonjour déjà mais très plus"),
+	"de": wordSet("der die das und ist nicht sie ihr ihre ein eine mit für auf den dem des zu wir danke bestellung wurde bitte hallo schon aber sehr mehr"),
+	"it": wordSet("il lo gli della del di che e è per non una un con sono grazie ordine suo sua tuo tua ciao già ma molto più stato"),
+}
+
+// languageOrder is the order languages are compared in, so a tie is decided the same way every time.
+var languageOrder = []string{"en", "es", "pt", "fr", "de", "it"}
+
+func wordSet(words string) map[string]bool {
+	set := map[string]bool{}
+	for _, w := range strings.Fields(words) {
+		set[w] = true
+	}
+	return set
+}
+
+// language is the language text is written in, by ISO 639-1 code, when its
+// common words say so clearly: at least two of them, and more than any other
+// language's. Empty otherwise: a short or mixed text gets the default line.
+// It only picks which of a disclosure's lines heads the text.
+func language(text string) string {
+	counts := map[string]int{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
+		for _, lang := range languageOrder {
+			if commonWords[lang][w] {
+				counts[lang]++
+			}
+		}
+	}
+	best, top, second := "", 0, 0
+	for _, lang := range languageOrder {
+		switch n := counts[lang]; {
+		case n > top:
+			best, top, second = lang, n, top
+		case n > second:
+			second = n
+		}
+	}
+	if top < 2 || top == second {
+		return ""
+	}
+	return best
 }
 
 // parentOf is the object holding path's last part in call, and that part;

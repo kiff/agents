@@ -553,7 +553,8 @@ func TestADefinitionsDisclosureIsCheckedAndBuilt(t *testing.T) {
 	if a.Disclose == nil || a.Disclose.Line != d.Disclose.Line || len(a.Disclose.In) != 1 {
 		t.Fatalf("built with disclosure %+v", a.Disclose)
 	}
-	// The credit too, checked on its own: "Built with tafs." after the disclosure.
+	// A definition that still names a credit saves and builds as before, still
+	// checked; the agent puts no credit line in any call (the owner's call, 7 Nov).
 	d.Credit = &agent.Disclosure{Line: "Built with tafs.", After: d.Disclose.Line, In: []agent.DisclosureIn{{Tool: "send_reply", Fields: []string{"body"}}}}
 	if err := d.Check(); err != nil {
 		t.Fatal(err)
@@ -566,8 +567,8 @@ func TestADefinitionsDisclosureIsCheckedAndBuilt(t *testing.T) {
 	if err := f.agents.Put(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	if a, _, err = f.b.Build(ctx, "t1", "payouts"); err != nil || a.Credit == nil || a.Credit.Line != "Built with tafs." || a.Credit.After != d.Disclose.Line {
-		t.Fatalf("built with credit %+v, %v", a.Credit, err)
+	if a, _, err = f.b.Build(ctx, "t1", "payouts"); err != nil || a.Disclose == nil || a.Disclose.Line != d.Disclose.Line {
+		t.Fatalf("built %+v, %v", a.Disclose, err)
 	}
 }
 
