@@ -40,6 +40,8 @@ jobs:
     timeout-minutes: 60
     env:
       REPORTS: kiff-agents-eval-reports
+      # Each taf a run makes, for the sweep at the end (cmd/e2e -made).
+      E2E_MADE: e2e-made.txt
       # Whether step 9's people are signed in: a step's if can't read secrets.
       HAS_PEOPLE: ${{ secrets.E2E_MARIA_SESSION != '' && secrets.E2E_LUIS_SESSION != '' }}
     steps:
@@ -145,6 +147,21 @@ jobs:
           E2E_LUIS_SESSION: ${{ secrets.E2E_LUIS_SESSION }}
           E2E_LUIS_PHONE_KEY: ${{ secrets.E2E_LUIS_PHONE_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript people.md -people
+      - name: The sweep, the test account's leftover tafs
+        # The teardown, after every run above whatever they did (sweep.go):
+        # archive the tafs this job's runs made (E2E_MADE), so a run cut off
+        # before its cleanup leaves none, and any other taf whose keys have
+        # all been idle for 14 days. Archiving takes a taf's keys with it; a
+        # taf whose agent is already gone has its keys revoked. Never Setup's,
+        # a gateway or connector agent's, or the account's keys. It prints
+        # only counts, and it never decides the run: a failed sweep is
+        # reported, and the verdict is the steps above.
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        continue-on-error: true
+        env:
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+        run: go run ./cmd/e2e -sweep
       # The role assumes only from main (infra/aws.sh).
       - uses: aws-actions/configure-aws-credentials@v4
         if: steps.unchanged.outputs.skip != 'true' && (always() && github.ref == 'refs/heads/main')
