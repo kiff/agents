@@ -108,9 +108,10 @@ type config struct {
 	maxTurns                                        int
 	maxCost                                         int64
 	keep                                            bool
-	improve                                         bool // the improve case, after the taf
-	desk                                            bool // the second vendor: a desk by its key, Setup's connection only
-	people                                          bool // step 9's people on a shared taf, instead of the taf's own checks
+	made                                            string // -made: the file each taf this run makes is added to, for -sweep
+	improve                                         bool   // the improve case, after the taf
+	desk                                            bool   // the second vendor: a desk by its key, Setup's connection only
+	people                                          bool   // step 9's people on a shared taf, instead of the taf's own checks
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
 }
@@ -175,6 +176,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"(E2E_DESK_KEY), not MCP; checked once the desk's tools are connected, with no taf after")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
+	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
+	sweepMode := fs.Bool("sweep", false, "only the teardown: archive the tafs -made names, and any other the account's keys show idle for 14 days "+
+		"(sweep.go). Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
 	transcript := fs.String("transcript", "", "write each step's details (what the owner and the agents said) to this file, in CI too: "+
 		"for the private reports bucket, never the public log")
@@ -249,6 +253,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		return kiffSignIn(ctx, kiff.APIURL, *account, "e2e-setup", &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
+	if *sweepMode {
+		return runSweep(ctx, kiff.APIURL, cfg, stdout)
+	}
 	cfg.vendor, cfg.vendorToken = env("E2E_VENDOR"), env("E2E_VENDOR_TOKEN")
 	if cfg.deskKey = env("E2E_DESK_KEY"); cfg.deskKey != "" {
 		stdout.hide(cfg.deskKey, "<the desk's key>")
@@ -1080,6 +1087,9 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 	t.draftIDs = append(t.draftIDs, c.Draft)
 	if a, ok := d.Body["agent_id"].(string); ok && a != "" && !slices.Contains(t.tafAgents, a) {
 		t.tafAgents = append(t.tafAgents, a)
+		if err := recordMade(t.cfg.made, a); err != nil {
+			t.logf("recording the taf for the sweep: %v", err)
+		}
 	}
 	if ids, ok := d.Body["card_ids"].([]any); ok {
 		for _, id := range ids {

@@ -37,8 +37,9 @@ func signedPath(method, path string) bool {
 			// Archiving a taf at the end of a run (kiff/agents#78, PhoneSignedRules).
 			strings.HasPrefix(path, "/v1/me/agents/") && strings.HasSuffix(path, "/archive")
 	case http.MethodDelete:
-		// Going back from trying a version (kiff/tafs#173).
-		return draft && strings.HasSuffix(path, "/trial") || sharing
+		// Going back from trying a version (kiff/tafs#173), and the sweep
+		// revoking a gone taf's key (-sweep).
+		return draft && strings.HasSuffix(path, "/trial") || sharing || strings.HasPrefix(path, "/v1/keys/")
 	}
 	return false
 }
