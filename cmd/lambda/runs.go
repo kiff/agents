@@ -114,6 +114,65 @@ func unworked(r run.Run) bool {
 	return r.Status == run.Error && r.Turns == 0 && r.Resumes == 0 && runner.Own(r.Error)
 }
 
+// unfinished reports whether r, a firing's run that did some work, ended
+// without finishing what it was handed: it failed, or was cut short by its
+// turn or cost cap, or by its reply running out of room (a reply cut off
+// before its next call looks just like that). One that ended with an answer
+// finished. One paused holds its work and carries on from there. One its
+// owner stopped isn't one to start again.
+func unfinished(r run.Run) bool {
+	switch r.Status {
+	case run.Error:
+		return !unworked(r)
+	case run.Completed:
+		return r.Stop == "turn_cap" || r.Stop == "cost_cap" || r.Stop == "max_token"
+	}
+	return false
+}
+
+// declined reports whether r stopped because a turn of it was declined (a
+// safety classifier): it didn't finish either, and a new run with the same
+// items would only be declined again.
+func declined(r run.Run) bool {
+	return r.Status == run.Completed && r.Stop == "refused"
+}
+
+// unsent reports whether nothing r did can have changed anything outside
+// it: no call that acts may have reached the vendor (run.Run.Sent, from
+// KIFF's word on each call, never its error mark), none went through (Done),
+// the sweep never carried the run on, and its failure is one the runner
+// stored itself. Only then can what r was handed go to another run with
+// nothing done twice: a run the sweep ended may have acted with its turns
+// not yet stored.
+func unsent(r run.Run) bool {
+	return r.Sent == 0 && len(r.Done) == 0 && r.Resumes == 0 && (r.Status != run.Error || runner.Own(r.Error))
+}
+
+// ended is what a firing's run means for the firing once it has stopped:
+//   - it did nothing, stopped by a switch: the switch's skip;
+//   - it did nothing: nothing it was handed is used up;
+//   - it didn't finish, and changed nothing: what it was handed can go to
+//     another run;
+//   - it didn't finish, and may have changed something: never handed again;
+//   - a turn of it was declined: never handed again either, so the owner
+//     hears that its items were dropped;
+//   - anything else is a run that started, as it always was: one that
+//     answered, one its owner stopped, and one still at work or paused for
+//     its owner, which holds what it was handed.
+func ended(r run.Run) error {
+	switch {
+	case unworked(r) && r.Error == runner.FailedSwitching:
+		return schedule.ErrSwitching
+	case unworked(r):
+		return schedule.ErrUnworked
+	case unfinished(r) && unsent(r):
+		return schedule.ErrUnfinished
+	case unfinished(r), declined(r):
+		return schedule.ErrNotAgain
+	}
+	return nil
+}
+
 // fire starts the run a schedule's firing asks for, and executes it in this
 // invocation, which EventBridge Scheduler already started in the background.
 // The run's ID is the firing's key, so a repeated delivery finds the run
@@ -129,14 +188,9 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case errors.Is(err, run.ErrExists):
 		if r.Status != run.Pending {
 			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
-			// The run a first delivery started did nothing: a repeat uses up nothing either.
-			if unworked(r) && r.Error == runner.FailedSwitching {
-				return schedule.ErrSwitching
-			}
-			if unworked(r) {
-				return schedule.ErrUnworked
-			}
-			return nil
+			// What the run a first delivery started came to, said again: a
+			// repeat uses up, and counts, nothing more.
+			return ended(r)
 		}
 	case errors.Is(err, registry.ErrSwitching):
 		// Skipped, not retried: a retry could start it on the version
@@ -161,38 +215,41 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case err != nil:
 		return err
 	}
-	// A run that failed before any turn did nothing: the firing says so, and
-	// what it handed over goes back (schedule.FiredUnworked). One stopped
-	// before it began because a switch began meanwhile is a switch's skip,
-	// not a failure: it never counts toward failing.
-	done := f.executed(ctx, r.Tenant, r.ID)
-	if unworked(done) && done.Error == runner.FailedSwitching {
-		return schedule.ErrSwitching
-	}
-	if unworked(done) {
-		return schedule.ErrUnworked
-	}
-	return nil
+	// What the run came to, for the firing: one that did nothing hands back
+	// what it was given (schedule.FiredUnworked; a switch's skip when a
+	// switch stopped it before it began, never a failure), and so does one
+	// that didn't finish and changed nothing. One still at work or paused
+	// holds what it was given.
+	return ended(f.executed(ctx, r.Tenant, r.ID))
 }
 
-// checkRead is a schedule's check read: read, and when it fails because the
-// agent is halted or switching versions (startable says which), that skip
-// (schedule.ErrHalted, ErrSwitching), never a read that failed, so neither a
-// halt nor a switch counts toward the schedule's failing. A read that worked
-// meanwhile goes on as before: its run is refused, and the schedule keeps the
-// halt (the cursor moves past) or the switch (it stays).
+// checkRead is a schedule's check read. A halted or switching agent's check
+// reads nothing (startable says which): that skip (schedule.ErrHalted,
+// ErrSwitching), with no call to the app. A read that fails is asked again,
+// since a halt or a switch may have begun meanwhile: that skip too, never a
+// read that failed, so neither counts toward the schedule's failing. Either
+// way the check's cursor stays where it was.
 func checkRead(startable func(ctx context.Context, tenant, agent string) error,
 	read func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error)) func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+	skip := func(ctx context.Context, tenant, agent string) error {
+		switch st := startable(ctx, tenant, agent); {
+		case errors.Is(st, registry.ErrHalted):
+			return schedule.ErrHalted
+		case errors.Is(st, registry.ErrSwitching):
+			return schedule.ErrSwitching
+		}
+		return nil
+	}
 	return func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+		if err := skip(ctx, tenant, agent); err != nil {
+			return "", err
+		}
 		result, err := read(ctx, tenant, agent, c)
 		if err == nil {
 			return result, nil
 		}
-		switch st := startable(ctx, tenant, agent); {
-		case errors.Is(st, registry.ErrHalted):
-			return "", schedule.ErrHalted
-		case errors.Is(st, registry.ErrSwitching):
-			return "", schedule.ErrSwitching
+		if skipped := skip(ctx, tenant, agent); skipped != nil {
+			return "", skipped
 		}
 		return "", err
 	}

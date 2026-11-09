@@ -845,6 +845,45 @@ func TestARunKeepsWhatItDidAcrossAPause(t *testing.T) {
 	}
 }
 
+// A run keeps how many of its calls that act may have reached the vendor
+// (Sent), across its pause and when it fails: a write KIFF sent whose answer
+// was lost counts, though it isn't one that went through (Done). A run that
+// only read, then failed, keeps zero: what it was handed can go to another.
+func TestARunKeepsHowManyActsMayHaveBeenSent(t *testing.T) {
+	lost := tool.Result{Text: "Sent to the tool, but its response was lost.", IsError: true, State: "unknown"}
+	// The lost write, then no more replies: the next turn fails.
+	f := newFixture(t, use("c0", "stripe_cancel", `{"order":41}`))
+	f.extra = []tool.Tool{&gatewayTool{name: "stripe_cancel", result: lost}}
+	r := f.start(server.Start{Input: "cancel 41"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error || got.Turns != 1 || got.Sent != 1 || len(got.Done) != 0 {
+		t.Fatalf("a run that failed after a lost write: %s, %d turns, sent %d, done %+v (%v)", got.Status, got.Turns, got.Sent, got.Done, err)
+	}
+	// A write that went through before a hold, then the held one approved: both count.
+	f = newFixture(t, use("c0", "stripe_cancel", `{"order":41}`), use("c1", "stripe_refund", `{"order":42}`), say("Waiting for approval."))
+	f.extra = []tool.Tool{&gatewayTool{name: "stripe_cancel", result: tool.Result{Text: "cancelled"}}}
+	r = f.start(server.Start{Input: "cancel 41, refund 42"})
+	if paused := f.pause(r); paused.Status != run.Paused || paused.Sent != 1 {
+		t.Fatalf("paused with sent %d", paused.Sent)
+	}
+	f.answer(r)
+	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: lost}}, nil
+	}
+	// No more replies: it fails after the approved refund was sent, its answer lost.
+	got, err = f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error || got.Sent != 2 || len(got.Done) != 1 {
+		t.Fatalf("after the approved refund: %s, sent %d, done %+v (%v)", got.Status, got.Sent, got.Done, err)
+	}
+	// Reads only, then a failed turn: nothing sent.
+	f = newFixture(t, use("r1", "lookup", `{"q":"41"}`))
+	r = f.start(server.Start{Input: "look up 41"})
+	got, err = f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error || got.Turns != 1 || got.Sent != 0 {
+		t.Fatalf("a run that only read: %s, %d turns, sent %d (%v)", got.Status, got.Turns, got.Sent, err)
+	}
+}
+
 // While a run is paused, a new message in its session starts a new run, and
 // its history leaves the paused run out.
 func TestANewMessageWhilePaused(t *testing.T) {

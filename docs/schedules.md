@@ -78,6 +78,20 @@ untrusted data.
   the run's input. The cursor moves only past items handed over; the rest come
   with the next check. An item too large for any run is counted, said in the
   firing's outcome, and not read again.
+- **The cursor is the service's, like `failing`.** What the check kept
+  (`last`, `due`, `partial`, `tries`) shows on every read, and a body that
+  sets any of it is ignored.
+- **An update keeps the cursor when the check still reads the same thing:**
+  the same `tool`, `arguments` (as JSON, however written), `items`, `cursor`
+  and `id`, for the same agent. So writing the same schedule again, or
+  changing only its times or its input, never skips what came since the last
+  check.
+- **A check that reads something else starts anew:** an old cursor means
+  nothing for another read, so its first firing only takes the cursor, as a
+  new check's does.
+- **A halted or switching agent's check reads nothing.** The firing is
+  `skipped_halted` or `skipped_switching`, and the cursor stays, so the first
+  firing afterwards hands over what came meanwhile.
 
 ## Follow-ups the agent sets itself
 
@@ -112,7 +126,9 @@ schedule and due time, so a repeated delivery replaces it.
 | `quiet` | its check found nothing new |
 | `skipped_too_large` | its check found only items too large for a run |
 | `failed_unworked` | it started `run`, which failed before any turn and did nothing |
-| `skipped_halted` | its agent, or the whole account, was halted: no run, and nothing from before a halt runs, so a check's cursor moves past what it found; `failing` stays as it was |
+| `failed_retrying` | its check's run did some work, then failed or was cut short, and changed nothing: the cursor stays, and the next firing hands the same items to a new run; `failing` stays as it was |
+| `failed_unfinished` | its check's run didn't finish, and its items aren't handed again (a call of it may have changed something, a turn of it was declined, or three runs were handed them): the cursor moves past them, and it counts toward `failing` |
+| `skipped_halted` | its agent, or the whole account, was halted: no run, and the firing isn't tried again; a check reads nothing and its cursor stays, so what came meanwhile goes to the first firing after the halt; `failing` stays as it was |
 | `skipped_switching` | its agent was switching versions: no run, nothing used up, so a check's cursor stays and the next firing hands the same items to the new version; `failing` stays as it was |
 | `failed_check` | its check couldn't read the app: no run, a check's cursor stays, and it counts toward `failing` |
 | `skipped_credits` | the account's tafs wait for credits (runs.md): no run, and what it was handed waits, as a check's cursor stays, for the next firing that runs; `failing` stays as it was, and `waited` says why |
@@ -133,9 +149,10 @@ nothing, so the firing used up nothing:
 - **a check's cursor stays where it was,** so the next firing hands the same
   items to a new run, with anything new since;
 - **the schedule's `failing` says so,** kept by the service and shown on every
-  read: `{since, firings, run, last}`, the first such firing's due time, how
-  many in a row, and the last one's run and due time. A run that works ends it.
-  A body that sets `failing` is ignored, and an update keeps it.
+  read: `{since, firings, run, outcome, last}`, the first such firing's due
+  time, how many in a row, and the last one's run, outcome and due time. A run
+  that works ends it. A body that sets `failing` is ignored, and an update
+  keeps it.
 
 A check that couldn't read the app is the same kind of failure, one step
 earlier: its outcome is `failed_check`, with no `run`, its cursor stays, and it
@@ -148,11 +165,71 @@ A run counts as doing nothing only when the runner itself stored its error
 sweep never carried it on. A run whose invocation died is ended by the sweep,
 and its turns may be behind what it did, so it never counts.
 
-A run that failed after it acted keeps today's rule: what it was handed is
-used up, so nothing is done twice. A repeated delivery of a firing whose run
-did nothing does nothing either, says the same, and counts once in `failing`,
-and so does a late delivery of an older firing that comes after a newer one
-was counted.
+A repeated delivery of a firing whose run did nothing does nothing either,
+says the same, and counts once in `failing`, and so does a late delivery of an
+older firing that comes after a newer one was counted.
+
+## A check's run that doesn't finish
+
+A check's cursor moves only past items a run finished. A run finished what it
+was handed when it ended with an answer. A run paused for its owner holds its
+items and carries on from there. A run its owner stopped isn't started again,
+and neither is one a halt stopped partway: a halt that lands during a run
+drops that run's items (the cursor stays only for a firing that hadn't started
+its run).
+
+A run **didn't finish** when it did some work and then failed, or was cut
+short: by its turn cap, by its cost cap, or by its reply running out of room
+(a reply cut off before its next call looks just like that). What happens to
+its items depends on one thing: whether anything it did can have changed
+something outside it.
+
+- **It changed nothing: the items go again.**
+  - The firing's outcome is `failed_retrying`, with its `run`. The cursor
+    stays, and `failing` stays as it was.
+  - The next firing hands the same items to a new run, with anything new
+    since. That run's input says an earlier run didn't finish them, and to
+    check in the app what was already done for each before acting.
+  - **Three runs at most** (`check.tries` counts them). After the third, the
+    cursor moves past the items, the outcome is `failed_unfinished`, and it
+    counts toward `failing`. `tries` stays at 3 until the check hands a run
+    items again, so a batch no run can finish never costs a run at every
+    firing for good.
+- **It may have changed something: nothing is handed again, so nothing is
+  done twice.** This is the rule for anything that moved money.
+  - The outcome is `failed_unfinished`, with its `run`. The cursor moves past
+    the items, as it always did.
+  - It counts toward `failing`, so whoever shows the schedule tells the owner.
+    The run's own record says what it did (`done`).
+- **A turn of it was declined** (a safety classifier): the same as above. A
+  new run with the same items would only be declined again, so they aren't
+  handed again, the cursor moves, and it counts toward `failing`.
+
+**"May have changed something" is decided from KIFF's word on each call that
+acts, never from the call's error mark.** KIFF marks its own answers as
+errors, among them a call it sent whose answer was lost, and that call may
+have paid or refunded. A run keeps the count in its record (`run.Run.Sent`;
+not in the API's view of a run):
+
+| A call that acts | Counts as sent |
+|---|---|
+| went through | yes |
+| sent, the answer lost (`unknown`), or not in yet (`forwarding`, `sending`) | yes |
+| still being decided (`deciding`): not sent yet, and another attempt of the same call may still send it | yes |
+| sent, and the vendor failed it | yes |
+| any state this runtime doesn't know, or none (a tool outside KIFF) | yes |
+| held for the owner, refused, or failed before sending | no |
+| a trial's, or one refused back to the model unmade | no |
+
+A read never counts. What a read is comes from the tool's mark, as its
+connection gives it. A run the sweep carried on or ended counts as having
+changed something, whatever it kept: its turns may be behind what it did.
+
+A plain schedule hands its run nothing to give back. Its run that started and
+worked is `run`, however it ended, as before.
+
+A repeated delivery of a firing whose run didn't finish says what the first
+delivery said, and counts once, in `tries` and in `failing`.
 
 **A `once` schedule is off after its firing, whatever came of it,** this one
 included. An agent's own follow-ups are `once` schedules. A follow-up whose run

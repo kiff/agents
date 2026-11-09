@@ -588,6 +588,108 @@ func TestFailingIsTheServices(t *testing.T) {
 	}
 }
 
+// A check's state (its cursor, the firing that last started a run, what it
+// handed over of a cursor value's items) is the service's, like failing: a
+// body's is ignored, and an update whose check reads the same thing keeps
+// the stored one, however its arguments are written. A check that reads
+// something else starts anew, and takes its cursor at its first firing.
+func TestACheckKeepsItsCursorOnAnUpdate(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.putAgent("t1", "payouts")
+	check := func() *schedule.Check {
+		return &schedule.Check{Tool: "gmail__list", Arguments: json.RawMessage(`{"label":"refunds","max":50}`), Items: "data", Cursor: "created"}
+	}
+	body := scheduleBody("inbox")
+	body.Cron, body.AppCheck = "*/15 * * * *", check()
+	body.AppCheck.Last, body.AppCheck.Due = "999", now
+	body.AppCheck.Partial = &schedule.Partial{Cursor: "999", Seen: []string{"x"}}
+	code, got := f.do("t1", "POST", "/schedules", body)
+	f.want(201, code, got, "create")
+	stored, _ := f.schedSvc.Store.Get(ctx, "t1", "inbox")
+	if c := stored.AppCheck; c == nil || c.Last != "" || !c.Due.IsZero() || c.Partial != nil {
+		t.Fatalf("created with a body's cursor: %+v", stored.AppCheck)
+	}
+	// The firings move it.
+	due := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	stored.AppCheck.Last, stored.AppCheck.Due = "1700", due
+	stored.AppCheck.Partial = &schedule.Partial{Cursor: "1701", Seen: []string{"a", "b"}}
+	if err := f.schedSvc.Store.Put(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	kept := func(what string, want bool) {
+		t.Helper()
+		after, err := f.schedSvc.Store.Get(ctx, "t1", "inbox")
+		if err != nil || after.AppCheck == nil {
+			t.Fatalf("%s: %+v, %v", what, after, err)
+		}
+		c := after.AppCheck
+		has := c.Last == "1700" && c.Due.Equal(due) && c.Partial != nil && c.Partial.Cursor == "1701" && len(c.Partial.Seen) == 2
+		none := c.Last == "" && c.Due.IsZero() && c.Partial == nil
+		if want && !has || !want && !none {
+			t.Fatalf("%s: the check is %+v (partial %+v); kept should be %v", what, *c, c.Partial, want)
+		}
+	}
+	// The same dial written again, as a caller that never saw the cursor
+	// sends it, its arguments in another order: the cursor stays.
+	upd := scheduleBody("")
+	upd.ID, upd.Cron, upd.AppCheck = "", "*/30 * * * *", check()
+	upd.AppCheck.Arguments = json.RawMessage(`{ "max": 50, "label": "refunds" }`)
+	code, got = f.do("t1", "PUT", "/schedules/inbox", upd)
+	f.want(200, code, got, "update")
+	kept("the same read", true)
+	if c, _ := got["check"].(map[string]any); c["last"] != "1700" {
+		t.Fatalf("the update answered %v", got["check"])
+	}
+	// A body's own cursor is ignored: the stored one stays.
+	upd.AppCheck = check()
+	upd.AppCheck.Last = "5"
+	code, got = f.do("t1", "PUT", "/schedules/inbox", upd)
+	f.want(200, code, got, "update with a cursor")
+	kept("a body's cursor", true)
+	// Each thing that makes it another read starts it anew.
+	for what, change := range map[string]func(c *schedule.Check){
+		"another tool":         func(c *schedule.Check) { c.Tool = "gmail__search" },
+		"other arguments":      func(c *schedule.Check) { c.Arguments = json.RawMessage(`{"label":"returns","max":50}`) },
+		"another list":         func(c *schedule.Check) { c.Items = "messages" },
+		"another cursor field": func(c *schedule.Check) { c.Cursor = "updated" },
+		"another id field":     func(c *schedule.Check) { c.ID = "thread" },
+	} {
+		again, _ := f.schedSvc.Store.Get(ctx, "t1", "inbox")
+		again.AppCheck = check()
+		again.AppCheck.Last, again.AppCheck.Due = "1700", due
+		again.AppCheck.Partial = &schedule.Partial{Cursor: "1701", Seen: []string{"a", "b"}}
+		if err := f.schedSvc.Store.Put(ctx, again); err != nil {
+			t.Fatal(err)
+		}
+		upd.AppCheck = check()
+		change(upd.AppCheck)
+		upd.AppCheck.Last = "1700" // a caller can't carry it over either
+		code, got = f.do("t1", "PUT", "/schedules/inbox", upd)
+		f.want(200, code, got, what)
+		kept(what, false)
+	}
+	// The id field's default is "id": naming it changes nothing.
+	again, _ := f.schedSvc.Store.Get(ctx, "t1", "inbox")
+	again.AppCheck = check()
+	again.AppCheck.Last, again.AppCheck.Due = "1700", due
+	again.AppCheck.Partial = &schedule.Partial{Cursor: "1701", Seen: []string{"a", "b"}}
+	if err := f.schedSvc.Store.Put(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	upd.AppCheck = check()
+	upd.AppCheck.ID = "id"
+	code, got = f.do("t1", "PUT", "/schedules/inbox", upd)
+	f.want(200, code, got, "the default id field, named")
+	kept("the default id field, named", true)
+	// A schedule moved to another agent reads through another gateway.
+	f.putAgent("t1", "returns")
+	upd.AppCheck, upd.Agent = check(), "returns"
+	code, got = f.do("t1", "PUT", "/schedules/inbox", upd)
+	f.want(200, code, got, "another agent")
+	kept("another agent", false)
+}
+
 func TestCreateScheduleRefuses(t *testing.T) {
 	cases := map[string]schedule.Schedule{
 		"another tenant in the body": func() schedule.Schedule { s := scheduleBody("m"); s.Tenant = "t2"; return s }(),

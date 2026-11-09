@@ -759,6 +759,177 @@ func TestARunKeepsTheActsThatWentThrough(t *testing.T) {
 	}
 }
 
+// A run counts its calls that act which may have reached the vendor
+// (Outcome.Sent), from KIFF's word on each call and never from its error
+// mark: KIFF marks its own answers as errors, a call it sent whose answer
+// was lost among them, and that one may have paid or refunded. Only a call
+// known unsent doesn't count: held, refused, failed or still being decided
+// by KIFF, a trial's, or one refused back unmade. A read never counts.
+func TestARunCountsTheActsThatMayHaveBeenSent(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		access tool.Access
+		result tool.Result
+		sent   int
+	}{
+		{"a write that went through", tool.Write, tool.Result{Text: "refunded re_1", Invocation: "tc-1"}, 1},
+		{"a write KIFF sent whose answer was lost", tool.Write, tool.Result{Text: "Sent to the tool, but its response was lost.", IsError: true, State: "unknown"}, 1},
+		{"a write still being sent", tool.Write, tool.Result{Text: "Sent; its result isn't in yet.", IsError: true, State: "forwarding"}, 1},
+		{"a write KIFF sent, said on a repeat", tool.Write, tool.Result{Text: "This call was sent to the tool.", IsError: true, State: "forwarded"}, 1},
+		{"a write the vendor failed", tool.Write, tool.Result{Text: "no such charge", IsError: true}, 1},
+		{"a write whose outcome comes later", tool.Write, tool.Result{Text: "Sent.", State: "sending"}, 1},
+		{"a write with a state this runtime doesn't know", tool.Write, tool.Result{Text: "?", IsError: true, State: "queued"}, 1},
+		{"a write KIFF refused", tool.Write, tool.Result{Text: "Outside its Card.", IsError: true, State: tool.StateRefused}, 0},
+		{"a write KIFF failed before sending", tool.Write, tool.Result{Text: "KIFF couldn't send it.", IsError: true, State: tool.StateFailed}, 0},
+		// Not sent yet: another attempt of the same call may still send it.
+		{"a write KIFF is still deciding", tool.Write, tool.Result{Text: "Deciding.", IsError: true, State: "deciding"}, 1},
+		{"a trial's write", tool.Write, tool.Result{Text: "Not sent: a trial.", State: "trial", Trial: &tool.TrialDecision{Decision: "allowed"}}, 0},
+		{"a read whose answer was lost", tool.Read, tool.Result{Text: "lost", IsError: true, State: "unknown"}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			act := &fakeTool{name: "stripe_refund", access: c.access, gateway: true, result: c.result}
+			// The call, then no more replies: the next turn fails.
+			m := &script{replies: []model.Reply{use("c1", "stripe_refund", `{"charge":"ch_1"}`)}}
+			_, r := start(t, session.KindRun)
+			out, _, err := agent.Run(context.Background(), newAgent(m, act), r, nil, "Refund ch_1.", nil)
+			if err == nil {
+				t.Fatal("want the failed turn's error")
+			}
+			if out.Sent != c.sent {
+				t.Fatalf("sent %d, want %d (done %+v)", out.Sent, c.sent, out.Done)
+			}
+		})
+	}
+	// A held write isn't sent: the run pauses with nothing counted.
+	m := &script{replies: []model.Reply{use("c2", "stripe_refund", `{"charge":"ch_big"}`), say("Waiting for you.")}}
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m, heldRefund()), r, nil, "Refund ch_big.", nil)
+	if err != nil || out.Stop != agent.Paused || out.Sent != 0 {
+		t.Fatalf("a held write: stop %q, sent %d, %v", out.Stop, out.Sent, err)
+	}
+	// An act sent beside a read is refused back unmade: not counted.
+	m = &script{replies: []model.Reply{both()}}
+	_, r = start(t, session.KindRun)
+	get := &fakeTool{name: "stripe_get", access: tool.Read, gateway: true, result: tool.Result{Text: `{"amount":500}`}}
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	if out, _, _ := agent.Run(context.Background(), newAgent(m, get, refund), r, nil, "Refund ch_big.", nil); out.Sent != 0 || refund.calls != 0 {
+		t.Fatalf("an act refused back unmade: sent %d, %d calls", out.Sent, refund.calls)
+	}
+}
+
+// endsRecording is a write tool whose call goes out, then leaves the
+// recording ended: its result can't be recorded, so the tool batch fails
+// with the call already made.
+type endsRecording struct {
+	fakeTool
+	rec *session.Recording
+}
+
+func (e *endsRecording) Call(ctx context.Context, in json.RawMessage) (tool.Result, error) {
+	res, err := e.fakeTool.Call(ctx, in)
+	_ = e.rec.End(ctx)
+	return res, err
+}
+
+// A tool batch whose results never came back (they couldn't be recorded)
+// still counts each call that acts as sent: the call went out. A batch of
+// reads counts nothing.
+func TestAFailedToolBatchCountsItsActsAsSent(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		access tool.Access
+		sent   int
+	}{
+		{"a write", tool.Write, 1},
+		{"a read", tool.Read, 0},
+	} {
+		_, r := start(t, session.KindRun)
+		act := &endsRecording{fakeTool: fakeTool{name: "stripe_refund", access: c.access, gateway: true, result: tool.Result{Text: "refunded re_1"}}, rec: r}
+		m := &script{replies: []model.Reply{use("c1", "stripe_refund", `{"charge":"ch_1"}`), say("Done.")}}
+		out, _, err := agent.Run(context.Background(), newAgent(m, act), r, nil, "Refund ch_1.", nil)
+		if err == nil || act.calls != 1 {
+			t.Fatalf("%s: want the batch's error after its one call: %v (%d calls)", c.name, err, act.calls)
+		}
+		if out.Sent != c.sent {
+			t.Fatalf("%s: sent %d, want %d", c.name, out.Sent, c.sent)
+		}
+	}
+}
+
+// A continuation that fails before its first turn (its files can't be
+// loaded, say) still says what the held calls came to: a refund the owner
+// approved was sent by KIFF before the run went on, so the run keeps it as
+// sent and done, with its cost and turns so far.
+func TestAContinuationThatFailsEarlyKeepsWhatTheHeldCallsCameTo(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("Done.")}}
+	a := newAgent(m, lookupTool(), heldRefund())
+	stored, s := paused(t, store, rec, a)
+	r, err := rec.Resume(context.Background(), s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Load = func(context.Context, []model.Message) error { return errors.New("the files can't be read") }
+	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, approved(), nil)
+	if err == nil {
+		t.Fatal("want the load's error")
+	}
+	if out.Sent != 1 || len(out.Done) != 1 || out.Done[0].CallID != "c2" {
+		t.Fatalf("sent %d, done %+v; want the approved refund kept", out.Sent, out.Done)
+	}
+	if out.Turns != stored.Turns || out.Cost != stored.Cost || stored.Turns == 0 {
+		t.Fatalf("turns %d and cost %d, want the run's so far (%d, %d)", out.Turns, out.Cost, stored.Turns, stored.Cost)
+	}
+	// One the owner refused was never sent: nothing to keep.
+	out, _, err = agent.Continue(context.Background(), a, r, nil, stored,
+		[]agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: tool.Result{Text: "The owner refused it.", IsError: true, State: tool.StateRefused}}}, nil)
+	if err == nil || out.Sent != 0 || len(out.Done) != 0 {
+		t.Fatalf("a refused hold: sent %d, done %+v, %v", out.Sent, out.Done, err)
+	}
+}
+
+// A held call the owner approved, once KIFF made it, counts as sent when the
+// run continues, whatever its result's error mark; one the owner refused
+// doesn't.
+func TestAHeldCallsOutcomeCountsAsSentOnlyWhenItWas(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		result tool.Result
+		sent   int
+	}{
+		{"approved and made", tool.Result{Text: "refunded re_1", State: "allowed"}, 1},
+		{"approved, sent, the answer lost", tool.Result{Text: "Sent to the tool, but its response was lost.", IsError: true, State: "unknown"}, 1},
+		{"refused by the owner", tool.Result{Text: "The owner refused it. Nothing was sent.", IsError: true, State: tool.StateRefused}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := memory.New()
+			rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := &script{replies: []model.Reply{both(), say("Waiting for you."), say("Done.")}}
+			a := newAgent(m, lookupTool(), heldRefund())
+			stored, s := paused(t, store, rec, a)
+			r, err := rec.Resume(context.Background(), s, stored.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, _, err := agent.Continue(context.Background(), a, r, nil, stored,
+				[]agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: c.result}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Sent != c.sent {
+				t.Fatalf("sent %d, want %d", out.Sent, c.sent)
+			}
+		})
+	}
+}
+
 // A held call the owner approved, once KIFF made it, is kept as done when the
 // run continues; the calls the paused turn made beside it were kept when it
 // paused, not again.

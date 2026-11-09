@@ -427,12 +427,76 @@ func TestAFiringWhoseRunDidNothingSaysSo(t *testing.T) {
 	// after acting, before its turns were stored. A late repeated delivery
 	// doesn't hand its items to another run.
 	change(func(n *run.Run) { n.Resumes, n.Error = 1, "its lease ran out: the invocation crashed or timed out" })
-	if err := f.fire(ctx, fi); err != nil {
-		t.Fatalf("a run the sweep ended, delivered again = %v, want nil", err)
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrNotAgain) {
+		t.Fatalf("a run the sweep ended, delivered again = %v, want ErrNotAgain", err)
 	}
-	change(func(n *run.Run) { n.Resumes, n.Error, n.Turns = 0, runner.FailedRun, 1 })
-	if err := f.fire(ctx, fi); err != nil {
-		t.Fatalf("a run that acted, delivered again = %v, want nil", err)
+	// It worked, then failed, with a write that went through: never handed again either.
+	change(func(n *run.Run) {
+		n.Resumes, n.Error, n.Turns, n.Sent = 0, runner.FailedRun, 1, 1
+		n.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund"}}
+	})
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrNotAgain) {
+		t.Fatalf("a run that acted, delivered again = %v, want ErrNotAgain", err)
+	}
+	// It worked, then failed, and changed nothing: its items can go again.
+	change(func(n *run.Run) { n.Sent, n.Done = 0, nil })
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrUnfinished) {
+		t.Fatalf("a run that only read, delivered again = %v, want ErrUnfinished", err)
+	}
+	// Still at work, or paused for its owner: it holds what it was handed.
+	for _, st := range []run.Status{run.Running, run.Paused} {
+		change(func(n *run.Run) { n.Status, n.Error = st, "" })
+		if err := f.fire(ctx, fi); err != nil {
+			t.Fatalf("a %s run, delivered again = %v, want nil", st, err)
+		}
+	}
+}
+
+// What a firing's run that stopped means for the firing. It didn't finish
+// when it failed after working or its turn or cost cap cut it short. What it
+// was handed goes to another run only when nothing it did can have changed
+// anything: no call that acts may have reached the vendor (Sent, from KIFF's
+// word on each call), none went through, the sweep never carried it on, and
+// its failure is the runner's own. Anything else that didn't finish is never
+// handed again, so nothing is paid or refunded twice. A run cut off by its
+// reply running out of room didn't finish either, and one whose turn was
+// declined is never handed again: a new run would only be declined too.
+func TestWhatAFiringsEndedRunMeans(t *testing.T) {
+	failed := run.Run{Status: run.Error, Error: runner.FailedRun, Turns: 3}
+	capped := run.Run{Status: run.Completed, Stop: "turn_cap", Turns: 50}
+	with := func(r run.Run, c func(*run.Run)) run.Run { c(&r); return r }
+	for _, c := range []struct {
+		name string
+		r    run.Run
+		want error
+	}{
+		{"failed before any turn", run.Run{Status: run.Error, Error: runner.FailedRun}, schedule.ErrUnworked},
+		{"stopped by a switch before it began", run.Run{Status: run.Error, Error: runner.FailedSwitching}, schedule.ErrSwitching},
+		{"failed after reads only", failed, schedule.ErrUnfinished},
+		{"failed after a write KIFF held, refused or failed (not sent)", with(failed, func(r *run.Run) { r.Refused, r.Declined = 2, 1 }), schedule.ErrUnfinished},
+		{"failed after a write that may have been sent (its answer lost)", with(failed, func(r *run.Run) { r.Sent = 1 }), schedule.ErrNotAgain},
+		{"failed after a write that went through", with(failed, func(r *run.Run) { r.Sent, r.Done = 1, []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrNotAgain},
+		{"failed with a done call kept by an older runtime (no count)", with(failed, func(r *run.Run) { r.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrNotAgain},
+		{"failed after the sweep carried it on", with(failed, func(r *run.Run) { r.Resumes = 1 }), schedule.ErrNotAgain},
+		{"ended by the sweep, its turns maybe behind", run.Run{Status: run.Error, Error: "its lease ran out: the invocation crashed or timed out"}, schedule.ErrNotAgain},
+		{"cut short by its turn cap after reads only", capped, schedule.ErrUnfinished},
+		{"cut short by its cost cap after reads only", with(capped, func(r *run.Run) { r.Stop = "cost_cap" }), schedule.ErrUnfinished},
+		{"cut short by its turn cap after a write that went through", with(capped, func(r *run.Run) { r.Sent, r.Done = 1, []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrNotAgain},
+		{"cut short by its cost cap after a write whose answer was lost", with(capped, func(r *run.Run) { r.Stop, r.Sent = "cost_cap", 1 }), schedule.ErrNotAgain},
+		{"answered", run.Run{Status: run.Completed, Stop: "answered", Turns: 4}, nil},
+		{"answered after writes", run.Run{Status: run.Completed, Stop: "answered", Turns: 4, Sent: 2}, nil},
+		{"out of room mid-answer after reads only", run.Run{Status: run.Completed, Stop: "max_token", Turns: 4}, schedule.ErrUnfinished},
+		{"out of room mid-answer after a write that may have been sent", run.Run{Status: run.Completed, Stop: "max_token", Turns: 4, Sent: 1}, schedule.ErrNotAgain},
+		{"a turn declined", run.Run{Status: run.Completed, Stop: "refused", Turns: 1}, schedule.ErrNotAgain},
+		{"a turn declined after a write", run.Run{Status: run.Completed, Stop: "refused", Turns: 3, Sent: 1}, schedule.ErrNotAgain},
+		{"stopped by its owner", run.Run{Status: run.Cancelled, Stop: "cancelled", Turns: 2}, nil},
+		{"paused for its owner, after a write", run.Run{Status: run.Paused, Stop: "paused", Turns: 2, Sent: 1}, nil},
+		{"still at work", run.Run{Status: run.Running, Turns: 2}, nil},
+		{"not yet claimed", run.Run{Status: run.Pending}, nil},
+	} {
+		if got := ended(c.r); !errors.Is(got, c.want) || (c.want == nil && got != nil) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -732,10 +796,43 @@ func TestACheckReadRefusedForAHaltOrASwitchIsThatSkip(t *testing.T) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}
-	asked := false
-	worked := checkRead(func(context.Context, string, string) error { asked = true; return registry.ErrHalted },
-		func(context.Context, string, string, schedule.Check) (string, error) { return `{"data":[]}`, nil })
-	if got, err := worked(ctx, "t1", "inbox", schedule.Check{}); err != nil || got != `{"data":[]}` || asked {
-		t.Fatalf("a read that worked: %q, %v (state asked: %v)", got, err, asked)
+	// A halted or switching agent's check reads nothing: the app isn't called.
+	for _, c := range []struct {
+		name      string
+		startable error
+		want      error
+	}{
+		{"halted", fmt.Errorf("%w", registry.ErrHalted), schedule.ErrHalted},
+		{"switching", fmt.Errorf("%w (to version 2)", registry.ErrSwitching), schedule.ErrSwitching},
+	} {
+		reads := 0
+		read := checkRead(func(context.Context, string, string) error { return c.startable },
+			func(context.Context, string, string, schedule.Check) (string, error) {
+				reads++
+				return `{"data":[]}`, nil
+			})
+		if _, err := read(ctx, "t1", "inbox", schedule.Check{}); !errors.Is(err, c.want) || reads != 0 {
+			t.Errorf("%s before the read: %v, want %v (%d reads)", c.name, err, c.want, reads)
+		}
+	}
+	// One that's neither reads, and a read that works is the answer; a state
+	// that can't be read doesn't stop the read.
+	for name, st := range map[string]error{"startable": nil, "the state can't be read": errors.New("dynamodb down")} {
+		worked := checkRead(func(context.Context, string, string) error { return st },
+			func(context.Context, string, string, schedule.Check) (string, error) { return `{"data":[]}`, nil })
+		if got, err := worked(ctx, "t1", "inbox", schedule.Check{}); err != nil || got != `{"data":[]}` {
+			t.Fatalf("%s: a read that worked: %q, %v", name, got, err)
+		}
+	}
+	// A halt that begins during a read that fails is still the halt's skip.
+	asked := 0
+	during := checkRead(func(context.Context, string, string) error {
+		if asked++; asked == 1 {
+			return nil
+		}
+		return registry.ErrHalted
+	}, func(context.Context, string, string, schedule.Check) (string, error) { return "", refused })
+	if _, err := during(ctx, "t1", "inbox", schedule.Check{}); !errors.Is(err, schedule.ErrHalted) || asked != 2 {
+		t.Fatalf("a halt during a failed read: %v (asked %d times)", err, asked)
 	}
 }

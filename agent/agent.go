@@ -374,6 +374,10 @@ type Outcome struct {
 	// report says them.
 	Refused  int `json:"refused,omitempty"`
 	Declined int `json:"declined,omitempty"`
+	// Sent counts the calls that act which may have reached the vendor in
+	// this part of the run (maySend): those that went through, and those
+	// whose outcome isn't known. The caller adds them to the run's.
+	Sent int `json:"sent,omitempty"`
 
 	// standard: a fast agent's turn ran at standard speed, so the rest of
 	// the run does too.
@@ -443,40 +447,50 @@ func (a Agent) load(ctx context.Context, msgs []model.Message) error {
 // paused in (Turn.Before), and that turn. Its cost and turns carry on from
 // r's, so the caps hold across pauses.
 func Continue(ctx context.Context, a Agent, rec *session.Recording, history []model.Message, r run.Run, held []ToolResultBody, emit func(Event)) (Outcome, []model.Message, error) {
+	// What the held calls came to is counted first, and goes back with any
+	// error below: a call the owner approved was sent by KIFF before this
+	// ran, whatever fails here, and the run keeps that (Done, Sent), with
+	// its cost and turns so far.
+	base := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns}
+	for _, h := range held {
+		if wentThrough(h) {
+			base.Done = append(base.Done, doneOf(h, requirementInput(r, h.CallID)))
+		}
+		if maySend(h) {
+			base.Sent++
+		}
+	}
+	done, sent := base.Done, base.Sent
 	if err := a.Check(); err != nil {
-		return Outcome{}, history, err
+		return base, history, err
 	}
 	// A crashed run carried on (run.Resumes) may wait on nothing: its acting
 	// turn had all its results.
 	if r.Paused == nil || (len(r.Requirements) == 0 && r.Resumes == 0) {
-		return Outcome{}, history, fmt.Errorf("%w: run %s has no paused turn", ErrResults, r.ID)
+		return base, history, fmt.Errorf("%w: run %s has no paused turn", ErrResults, r.ID)
 	}
 	if len(r.Requirements) == 0 && len(r.Paused.Reply.Blocks) == 0 {
 		return a.restart(ctx, rec, history, r, emit)
 	}
 	results, err := merge(r, held)
 	if err != nil {
-		return Outcome{}, history, err
+		return base, history, err
 	}
 	if emit == nil {
 		emit = func(Event) {}
 	}
-	var done []run.Done
 	for _, h := range held {
 		if err := rec.Record(session.ToolResult, h); err != nil {
-			return Outcome{}, history, err
-		}
-		if wentThrough(h) {
-			done = append(done, doneOf(h, requirementInput(r, h.CallID)))
+			return base, history, err
 		}
 		if err := recordRef(rec, h.Result); err != nil {
-			return Outcome{}, history, err
+			return base, history, err
 		}
 		q, ok := requirement(r, h.CallID)
 		switch {
 		case ok && q.Card():
 			if err := recordAnswered(rec, q); err != nil {
-				return Outcome{}, history, err
+				return base, history, err
 			}
 		case ok && q.Event():
 			// A sent call whose outcome came later (or didn't): the call
@@ -486,11 +500,11 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 				oc = OutcomeNotCame
 			}
 			if err := recordCalled(rec, nil, h.Tool, q.Input, oc, ""); err != nil {
-				return Outcome{}, history, err
+				return base, history, err
 			}
 		default:
 			if err := recordCalled(rec, nil, h.Tool, requirementInput(r, h.CallID), outcome(h, requirementAnswer(r, h.CallID)), reasonOf(h)); err != nil {
-				return Outcome{}, history, err
+				return base, history, err
 			}
 		}
 		emit(Event{Kind: CallResult, CallID: h.CallID, Tool: h.Tool, Result: &h.Result})
@@ -519,7 +533,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	msgs = append(msgs, r.Paused.Reply, model.Message{Role: model.User, Blocks: results})
 	a.history = len(history)
 	if err := a.load(ctx, msgs); err != nil {
-		return Outcome{}, msgs, err
+		return base, msgs, err
 	}
 	a.resumed = true
 	a.resolved = make(map[string]string, len(held))
@@ -527,7 +541,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	refused, declined := refusals(r, held)
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent}, emit)
 }
 
 // refusals counts the held calls of r whose outcome is in: those the owner
@@ -653,6 +667,14 @@ func merge(r run.Run, held []ToolResultBody) ([]model.Block, error) {
 // back unmade, not held, not refused by KIFF, and not failed.
 func wentThrough(r ToolResultBody) bool {
 	return !r.NotMade && !r.IsError && r.State != tool.StateHeld && r.State != tool.StateRefused && r.Trial == nil
+}
+
+// maySend reports whether r, the result of a call that acts, may have
+// reached the vendor: made, and not known unsent by KIFF's word on it
+// (tool.Result.MaySend). Wider than wentThrough, which a call KIFF sent and
+// lost the answer of fails: that one may have paid or refunded all the same.
+func maySend(r ToolResultBody) bool {
+	return !r.NotMade && r.MaySend()
 }
 
 // doneOf is r, a call that acted and went through, with its input, as the run
@@ -810,6 +832,12 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		results, err := a.callTools(ctx, rec, byName, calls, emit)
 		if err != nil {
+			// Their results never came back: each call that acts may have gone out.
+			for _, c := range calls {
+				if acts(byName[c.Tool], c.Input) {
+					out.Sent++
+				}
+			}
 			return out, msgs, err
 		}
 		for _, r := range results {
@@ -823,6 +851,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			held = held || r.Waits()
 			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
 				out.Done = append(out.Done, doneOf(r, calls[i].Input))
+			}
+			if acts(byName[r.Tool], calls[i].Input) && maySend(r) {
+				out.Sent++
 			}
 			if r.State == tool.StateRefused {
 				out.Refused++

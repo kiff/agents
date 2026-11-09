@@ -1223,7 +1223,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
 			ranOn(n, out.Source, out.Region)
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
-			n.Done = run.AddDone(n.Done, out.Done...)
+			n.Done, n.Sent = run.AddDone(n.Done, out.Done...), n.Sent+out.Sent
 			n.Refused, n.Declined = n.Refused+out.Refused, n.Declined+out.Declined
 			if x.notAgain != nil {
 				n.NotAgain = x.notAgain
@@ -1243,7 +1243,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		before = n.Cost
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
 		ranOn(n, out.Source, out.Region)
-		n.Done = run.AddDone(n.Done, out.Done...)
+		n.Done, n.Sent = run.AddDone(n.Done, out.Done...), n.Sent+out.Sent
 		n.Refused, n.Declined = n.Refused+out.Refused, n.Declined+out.Declined
 		if x.notAgain != nil {
 			n.NotAgain = x.notAgain
