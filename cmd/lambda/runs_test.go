@@ -449,6 +449,7 @@ func TestOnlyARunTheRunnerEndedBeforeAnyTurnIsUnworked(t *testing.T) {
 		{"not started", run.Run{Status: run.Error, Error: runner.FailedStart}, true},
 		{"its agent switching versions", run.Run{Status: run.Error, Error: runner.FailedSwitching}, true},
 		{"a turn done", run.Run{Status: run.Error, Error: runner.FailedRun, Turns: 1}, false},
+		{"refused for our AI balance after a turn", run.Run{Status: run.Error, Error: runner.FailedAIUnavailable, Turns: 1}, false},
 		{"carried on by the sweep", run.Run{Status: run.Error, Error: runner.FailedRun, Resumes: 1}, false},
 		{"its lease ran out", run.Run{Status: run.Error, Error: "its lease ran out: the invocation crashed or timed out"}, false},
 		{"stopped as often as it may", run.Run{Status: run.Error, Error: run.NeedsYou, Resumes: run.MaxResumes}, false},
