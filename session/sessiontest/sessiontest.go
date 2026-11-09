@@ -874,7 +874,7 @@ func notes(t *testing.T, b Backend, c *clock) {
 	// one and from another requester's, and keeps where it came from.
 	ana, luis := "member:ana", "member:luis"
 	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Scope: ana, Name: "b", Text: "ana's",
-		Session: "s1", Run: "r1", Requester: ana}))
+		Session: "s1", Run: "r1", Requester: ana, Version: 4}))
 	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Scope: luis, Name: "b", Text: "luis's"}))
 	// A name that looks like a scoped key stays a shared note of its own.
 	check(t, b.PutNote(ctx, session.Note{Tenant: "t1", Agent: "refunds", Name: "member:ana|b", Text: "shared", SharedBy: "member:ana"}))
@@ -883,8 +883,11 @@ func notes(t *testing.T, b Backend, c *clock) {
 		n[1].Name != "member:ana|b" || n[2].Scope != ana || n[2].Text != "ana's" || n[3].Scope != luis || n[3].Text != "luis's" {
 		t.Fatalf("scoped notes = %+v", n)
 	}
-	if n[2].Session != "s1" || n[2].Run != "r1" || n[2].Requester != ana {
+	if n[2].Session != "s1" || n[2].Run != "r1" || n[2].Requester != ana || n[2].Version != 4 {
 		t.Fatalf("ana's note lost its source: %+v", n[2])
+	}
+	if n[3].Version != 0 {
+		t.Fatalf("a note written with no version has one: %+v", n[3])
 	}
 	if got := session.NotesFor(n, ana); len(got) != 3 || got[2].Text != "ana's" {
 		t.Fatalf("ana reads %+v", got)

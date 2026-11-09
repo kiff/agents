@@ -93,8 +93,9 @@ type Waited struct {
 }
 
 // Failing is a schedule's firings in a row whose runs failed before any
-// turn: since the first's due time, how many, the last one's run, and its due
-// time. What they were handed waits for a run that works (a check's items go
+// turn, or whose check couldn't read the app: since the first's due time, how
+// many, the last one's firing key (its run's ID, when a run was made), and its
+// due time. What they were handed waits for a run that works (a check's items go
 // back).
 type Failing struct {
 	Since   time.Time `json:"since"`
@@ -322,6 +323,14 @@ var ErrUnworked = errors.New("schedule: the firing's run failed before doing any
 // (FiredHalted).
 var ErrHalted = errors.New("schedule: the agent is halted, so the firing starts nothing")
 
+// ErrSwitching is what Start returns for a firing of an agent switching
+// versions: it starts no run and isn't tried again, since a retry could start
+// it on the version the owner is leaving, or late on the next one
+// (kiff/tafs#107). Nothing failed, and nothing was used up: a check's cursor
+// stays, and the next firing hands the same items to the new version
+// (FiredSwitching).
+var ErrSwitching = errors.New("schedule: the agent is switching versions, so the firing starts nothing")
+
 // CreditsError is what Start returns for a firing whose run KIFF's balance
 // refused, the account's tafs waiting for credits: Why is KIFF's code. It
 // starts no run. What the firing was handed waits for the next firing that
@@ -392,6 +401,16 @@ const (
 	// runs hands the same items. The schedule's failing is left as it was,
 	// since nothing failed; its Waited says so.
 	FiredCredits = "skipped_credits"
+	// FiredCheckFailed: its check couldn't read the app (the tool refused or
+	// failed, or answered something that isn't a list). No run, the cursor
+	// stays, and it counts toward the schedule's failing like a run that
+	// failed before any work, so whoever watches failing hears of it.
+	FiredCheckFailed = "failed_check"
+	// FiredSwitching: its agent was switching versions. No run, and nothing
+	// was used up: a check's cursor stays, so the next firing hands the same
+	// items to the new version. The schedule's failing is left as it was,
+	// since nothing ran or failed.
+	FiredSwitching = "skipped_switching"
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -698,12 +717,18 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredDropped})
 		}
 		result, err := sv.Probe(ctx, s.Tenant, s.Agent, *c)
-		if err != nil {
-			return err
+		switch {
+		case errors.Is(err, ErrHalted):
+			// Nothing read, nothing runs: the cursor stays where it was.
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
+		case errors.Is(err, ErrSwitching):
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
+		case err != nil:
+			return sv.checkFailed(ctx, s, f, now, err)
 		}
 		input, next, n, tooLarge, err := c.batch(s.Input, result)
 		if err != nil {
-			return err
+			return sv.checkFailed(ctx, s, f, now, err)
 		}
 		if n == 0 {
 			if !reflect.DeepEqual(next, *c) { // the first check takes the cursor; a too-large item is passed
@@ -729,6 +754,9 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			case errors.As(err, &credits):
 				// No run: the items wait, as the cursor stays.
 				return sv.waited(ctx, s, f, now, credits.Why)
+			case errors.Is(err, ErrSwitching):
+				// No run: the items wait for the new version, as the cursor stays.
+				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
 			case errors.Is(err, ErrHalted):
 				// Nothing from before a halt runs: the cursor moves past them.
 				halted = true
@@ -759,6 +787,8 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.waited(ctx, s, f, now, credits.Why)
 		case errors.Is(err, ErrHalted):
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
+		case errors.Is(err, ErrSwitching):
+			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
 		}
 		return err
 	}
@@ -817,7 +847,25 @@ func (sv *Service) ranAgain(ctx context.Context, s Schedule) error {
 // doesn't run again, and its failing says so. The schedule is read again
 // first, so an owner's change made while the run went isn't written over.
 func (sv *Service) unworked(ctx context.Context, s Schedule, f Firing, now time.Time) error {
-	fired := Fired{Due: f.Due, At: now, Outcome: FiredUnworked, Run: f.Key()}
+	return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredUnworked, Run: f.Key()})
+}
+
+// checkFailed keeps a firing whose check couldn't read the app: FiredCheckFailed
+// in its history, counted toward the schedule's failing as a run that did no
+// work is, with no run (none started) and the cursor where it was, so the next
+// firing reads the same items again. The read's error is answered too, so the
+// invocation logs it.
+func (sv *Service) checkFailed(ctx context.Context, s Schedule, f Firing, now time.Time, read error) error {
+	if err := sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredCheckFailed}); err != nil {
+		return errors.Join(read, err)
+	}
+	return fmt.Errorf("schedule: the check couldn't read the app (kept as %s): %w", FiredCheckFailed, read)
+}
+
+// failed keeps fired, a firing that did no work, and counts it toward the
+// schedule's failing (Failing.Run is the firing's key, whether or not a run
+// was made under it, so a repeated delivery is counted once).
+func (sv *Service) failed(ctx context.Context, s Schedule, f Firing, fired Fired) error {
 	stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
 	switch {
 	case errors.Is(err, ErrNotFound):

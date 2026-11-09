@@ -76,7 +76,9 @@ func run() error {
 		Connect: func(ctx context.Context, _, _, gateway, key string) ([]tool.Tool, error) {
 			return kiff.New(gateway, key, nil).Tools(ctx)
 		},
-		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} }}
+		Own: func(tenant, agent string, version int) []tool.Tool {
+			return []tool.Tool{toolmemory.New(store, tenant, agent, version)}
+		}}
 	a, _, err := builder.Build(ctx, d.Tenant, d.ID) // check it builds, and say what it reaches
 	if err != nil {
 		return err

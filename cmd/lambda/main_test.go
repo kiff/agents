@@ -81,7 +81,7 @@ func newFunctionWith(t *testing.T, m *replies, inv *invocations) (*function, *sc
 	}}
 	s := &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: svc, Runs: runs,
 		Runner: rn, Background: background(inv, "agents-fn"), Gateways: gateways}
-	f := &function{http: s.Handler(), schedules: svc, runner: rn, sweeper: sweeping(runs, rn, background(inv, "agents-fn")),
+	f := &function{http: s.Handler(), schedules: svc, runner: rn, runs: runs, sweeper: sweeping(runs, rn, background(inv, "agents-fn")),
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	svc.Start = f.fire
 	return f, sched, agents, runs
@@ -140,7 +140,8 @@ func TestFiringsReachTheSchedule(t *testing.T) {
 	key := schedule.Firing{Tenant: "t1", Schedule: "morning", Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}.Key()
 	r, err := runs.Get(ctx, "t1", key)
 	if err != nil || r.Status != run.Completed || r.Trigger != run.BySchedule || r.Source != "morning" ||
-		r.Agent != sc.Agent || r.Input != sc.Input || r.Output != "Payouts are reconciled." {
+		r.Agent != sc.Agent || r.Input != sc.Input+"\n\n[From the runtime, not your notes: this schedule has no earlier run that did any work.]" ||
+		r.Output != "Payouts are reconciled." {
 		t.Fatalf("got %+v (%v)", r, err)
 	}
 	if list, _ := runs.ListSource(ctx, "t1", run.BySchedule, "morning", 10); len(list) != 1 {

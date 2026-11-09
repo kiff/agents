@@ -113,6 +113,8 @@ schedule and due time, so a repeated delivery replaces it.
 | `skipped_too_large` | its check found only items too large for a run |
 | `failed_unworked` | it started `run`, which failed before any turn and did nothing |
 | `skipped_halted` | its agent, or the whole account, was halted: no run, and nothing from before a halt runs, so a check's cursor moves past what it found; `failing` stays as it was |
+| `skipped_switching` | its agent was switching versions: no run, nothing used up, so a check's cursor stays and the next firing hands the same items to the new version; `failing` stays as it was |
+| `failed_check` | its check couldn't read the app: no run, a check's cursor stays, and it counts toward `failing` |
 | `skipped_credits` | the account's tafs wait for credits (runs.md): no run, and what it was handed waits, as a check's cursor stays, for the next firing that runs; `failing` stays as it was, and `waited` says why |
 
 A schedule keeps its last firing that waited for credits, kept by the service
@@ -135,6 +137,12 @@ nothing, so the firing used up nothing:
   many in a row, and the last one's run and due time. A run that works ends it.
   A body that sets `failing` is ignored, and an update keeps it.
 
+A check that couldn't read the app is the same kind of failure, one step
+earlier: its outcome is `failed_check`, with no `run`, its cursor stays, and it
+counts in `failing` as a run that did nothing does (`run` empty). A read that
+fails because the agent was halted or was switching versions is that skip
+instead (`skipped_halted`, `skipped_switching`), and counts nothing.
+
 A run counts as doing nothing only when the runner itself stored its error
 (it ended the run, or stopped it before its loop) with no turn done, and the
 sweep never carried it on. A run whose invocation died is ended by the sweep,
@@ -156,6 +164,18 @@ again, later, isn't done today.
 The service can't reach the owner: whoever shows the schedule tells them,
 once for each run of failures, and at once for a `once` schedule, whose work
 won't run (kiff/tafs alerts on `failing`).
+
+## What a run is told of the last one
+
+Each firing's run gets one more line after its input, from the runtime and not
+from the agent's notes: when its schedule's last run that did any work ended,
+and how (it finished, failed, was stopped by its owner, or was cut short by
+its turn or cost limit or by running out of room), with the start of its last
+answer (up to 400 bytes). A run that did work is the newest one of the
+schedule's last 10, other than this one, that did at least one turn and has
+ended; a run paused or still going isn't one. With none, the line says the
+schedule has no earlier run that did any work. An agent that keeps notes on
+its progress can check them against it.
 
 The scheduler may deliver a firing more than once. Every delivery of one
 firing carries the same key, so it starts one run however often it comes.

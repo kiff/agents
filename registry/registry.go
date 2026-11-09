@@ -686,7 +686,7 @@ type Builder struct {
 	Connect func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error)
 	// Own, when set, returns the tools an agent has besides its gateway's,
 	// such as its memory.
-	Own func(tenant, agent string) []tool.Tool
+	Own func(tenant, agent string, version int) []tool.Tool
 	// Workspace, when set, returns the workspace tool for one run of an
 	// agent whose definition asks for one.
 	Workspace func(tenant, run string) tool.Tool
@@ -768,7 +768,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	}
 	mark("connect")
 	if b.Own != nil {
-		tools = append(tools, b.Own(tenant, id)...)
+		tools = append(tools, b.Own(tenant, id, d.Version)...)
 	}
 	if d.Show {
 		tools = append(tools, show.New(d.ShowTypes...))

@@ -197,7 +197,7 @@ func TestSendStreams(t *testing.T) {
 func TestTheMemoryToolKeepsNotes(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
-	mem := toolmemory.New(store, "t1", "rae")
+	mem := toolmemory.New(store, "t1", "rae", 0)
 	call := func(in string) tool.Result {
 		t.Helper()
 		r, err := mem.Call(ctx, json.RawMessage(in))
@@ -209,10 +209,14 @@ func TestTheMemoryToolKeepsNotes(t *testing.T) {
 	if r := call(`{"action":"write","name":"acme","text":"Ask first."}`); r.IsError {
 		t.Fatal(r.Text)
 	}
-	if r := call(`{"action":"list"}`); r.Text != "## acme\nAsk first." {
+	// list names it, with the version that wrote it (none here) and when, and its first line; read gives it whole.
+	if r := call(`{"action":"list"}`); !strings.HasPrefix(r.Text, "1 note. read it by name to see it in full.\n- acme (no version, ") || !strings.HasSuffix(r.Text, "): Ask first.") {
 		t.Fatalf("list = %q", r.Text)
 	}
-	other, _ := toolmemory.New(store, "t1", "max").Call(ctx, json.RawMessage(`{"action":"list"}`))
+	if r := call(`{"action":"read","name":"acme"}`); !strings.HasPrefix(r.Text, "## acme (no version, ") || !strings.HasSuffix(r.Text, ")\nAsk first.") {
+		t.Fatalf("read = %q", r.Text)
+	}
+	other, _ := toolmemory.New(store, "t1", "max", 0).Call(ctx, json.RawMessage(`{"action":"list"}`))
 	if other.Text != "No notes yet." {
 		t.Fatalf("another agent read %q", other.Text)
 	}
