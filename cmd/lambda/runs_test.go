@@ -486,6 +486,9 @@ func TestWhatAFiringsEndedRunMeans(t *testing.T) {
 		{"out of room mid-answer", run.Run{Status: run.Completed, Stop: "max_token", Turns: 4}, nil},
 		{"a turn declined", run.Run{Status: run.Completed, Stop: "refused", Turns: 1}, nil},
 		{"stopped by its owner", run.Run{Status: run.Cancelled, Stop: "cancelled", Turns: 2}, nil},
+		{"paused for its owner, after a write", run.Run{Status: run.Paused, Stop: "paused", Turns: 2, Sent: 1}, nil},
+		{"still at work", run.Run{Status: run.Running, Turns: 2}, nil},
+		{"not yet claimed", run.Run{Status: run.Pending}, nil},
 	} {
 		if got := ended(c.r); !errors.Is(got, c.want) || (c.want == nil && got != nil) {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)

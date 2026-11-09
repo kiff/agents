@@ -146,7 +146,9 @@ func unsent(r run.Run) bool {
 //   - it didn't finish, and changed nothing: what it was handed can go to
 //     another run;
 //   - it didn't finish, and may have changed something: never handed again;
-//   - anything else is a run that started, as it always was.
+//   - anything else is a run that started, as it always was: one that
+//     answered, one its owner stopped, and one still at work or paused for
+//     its owner, which holds what it was handed.
 func ended(r run.Run) error {
 	switch {
 	case unworked(r) && r.Error == runner.FailedSwitching:
@@ -178,9 +180,6 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
 			// What the run a first delivery started came to, said again: a
 			// repeat uses up, and counts, nothing more.
-			if r.Active() || r.Status == run.Paused {
-				return nil
-			}
 			return ended(r)
 		}
 	case errors.Is(err, registry.ErrSwitching):
@@ -211,11 +210,7 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	// switch stopped it before it began, never a failure), and so does one
 	// that didn't finish and changed nothing. One still at work or paused
 	// holds what it was given.
-	done := f.executed(ctx, r.Tenant, r.ID)
-	if done.Active() || done.Status == run.Paused {
-		return nil
-	}
-	return ended(done)
+	return ended(f.executed(ctx, r.Tenant, r.ID))
 }
 
 // checkRead is a schedule's check read. A halted or switching agent's check

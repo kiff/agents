@@ -865,6 +865,35 @@ func TestAnUnworkedRunGivesItsItemsBack(t *testing.T) {
 	}
 }
 
+// A check takes the stored one's state only when both read the same thing,
+// and never its own: what a caller sends as a cursor is dropped either way.
+func TestACheckKeepsOnlyTheStoredState(t *testing.T) {
+	due := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	stored := schedule.Check{Tool: "gmail__list", Arguments: json.RawMessage(`{"label":"refunds"}`), Items: "data", Cursor: "created",
+		Last: "1700", Due: due, Partial: &schedule.Partial{Cursor: "1701", Seen: []string{"a"}}, Tries: 2}
+	sent := schedule.Check{Tool: "gmail__list", Arguments: json.RawMessage(`{ "label": "refunds" }`), Items: "data", Cursor: "created", ID: "id",
+		Last: "5", Due: due.Add(time.Hour), Partial: &schedule.Partial{Cursor: "6"}, Tries: 1}
+	got := sent.Keeping(&stored)
+	if got.Last != "1700" || !got.Due.Equal(due) || got.Partial == nil || got.Partial.Cursor != "1701" || got.Tries != 2 {
+		t.Fatalf("the same read: %+v", got)
+	}
+	for what, other := range map[string]*schedule.Check{
+		"no stored check": nil,
+		"another read":    {Tool: "gmail__search", Items: "data", Cursor: "created", Last: "1700", Tries: 2},
+	} {
+		got := sent.Keeping(other)
+		if got.Last != "" || !got.Due.IsZero() || got.Partial != nil || got.Tries != 0 {
+			t.Fatalf("%s: kept %+v", what, got)
+		}
+		if got.Tool != sent.Tool || got.Cursor != sent.Cursor || string(got.Arguments) != string(sent.Arguments) {
+			t.Fatalf("%s: the read itself changed: %+v", what, got)
+		}
+	}
+	if !stored.Reads(sent) || stored.Reads(schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created"}) {
+		t.Fatal("Reads: the same arguments however written, and never without them")
+	}
+}
+
 // checked is a fixture with a check schedule "inbox" at cursor 100, whose
 // read finds m1, and helpers to fire it and read what came of a firing.
 func checked(t *testing.T) (f *fixture, fire func(time.Time) schedule.Schedule, outcome func(time.Time) schedule.Fired, at func(int) time.Time) {
