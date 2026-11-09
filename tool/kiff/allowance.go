@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,15 +20,12 @@ import (
 // is used, a run can still start.
 const AllowanceKept = time.Minute
 
-// NoRoute is the why of an allowed answer from a KIFF without the route
-// (404), from before credits: the checker logs each one.
-const NoRoute = "no_route"
-
 // Allowance asks KIFF whether a new run of the key's agent may start: GET
 // /v1/me/credits/allowance with the agent's own key. It answers whether,
-// and why not: KIFF's code (credits_used_up, limit_reached or no_plan). A
-// KIFF without the route (404) allows, with why NoRoute. Any other answer is
-// an error, and the key never appears in one.
+// and why not: KIFF's code (credits_used_up, limit_reached or no_plan). Any
+// other answer is an error, a 404 included, and the key never appears in one:
+// the route is KIFF's, so a 404 is a KIFF fault, never a run let through
+// unchecked.
 func Allowance(ctx context.Context, hc *http.Client, apiURL, key string) (allowed bool, why string, err error) {
 	if hc == nil {
 		hc = http.DefaultClient
@@ -45,13 +41,6 @@ func Allowance(ctx context.Context, hc *http.Client, apiURL, key string) (allowe
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
-	if resp.StatusCode == http.StatusNotFound {
-		// A KIFF from before credits has no such route: every run may
-		// start, so the order the two deploy in can't stop every taf. Said
-		// as NoRoute, so the checker logs it; it goes once KIFF's route is
-		// live, and a 404 then fails the start as any KIFF error does.
-		return true, NoRoute, nil
-	}
 	if resp.StatusCode != http.StatusOK {
 		return false, "", fmt.Errorf("kiff: allowance: %s: %s", resp.Status, strings.TrimSpace(scrub(errors.New(string(b)), key).Error()))
 	}
@@ -67,9 +56,8 @@ func Allowance(ctx context.Context, hc *http.Client, apiURL, key string) (allowe
 
 // AllowanceChecker is the runtime's runner.Runner.Allowance: it asks KIFF
 // with the agent's own key, and keeps an allowed answer for AllowanceKept
-// per agent. now is the clock; nil, the system's. log, when set, gets a
-// warning each time a KIFF without the route allows (NoRoute).
-func AllowanceChecker(agents registry.Agents, secrets registry.Secrets, hc *http.Client, apiURL string, now func() time.Time, log *slog.Logger) func(ctx context.Context, tenant, agent string) (bool, string, error) {
+// per agent. now is the clock; nil, the system's.
+func AllowanceChecker(agents registry.Agents, secrets registry.Secrets, hc *http.Client, apiURL string, now func() time.Time) func(ctx context.Context, tenant, agent string) (bool, string, error) {
 	if now == nil {
 		now = time.Now
 	}
@@ -98,9 +86,6 @@ func AllowanceChecker(agents registry.Agents, secrets registry.Secrets, hc *http
 		ok, why, err := Allowance(ctx, hc, apiURL, key)
 		if err != nil || !ok {
 			return ok, why, err
-		}
-		if why == NoRoute && log != nil {
-			log.Warn("KIFF has no allowance route: the run starts unchecked")
 		}
 		mu.Lock()
 		allowed[k] = now().Add(AllowanceKept)

@@ -2,7 +2,6 @@ package kiff_test
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,8 +45,9 @@ func (a *allowanceAPI) set(status int, body string) {
 	a.status, a.body = status, body
 }
 
-// KIFF's answer, read: allowed, or refused with its code. A KIFF without the
-// route allows; any other answer is an error, without the key.
+// KIFF's answer, read: allowed, or refused with its code. Any other answer is
+// an error, a 404 included (the route is live: a 404 is a fault, never a run
+// let through unchecked), and the key is never in one.
 func TestTheAllowanceAnswer(t *testing.T) {
 	api := &allowanceAPI{}
 	srv := api.server(t)
@@ -59,7 +59,7 @@ func TestTheAllowanceAnswer(t *testing.T) {
 	}{
 		{200, `{"allowed": true}`, true, false, ""},
 		{200, `{"allowed": false, "why": "limit_reached"}`, false, false, "limit_reached"},
-		{404, `not found`, true, false, kiff.NoRoute},
+		{404, `not found`, false, true, ""},
 		{200, `{"allowed": false}`, false, true, ""},
 		{200, `{}`, false, true, ""},
 		{200, `nope`, false, true, ""},
@@ -87,8 +87,7 @@ func TestTheAllowanceChecker(t *testing.T) {
 	api := &allowanceAPI{}
 	srv := api.server(t)
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-	var logged strings.Builder
-	check := kiff.AllowanceChecker(oneAgent{}, keys{}, srv.Client(), srv.URL, func() time.Time { return now }, slog.New(slog.NewTextHandler(&logged, nil)))
+	check := kiff.AllowanceChecker(oneAgent{}, keys{}, srv.Client(), srv.URL, func() time.Time { return now })
 	ctx := context.Background()
 
 	api.set(200, `{"allowed": false, "why": "credits_used_up"}`)
@@ -122,12 +121,11 @@ func TestTheAllowanceChecker(t *testing.T) {
 	if ok, _, err := check(ctx, "t1", "rae"); ok || err == nil {
 		t.Fatalf("KIFF down: %v %v", ok, err)
 	}
-	// A KIFF without the route allows, and says so in the log each time.
-	if logged.Len() != 0 {
-		t.Fatalf("logged before any 404: %s", logged.String())
-	}
+	// A 404 is a KIFF fault like any other: the start fails, and nothing is kept.
 	api.set(404, `not found`)
-	if ok, _, err := check(ctx, "t1", "rae"); !ok || err != nil || !strings.Contains(logged.String(), "no allowance route") {
-		t.Fatalf("no route: %v %v, logged %q", ok, err, logged.String())
+	for range 2 {
+		if ok, _, err := check(ctx, "t1", "rae"); ok || err == nil {
+			t.Fatalf("a 404: %v %v", ok, err)
+		}
 	}
 }

@@ -382,8 +382,8 @@ balance, and `Start` asks it before each run (`runner.Runner.Allowance`).
   ways past it.
 - **KIFF not answering** fails the start, as any KIFF outage does: the API
   answers 502 (`kiff_unanswered`), and a firing is tried again by the
-  scheduler. A KIFF from before credits has no such route (404), and every run
-  may start, so the order the two deploy in can't stop every taf.
+  scheduler. A 404 is no exception: KIFF's route is live, so a 404 is a fault
+  and fails the start, never a run let through unchecked.
 - **A run already going finishes**, and a run stored before (a repeated
   delivery of a firing, a paused run carried on) asks nothing.
 - A chat's AI bound (`ai`), from before, is ignored: nothing is counted toward

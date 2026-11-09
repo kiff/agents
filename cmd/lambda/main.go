@@ -243,7 +243,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	}, Collect: kiff.Collect, Settle: kiff.Settle, Usage: use, Log: log,
 		// Before each new run, KIFF's balance, with the agent's own key: an
 		// allowed answer is kept a minute per agent, a refusal never.
-		Allowance: kiff.AllowanceChecker(agents, keys, &http.Client{Timeout: allowanceTimeout}, kiffAPI, nil, log)}
+		Allowance: kiff.AllowanceChecker(agents, keys, &http.Client{Timeout: allowanceTimeout}, kiffAPI, nil)}
 	// What a chat keeps of its reads for its next messages, sealed under the
 	// tenant's own key (#172): off unless set, so nothing is kept by default.
 	if sp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")); sp != "" {
