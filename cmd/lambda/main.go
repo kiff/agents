@@ -118,7 +118,10 @@ type function struct {
 	api       *server.Server
 	schedules *schedule.Service
 	runner    server.Runner
-	sweeper   func(ctx context.Context, now time.Time) (int, error)
+	// runs is where fire reads a schedule's earlier runs, to tell a firing's
+	// run how the last one that worked ended; nil: it isn't told.
+	runs    run.Runs
+	sweeper func(ctx context.Context, now time.Time) (int, error)
 	// files are the attached files the sweep removes when due; nil: none.
 	files *attach.Service
 	// cont is how the sweep continues a resolved paused run; setup keeps it
@@ -234,7 +237,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
 			return warm.Tools(ctx, gateway, tenant, agent, key)
 		},
-		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(store, tenant, agent)} },
+		Own: func(tenant, agent string, version int) []tool.Tool {
+			return []tool.Tool{toolmemory.New(store, tenant, agent, version)}
+		},
 		Drafts:   draftTool(claims),
 		Planques: planques,
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
@@ -280,9 +285,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// A check of a connected app reads through the agent's own Card, with
 	// its own key, without the model: only a tool its gateway
 	// lists as a read.
-	schedules.Probe = func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+	schedules.Probe = checkRead(rn.Startable, func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
 		return probe(ctx, rn.Builder, tenant, agent, c)
-	}
+	})
 	// A taf's own follow-ups, on the same schedules.
 	rn.Builder.FollowUp = func(tenant, agent string, version int) tool.Tool {
 		return followup.New(schedules, runs, tenant, agent, version)
@@ -294,6 +299,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,
+		runs:      runs,
 		cont:      bg,
 		log:       log,
 	}

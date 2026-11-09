@@ -159,7 +159,7 @@ func newFixture(t *testing.T) *fixture {
 			f.connects = append(f.connects, gateway+" "+key)
 			return []tool.Tool{stub{name: "stripe_refund", access: tool.Write, gateway: true}}, nil
 		},
-		Own: func(tenant, agent string) []tool.Tool {
+		Own: func(tenant, agent string, _ int) []tool.Tool {
 			return []tool.Tool{stub{name: "memory_" + tenant + "_" + agent, access: tool.Own}}
 		},
 	}
@@ -257,7 +257,9 @@ func TestBuildRefusesWhatCantRun(t *testing.T) {
 	})
 	t.Run("a write tool outside the gateway", func(t *testing.T) {
 		f := newFixture(t)
-		f.b.Own = func(string, string) []tool.Tool { return []tool.Tool{stub{name: "send_email", access: tool.Write}} }
+		f.b.Own = func(string, string, int) []tool.Tool {
+			return []tool.Tool{stub{name: "send_email", access: tool.Write}}
+		}
 		if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, tool.ErrUngoverned) {
 			t.Fatalf("got %v, want ErrUngoverned", err)
 		}

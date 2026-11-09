@@ -578,7 +578,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 		Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
 			return t.warm.Tools(ctx, gateway, tenant, agent, key)
 		},
-		Own:      func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(t.sessions, tenant, agent)} },
+		Own: func(tenant, agent string, version int) []tool.Tool {
+			return []tool.Tool{toolmemory.New(t.sessions, tenant, agent, version)}
+		},
 		Planques: []string{strings.TrimRight(t.cfg.planque, "/")},
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
 			return planque.New(base, tenant, key, t.hc).ReadThrough(kiff.New(gateway, key, nil))

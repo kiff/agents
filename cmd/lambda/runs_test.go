@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,11 +20,13 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/store/memory"
 )
 
 // replies is a model that answers each turn with the next reply, and counts
@@ -568,5 +572,170 @@ func TestAFiringWhileTheTafsWaitIsSkipped(t *testing.T) {
 	rn.Allowance = func(context.Context, string, string) (bool, string, error) { return false, "", errors.New("down") }
 	if err := f.fire(ctx, fi); err == nil || errors.As(err, &credits) {
 		t.Fatalf("KIFF down = %v; want an error the firing is tried again on", err)
+	}
+}
+
+// A firing of an agent switching versions is skipped, not retried, and says
+// so (schedule.ErrSwitching): never a run that wasn't made. So is a repeated
+// delivery of one whose run a switch stopped before it began, and that one
+// never counts as a run that failed.
+func TestAFiringOfASwitchingAgentIsSkippedSwitching(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	if _, err := agents.BeginSwitch(ctx, "t1", "payouts", registry.Switching{N: 2, At: time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatal(err)
+	}
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrSwitching) {
+		t.Fatalf("a firing of a switching agent = %v; want schedule.ErrSwitching", err)
+	}
+	if _, err := runs.Get(ctx, "t1", fi.Key()); !errors.Is(err, run.ErrNotFound) {
+		t.Fatalf("a switching agent's firing stored a run: %v", err)
+	}
+	// A run stored, then stopped by a switch before it began: delivered again, it's the switch's skip.
+	stopped := run.Run{ID: fi.Key(), Tenant: "t1", Agent: "payouts", Trigger: run.BySchedule, Source: "morning",
+		Status: run.Error, Error: runner.FailedSwitching, Version: 1}
+	if err := runs.Create(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrSwitching) {
+		t.Fatalf("a repeated delivery of a switch-stopped run = %v; want schedule.ErrSwitching", err)
+	}
+}
+
+// switchOnCreate begins the agent's switch as soon as a run is stored: the
+// run starts, then is stopped before its loop by the switch.
+type switchOnCreate struct {
+	*memory.Runs
+	agents *memory.Agents
+}
+
+func (s switchOnCreate) Create(ctx context.Context, r run.Run) error {
+	if err := s.Runs.Create(ctx, r); err != nil {
+		return err
+	}
+	_, err := s.agents.BeginSwitch(ctx, r.Tenant, r.Agent, registry.Switching{N: 2, At: time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)})
+	return err
+}
+
+// A firing whose run started, then was stopped before its loop by a switch
+// begun meanwhile, is the switch's skip, never a run that did nothing.
+func TestAFiringStoppedByASwitchBegunMeanwhileIsSkippedSwitching(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	f.runner.(*runner.Runner).Runs = switchOnCreate{Runs: runs, agents: agents}
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrSwitching) {
+		t.Fatalf("a firing stopped by a switch = %v; want schedule.ErrSwitching", err)
+	}
+	if r, err := runs.Get(ctx, "t1", fi.Key()); err != nil || r.Error != runner.FailedSwitching {
+		t.Fatalf("its run = %+v, %v; want it stopped for the switch", r, err)
+	}
+}
+
+// Each firing's run is told, from the runtime and not its notes, when its
+// schedule's last run that did any work ended and how, with the start of its
+// last answer; a run with no work behind it is told so. Runs still at work,
+// paused for the owner, or that did nothing are passed over, and so is the
+// firing's own run.
+func TestAFiringIsToldHowTheLastRunThatWorkedEnded(t *testing.T) {
+	m := &replies{next: []model.Reply{answer("Done."), answer("Done.")}}
+	f, _, agents, runs := newFunctionWith(t, m, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	at := func(h int) time.Time { return time.Date(2026, 11, 9, h, 0, 0, 0, time.UTC) }
+	fire := func(sched string, due time.Time) string {
+		t.Helper()
+		fi := schedule.Firing{Tenant: "t1", Schedule: sched, Agent: "payouts", Input: "Work the refund queue.", Due: due}
+		if err := f.fire(ctx, fi); err != nil {
+			t.Fatal(err)
+		}
+		r, err := runs.Get(ctx, "t1", fi.Key())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Input
+	}
+	if got := fire("fresh", at(8)); got != "Work the refund queue.\n\n[From the runtime, not your notes: this schedule has no earlier run that did any work.]" {
+		t.Fatalf("first firing's input %q", got)
+	}
+	// Runs that did nothing, or that haven't ended, aren't the last that worked.
+	put := func(r run.Run) {
+		t.Helper()
+		r.Tenant, r.Agent, r.Trigger, r.Source, r.Version = "t1", "payouts", run.BySchedule, "queue", 1
+		if err := runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(run.Run{ID: "cut", Status: run.Completed, Stop: "turn_cap", Turns: 50, Output: "Refunded orders 1 to 20.\n\nStill open: 21 to 40.",
+		Created: at(9), Updated: at(9).Add(10 * time.Minute), Ended: at(9).Add(10 * time.Minute)})
+	put(run.Run{ID: "nothing", Status: run.Error, Error: runner.FailedRun, Turns: 0, Created: at(10), Updated: at(10)})
+	put(run.Run{ID: "paused", Status: run.Paused, Turns: 3, Created: at(11), Updated: at(11)})
+	got := fire("queue", at(12))
+	want := "Work the refund queue.\n\n[From the runtime, not your notes: your last run on this schedule that did any work ended 2026-11-09 09:10 UTC; " +
+		"it stopped at its turn limit, cut short before it finished. Its last answer began, in its own words, not the runtime's: \"Refunded orders 1 to 20. Still open: 21 to 40.\"]"
+	if got != want {
+		t.Fatalf("input\n%q\nwant\n%q", got, want)
+	}
+}
+
+// How a run ended, in the words the next firing reads.
+func TestHandOverSaysHowARunEnded(t *testing.T) {
+	end := time.Date(2026, 11, 9, 9, 10, 0, 0, time.UTC)
+	for _, c := range []struct {
+		r    run.Run
+		want string
+	}{
+		{run.Run{Status: run.Completed, Stop: "answered"}, "it answered and finished"},
+		{run.Run{Status: run.Completed}, "it answered and finished"},
+		{run.Run{Status: run.Completed, Stop: "turn_cap"}, "it stopped at its turn limit, cut short before it finished"},
+		{run.Run{Status: run.Completed, Stop: "cost_cap"}, "it stopped at its cost limit, cut short before it finished"},
+		{run.Run{Status: run.Completed, Stop: "max_token"}, "it ran out of room mid-answer, cut short"},
+		{run.Run{Status: run.Completed, Stop: "refused"}, "a turn was declined, so it stopped before it finished"},
+		{run.Run{Status: run.Completed, Stop: "something_new"}, "it stopped (something_new) before it finished"},
+		{run.Run{Status: run.Error, Error: runner.FailedRun}, "it failed after doing some work"},
+		{run.Run{Status: run.Cancelled}, "it was stopped by its owner before it finished"},
+	} {
+		c.r.Ended = end
+		got := handOver(c.r)
+		if !strings.Contains(got, "ended 2026-11-09 09:10 UTC; "+c.want+".") || strings.Contains(got, "Its last answer") {
+			t.Errorf("%+v: %q", c.r, got)
+		}
+	}
+	// A long answer is cut, on a rune, and marked; one stored before Ended was kept ends when it last changed.
+	long := handOver(run.Run{Status: run.Completed, Stop: "answered", Updated: end, Output: strings.Repeat("é", 300)})
+	if !strings.Contains(long, "ended 2026-11-09 09:10 UTC") || !strings.HasSuffix(long, "…\"]") || !utf8.ValidString(long) {
+		t.Fatalf("long %q", long)
+	}
+}
+
+// A check's read that fails while the agent is halted or switching is that
+// skip, never a read that failed; any other failure is the read's own error,
+// and a read that worked is passed on whatever the agent's state.
+func TestACheckReadRefusedForAHaltOrASwitchIsThatSkip(t *testing.T) {
+	refused := errors.New("lambda: the check's read gmail__list wasn't made: halted")
+	for _, c := range []struct {
+		name      string
+		read      error
+		startable error
+		want      error
+	}{
+		{"halted", refused, fmt.Errorf("%w", registry.ErrHalted), schedule.ErrHalted},
+		{"switching", refused, fmt.Errorf("%w (to version 2)", registry.ErrSwitching), schedule.ErrSwitching},
+		{"neither", refused, nil, refused},
+		{"the state can't be read", refused, errors.New("dynamodb down"), refused},
+	} {
+		read := checkRead(func(context.Context, string, string) error { return c.startable },
+			func(context.Context, string, string, schedule.Check) (string, error) { return "", c.read })
+		if _, err := read(ctx, "t1", "inbox", schedule.Check{}); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, err, c.want)
+		}
+	}
+	asked := false
+	worked := checkRead(func(context.Context, string, string) error { asked = true; return registry.ErrHalted },
+		func(context.Context, string, string, schedule.Check) (string, error) { return `{"data":[]}`, nil })
+	if got, err := worked(ctx, "t1", "inbox", schedule.Check{}); err != nil || got != `{"data":[]}` || asked {
+		t.Fatalf("a read that worked: %q, %v (state asked: %v)", got, err, asked)
 	}
 }

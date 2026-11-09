@@ -331,6 +331,18 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	return r, nil
 }
 
+// Startable is registry.ErrHalted while the agent or its tenant is halted,
+// registry.ErrSwitching while it is switching versions, and nil when a run of
+// it could start now: what a schedule's check asks before it reads the app, so
+// a read refused for a halt or a switch is kept as that, never as a read that
+// failed.
+func (rn *Runner) Startable(ctx context.Context, tenant, agent string) error {
+	if err := rn.notHalted(ctx, tenant, agent, time.Time{}); err != nil {
+		return err
+	}
+	return rn.notSwitching(ctx, tenant, agent)
+}
+
 // notSwitching is registry.ErrSwitching while the agent is switching
 // versions (kiff/tafs#107), and nil otherwise.
 func (rn *Runner) notSwitching(ctx context.Context, tenant, agent string) error {

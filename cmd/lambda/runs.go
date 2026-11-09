@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
@@ -122,13 +123,16 @@ func unworked(r run.Run) bool {
 // which is for the answer to continue, not a repeated firing.
 func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	r, err := f.runner.Start(ctx, server.Start{Tenant: fi.Tenant, Agent: fi.Agent, Trigger: run.BySchedule,
-		Source: fi.Schedule, Input: fi.Input, ID: fi.Key()})
+		Source: fi.Schedule, Input: fi.Input + f.lastWorked(ctx, fi), ID: fi.Key()})
 	var credits *server.CreditsRefusal
 	switch {
 	case errors.Is(err, run.ErrExists):
 		if r.Status != run.Pending {
 			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
 			// The run a first delivery started did nothing: a repeat uses up nothing either.
+			if unworked(r) && r.Error == runner.FailedSwitching {
+				return schedule.ErrSwitching
+			}
 			if unworked(r) {
 				return schedule.ErrUnworked
 			}
@@ -137,8 +141,10 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case errors.Is(err, registry.ErrSwitching):
 		// Skipped, not retried: a retry could start it on the version
 		// the owner is leaving, or late on the next one (kiff/tafs#107).
+		// The schedule keeps it as skipped_switching, never as a run: no
+		// run was made, and a check's cursor stays for the new version.
 		f.log.InfoContext(ctx, "firing skipped: the agent is switching versions", "tenant", fi.Tenant, "schedule", fi.Schedule, "agent", fi.Agent)
-		return nil
+		return schedule.ErrSwitching
 	case errors.Is(err, registry.ErrHalted):
 		// Skipped, not retried: a retry would run it once resumed, and
 		// nothing from before a halt runs. The schedule keeps it as
@@ -156,12 +162,116 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 		return err
 	}
 	// A run that failed before any turn did nothing: the firing says so, and
-	// what it handed over goes back (schedule.FiredUnworked).
-	if unworked(f.executed(ctx, r.Tenant, r.ID)) {
+	// what it handed over goes back (schedule.FiredUnworked). One stopped
+	// before it began because a switch began meanwhile is a switch's skip,
+	// not a failure: it never counts toward failing.
+	done := f.executed(ctx, r.Tenant, r.ID)
+	if unworked(done) && done.Error == runner.FailedSwitching {
+		return schedule.ErrSwitching
+	}
+	if unworked(done) {
 		return schedule.ErrUnworked
 	}
 	return nil
 }
+
+// checkRead is a schedule's check read: read, and when it fails because the
+// agent is halted or switching versions (startable says which), that skip
+// (schedule.ErrHalted, ErrSwitching), never a read that failed, so neither a
+// halt nor a switch counts toward the schedule's failing. A read that worked
+// meanwhile goes on as before: its run is refused, and the schedule keeps the
+// halt (the cursor moves past) or the switch (it stays).
+func checkRead(startable func(ctx context.Context, tenant, agent string) error,
+	read func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error)) func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+	return func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+		result, err := read(ctx, tenant, agent, c)
+		if err == nil {
+			return result, nil
+		}
+		switch st := startable(ctx, tenant, agent); {
+		case errors.Is(st, registry.ErrHalted):
+			return "", schedule.ErrHalted
+		case errors.Is(st, registry.ErrSwitching):
+			return "", schedule.ErrSwitching
+		}
+		return "", err
+	}
+}
+
+// lastLook is how many of a schedule's newest runs lastWorked reads.
+const lastLook = 10
+
+// lastWorked is what a firing's run is told of its schedule's last run that
+// did any work, from the runtime and not from its notes: when it ended and how
+// (answered; stopped at its turn or cost cap, so cut short; out of room; a
+// declined turn; failed; cancelled), with the start of its last answer. A run
+// still at work or paused for its owner hasn't ended, and is passed over. None
+// among the newest: it's told so, so it never guesses where the last one
+// stopped. Empty when the runs can't be read: the firing goes on without it.
+func (f *function) lastWorked(ctx context.Context, fi schedule.Firing) string {
+	if f.runs == nil {
+		return ""
+	}
+	recent, err := f.runs.ListSource(ctx, fi.Tenant, run.BySchedule, fi.Schedule, lastLook)
+	if err != nil {
+		f.log.WarnContext(ctx, "reading the schedule's last runs", "tenant", fi.Tenant, "schedule", fi.Schedule, "err", err)
+		return ""
+	}
+	for _, r := range recent {
+		if r.ID == fi.Key() || r.Turns == 0 || (r.Status != run.Completed && r.Status != run.Error && r.Status != run.Cancelled) {
+			continue
+		}
+		return handOver(r)
+	}
+	return "\n\n[From the runtime, not your notes: this schedule has no earlier run that did any work.]"
+}
+
+// handOver is the line lastWorked adds for r.
+func handOver(r run.Run) string {
+	how := "it answered and finished"
+	switch {
+	case r.Status == run.Error:
+		how = "it failed after doing some work"
+	case r.Status == run.Cancelled:
+		how = "it was stopped by its owner before it finished"
+	case r.Stop == "turn_cap":
+		how = "it stopped at its turn limit, cut short before it finished"
+	case r.Stop == "cost_cap":
+		how = "it stopped at its cost limit, cut short before it finished"
+	case r.Stop == "max_token":
+		how = "it ran out of room mid-answer, cut short"
+	case r.Stop == "refused":
+		how = "a turn was declined, so it stopped before it finished"
+	case r.Stop != "" && r.Stop != "answered":
+		how = "it stopped (" + r.Stop + ") before it finished"
+	}
+	line := "\n\n[From the runtime, not your notes: your last run on this schedule that did any work ended " +
+		endedAt(r).UTC().Format("2006-01-02 15:04 UTC") + "; " + how + "."
+	if out := strings.Join(strings.Fields(r.Output), " "); out != "" {
+		if len(out) > handOverOutput {
+			cut := handOverOutput
+			for cut > 0 && !utf8.RuneStart(out[cut]) {
+				cut--
+			}
+			out = out[:cut] + "…"
+		}
+		line += " Its last answer began, in its own words, not the runtime's: \"" + out + "\""
+	}
+	return line + "]"
+}
+
+// endedAt is when r ended: its Ended, or its last change for a run stored
+// before Ended was kept.
+func endedAt(r run.Run) time.Time {
+	if !r.Ended.IsZero() {
+		return r.Ended
+	}
+	return r.Updated
+}
+
+// handOverOutput bounds how much of the last run's answer handOver quotes, in
+// bytes.
+const handOverOutput = 400
 
 // sweepLimit bounds the runs one sweep reads, of each kind. The sweep runs
 // every minute, so this ends up to 100 runs a minute that nobody else is left

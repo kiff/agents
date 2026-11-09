@@ -224,7 +224,9 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 	rt.skills = memory.NewSkills()
 	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
 		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect, Skills: rt.skills,
-		Own: func(tenant, agent string) []tool.Tool { return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent)} },
+		Own: func(tenant, agent string, version int) []tool.Tool {
+			return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent, version)}
+		},
 	}}
 	return rt
 }

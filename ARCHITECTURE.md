@@ -259,7 +259,12 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   changes none; a run no one asked for (a schedule's) reads and writes the
   shared ones. Each note keeps the session, run and requester it came from.
   Notes from before scopes are shared. A person's note becomes shared only
-  through the share route.
+  through the share route. Each note also keeps the version of the agent that
+  wrote it (`version`; a note from before has none). The tool's `list` is an
+  index by name (a person's own note before a shared one of that name), a note's name, scope, version and date and its first line, within
+  16 KB; past that it says how many it left out and lists the rest with
+  `after` the last name it showed, so no note is ever cut silently. `read`
+  gives one note whole, a person's own before a shared one by that name.
 - **Attached files** (kiff/tafs#209) are their message's: an owner's message
   records each by reference (never its bytes), the runner loads their bytes
   for a run's turns (the newest within 20 MB and about 100,000 tokens; an

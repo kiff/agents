@@ -33,6 +33,10 @@ type Note struct {
 	// SharedBy is who made the note shared on purpose: the requester's key
 	// of the person who shared it, or "owner" for one the owner wrote.
 	SharedBy string `json:"shared_by,omitempty"`
+	// Version is the agent's live version when the note was last written,
+	// so a note from an older job can be told apart; 0 for one written
+	// before versions were kept, or outside a version (the owner's chat).
+	Version int `json:"version,omitempty"`
 }
 
 // Quarantined reports whether n is a shared note of unknown origin, which no

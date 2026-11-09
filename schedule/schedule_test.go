@@ -1365,3 +1365,156 @@ func TestAFiringWhileTheTafsWaitIsSkippedCredits(t *testing.T) {
 		t.Fatalf("a follow-up: enabled %v, waited %+v, failing %+v", got.Enabled, got.Waited, got.Failing)
 	}
 }
+
+// A firing of an agent switching versions starts no run, and says so:
+// skipped_switching in the history, never a run that wasn't made. Nothing was
+// used up and nothing failed: a check's cursor stays, so the next firing hands
+// the same items to the new version, and the schedule's failing is left as it
+// was, never cleared.
+func TestASwitchingAgentsFiringIsSkippedSwitching(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "0"}
+	since := time.Date(2026, 11, 3, 8, 45, 0, 0, time.UTC)
+	s.Failing = &schedule.Failing{Since: since, Firings: 2, Last: since}
+	if err := f.store.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+		return `{"data":[{"id":"m1","created":1},{"id":"m2","created":2}]}`, nil
+	}
+	switching := true
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		if switching {
+			return schedule.ErrSwitching
+		}
+		return nil
+	}
+	due := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	if err := f.sv.Fire(ctx, "t1", "inbox", due); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := f.history.Firings(ctx, "t1", "inbox", 10)
+	if len(h) != 1 || h[0].Outcome != schedule.FiredSwitching || h[0].Run != "" {
+		t.Fatalf("history %+v", h)
+	}
+	got, _ := f.store.Get(ctx, "t1", "inbox")
+	if got.AppCheck.Last != "0" || got.Failing == nil || got.Failing.Firings != 2 {
+		t.Fatalf("cursor %q, failing %+v", got.AppCheck.Last, got.Failing)
+	}
+	// Once the new version is live, the next firing hands it the same items.
+	switching = false
+	if err := f.sv.Fire(ctx, "t1", "inbox", due.Add(15*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 2 || !strings.Contains(f.started[1].Input, `"id":"m1"`) || !strings.Contains(f.started[1].Input, `"id":"m2"`) {
+		t.Fatalf("started %+v", f.started)
+	}
+	// Without a check: the same, and its failing stays.
+	plain := scheduletest.Schedule("t1", "morning")
+	plain.Failing = &schedule.Failing{Since: since, Firings: 1, Last: since}
+	if err := f.store.Put(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	switching = true
+	paris, _ := time.LoadLocation("Europe/Paris")
+	if err := f.sv.Fire(ctx, "t1", "morning", time.Date(2026, 11, 9, 9, 0, 0, 0, paris)); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "morning", 10); len(h) != 1 || h[0].Outcome != schedule.FiredSwitching || h[0].Run != "" {
+		t.Fatalf("history %+v", h)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+}
+
+// A check that couldn't read the app leaves a record: failed_check in the
+// history, counted toward the schedule's failing as a run that did no work
+// is, so whoever watches failing hears of it. No run, the cursor stays, and
+// the read's error is still answered. A repeated delivery counts once, and a
+// read that works ends the failing.
+func TestACheckThatCouldntReadIsKeptAsFailing(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "100"}
+	if err := f.store.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	read := errors.New("lambda: the check's read gmail__list wasn't made: unauthorized")
+	result := ""
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+		if result == "" {
+			return "", read
+		}
+		return result, nil
+	}
+	at := func(m int) time.Time { return time.Date(2026, 11, 6, 13, m, 0, 0, time.UTC) }
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(0)); !errors.Is(err, read) {
+		t.Fatalf("fire = %v, want the read's error", err)
+	}
+	h, _ := f.history.Firings(ctx, "t1", "inbox", 10)
+	if len(h) != 1 || h[0].Outcome != schedule.FiredCheckFailed || h[0].Run != "" {
+		t.Fatalf("history %+v", h)
+	}
+	got, _ := f.store.Get(ctx, "t1", "inbox")
+	if got.AppCheck.Last != "100" || got.Failing == nil || got.Failing.Firings != 1 || !got.Failing.Since.Equal(at(0)) {
+		t.Fatalf("cursor %q, failing %+v", got.AppCheck.Last, got.Failing)
+	}
+	if len(f.started) != 0 {
+		t.Fatalf("a run started: %+v", f.started)
+	}
+	// The same firing delivered again counts once; the next one adds to it.
+	_ = f.sv.Fire(ctx, "t1", "inbox", at(0))
+	_ = f.sv.Fire(ctx, "t1", "inbox", at(15))
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing == nil || got.Failing.Firings != 2 || !got.Failing.Since.Equal(at(0)) {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+	// An answer that isn't a list is a read that failed too.
+	result = `{"error":"not a list"}`
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(30)); err == nil {
+		t.Fatal("an answer with no list was no error")
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing == nil || got.Failing.Firings != 3 {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+	// The read works and its run works: the failing ends.
+	result = `{"data":[{"id":"m1","created":110}]}`
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(45)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing != nil || got.AppCheck.Last != "110" {
+		t.Fatalf("cursor %q, failing %+v", got.AppCheck.Last, got.Failing)
+	}
+}
+
+// A read refused because the agent is halted or switching is kept as that
+// skip, never as a read that failed: no failing, and the cursor stays.
+func TestACheckReadRefusedForAHaltOrASwitchIsThatSkip(t *testing.T) {
+	for _, c := range []struct {
+		err     error
+		outcome string
+	}{{schedule.ErrHalted, schedule.FiredHalted}, {schedule.ErrSwitching, schedule.FiredSwitching}} {
+		f := newFixture()
+		s := scheduletest.Schedule("t1", "inbox")
+		s.Cron = "*/15 * * * *"
+		s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "100"}
+		if err := f.store.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return "", c.err }
+		if err := f.sv.Fire(ctx, "t1", "inbox", time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("%s: %v", c.outcome, err)
+		}
+		h, _ := f.history.Firings(ctx, "t1", "inbox", 10)
+		if len(h) != 1 || h[0].Outcome != c.outcome {
+			t.Fatalf("%s: history %+v", c.outcome, h)
+		}
+		if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing != nil || got.AppCheck.Last != "100" {
+			t.Fatalf("%s: cursor %q, failing %+v", c.outcome, got.AppCheck.Last, got.Failing)
+		}
+	}
+}
