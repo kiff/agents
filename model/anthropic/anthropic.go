@@ -61,6 +61,10 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 		req.Fast = false
 		r, _, err = m.turn(ctx, req, onText)
 	}
+	if err != nil && CreditRefused(err) {
+		// The API's own words stay in the error, for the logs and their alarm.
+		err = fmt.Errorf("%w: %w", model.ErrProviderBalance, err)
+	}
 	return r, err
 }
 

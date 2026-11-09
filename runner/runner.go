@@ -51,6 +51,9 @@ const (
 	FailedStart = "the run could not be started"
 	FailedRun   = "the run failed"
 	FailedTime  = "the run reached its time limit"
+	// FailedAIUnavailable: the AI provider refused a turn for our own
+	// account's balance (model.ErrProviderBalance).
+	FailedAIUnavailable = run.AIUnavailable
 	// FailedSwitching: the agent began switching versions before the run
 	// started (kiff/tafs#107).
 	FailedSwitching = "the agent is switching versions, so the run didn't start"
@@ -891,12 +894,12 @@ func (rn *Runner) fold(ctx context.Context, a agent.Agent, rec *session.Recordin
 }
 
 // Own reports whether a run's error is one this runner stored itself: when it
-// ended the run (FailedRun, FailedTime) or stopped it before its loop
+// ended the run (FailedRun, FailedTime, FailedAIUnavailable) or stopped it before its loop
 // (FailedBuild, FailedStart, FailedSwitching). Never one the sweep set for a
 // run nobody was left to end, whose stored turns may be behind what it did.
 func Own(err string) bool {
 	switch err {
-	case FailedRun, FailedTime, FailedBuild, FailedStart, FailedSwitching:
+	case FailedRun, FailedTime, FailedAIUnavailable, FailedBuild, FailedStart, FailedSwitching:
 		return true
 	}
 	return false
@@ -906,6 +909,9 @@ func Own(err string) bool {
 func failed(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return FailedTime
+	}
+	if errors.Is(err, model.ErrProviderBalance) {
+		return FailedAIUnavailable
 	}
 	return FailedRun
 }

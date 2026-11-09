@@ -124,12 +124,15 @@ type runView struct {
 	Requester run.Requester `json:"requester,omitzero"`
 	// NewSession is whether the run opened its session (#219); always
 	// present, so a client can rely on it.
-	NewSession   bool              `json:"new_session"`
-	Status       run.Status        `json:"status"`
-	Stop         string            `json:"stop,omitempty"`
-	Refusal      string            `json:"refusal,omitempty"`
-	Output       string            `json:"output,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	NewSession bool       `json:"new_session"`
+	Status     run.Status `json:"status"`
+	Stop       string     `json:"stop,omitempty"`
+	Refusal    string     `json:"refusal,omitempty"`
+	Output     string     `json:"output,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	// Code is Error's code when a client may treat it apart
+	// (run.ErrorCode): "ai_unavailable".
+	Code         string            `json:"code,omitempty"`
 	Cost         int64             `json:"cost_micro_usd"`
 	Turns        int               `json:"turns"`
 	Requirements []run.Requirement `json:"requirements,omitempty"`
@@ -162,7 +165,7 @@ func (s *Server) viewRun(r run.Run) runView { return viewRunAt(r, s.now()) }
 func viewRunAt(r run.Run, now time.Time) runView {
 	w := r.WorkAt(now)
 	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
-		Output: r.Output, Error: r.Error, Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
+		Output: r.Output, Error: r.Error, Code: run.ErrorCode(r.Error), Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
 }

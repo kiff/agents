@@ -38,6 +38,8 @@ type script struct {
 	replies []model.Reply
 	reqs    []model.Request
 	onTurn  func(n int)
+	// fail, when set, is every turn's error once the replies run out.
+	fail error
 }
 
 func (s *script) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
@@ -56,6 +58,9 @@ func (s *script) Turn(ctx context.Context, req model.Request, onText func(string
 		case i > 0 && req.Messages[i-1].Role == m.Role:
 			return model.Reply{}, fmt.Errorf("script: messages %d and %d are both %s", i-1, i, m.Role)
 		}
+	}
+	if len(s.reqs) > len(s.replies) && s.fail != nil {
+		return model.Reply{}, s.fail
 	}
 	if len(s.reqs) > len(s.replies) {
 		return model.Reply{}, errors.New("script: no more replies")
@@ -1016,6 +1021,24 @@ func TestAFailedModelIsAnError(t *testing.T) {
 	}
 	if !f.state(r).Ended || !slices.Contains(f.events(r), session.Error) {
 		t.Fatalf("recording %+v with %v, want ended with the error", f.state(r), f.events(r))
+	}
+}
+
+// A run the AI provider refused for our own balance says so in the person's
+// words, with its code, and is the runner's own failure, as any run's.
+func TestARunRefusedForOurBalanceSaysSo(t *testing.T) {
+	f := newFixture(t)
+	f.model.fail = fmt.Errorf("%w: 400 invalid_request_error: Your credit balance is too low", model.ErrProviderBalance)
+	r := f.start(server.Start{Input: "go"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if !errors.Is(err, model.ErrProviderBalance) {
+		t.Fatalf("got %v, want the refusal for the caller to log", err)
+	}
+	if got.Status != run.Error || got.Error != runner.FailedAIUnavailable || run.ErrorCode(got.Error) != "ai_unavailable" || !runner.Own(got.Error) {
+		t.Fatalf("failed to %+v", got)
+	}
+	if strings.Contains(got.Error, "credit balance") {
+		t.Fatal("the provider's own words reached the person")
 	}
 }
 

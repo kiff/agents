@@ -504,6 +504,20 @@ func TestGetRun(t *testing.T) {
 			t.Errorf("a running run shows %q", k)
 		}
 	}
+	if _, ok := body["code"]; ok {
+		t.Error("a run that didn't fail shows a code")
+	}
+	// A run the AI provider refused for our balance carries its code (kiff/tafs' apps).
+	refused := run.New("t1", "payouts", "s-PAUSED", run.ByOwner, "x", now)
+	refused.Status, refused.Error = run.Error, run.AIUnavailable
+	if err := f.runs.Create(ctx, refused); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+refused.ID+"?as=service", nil)
+	f.want(200, code, body, "get a refused run")
+	if body["code"] != "ai_unavailable" || body["error"] != run.AIUnavailable {
+		t.Fatalf("got %v", body)
+	}
 	code, body = f.do("t2", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
 	f.want(404, code, body, "another tenant's run")
 	code, body = f.do("t1", "GET", "/agents/refunds/runs/"+r.ID+"?as=service", nil)
