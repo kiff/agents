@@ -255,7 +255,7 @@ func handOver(r run.Run) string {
 			}
 			out = out[:cut] + "…"
 		}
-		line += " Its last answer began: \"" + out + "\""
+		line += " Its last answer began, in its own words, not the runtime's: \"" + out + "\""
 	}
 	return line + "]"
 }

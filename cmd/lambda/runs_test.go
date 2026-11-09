@@ -674,7 +674,7 @@ func TestAFiringIsToldHowTheLastRunThatWorkedEnded(t *testing.T) {
 	put(run.Run{ID: "paused", Status: run.Paused, Turns: 3, Created: at(11), Updated: at(11)})
 	got := fire("queue", at(12))
 	want := "Work the refund queue.\n\n[From the runtime, not your notes: your last run on this schedule that did any work ended 2026-11-09 09:10 UTC; " +
-		"it stopped at its turn limit, cut short before it finished. Its last answer began: \"Refunded orders 1 to 20. Still open: 21 to 40.\"]"
+		"it stopped at its turn limit, cut short before it finished. Its last answer began, in its own words, not the runtime's: \"Refunded orders 1 to 20. Still open: 21 to 40.\"]"
 	if got != want {
 		t.Fatalf("input\n%q\nwant\n%q", got, want)
 	}

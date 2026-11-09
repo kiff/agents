@@ -4,9 +4,11 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -175,6 +177,16 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 // when, and its first line. It stops before ListBudget and says how many it
 // left out and how to list on, so the answer is never cut.
 func index(notes []session.Note, scope, after string) string {
+	// By name, a person's own note before a shared one of the same name (as
+	// read finds them), so after, a name, is a true cursor: a store sorts by
+	// scope first, and paging that by name would pass some notes over.
+	notes = slices.Clone(notes)
+	slices.SortStableFunc(notes, func(a, b session.Note) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return cmp.Compare(boolInt(a.Scope == session.Shared), boolInt(b.Scope == session.Shared))
+	})
 	var lines []string
 	shown, size := 0, 0
 	skipped := 0
@@ -187,7 +199,10 @@ func index(notes []session.Note, scope, after string) string {
 		if first := firstLine(n.Text); first != "" {
 			line += ": " + first
 		}
-		if size+len(line)+1 > ListBudget && shown > 0 {
+		// A page never ends between two notes of one name (a person's own
+		// and a shared one): the next page starts after that name. Each line
+		// is bounded, so the one over is small.
+		if size+len(line)+1 > ListBudget && shown > 0 && n.Name != notes[i-1].Name {
 			rest := len(notes) - i
 			lines = append(lines, fmt.Sprintf("…and %d more. To see them, list with after: %q.", rest, notes[i-1].Name))
 			break
@@ -259,4 +274,11 @@ func hasNote(notes []session.Note, scope, name string) bool {
 		}
 	}
 	return false
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

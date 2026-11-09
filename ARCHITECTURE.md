@@ -261,7 +261,7 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
   Notes from before scopes are shared. A person's note becomes shared only
   through the share route. Each note also keeps the version of the agent that
   wrote it (`version`; a note from before has none). The tool's `list` is an
-  index, a note's name, scope, version and date and its first line, within
+  index by name (a person's own note before a shared one of that name), a note's name, scope, version and date and its first line, within
   16 KB; past that it says how many it left out and lists the rest with
   `after` the last name it showed, so no note is ever cut silently. `read`
   gives one note whole, a person's own before a shared one by that name.

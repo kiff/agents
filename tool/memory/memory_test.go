@@ -201,3 +201,95 @@ func TestListNeverCutsANoteSilently(t *testing.T) {
 		t.Fatalf("list past the last = %q", r.Text)
 	}
 }
+
+// listAll pages through list as a model would, following each "list with
+// after", and counts how often each note's line is shown.
+func listAll(t *testing.T, ctx context.Context, m tool.Tool) (map[string]int, []string) {
+	t.Helper()
+	seen := map[string]int{}
+	var order []string
+	after := ""
+	for page := 0; page < 1000; page++ {
+		in := `{"action":"list"}`
+		if after != "" {
+			in = fmt.Sprintf(`{"action":"list","after":%q}`, after)
+		}
+		r, err := m.Call(ctx, json.RawMessage(in))
+		if err != nil || r.IsError {
+			t.Fatalf("list: %+v, %v", r, err)
+		}
+		next := ""
+		for _, l := range strings.Split(r.Text, "\n")[1:] {
+			switch {
+			case strings.HasPrefix(l, "- "):
+				line := strings.SplitN(l[2:], ": ", 2)[0]
+				seen[line]++
+				order = append(order, line)
+			case strings.HasPrefix(l, "…and "):
+				q := strings.Index(l, `after: "`)
+				next = strings.TrimSuffix(l[q+len(`after: "`):], `".`)
+			}
+		}
+		if next == "" {
+			return seen, order
+		}
+		after = next
+	}
+	t.Fatal("list never ended")
+	return nil, nil
+}
+
+// A store sorts notes by scope, then name, but list pages by name: a
+// person's own note whose name sorts before a page's cut is still listed,
+// and a page never ends between their note and a shared one of that name.
+func TestListPagesReachEveryNote(t *testing.T) {
+	ctx := context.Background()
+	notes := memory.New()
+	shared := toolmemory.New(notes, "t1", "rae", 1)
+	ana := run.WithRequester(ctx, run.Requester{Kind: run.ByMember, ID: "ana"})
+	own := toolmemory.New(notes, "t1", "rae", 1)
+	write := func(ctx context.Context, m tool.Tool, name, text string) {
+		t.Helper()
+		in := fmt.Sprintf(`{"action":"write","name":%q,"text":%q}`, name, text)
+		if r, err := m.Call(ctx, json.RawMessage(in)); err != nil || r.IsError {
+			t.Fatalf("write %s: %+v, %v", name, r, err)
+		}
+	}
+	big := strings.Repeat("x", 150)
+	for i := 1; i <= 60; i++ {
+		for c := 'a'; c <= 'e'; c++ {
+			write(ctx, shared, fmt.Sprintf("b%02d%c", i, c), big)
+		}
+	}
+	write(ana, own, "a-own", "mine")
+	// ana has a note of every shared note's name too, so some page's cut
+	// falls between two notes of one name.
+	for i := 1; i <= 60; i++ {
+		for c := 'a'; c <= 'e'; c++ {
+			write(ana, own, fmt.Sprintf("b%02d%c", i, c), big)
+		}
+	}
+	seen, order := listAll(t, ana, own)
+	total := 300 + 1 + 300
+	// Her own note comes before the shared one of its name, as read finds them.
+	if len(order) == 0 || !strings.HasPrefix(order[0], "a-own ") {
+		t.Fatalf("the first line %q; want ana's a-own", order)
+	}
+	for i := 1; i+1 < len(order); i += 2 {
+		mine, theirs := order[i], order[i+1]
+		if strings.SplitN(mine, " ", 2)[0] != strings.SplitN(theirs, " ", 2)[0] ||
+			!strings.Contains(mine, "from conversations with this person") || strings.Contains(theirs, "from conversations with this person") {
+			t.Fatalf("lines %d and %d: %q, then %q; want her own note, then the shared one", i, i+1, mine, theirs)
+		}
+	}
+	n := 0
+	for line, k := range seen {
+		if k != 1 {
+			t.Fatalf("%q listed %d times", line, k)
+		}
+		n++
+	}
+	if n != total {
+		t.Fatalf("the pages listed %d of %d notes", n, total)
+	}
+}

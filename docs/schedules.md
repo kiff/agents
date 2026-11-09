@@ -171,7 +171,7 @@ Each firing's run gets one more line after its input, from the runtime and not
 from the agent's notes: when its schedule's last run that did any work ended,
 and how (it finished, failed, was stopped by its owner, or was cut short by
 its turn or cost limit or by running out of room), with the start of its last
-answer (up to 400 bytes). A run that did work is the newest one of the
+answer (up to 400 bytes), marked as the run's own words, not the runtime's. A run that did work is the newest one of the
 schedule's last 10, other than this one, that did at least one turn and has
 ended; a run paused or still going isn't one. With none, the line says the
 schedule has no earlier run that did any work. An agent that keeps notes on
