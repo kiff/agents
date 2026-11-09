@@ -114,6 +114,53 @@ func unworked(r run.Run) bool {
 	return r.Status == run.Error && r.Turns == 0 && r.Resumes == 0 && runner.Own(r.Error)
 }
 
+// unfinished reports whether r, a firing's run that did some work, ended
+// without finishing what it was handed: it failed, or its turn or cost cap
+// cut it short. One that ended with an answer finished. One paused holds its
+// work and carries on from there. One its owner stopped, or whose turn was
+// declined, isn't one to start again.
+func unfinished(r run.Run) bool {
+	switch r.Status {
+	case run.Error:
+		return !unworked(r)
+	case run.Completed:
+		return r.Stop == "turn_cap" || r.Stop == "cost_cap"
+	}
+	return false
+}
+
+// unsent reports whether nothing r did can have changed anything outside
+// it: no call that acts may have reached the vendor (run.Run.Sent, from
+// KIFF's word on each call, never its error mark), none went through (Done),
+// the sweep never carried the run on, and its failure is one the runner
+// stored itself. Only then can what r was handed go to another run with
+// nothing done twice: a run the sweep ended may have acted with its turns
+// not yet stored.
+func unsent(r run.Run) bool {
+	return r.Sent == 0 && len(r.Done) == 0 && r.Resumes == 0 && (r.Status != run.Error || runner.Own(r.Error))
+}
+
+// ended is what a firing's run means for the firing once it has stopped:
+//   - it did nothing, stopped by a switch: the switch's skip;
+//   - it did nothing: nothing it was handed is used up;
+//   - it didn't finish, and changed nothing: what it was handed can go to
+//     another run;
+//   - it didn't finish, and may have changed something: never handed again;
+//   - anything else is a run that started, as it always was.
+func ended(r run.Run) error {
+	switch {
+	case unworked(r) && r.Error == runner.FailedSwitching:
+		return schedule.ErrSwitching
+	case unworked(r):
+		return schedule.ErrUnworked
+	case unfinished(r) && unsent(r):
+		return schedule.ErrUnfinished
+	case unfinished(r):
+		return schedule.ErrActed
+	}
+	return nil
+}
+
 // fire starts the run a schedule's firing asks for, and executes it in this
 // invocation, which EventBridge Scheduler already started in the background.
 // The run's ID is the firing's key, so a repeated delivery finds the run
@@ -129,14 +176,12 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case errors.Is(err, run.ErrExists):
 		if r.Status != run.Pending {
 			f.log.InfoContext(ctx, "firing repeated", "tenant", r.Tenant, "run", r.ID, "status", r.Status)
-			// The run a first delivery started did nothing: a repeat uses up nothing either.
-			if unworked(r) && r.Error == runner.FailedSwitching {
-				return schedule.ErrSwitching
+			// What the run a first delivery started came to, said again: a
+			// repeat uses up, and counts, nothing more.
+			if r.Active() || r.Status == run.Paused {
+				return nil
 			}
-			if unworked(r) {
-				return schedule.ErrUnworked
-			}
-			return nil
+			return ended(r)
 		}
 	case errors.Is(err, registry.ErrSwitching):
 		// Skipped, not retried: a retry could start it on the version
@@ -161,18 +206,16 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	case err != nil:
 		return err
 	}
-	// A run that failed before any turn did nothing: the firing says so, and
-	// what it handed over goes back (schedule.FiredUnworked). One stopped
-	// before it began because a switch began meanwhile is a switch's skip,
-	// not a failure: it never counts toward failing.
+	// What the run came to, for the firing: one that did nothing hands back
+	// what it was given (schedule.FiredUnworked; a switch's skip when a
+	// switch stopped it before it began, never a failure), and so does one
+	// that didn't finish and changed nothing. One still at work or paused
+	// holds what it was given.
 	done := f.executed(ctx, r.Tenant, r.ID)
-	if unworked(done) && done.Error == runner.FailedSwitching {
-		return schedule.ErrSwitching
+	if done.Active() || done.Status == run.Paused {
+		return nil
 	}
-	if unworked(done) {
-		return schedule.ErrUnworked
-	}
-	return nil
+	return ended(done)
 }
 
 // checkRead is a schedule's check read. A halted or switching agent's check

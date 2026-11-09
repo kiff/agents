@@ -281,6 +281,13 @@ type Run struct {
 	// calls' own results said, never the model. A run that fails after one
 	// says what it did from these.
 	Done []Done `json:"done,omitempty"`
+	// Sent counts the run's calls that act which may have reached the
+	// vendor, over all its parts: those in Done, and those whose outcome
+	// isn't known (KIFF sent one and lost the answer, or its result never
+	// came back). Counted from KIFF's word on each call, never from its
+	// error mark. Zero: nothing the run did can have changed anything, so
+	// what it was handed can go to another run (a schedule's check).
+	Sent int `json:"sent,omitempty"`
 
 	// Cancel records that the run was asked to stop: a running run stops at
 	// its next checkpoint (before a model turn, after a tool batch).

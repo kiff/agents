@@ -42,7 +42,31 @@ const (
 	// as an event of the vendor's app (the slow-tools design): the run
 	// pauses as for a card, and the event, matched by its key, answers it.
 	StateWaiting = "waiting"
+	// StateFailed is a call KIFF couldn't decide or send, and StateDeciding
+	// one it's still deciding: like a held or a refused one, neither
+	// reached the vendor. Every other state (forwarded, forwarding, sending,
+	// unknown), and a result with no state at all, may have: see
+	// MaySend.
+	StateFailed   = "failed"
+	StateDeciding = "deciding"
 )
+
+// MaySend reports whether a call with this result may have reached the
+// vendor, by the gateway's word on the call and never by its error mark:
+// KIFF marks its own answers as errors, among them a call it sent whose
+// answer was lost. Only a held, refused, failed or still-deciding call, and
+// a trial's, is known not sent. Anything else counts as sent, a result with
+// no state included (a call that went through, or a tool outside KIFF).
+func (r Result) MaySend() bool {
+	if r.Trial != nil {
+		return false
+	}
+	switch r.State {
+	case StateHeld, StateRefused, StateFailed, StateDeciding:
+		return false
+	}
+	return true
+}
 
 // Result is what a call returned. State is the gateway's word on the call,
 // empty for tools that don't go through it.

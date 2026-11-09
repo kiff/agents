@@ -101,6 +101,12 @@ type Failing struct {
 	Since   time.Time `json:"since"`
 	Firings int       `json:"firings"`
 	Run     string    `json:"run,omitempty"`
+	// Outcome is the last counted firing's outcome (FiredUnworked,
+	// FiredCheckFailed, FiredUnfinished), so whoever tells the owner can
+	// say which: a run that couldn't start, a check that couldn't read, or
+	// a run that stopped partway. Empty on a failing stored before it was
+	// kept.
+	Outcome string `json:"outcome,omitempty"`
 	// Last is the due time of the last firing counted: one no later than it
 	// (a repeated delivery, or a late one of an older firing) is counted
 	// already. Zero on a failing stored before it was kept.
@@ -331,6 +337,18 @@ var ErrHalted = errors.New("schedule: the agent is halted, so the firing starts 
 // (FiredSwitching).
 var ErrSwitching = errors.New("schedule: the agent is switching versions, so the firing starts nothing")
 
+// ErrUnfinished is what Start returns for a firing whose run did some work,
+// then failed or was cut short by its turn or cost cap, with no call that
+// could have changed anything outside it. What a check handed it goes to the
+// next firing's run again (FiredRetrying), MaxCheckTries runs at most.
+var ErrUnfinished = errors.New("schedule: the firing's run didn't finish, and changed nothing")
+
+// ErrActed is what Start returns for a firing whose run didn't finish
+// either, after a call that acts may have reached the vendor: nothing it was
+// handed goes to another run, which could pay or refund again
+// (FiredUnfinished).
+var ErrActed = errors.New("schedule: the firing's run didn't finish, after a call that may have changed something")
+
 // CreditsError is what Start returns for a firing whose run KIFF's balance
 // refused, the account's tafs waiting for credits: Why is KIFF's code. It
 // starts no run. What the firing was handed waits for the next firing that
@@ -397,6 +415,18 @@ const (
 	// stays, so what came meanwhile goes to the first firing after the halt.
 	// The schedule's failing is left as it was, since no run worked.
 	FiredHalted = "skipped_halted"
+	// FiredRetrying: its check's run did some work, then failed or was cut
+	// short by its turn or cost cap, and changed nothing (ErrUnfinished).
+	// The cursor stays, and the next firing hands the same items to a new
+	// run, told to check what was done. The schedule's failing is left as
+	// it was.
+	FiredRetrying = "failed_retrying"
+	// FiredUnfinished: its check's run didn't finish, and what it was
+	// handed isn't handed again: a call of it may have changed something
+	// (ErrActed), or MaxCheckTries runs were handed them. The cursor moves
+	// past them, and it counts toward the schedule's failing, so the owner
+	// hears.
+	FiredUnfinished = "failed_unfinished"
 	// FiredCredits: the account's tafs wait for credits. No run, and what
 	// it was handed waits: a check's cursor stays, and the next firing that
 	// runs hands the same items. The schedule's failing is left as it was,
@@ -727,11 +757,18 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 		case err != nil:
 			return sv.checkFailed(ctx, s, f, now, err)
 		}
-		input, next, n, tooLarge, err := c.batch(s.Input, result)
+		// How often these items were handed already. A batch given up on is
+		// behind the cursor: what comes now starts its own count.
+		cur := *c
+		if cur.Tries >= MaxCheckTries {
+			cur.Tries = 0
+		}
+		input, next, n, tooLarge, err := cur.batch(s.Input, result)
 		if err != nil {
 			return sv.checkFailed(ctx, s, f, now, err)
 		}
 		if n == 0 {
+			next.Tries = c.Tries              // nothing handed: the count says what it said
 			if !reflect.DeepEqual(next, *c) { // the first check takes the cursor; a too-large item is passed
 				s.AppCheck = &next
 				if err := sv.Store.Put(ctx, s); err != nil {
@@ -745,6 +782,7 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: outcome})
 		}
 		f.Input = input
+		unfinished := false
 		var credits *CreditsError
 		if err := sv.Start(ctx, f); err != nil {
 			switch {
@@ -760,12 +798,38 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			case errors.Is(err, ErrHalted):
 				// No run: the items wait for the halt's end, as the cursor stays.
 				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
+			case errors.Is(err, ErrUnfinished) && cur.Tries+1 < MaxCheckTries:
+				// Its run didn't finish them and changed nothing: they go
+				// again, as the cursor stays. Due names this firing, so its
+				// repeated delivery counts once.
+				cur.Tries, cur.Due = cur.Tries+1, f.Due
+				s.AppCheck, s.Waited = &cur, nil
+				if err := sv.Store.Put(ctx, s); err != nil {
+					return err
+				}
+				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRetrying, Run: f.Key()})
+			case errors.Is(err, ErrUnfinished):
+				// Handed MaxCheckTries runs, none finished them: the cursor moves on.
+				unfinished, next.Tries = true, MaxCheckTries
+			case errors.Is(err, ErrActed):
+				// A call of its run may have changed something: never handed
+				// again, so nothing is done twice. The cursor moves on.
+				unfinished, next.Tries = true, 0
 			default:
 				return err
 			}
+		} else {
+			next.Tries = 0
 		}
 		next.Due = f.Due
 		s.AppCheck = &next
+		if unfinished {
+			s.Waited = nil
+			if err := sv.Store.Put(ctx, s); err != nil {
+				return err
+			}
+			return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredUnfinished, Run: f.Key()})
+		}
 		s.Failing, s.Waited = nil, nil
 		if err := sv.Store.Put(ctx, s); err != nil {
 			return err
@@ -774,6 +838,7 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 	}
 	if err := sv.Start(ctx, f); err != nil {
 		var credits *CreditsError
+		started := false
 		switch {
 		case errors.Is(err, ErrUnworked):
 			return sv.unworked(ctx, s, f, now)
@@ -783,8 +848,21 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 		case errors.Is(err, ErrSwitching):
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
+		case (errors.Is(err, ErrUnfinished) || errors.Is(err, ErrActed)) && s.AppCheck != nil:
+			// A repeated delivery of a check's firing whose run didn't
+			// finish: kept as the first delivery kept it, and counted once.
+			if errors.Is(err, ErrUnfinished) && s.AppCheck.Tries < MaxCheckTries {
+				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRetrying, Run: f.Key()})
+			}
+			return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredUnfinished, Run: f.Key()})
+		case errors.Is(err, ErrUnfinished), errors.Is(err, ErrActed):
+			// A plain schedule hands its run nothing to give back: a run
+			// that started and worked, as it always was.
+			started = true
 		}
-		return err
+		if !started {
+			return err
+		}
 	}
 	if s.Failing != nil || s.Waited != nil {
 		if err := sv.ranAgain(ctx, s); err != nil {
@@ -872,9 +950,9 @@ func (sv *Service) failed(ctx context.Context, s Schedule, f Firing, fired Fired
 		// A repeated delivery of a firing counted already, or a late one of
 		// an older firing, delivered after a newer one was counted.
 	case stored.Failing != nil:
-		stored.Failing = &Failing{Since: stored.Failing.Since, Firings: stored.Failing.Firings + 1, Run: f.Key(), Last: f.Due}
+		stored.Failing = &Failing{Since: stored.Failing.Since, Firings: stored.Failing.Firings + 1, Run: f.Key(), Outcome: fired.Outcome, Last: f.Due}
 	default:
-		stored.Failing = &Failing{Since: f.Due, Firings: 1, Run: f.Key(), Last: f.Due}
+		stored.Failing = &Failing{Since: f.Due, Firings: 1, Run: f.Key(), Outcome: fired.Outcome, Last: f.Due}
 	}
 	offOnce(&stored, f.Due)
 	if err := sv.Store.Put(ctx, stored); err != nil {

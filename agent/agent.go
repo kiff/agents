@@ -374,6 +374,10 @@ type Outcome struct {
 	// report says them.
 	Refused  int `json:"refused,omitempty"`
 	Declined int `json:"declined,omitempty"`
+	// Sent counts the calls that act which may have reached the vendor in
+	// this part of the run (maySend): those that went through, and those
+	// whose outcome isn't known. The caller adds them to the run's.
+	Sent int `json:"sent,omitempty"`
 
 	// standard: a fast agent's turn ran at standard speed, so the rest of
 	// the run does too.
@@ -462,12 +466,16 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		emit = func(Event) {}
 	}
 	var done []run.Done
+	sent := 0
 	for _, h := range held {
 		if err := rec.Record(session.ToolResult, h); err != nil {
 			return Outcome{}, history, err
 		}
 		if wentThrough(h) {
 			done = append(done, doneOf(h, requirementInput(r, h.CallID)))
+		}
+		if maySend(h) {
+			sent++
 		}
 		if err := recordRef(rec, h.Result); err != nil {
 			return Outcome{}, history, err
@@ -527,7 +535,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	refused, declined := refusals(r, held)
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent}, emit)
 }
 
 // refusals counts the held calls of r whose outcome is in: those the owner
@@ -653,6 +661,14 @@ func merge(r run.Run, held []ToolResultBody) ([]model.Block, error) {
 // back unmade, not held, not refused by KIFF, and not failed.
 func wentThrough(r ToolResultBody) bool {
 	return !r.NotMade && !r.IsError && r.State != tool.StateHeld && r.State != tool.StateRefused && r.Trial == nil
+}
+
+// maySend reports whether r, the result of a call that acts, may have
+// reached the vendor: made, and not known unsent by KIFF's word on it
+// (tool.Result.MaySend). Wider than wentThrough, which a call KIFF sent and
+// lost the answer of fails: that one may have paid or refunded all the same.
+func maySend(r ToolResultBody) bool {
+	return !r.NotMade && r.MaySend()
 }
 
 // doneOf is r, a call that acted and went through, with its input, as the run
@@ -810,6 +826,12 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		results, err := a.callTools(ctx, rec, byName, calls, emit)
 		if err != nil {
+			// Their results never came back: each call that acts may have gone out.
+			for _, c := range calls {
+				if acts(byName[c.Tool], c.Input) {
+					out.Sent++
+				}
+			}
 			return out, msgs, err
 		}
 		for _, r := range results {
@@ -823,6 +845,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			held = held || r.Waits()
 			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
 				out.Done = append(out.Done, doneOf(r, calls[i].Input))
+			}
+			if acts(byName[r.Tool], calls[i].Input) && maySend(r) {
+				out.Sent++
 			}
 			if r.State == tool.StateRefused {
 				out.Refused++

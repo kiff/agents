@@ -865,6 +865,219 @@ func TestAnUnworkedRunGivesItsItemsBack(t *testing.T) {
 	}
 }
 
+// checked is a fixture with a check schedule "inbox" at cursor 100, whose
+// read finds m1, and helpers to fire it and read what came of a firing.
+func checked(t *testing.T) (f *fixture, fire func(time.Time) schedule.Schedule, outcome func(time.Time) schedule.Fired, at func(int) time.Time) {
+	t.Helper()
+	f = newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "100"}
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+		return `{"data":[{"id":"m1","created":110}]}`, nil
+	}
+	at = func(m int) time.Time {
+		return time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC).Add(time.Duration(m) * time.Minute)
+	}
+	fire = func(due time.Time) schedule.Schedule {
+		t.Helper()
+		if err := f.sv.Fire(ctx, "t1", "inbox", due); err != nil {
+			t.Fatalf("firing: %v", err)
+		}
+		got, _ := f.store.Get(ctx, "t1", "inbox")
+		return got
+	}
+	outcome = func(due time.Time) schedule.Fired {
+		h, _ := f.history.Firings(ctx, "t1", "inbox", schedule.MaxHistory)
+		for _, x := range h {
+			if x.Due.Equal(due) {
+				return x
+			}
+		}
+		return schedule.Fired{}
+	}
+	return f, fire, outcome, at
+}
+
+// again is the line a run reads when its items were handed to an earlier
+// run that didn't finish them.
+const again = "An earlier run was handed some of the items below and didn't finish them"
+
+// A check's run that did some work, then failed or was cut short, and
+// changed nothing (ErrUnfinished) didn't finish what it was handed: the
+// cursor stays, and the next firing hands the same items to a new run, told
+// an earlier one didn't finish them and to check what was done. That's the
+// schedule's failing left as it was. Three runs at most: after the third the
+// cursor moves past them, tries says 3, it counts toward failing, and no
+// fourth run gets them.
+func TestAnUnfinishedRunsItemsGoAgainThreeTimesAtMost(t *testing.T) {
+	f, fire, outcome, at := checked(t)
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrUnfinished
+	}
+	got := fire(at(0))
+	if o := outcome(at(0)); o.Outcome != schedule.FiredRetrying || o.Run != f.started[0].Key() {
+		t.Fatalf("the first unfinished firing: %+v", o)
+	}
+	if c := got.AppCheck; c.Last != "100" || c.Tries != 1 || !c.Due.Equal(at(0)) || got.Failing != nil {
+		t.Fatalf("after the first: check %+v, failing %+v", c, got.Failing)
+	}
+	if strings.Contains(f.started[0].Input, again) {
+		t.Fatalf("the first run was told of an earlier one: %q", f.started[0].Input)
+	}
+	got = fire(at(15)) // the same item, to a second run, told so
+	if len(f.started) != 2 || !strings.Contains(f.started[1].Input, `"id":"m1"`) || !strings.Contains(f.started[1].Input, again) ||
+		!strings.Contains(f.started[1].Input, "so nothing is done twice") {
+		t.Fatalf("the second run's input: %+v", f.started)
+	}
+	if c := got.AppCheck; c.Last != "100" || c.Tries != 2 || got.Failing != nil || outcome(at(15)).Outcome != schedule.FiredRetrying {
+		t.Fatalf("after the second: check %+v, failing %+v, %s", c, got.Failing, outcome(at(15)).Outcome)
+	}
+	got = fire(at(30)) // the third and last
+	if len(f.started) != 3 || !strings.Contains(f.started[2].Input, `"id":"m1"`) || !strings.Contains(f.started[2].Input, again) {
+		t.Fatalf("the third run's input: %+v", f.started)
+	}
+	if c := got.AppCheck; c.Last != "110" || c.Tries != 3 || outcome(at(30)).Outcome != schedule.FiredUnfinished || outcome(at(30)).Run != f.started[2].Key() {
+		t.Fatalf("after the third: check %+v, %+v", c, outcome(at(30)))
+	}
+	if fl := got.Failing; fl == nil || fl.Firings != 1 || !fl.Since.Equal(at(30)) || fl.Run != f.started[2].Key() || fl.Outcome != schedule.FiredUnfinished {
+		t.Fatalf("after the third: failing %+v", got.Failing)
+	}
+	// No fourth hand-over: the item is behind the cursor, and tries still says 3.
+	got = fire(at(45))
+	if len(f.started) != 3 || outcome(at(45)).Outcome != schedule.FiredQuiet || got.AppCheck.Tries != 3 || got.AppCheck.Last != "110" {
+		t.Fatalf("a fourth firing: started %d, %s, check %+v", len(f.started), outcome(at(45)).Outcome, got.AppCheck)
+	}
+	// What comes next starts its own count, and its run isn't told of an earlier one.
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+		return `{"data":[{"id":"m1","created":110},{"id":"m2","created":120}]}`, nil
+	}
+	got = fire(at(60))
+	if len(f.started) != 4 || strings.Contains(f.started[3].Input, `"id":"m1"`) || !strings.Contains(f.started[3].Input, `"id":"m2"`) || strings.Contains(f.started[3].Input, again) {
+		t.Fatalf("the next batch: %+v", f.started[3])
+	}
+	if c := got.AppCheck; c.Last != "110" || c.Tries != 1 || outcome(at(60)).Outcome != schedule.FiredRetrying {
+		t.Fatalf("the next batch's first unfinished run: check %+v, %s", c, outcome(at(60)).Outcome)
+	}
+	// A run that finishes them moves the cursor, and ends the count and the failing.
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error { f.started = append(f.started, fi); return nil }
+	got = fire(at(75))
+	if c := got.AppCheck; c.Last != "120" || c.Tries != 0 || got.Failing != nil || outcome(at(75)).Outcome != schedule.FiredRun || !strings.Contains(f.started[4].Input, again) {
+		t.Fatalf("the run that finished: check %+v, failing %+v, %s", c, got.Failing, outcome(at(75)).Outcome)
+	}
+}
+
+// A check's run that didn't finish after a call that may have changed
+// something (ErrActed) is never handed again: a second run could pay or
+// refund twice. The cursor moves past its items as it always did, it counts
+// toward the schedule's failing so the owner hears, and the next firing's
+// run gets only what's new.
+func TestAnUnfinishedRunThatMayHaveActedIsNeverHandedAgain(t *testing.T) {
+	f, fire, outcome, at := checked(t)
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrActed
+	}
+	got := fire(at(0))
+	if c := got.AppCheck; c.Last != "110" || c.Tries != 0 || !c.Due.Equal(at(0)) {
+		t.Fatalf("the check after a run that may have acted: %+v", c)
+	}
+	if o := outcome(at(0)); o.Outcome != schedule.FiredUnfinished || o.Run != f.started[0].Key() {
+		t.Fatalf("its firing: %+v", o)
+	}
+	if fl := got.Failing; fl == nil || fl.Firings != 1 || fl.Run != f.started[0].Key() || fl.Outcome != schedule.FiredUnfinished {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+	got = fire(at(15)) // nothing new: no run, and m1 isn't handed again
+	if len(f.started) != 1 || outcome(at(15)).Outcome != schedule.FiredQuiet || got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("the next firing: started %d, %s, failing %+v", len(f.started), outcome(at(15)).Outcome, got.Failing)
+	}
+	// After two runs that changed nothing, a third that may have acted: the
+	// cursor moves at once, and the count ends.
+	f, fire, outcome, at = checked(t)
+	errs := []error{schedule.ErrUnfinished, schedule.ErrUnfinished, schedule.ErrActed}
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return errs[len(f.started)-1]
+	}
+	fire(at(0))
+	fire(at(15))
+	got = fire(at(30))
+	if c := got.AppCheck; c.Last != "110" || c.Tries != 0 || outcome(at(30)).Outcome != schedule.FiredUnfinished || got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("acted on the third: check %+v, %s, failing %+v", c, outcome(at(30)).Outcome, got.Failing)
+	}
+}
+
+// A repeated delivery of a check's firing whose run didn't finish says what
+// the first delivery said and counts nothing more: the count of hand-overs
+// and the schedule's failing each move once per firing.
+func TestARepeatedUnfinishedFiringCountsOnce(t *testing.T) {
+	f, fire, outcome, at := checked(t)
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrUnfinished
+	}
+	fire(at(0))
+	got := fire(at(0)) // delivered again: no new read, the same run
+	if c := got.AppCheck; c.Tries != 1 || c.Last != "100" || outcome(at(0)).Outcome != schedule.FiredRetrying || got.Failing != nil {
+		t.Fatalf("a repeated first firing: check %+v, %s, failing %+v", c, outcome(at(0)).Outcome, got.Failing)
+	}
+	if len(f.started) != 2 || f.started[0].Key() != f.started[1].Key() {
+		t.Fatalf("the repeat started another run: %+v", f.started)
+	}
+	fire(at(15))
+	fire(at(30)) // the third: given up, counted in failing
+	got = fire(at(30))
+	if c := got.AppCheck; c.Tries != 3 || c.Last != "110" || outcome(at(30)).Outcome != schedule.FiredUnfinished || got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("a repeated third firing: check %+v, %s, failing %+v", c, outcome(at(30)).Outcome, got.Failing)
+	}
+	// A run that may have acted, delivered again: failing counts it once.
+	f, fire, outcome, at = checked(t)
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrActed
+	}
+	fire(at(0))
+	got = fire(at(0))
+	if got.Failing == nil || got.Failing.Firings != 1 || got.AppCheck.Last != "110" || outcome(at(0)).Outcome != schedule.FiredUnfinished {
+		t.Fatalf("a repeated acted firing: check %+v, %s, failing %+v", got.AppCheck, outcome(at(0)).Outcome, got.Failing)
+	}
+}
+
+// A plain schedule hands its run nothing to give back: a run that started
+// and worked is a run, however it ended, and it ends a run of failures as it
+// always did.
+func TestAPlainSchedulesUnfinishedRunIsARun(t *testing.T) {
+	for _, unfinished := range []error{schedule.ErrUnfinished, schedule.ErrActed} {
+		f := newFixture()
+		s := scheduletest.Schedule("t1", "morning")
+		since := time.Date(2026, 11, 3, 8, 45, 0, 0, time.UTC)
+		s.Failing = &schedule.Failing{Since: since, Firings: 2, Last: since}
+		if err := f.store.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+			f.started = append(f.started, fi)
+			return unfinished
+		}
+		paris, _ := time.LoadLocation("Europe/Paris")
+		if err := f.sv.Fire(ctx, "t1", "morning", time.Date(2026, 11, 9, 9, 0, 0, 0, paris)); err != nil {
+			t.Fatalf("%v: %v", unfinished, err)
+		}
+		h, _ := f.history.Firings(ctx, "t1", "morning", 10)
+		if len(h) != 1 || h[0].Outcome != schedule.FiredRun || h[0].Run != f.started[0].Key() {
+			t.Fatalf("%v: history %+v", unfinished, h)
+		}
+		if got, _ := f.store.Get(ctx, "t1", "morning"); got.Failing != nil {
+			t.Fatalf("%v: failing %+v", unfinished, got.Failing)
+		}
+	}
+}
+
 // A schedule without a check keeps its run of unworked firings too, and a
 // run that works ends it. The run of failures is written over a fresh read,
 // so an owner's change made while the run went stays.
