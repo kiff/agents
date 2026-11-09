@@ -128,6 +128,12 @@ if [ "$(aws dynamodb describe-time-to-live --table-name "$TABLE" --query TimeToL
   aws dynamodb update-time-to-live --table-name "$TABLE" --time-to-live-specification Enabled=true,AttributeName=ttl >/dev/null
   say "turned on TTL for $TABLE"
 fi
+# Point-in-time recovery: the last 35 days can be restored, in the region, as
+# the security page says of our databases' backups.
+if [ "$(aws dynamodb describe-continuous-backups --table-name "$TABLE" --query ContinuousBackupsDescription.PointInTimeRecoveryDescription.PointInTimeRecoveryStatus)" != "ENABLED" ]; then
+  aws dynamodb update-continuous-backups --table-name "$TABLE" --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true >/dev/null
+  say "turned on point-in-time recovery for $TABLE"
+fi
 
 # --- Attached files (kiff/tafs#209) ------------------------------------------
 
