@@ -26,6 +26,7 @@ import (
 	"github.com/kiff/agents/runner"
 	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
+	"github.com/kiff/agents/store/memory"
 )
 
 // replies is a model that answers each turn with the next reply, and counts
@@ -600,6 +601,37 @@ func TestAFiringOfASwitchingAgentIsSkippedSwitching(t *testing.T) {
 	}
 	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrSwitching) {
 		t.Fatalf("a repeated delivery of a switch-stopped run = %v; want schedule.ErrSwitching", err)
+	}
+}
+
+// switchOnCreate begins the agent's switch as soon as a run is stored: the
+// run starts, then is stopped before its loop by the switch.
+type switchOnCreate struct {
+	*memory.Runs
+	agents *memory.Agents
+}
+
+func (s switchOnCreate) Create(ctx context.Context, r run.Run) error {
+	if err := s.Runs.Create(ctx, r); err != nil {
+		return err
+	}
+	_, err := s.agents.BeginSwitch(ctx, r.Tenant, r.Agent, registry.Switching{N: 2, At: time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)})
+	return err
+}
+
+// A firing whose run started, then was stopped before its loop by a switch
+// begun meanwhile, is the switch's skip, never a run that did nothing.
+func TestAFiringStoppedByASwitchBegunMeanwhileIsSkippedSwitching(t *testing.T) {
+	f, _, agents, runs := newFunctionWith(t, &replies{}, &invocations{})
+	_ = agents.Put(ctx, registrytest.Definition("t1", "payouts"))
+	f.runner.(*runner.Runner).Runs = switchOnCreate{Runs: runs, agents: agents}
+	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
+		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrSwitching) {
+		t.Fatalf("a firing stopped by a switch = %v; want schedule.ErrSwitching", err)
+	}
+	if r, err := runs.Get(ctx, "t1", fi.Key()); err != nil || r.Error != runner.FailedSwitching {
+		t.Fatalf("its run = %+v, %v; want it stopped for the switch", r, err)
 	}
 }
 
