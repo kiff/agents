@@ -24,11 +24,22 @@ func FallsBack(err error) bool {
 	if !errors.As(err, &apiErr) {
 		return false
 	}
+	if CreditRefused(err) {
+		return true
+	}
 	switch apiErr.StatusCode {
-	case http.StatusBadRequest:
-		return string(apiErr.Type()) == "invalid_request_error" && strings.Contains(strings.ToLower(apiErr.Error()), "credit balance")
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
 		return true
 	}
 	return false
+}
+
+// CreditRefused says whether err is the Claude API refusing a turn for the
+// balance of the account that pays for it: matched on all of its status
+// (400), its error type (invalid_request_error) and its words ("credit
+// balance").
+func CreditRefused(err error) bool {
+	var apiErr *sdk.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+		string(apiErr.Type()) == "invalid_request_error" && strings.Contains(strings.ToLower(apiErr.Error()), "credit balance")
 }

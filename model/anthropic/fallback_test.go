@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -50,6 +51,11 @@ func TestOnlyTheCreditRefusalAndAnOutageFallBack(t *testing.T) {
 		}
 		if got := anthropic.FallsBack(err); got != c.want {
 			t.Errorf("%s: FallsBack = %v, want %v (%v)", c.name, got, c.want, err)
+		}
+		// Only the credit refusal is ours to say so about, its words kept for the logs' alarm.
+		credit := c.name == "the credit refusal"
+		if errors.Is(err, model.ErrProviderBalance) != credit || credit && !strings.Contains(err.Error(), "credit balance") {
+			t.Errorf("%s: ErrProviderBalance = %v, want %v (%v)", c.name, errors.Is(err, model.ErrProviderBalance), credit, err)
 		}
 	}
 	if anthropic.FallsBack(context.Canceled) || anthropic.FallsBack(errors.New("dial tcp: connection refused")) {

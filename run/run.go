@@ -34,6 +34,22 @@ const (
 	Cancelled Status = "CANCELLED" // cancelled; it doesn't undo what a tool already did
 )
 
+// AIUnavailable is the Error of a run that stopped because the AI provider
+// refused us for our own account's balance (model.ErrProviderBalance): words
+// the person reads as they are, in two sentences (tafs cloud shows two). Its
+// ErrorCode is "ai_unavailable". A failed run uses no credits (KIFF counts it
+// free), so the words can say so.
+const AIUnavailable = "Our AI provider isn't serving us right now, so this stopped and used none of your credits. It's on our side, not yours: try again a little later."
+
+// ErrorCode is the code of a run's Error that a client may treat apart from
+// its words: "ai_unavailable" for AIUnavailable, otherwise "".
+func ErrorCode(err string) string {
+	if err == AIUnavailable {
+		return "ai_unavailable"
+	}
+	return ""
+}
+
 // Final reports whether a run in this status can change no more.
 func (s Status) Final() bool { return s == Completed || s == Error || s == Cancelled }
 

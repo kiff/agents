@@ -237,6 +237,13 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
 - A failed run is stored ERROR with a public message (`runner.FailedBuild`,
   `FailedStart`, `FailedRun`, `FailedTime`); the cause is returned, never
   stored.
+- **The AI provider refusing our balance** (`model.ErrProviderBalance`: the
+  Claude API's 400 "credit balance") stops the run with words of its own,
+  `runner.FailedAIUnavailable`: it's on our side, and none of the person's
+  credits were used, as KIFF counts a failed run free. The run's `code` is
+  `ai_unavailable`, for apps to treat it apart from a credits refusal. The
+  API's words stay in the logged error, which the `credit balance` alarm
+  matches.
 - **Why a call failed, after the run.** A run drops its calls' results when
   it ends, but each call's `Called` line is kept, and a call that wasn't done
   keeps its result's words as its `reason`: on one line, at most 300

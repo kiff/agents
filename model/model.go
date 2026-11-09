@@ -7,8 +7,14 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrProviderBalance is a turn the provider refused because the account that
+// pays for it, ours and never the customer's, has no balance left. Nothing of
+// the turn ran.
+var ErrProviderBalance = errors.New("model: the provider refused the turn for our account's balance")
 
 // Role is who wrote a message.
 type Role string

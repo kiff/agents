@@ -444,6 +444,7 @@ func TestOnlyARunTheRunnerEndedBeforeAnyTurnIsUnworked(t *testing.T) {
 	}{
 		{"refused at its first call", run.Run{Status: run.Error, Error: runner.FailedRun}, true},
 		{"out of time before a reply", run.Run{Status: run.Error, Error: runner.FailedTime}, true},
+		{"refused for our AI balance", run.Run{Status: run.Error, Error: runner.FailedAIUnavailable}, true},
 		{"not built", run.Run{Status: run.Error, Error: runner.FailedBuild}, true},
 		{"not started", run.Run{Status: run.Error, Error: runner.FailedStart}, true},
 		{"its agent switching versions", run.Run{Status: run.Error, Error: runner.FailedSwitching}, true},
