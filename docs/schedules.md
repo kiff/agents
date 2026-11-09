@@ -127,7 +127,7 @@ schedule and due time, so a repeated delivery replaces it.
 | `skipped_too_large` | its check found only items too large for a run |
 | `failed_unworked` | it started `run`, which failed before any turn and did nothing |
 | `failed_retrying` | its check's run did some work, then failed or was cut short, and changed nothing: the cursor stays, and the next firing hands the same items to a new run; `failing` stays as it was |
-| `failed_unfinished` | its check's run didn't finish, and its items aren't handed again (a call of it may have changed something, or three runs were handed them): the cursor moves past them, and it counts toward `failing` |
+| `failed_unfinished` | its check's run didn't finish, and its items aren't handed again (a call of it may have changed something, a turn of it was declined, or three runs were handed them): the cursor moves past them, and it counts toward `failing` |
 | `skipped_halted` | its agent, or the whole account, was halted: no run, and the firing isn't tried again; a check reads nothing and its cursor stays, so what came meanwhile goes to the first firing after the halt; `failing` stays as it was |
 | `skipped_switching` | its agent was switching versions: no run, nothing used up, so a check's cursor stays and the next firing hands the same items to the new version; `failing` stays as it was |
 | `failed_check` | its check couldn't read the app: no run, a check's cursor stays, and it counts toward `failing` |
@@ -173,12 +173,16 @@ older firing that comes after a newer one was counted.
 
 A check's cursor moves only past items a run finished. A run finished what it
 was handed when it ended with an answer. A run paused for its owner holds its
-items and carries on from there. A run its owner stopped, or whose turn was
-declined, isn't started again.
+items and carries on from there. A run its owner stopped isn't started again,
+and neither is one a halt stopped partway: a halt that lands during a run
+drops that run's items (the cursor stays only for a firing that hadn't started
+its run).
 
-A run **didn't finish** when it did some work and then failed, or its turn or
-cost cap cut it short. What happens to its items depends on one thing: whether
-anything it did can have changed something outside it.
+A run **didn't finish** when it did some work and then failed, or was cut
+short: by its turn cap, by its cost cap, or by its reply running out of room
+(a reply cut off before its next call looks just like that). What happens to
+its items depends on one thing: whether anything it did can have changed
+something outside it.
 
 - **It changed nothing: the items go again.**
   - The firing's outcome is `failed_retrying`, with its `run`. The cursor
@@ -197,6 +201,9 @@ anything it did can have changed something outside it.
     the items, as it always did.
   - It counts toward `failing`, so whoever shows the schedule tells the owner.
     The run's own record says what it did (`done`).
+- **A turn of it was declined** (a safety classifier): the same as above. A
+  new run with the same items would only be declined again, so they aren't
+  handed again, the cursor moves, and it counts toward `failing`.
 
 **"May have changed something" is decided from KIFF's word on each call that
 acts, never from the call's error mark.** KIFF marks its own answers as
@@ -208,9 +215,10 @@ not in the API's view of a run):
 |---|---|
 | went through | yes |
 | sent, the answer lost (`unknown`), or not in yet (`forwarding`, `sending`) | yes |
+| still being decided (`deciding`): not sent yet, and another attempt of the same call may still send it | yes |
 | sent, and the vendor failed it | yes |
 | any state this runtime doesn't know, or none (a tool outside KIFF) | yes |
-| held for the owner, refused, failed before sending, or still being decided | no |
+| held for the owner, refused, or failed before sending | no |
 | a trial's, or one refused back to the model unmade | no |
 
 A read never counts. What a read is comes from the tool's mark, as its

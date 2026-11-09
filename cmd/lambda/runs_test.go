@@ -427,16 +427,16 @@ func TestAFiringWhoseRunDidNothingSaysSo(t *testing.T) {
 	// after acting, before its turns were stored. A late repeated delivery
 	// doesn't hand its items to another run.
 	change(func(n *run.Run) { n.Resumes, n.Error = 1, "its lease ran out: the invocation crashed or timed out" })
-	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrActed) {
-		t.Fatalf("a run the sweep ended, delivered again = %v, want ErrActed", err)
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrNotAgain) {
+		t.Fatalf("a run the sweep ended, delivered again = %v, want ErrNotAgain", err)
 	}
 	// It worked, then failed, with a write that went through: never handed again either.
 	change(func(n *run.Run) {
 		n.Resumes, n.Error, n.Turns, n.Sent = 0, runner.FailedRun, 1, 1
 		n.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund"}}
 	})
-	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrActed) {
-		t.Fatalf("a run that acted, delivered again = %v, want ErrActed", err)
+	if err := f.fire(ctx, fi); !errors.Is(err, schedule.ErrNotAgain) {
+		t.Fatalf("a run that acted, delivered again = %v, want ErrNotAgain", err)
 	}
 	// It worked, then failed, and changed nothing: its items can go again.
 	change(func(n *run.Run) { n.Sent, n.Done = 0, nil })
@@ -458,7 +458,9 @@ func TestAFiringWhoseRunDidNothingSaysSo(t *testing.T) {
 // anything: no call that acts may have reached the vendor (Sent, from KIFF's
 // word on each call), none went through, the sweep never carried it on, and
 // its failure is the runner's own. Anything else that didn't finish is never
-// handed again, so nothing is paid or refunded twice.
+// handed again, so nothing is paid or refunded twice. A run cut off by its
+// reply running out of room didn't finish either, and one whose turn was
+// declined is never handed again: a new run would only be declined too.
 func TestWhatAFiringsEndedRunMeans(t *testing.T) {
 	failed := run.Run{Status: run.Error, Error: runner.FailedRun, Turns: 3}
 	capped := run.Run{Status: run.Completed, Stop: "turn_cap", Turns: 50}
@@ -472,19 +474,21 @@ func TestWhatAFiringsEndedRunMeans(t *testing.T) {
 		{"stopped by a switch before it began", run.Run{Status: run.Error, Error: runner.FailedSwitching}, schedule.ErrSwitching},
 		{"failed after reads only", failed, schedule.ErrUnfinished},
 		{"failed after a write KIFF held, refused or failed (not sent)", with(failed, func(r *run.Run) { r.Refused, r.Declined = 2, 1 }), schedule.ErrUnfinished},
-		{"failed after a write that may have been sent (its answer lost)", with(failed, func(r *run.Run) { r.Sent = 1 }), schedule.ErrActed},
-		{"failed after a write that went through", with(failed, func(r *run.Run) { r.Sent, r.Done = 1, []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrActed},
-		{"failed with a done call kept by an older runtime (no count)", with(failed, func(r *run.Run) { r.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrActed},
-		{"failed after the sweep carried it on", with(failed, func(r *run.Run) { r.Resumes = 1 }), schedule.ErrActed},
-		{"ended by the sweep, its turns maybe behind", run.Run{Status: run.Error, Error: "its lease ran out: the invocation crashed or timed out"}, schedule.ErrActed},
+		{"failed after a write that may have been sent (its answer lost)", with(failed, func(r *run.Run) { r.Sent = 1 }), schedule.ErrNotAgain},
+		{"failed after a write that went through", with(failed, func(r *run.Run) { r.Sent, r.Done = 1, []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrNotAgain},
+		{"failed with a done call kept by an older runtime (no count)", with(failed, func(r *run.Run) { r.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrNotAgain},
+		{"failed after the sweep carried it on", with(failed, func(r *run.Run) { r.Resumes = 1 }), schedule.ErrNotAgain},
+		{"ended by the sweep, its turns maybe behind", run.Run{Status: run.Error, Error: "its lease ran out: the invocation crashed or timed out"}, schedule.ErrNotAgain},
 		{"cut short by its turn cap after reads only", capped, schedule.ErrUnfinished},
 		{"cut short by its cost cap after reads only", with(capped, func(r *run.Run) { r.Stop = "cost_cap" }), schedule.ErrUnfinished},
-		{"cut short by its turn cap after a write that went through", with(capped, func(r *run.Run) { r.Sent, r.Done = 1, []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrActed},
-		{"cut short by its cost cap after a write whose answer was lost", with(capped, func(r *run.Run) { r.Stop, r.Sent = "cost_cap", 1 }), schedule.ErrActed},
+		{"cut short by its turn cap after a write that went through", with(capped, func(r *run.Run) { r.Sent, r.Done = 1, []run.Done{{CallID: "c1", Tool: "stripe_refund"}} }), schedule.ErrNotAgain},
+		{"cut short by its cost cap after a write whose answer was lost", with(capped, func(r *run.Run) { r.Stop, r.Sent = "cost_cap", 1 }), schedule.ErrNotAgain},
 		{"answered", run.Run{Status: run.Completed, Stop: "answered", Turns: 4}, nil},
 		{"answered after writes", run.Run{Status: run.Completed, Stop: "answered", Turns: 4, Sent: 2}, nil},
-		{"out of room mid-answer", run.Run{Status: run.Completed, Stop: "max_token", Turns: 4}, nil},
-		{"a turn declined", run.Run{Status: run.Completed, Stop: "refused", Turns: 1}, nil},
+		{"out of room mid-answer after reads only", run.Run{Status: run.Completed, Stop: "max_token", Turns: 4}, schedule.ErrUnfinished},
+		{"out of room mid-answer after a write that may have been sent", run.Run{Status: run.Completed, Stop: "max_token", Turns: 4, Sent: 1}, schedule.ErrNotAgain},
+		{"a turn declined", run.Run{Status: run.Completed, Stop: "refused", Turns: 1}, schedule.ErrNotAgain},
+		{"a turn declined after a write", run.Run{Status: run.Completed, Stop: "refused", Turns: 3, Sent: 1}, schedule.ErrNotAgain},
 		{"stopped by its owner", run.Run{Status: run.Cancelled, Stop: "cancelled", Turns: 2}, nil},
 		{"paused for its owner, after a write", run.Run{Status: run.Paused, Stop: "paused", Turns: 2, Sent: 1}, nil},
 		{"still at work", run.Run{Status: run.Running, Turns: 2}, nil},

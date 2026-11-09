@@ -115,18 +115,26 @@ func unworked(r run.Run) bool {
 }
 
 // unfinished reports whether r, a firing's run that did some work, ended
-// without finishing what it was handed: it failed, or its turn or cost cap
-// cut it short. One that ended with an answer finished. One paused holds its
-// work and carries on from there. One its owner stopped, or whose turn was
-// declined, isn't one to start again.
+// without finishing what it was handed: it failed, or was cut short by its
+// turn or cost cap, or by its reply running out of room (a reply cut off
+// before its next call looks just like that). One that ended with an answer
+// finished. One paused holds its work and carries on from there. One its
+// owner stopped isn't one to start again.
 func unfinished(r run.Run) bool {
 	switch r.Status {
 	case run.Error:
 		return !unworked(r)
 	case run.Completed:
-		return r.Stop == "turn_cap" || r.Stop == "cost_cap"
+		return r.Stop == "turn_cap" || r.Stop == "cost_cap" || r.Stop == "max_token"
 	}
 	return false
+}
+
+// declined reports whether r stopped because a turn of it was declined (a
+// safety classifier): it didn't finish either, and a new run with the same
+// items would only be declined again.
+func declined(r run.Run) bool {
+	return r.Status == run.Completed && r.Stop == "refused"
 }
 
 // unsent reports whether nothing r did can have changed anything outside
@@ -146,6 +154,8 @@ func unsent(r run.Run) bool {
 //   - it didn't finish, and changed nothing: what it was handed can go to
 //     another run;
 //   - it didn't finish, and may have changed something: never handed again;
+//   - a turn of it was declined: never handed again either, so the owner
+//     hears that its items were dropped;
 //   - anything else is a run that started, as it always was: one that
 //     answered, one its owner stopped, and one still at work or paused for
 //     its owner, which holds what it was handed.
@@ -157,8 +167,8 @@ func ended(r run.Run) error {
 		return schedule.ErrUnworked
 	case unfinished(r) && unsent(r):
 		return schedule.ErrUnfinished
-	case unfinished(r):
-		return schedule.ErrActed
+	case unfinished(r), declined(r):
+		return schedule.ErrNotAgain
 	}
 	return nil
 }

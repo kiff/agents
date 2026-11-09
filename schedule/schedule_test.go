@@ -1001,7 +1001,7 @@ func TestAnUnfinishedRunsItemsGoAgainThreeTimesAtMost(t *testing.T) {
 }
 
 // A check's run that didn't finish after a call that may have changed
-// something (ErrActed) is never handed again: a second run could pay or
+// something (ErrNotAgain) is never handed again: a second run could pay or
 // refund twice. The cursor moves past its items as it always did, it counts
 // toward the schedule's failing so the owner hears, and the next firing's
 // run gets only what's new.
@@ -1009,7 +1009,7 @@ func TestAnUnfinishedRunThatMayHaveActedIsNeverHandedAgain(t *testing.T) {
 	f, fire, outcome, at := checked(t)
 	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
 		f.started = append(f.started, fi)
-		return schedule.ErrActed
+		return schedule.ErrNotAgain
 	}
 	got := fire(at(0))
 	if c := got.AppCheck; c.Last != "110" || c.Tries != 0 || !c.Due.Equal(at(0)) {
@@ -1028,7 +1028,7 @@ func TestAnUnfinishedRunThatMayHaveActedIsNeverHandedAgain(t *testing.T) {
 	// After two runs that changed nothing, a third that may have acted: the
 	// cursor moves at once, and the count ends.
 	f, fire, outcome, at = checked(t)
-	errs := []error{schedule.ErrUnfinished, schedule.ErrUnfinished, schedule.ErrActed}
+	errs := []error{schedule.ErrUnfinished, schedule.ErrUnfinished, schedule.ErrNotAgain}
 	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
 		f.started = append(f.started, fi)
 		return errs[len(f.started)-1]
@@ -1068,7 +1068,7 @@ func TestARepeatedUnfinishedFiringCountsOnce(t *testing.T) {
 	f, fire, outcome, at = checked(t)
 	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
 		f.started = append(f.started, fi)
-		return schedule.ErrActed
+		return schedule.ErrNotAgain
 	}
 	fire(at(0))
 	got = fire(at(0))
@@ -1081,7 +1081,7 @@ func TestARepeatedUnfinishedFiringCountsOnce(t *testing.T) {
 // and worked is a run, however it ended, and it ends a run of failures as it
 // always did.
 func TestAPlainSchedulesUnfinishedRunIsARun(t *testing.T) {
-	for _, unfinished := range []error{schedule.ErrUnfinished, schedule.ErrActed} {
+	for _, unfinished := range []error{schedule.ErrUnfinished, schedule.ErrNotAgain} {
 		f := newFixture()
 		s := scheduletest.Schedule("t1", "morning")
 		since := time.Date(2026, 11, 3, 8, 45, 0, 0, time.UTC)

@@ -343,11 +343,12 @@ var ErrSwitching = errors.New("schedule: the agent is switching versions, so the
 // next firing's run again (FiredRetrying), MaxCheckTries runs at most.
 var ErrUnfinished = errors.New("schedule: the firing's run didn't finish, and changed nothing")
 
-// ErrActed is what Start returns for a firing whose run didn't finish
-// either, after a call that acts may have reached the vendor: nothing it was
-// handed goes to another run, which could pay or refund again
+// ErrNotAgain is what Start returns for a firing whose run didn't finish
+// either, and whose items must not go to another run: a call of it that acts
+// may have reached the vendor, so a second run could pay or refund again, or
+// a turn of it was declined, so a second run would only be declined too
 // (FiredUnfinished).
-var ErrActed = errors.New("schedule: the firing's run didn't finish, after a call that may have changed something")
+var ErrNotAgain = errors.New("schedule: the firing's run didn't finish, and what it was handed isn't handed again")
 
 // CreditsError is what Start returns for a firing whose run KIFF's balance
 // refused, the account's tafs waiting for credits: Why is KIFF's code. It
@@ -422,8 +423,9 @@ const (
 	// it was.
 	FiredRetrying = "failed_retrying"
 	// FiredUnfinished: its check's run didn't finish, and what it was
-	// handed isn't handed again: a call of it may have changed something
-	// (ErrActed), or MaxCheckTries runs were handed them. The cursor moves
+	// handed isn't handed again: a call of it may have changed something or
+	// a turn of it was declined (ErrNotAgain), or MaxCheckTries runs were
+	// handed them. The cursor moves
 	// past them, and it counts toward the schedule's failing, so the owner
 	// hears.
 	FiredUnfinished = "failed_unfinished"
@@ -811,9 +813,10 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			case errors.Is(err, ErrUnfinished):
 				// Handed MaxCheckTries runs, none finished them: the cursor moves on.
 				unfinished, next.Tries = true, MaxCheckTries
-			case errors.Is(err, ErrActed):
-				// A call of its run may have changed something: never handed
-				// again, so nothing is done twice. The cursor moves on.
+			case errors.Is(err, ErrNotAgain):
+				// A call of its run may have changed something, or a turn of
+				// it was declined: never handed again, so nothing is done
+				// twice. The cursor moves on.
 				unfinished, next.Tries = true, 0
 			default:
 				return err
@@ -848,14 +851,14 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 		case errors.Is(err, ErrSwitching):
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
-		case (errors.Is(err, ErrUnfinished) || errors.Is(err, ErrActed)) && s.AppCheck != nil:
+		case (errors.Is(err, ErrUnfinished) || errors.Is(err, ErrNotAgain)) && s.AppCheck != nil:
 			// A repeated delivery of a check's firing whose run didn't
 			// finish: kept as the first delivery kept it, and counted once.
 			if errors.Is(err, ErrUnfinished) && s.AppCheck.Tries < MaxCheckTries {
 				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRetrying, Run: f.Key()})
 			}
 			return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredUnfinished, Run: f.Key()})
-		case errors.Is(err, ErrUnfinished), errors.Is(err, ErrActed):
+		case errors.Is(err, ErrUnfinished), errors.Is(err, ErrNotAgain):
 			// A plain schedule hands its run nothing to give back: a run
 			// that started and worked, as it always was.
 			started = true
