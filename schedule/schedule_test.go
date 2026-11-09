@@ -1028,9 +1028,12 @@ func TestAOnceScheduleIsTurnedOffAsStoredAfterItsRun(t *testing.T) {
 }
 
 // A firing of a halted agent starts no run, and says so: skipped_halted in
-// the history, with no run. Nothing from before a halt runs, so a check's
-// cursor moves past what it found, and the schedule's failing stays as it
-// was, since no run worked.
+// the history, with no run. The halted firing itself is never tried again,
+// but a check's cursor stays where it was, so what came meanwhile goes to
+// the first firing after the halt, as a plain schedule's run would find it
+// in the app. That holds for a halt found before the read (nothing is read)
+// and for one that lands after it. The schedule's failing stays as it was,
+// since no run worked.
 func TestAHaltedAgentsFiringIsSkippedHalted(t *testing.T) {
 	f := newFixture()
 	s := scheduletest.Schedule("t1", "inbox")
@@ -1057,8 +1060,42 @@ func TestAHaltedAgentsFiringIsSkippedHalted(t *testing.T) {
 		t.Fatalf("history %+v", h)
 	}
 	got, _ := f.store.Get(ctx, "t1", "inbox")
-	if got.AppCheck.Last != "2" || got.Failing == nil || got.Failing.Firings != 2 {
-		t.Fatalf("cursor %q, failing %+v", got.AppCheck.Last, got.Failing)
+	if got.AppCheck.Last != "0" || !got.AppCheck.Due.IsZero() || got.Failing == nil || got.Failing.Firings != 2 {
+		t.Fatalf("a halt after the read: check %+v, failing %+v", got.AppCheck, got.Failing)
+	}
+	// Halted before the read: nothing is read, nothing starts, the cursor stays.
+	f.started = nil
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return "", schedule.ErrHalted }
+	if err := f.sv.Fire(ctx, "t1", "inbox", due.Add(15*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = f.history.Firings(ctx, "t1", "inbox", 10)
+	if len(h) != 2 || h[0].Outcome != schedule.FiredHalted || h[0].Run != "" || len(f.started) != 0 {
+		t.Fatalf("halted before the read: history %+v, started %+v", h, f.started)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.AppCheck.Last != "0" || got.Failing == nil || got.Failing.Firings != 2 {
+		t.Fatalf("halted before the read: check %+v, failing %+v", got.AppCheck, got.Failing)
+	}
+	// The halt over: the next firing hands over what came meanwhile.
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+		return `{"data":[{"id":"m1","created":1},{"id":"m2","created":2},{"id":"m3","created":3}]}`, nil
+	}
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return nil
+	}
+	if err := f.sv.Fire(ctx, "t1", "inbox", due.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 1 || !strings.Contains(f.started[0].Input, `"m1"`) || !strings.Contains(f.started[0].Input, `"m3"`) {
+		t.Fatalf("after the halt: started %+v", f.started)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.AppCheck.Last != "3" {
+		t.Fatalf("after the halt: check %+v", got.AppCheck)
+	}
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return schedule.ErrHalted
 	}
 	// Without a check: the same, and its failing stays.
 	plain := scheduletest.Schedule("t1", "morning")

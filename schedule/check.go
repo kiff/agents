@@ -1,11 +1,13 @@
 package schedule
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -50,6 +52,50 @@ type Check struct {
 type Partial struct {
 	Cursor string   `json:"cursor"`
 	Seen   []string `json:"seen"`
+}
+
+// Reads reports whether c and o read the same thing: the same tool with the
+// same arguments, the same list in its result, and the same cursor and
+// identity fields. A cursor kept for one read means nothing for another.
+func (c Check) Reads(o Check) bool {
+	return c.Tool == o.Tool && c.Items == o.Items && c.Cursor == o.Cursor &&
+		cmp.Or(c.ID, "id") == cmp.Or(o.ID, "id") && sameJSON(c.Arguments, o.Arguments)
+}
+
+// sameJSON reports whether a and b are the same JSON value, however each is
+// written; no arguments are the empty object.
+func sameJSON(a, b json.RawMessage) bool {
+	var x, y any
+	if len(a) == 0 {
+		a = json.RawMessage("{}")
+	}
+	if len(b) == 0 {
+		b = json.RawMessage("{}")
+	}
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
+}
+
+// Fresh is c with nothing kept from earlier checks: what a body's check is
+// before the service gives it the stored one's state, or leaves it to take
+// its cursor at its first firing. The state is the service's, never a
+// caller's.
+func (c Check) Fresh() Check {
+	c.Last, c.Due, c.Partial = "", time.Time{}, nil
+	return c
+}
+
+// Keeping is c with the state the stored check o kept (its cursor, the
+// firing that last started a run, and what was handed over of a cursor
+// value's items) when both read the same thing; c fresh otherwise.
+func (c Check) Keeping(o *Check) Check {
+	c = c.Fresh()
+	if o != nil && c.Reads(*o) {
+		c.Last, c.Due, c.Partial = o.Last, o.Due, o.Partial
+	}
+	return c
 }
 
 // MaxCheckItems bounds the new items one firing hands its run.

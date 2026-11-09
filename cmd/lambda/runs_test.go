@@ -732,10 +732,43 @@ func TestACheckReadRefusedForAHaltOrASwitchIsThatSkip(t *testing.T) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}
-	asked := false
-	worked := checkRead(func(context.Context, string, string) error { asked = true; return registry.ErrHalted },
-		func(context.Context, string, string, schedule.Check) (string, error) { return `{"data":[]}`, nil })
-	if got, err := worked(ctx, "t1", "inbox", schedule.Check{}); err != nil || got != `{"data":[]}` || asked {
-		t.Fatalf("a read that worked: %q, %v (state asked: %v)", got, err, asked)
+	// A halted or switching agent's check reads nothing: the app isn't called.
+	for _, c := range []struct {
+		name      string
+		startable error
+		want      error
+	}{
+		{"halted", fmt.Errorf("%w", registry.ErrHalted), schedule.ErrHalted},
+		{"switching", fmt.Errorf("%w (to version 2)", registry.ErrSwitching), schedule.ErrSwitching},
+	} {
+		reads := 0
+		read := checkRead(func(context.Context, string, string) error { return c.startable },
+			func(context.Context, string, string, schedule.Check) (string, error) {
+				reads++
+				return `{"data":[]}`, nil
+			})
+		if _, err := read(ctx, "t1", "inbox", schedule.Check{}); !errors.Is(err, c.want) || reads != 0 {
+			t.Errorf("%s before the read: %v, want %v (%d reads)", c.name, err, c.want, reads)
+		}
+	}
+	// One that's neither reads, and a read that works is the answer; a state
+	// that can't be read doesn't stop the read.
+	for name, st := range map[string]error{"startable": nil, "the state can't be read": errors.New("dynamodb down")} {
+		worked := checkRead(func(context.Context, string, string) error { return st },
+			func(context.Context, string, string, schedule.Check) (string, error) { return `{"data":[]}`, nil })
+		if got, err := worked(ctx, "t1", "inbox", schedule.Check{}); err != nil || got != `{"data":[]}` {
+			t.Fatalf("%s: a read that worked: %q, %v", name, got, err)
+		}
+	}
+	// A halt that begins during a read that fails is still the halt's skip.
+	asked := 0
+	during := checkRead(func(context.Context, string, string) error {
+		if asked++; asked == 1 {
+			return nil
+		}
+		return registry.ErrHalted
+	}, func(context.Context, string, string, schedule.Check) (string, error) { return "", refused })
+	if _, err := during(ctx, "t1", "inbox", schedule.Check{}); !errors.Is(err, schedule.ErrHalted) || asked != 2 {
+		t.Fatalf("a halt during a failed read: %v (asked %d times)", err, asked)
 	}
 }

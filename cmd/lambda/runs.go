@@ -175,24 +175,33 @@ func (f *function) fire(ctx context.Context, fi schedule.Firing) error {
 	return nil
 }
 
-// checkRead is a schedule's check read: read, and when it fails because the
-// agent is halted or switching versions (startable says which), that skip
-// (schedule.ErrHalted, ErrSwitching), never a read that failed, so neither a
-// halt nor a switch counts toward the schedule's failing. A read that worked
-// meanwhile goes on as before: its run is refused, and the schedule keeps the
-// halt (the cursor moves past) or the switch (it stays).
+// checkRead is a schedule's check read. A halted or switching agent's check
+// reads nothing (startable says which): that skip (schedule.ErrHalted,
+// ErrSwitching), with no call to the app. A read that fails is asked again,
+// since a halt or a switch may have begun meanwhile: that skip too, never a
+// read that failed, so neither counts toward the schedule's failing. Either
+// way the check's cursor stays where it was.
 func checkRead(startable func(ctx context.Context, tenant, agent string) error,
 	read func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error)) func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+	skip := func(ctx context.Context, tenant, agent string) error {
+		switch st := startable(ctx, tenant, agent); {
+		case errors.Is(st, registry.ErrHalted):
+			return schedule.ErrHalted
+		case errors.Is(st, registry.ErrSwitching):
+			return schedule.ErrSwitching
+		}
+		return nil
+	}
 	return func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
+		if err := skip(ctx, tenant, agent); err != nil {
+			return "", err
+		}
 		result, err := read(ctx, tenant, agent, c)
 		if err == nil {
 			return result, nil
 		}
-		switch st := startable(ctx, tenant, agent); {
-		case errors.Is(st, registry.ErrHalted):
-			return "", schedule.ErrHalted
-		case errors.Is(st, registry.ErrSwitching):
-			return "", schedule.ErrSwitching
+		if skipped := skip(ctx, tenant, agent); skipped != nil {
+			return "", skipped
 		}
 		return "", err
 	}

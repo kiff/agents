@@ -318,9 +318,9 @@ var ErrNotFound = errors.New("schedule: no such schedule")
 // turn: it did nothing, so nothing it was handed is used up (FiredUnworked).
 var ErrUnworked = errors.New("schedule: the firing's run failed before doing any work")
 
-// ErrHalted is what Start returns for a firing of a halted agent: it starts
-// no run and isn't tried again, since nothing from before a halt runs
-// (FiredHalted).
+// ErrHalted is what Start, or a check's read, returns for a firing of a
+// halted agent: it starts no run and isn't tried again (FiredHalted). A
+// check's cursor stays where it was.
 var ErrHalted = errors.New("schedule: the agent is halted, so the firing starts nothing")
 
 // ErrSwitching is what Start returns for a firing of an agent switching
@@ -393,8 +393,9 @@ const (
 	// input: no run, and they aren't read again.
 	FiredTooLarge = "skipped_too_large"
 	// FiredHalted: its agent, or the whole account, was halted. No run, and
-	// nothing from before a halt runs: a check's cursor moves past what it
-	// found. The schedule's failing is left as it was, since no run worked.
+	// the firing isn't tried again. A check reads nothing and its cursor
+	// stays, so what came meanwhile goes to the first firing after the halt.
+	// The schedule's failing is left as it was, since no run worked.
 	FiredHalted = "skipped_halted"
 	// FiredCredits: the account's tafs wait for credits. No run, and what
 	// it was handed waits: a check's cursor stays, and the next firing that
@@ -744,7 +745,6 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: outcome})
 		}
 		f.Input = input
-		halted := false
 		var credits *CreditsError
 		if err := sv.Start(ctx, f); err != nil {
 			switch {
@@ -758,20 +758,14 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 				// No run: the items wait for the new version, as the cursor stays.
 				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
 			case errors.Is(err, ErrHalted):
-				// Nothing from before a halt runs: the cursor moves past them.
-				halted = true
+				// No run: the items wait for the halt's end, as the cursor stays.
+				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 			default:
 				return err
 			}
 		}
 		next.Due = f.Due
 		s.AppCheck = &next
-		if halted {
-			if err := sv.Store.Put(ctx, s); err != nil {
-				return err
-			}
-			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
-		}
 		s.Failing, s.Waited = nil, nil
 		if err := sv.Store.Put(ctx, s); err != nil {
 			return err

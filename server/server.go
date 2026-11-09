@@ -1125,8 +1125,13 @@ func readSchedule(r *http.Request, c Caller) (schedule.Schedule, error) {
 		return sc, bad("the tenant comes from the caller, not the body")
 	}
 	sc.Tenant = c.Tenant
-	// The service keeps them, from the firings: a body's are ignored.
+	// The service keeps them, from the firings: a body's are ignored, and so
+	// is what a body's check says it kept (its cursor).
 	sc.Failing, sc.Waited = nil, nil
+	if sc.AppCheck != nil {
+		fresh := sc.AppCheck.Fresh()
+		sc.AppCheck = &fresh
+	}
 	return sc, nil
 }
 
@@ -1199,6 +1204,15 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 	// Its firings' run of failures stays, until a run works, and so does
 	// the last firing that waited for credits.
 	sc.Failing, sc.Waited = old.Failing, old.Waited
+	// A check that reads what the stored one reads keeps its cursor: an
+	// update that only moves its times, or writes the same dial again, never
+	// skips what came since the last check. One that reads something else,
+	// or for another agent, starts anew, and takes its cursor at its first
+	// firing.
+	if sc.AppCheck != nil && sc.Agent == old.Agent {
+		kept := sc.AppCheck.Keeping(old.AppCheck)
+		sc.AppCheck = &kept
+	}
 	if err := s.putSchedule(ctx, sc); err != nil {
 		return 0, nil, err
 	}
