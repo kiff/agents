@@ -150,12 +150,12 @@ jobs:
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off
-        # before its cleanup leaves none, and any other taf whose keys have
-        # all been idle for 14 days. Archiving takes a taf's keys with it; a
-        # taf whose agent is already gone has its keys revoked. Never Setup's,
-        # a gateway or connector agent's, or the account's keys. It prints
-        # only counts, and it never decides the run: a failed sweep is
-        # reported, and the verdict is the steps above.
+        # before its cleanup leaves none. Archiving takes a taf's keys with
+        # it. It works as the owner's phone, with the calls KIFF takes from a
+        # phone's session only, and never takes Setup's agent or any agent
+        # this job didn't make. It prints only counts, and it never decides
+        # the run: a failed sweep is reported, and the verdict is the steps
+        # above.
         if: steps.unchanged.outputs.skip != 'true' && (always())
         continue-on-error: true
         env:

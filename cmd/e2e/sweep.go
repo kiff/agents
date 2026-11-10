@@ -19,94 +19,30 @@ import (
 // step whatever the steps before it did. A run's cleanup archives the tafs
 // it made, and KIFF revokes an archived agent's keys; the account's hourly
 // prune then deletes both. What a run never cleaned up stays: a run cut off
-// before its cleanup, and the runs before KIFF revoked an archived agent's
-// keys, whose agents the prune deleted and whose keys stayed live. The sweep
-// takes both, and nothing else:
-//   - the tafs this job's runs made (-made, written as each draft is
-//     confirmed), whenever they were last used;
-//   - any other taf whose keys have all been idle for sweepIdle.
+// before its cleanup. The sweep takes those, and nothing else: the tafs this
+// job's runs made (-made, written as each draft is confirmed).
 //
-// A taf here is an agent whose every active key is one KIFF minted when its
-// draft was claimed: bound to it, labelled "draft …", and a taf's gateway
-// key only. An agent with any other key (Setup's, a gateway or connector
-// agent's) is never touched, nor is a key bound to no agent (the account's).
-// Each taf is archived, which revokes its keys; one whose agent is already
-// gone has its keys revoked one by one. The log says only how many: the
-// nightly log is public.
-
-// sweepIdle is how long a taf's keys must all have been unused before the
-// sweep takes a taf this job didn't make.
-const sweepIdle = 14 * 24 * time.Hour
-
-// gatewayAgent is the role of the key KIFF mints for a claimed draft.
-const gatewayAgent = "gateway_agent"
-
-// listedKey is an active key as GET /v1/keys lists it.
-type listedKey struct {
-	ID         string     `json:"id"`
-	Label      string     `json:"label"`
-	Roles      []string   `json:"roles"`
-	AgentID    string     `json:"agent_id"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-}
-
-// draftKey is whether KIFF minted k for a claimed taf draft.
-func (k listedKey) draftKey() bool {
-	return k.AgentID != "" && strings.HasPrefix(k.Label, "draft ") && slices.Equal(k.Roles, []string{gatewayAgent})
-}
-
-// idle is whether k has gone unused, or unused since it was made, for sweepIdle.
-func (k listedKey) idle(now time.Time) bool {
-	last := k.CreatedAt
-	if k.LastUsedAt != nil {
-		last = *k.LastUsedAt
-	}
-	return now.Sub(last) > sweepIdle
-}
-
-// sweepPlan is the tafs to take, each with its active keys, in the order the
-// keys are listed: the ones made (this job's), and any other whose keys are
-// all idle.
-func sweepPlan(keys []listedKey, made []string, now time.Time) (agents []string, keysOf map[string][]string) {
-	byAgent := map[string][]listedKey{}
-	var order []string
-	for _, k := range keys {
-		if k.AgentID == "" {
-			continue
-		}
-		if _, seen := byAgent[k.AgentID]; !seen {
-			order = append(order, k.AgentID)
-		}
-		byAgent[k.AgentID] = append(byAgent[k.AgentID], k)
-	}
-	keysOf = map[string][]string{}
-	for _, a := range order {
-		ks := byAgent[a]
-		taf, allIdle := true, true
-		for _, k := range ks {
-			taf = taf && k.draftKey()
-			allIdle = allIdle && k.idle(now)
-		}
-		if !taf || (!allIdle && !slices.Contains(made, a)) {
-			continue
-		}
-		agents = append(agents, a)
-		for _, k := range ks {
-			keysOf[a] = append(keysOf[a], k.ID)
-		}
-	}
-	return agents, keysOf
-}
+// It works as the owner's phone, so it makes only the calls KIFF takes from
+// a phone's session: it reads the phone's own access (GET /v1/me/access, the
+// account's agents that aren't archived, and which one is Setup's) and
+// archives each taf by its id, signed. KIFF never lets a phone's session
+// list the account's keys, so the sweep doesn't ask: an earlier version did,
+// was refused every time (403), and swept nothing.
+//
+// A taf this job made that is no longer in the phone's access is already
+// archived: nothing to do. Setup's agent is never archived, even if -made
+// names it. Tafs left by runs before this one aren't found from a phone's
+// session; whoever holds the account's dashboard removes those. The log
+// says only how many: the nightly log is public.
 
 // sweepCounts is what a sweep did, for the log.
 type sweepCounts struct {
-	archived, revoked, failed, left int
+	archived, gone, failed, left int
 }
 
 func (c sweepCounts) String() string {
-	return fmt.Sprintf("sweep: %d tafs archived (their keys with them), %d keys revoked whose taf was already gone, %d failed; %d left to sweep",
-		c.archived, c.revoked, c.failed, c.left)
+	return fmt.Sprintf("sweep: %d tafs archived (their keys with them), %d already gone, %d failed; %d left to sweep",
+		c.archived, c.gone, c.failed, c.left)
 }
 
 // runSweep is -sweep: the phone's session in KIFF at apiBase, the tafs
@@ -129,64 +65,75 @@ func runSweep(ctx context.Context, apiBase string, cfg config, out io.Writer) er
 	if err != nil {
 		return err
 	}
-	c, err := sweep(ctx, kiffSession(apiBase, cfg.session, tenant, pk, hc), made, time.Now())
+	c, err := sweep(ctx, kiffSession(apiBase, cfg.session, tenant, pk, hc), made)
 	fmt.Fprintln(out, c)
 	return err
 }
 
-// sweep takes the tafs sweepPlan names, through KIFF as the owner's phone.
-func sweep(ctx context.Context, kiffc *client, made []string, now time.Time) (sweepCounts, error) {
+// sweep archives the tafs this job's runs made, through KIFF as the owner's
+// phone, and counts what is still there after.
+func sweep(ctx context.Context, kiffc *client, made []string) (sweepCounts, error) {
 	var c sweepCounts
-	keys, err := activeKeys(ctx, kiffc)
+	there, setup, err := phoneAccess(ctx, kiffc)
 	if err != nil {
 		return c, err
 	}
-	agents, keysOf := sweepPlan(keys, made, now)
-	for _, a := range agents {
-		ans, err := kiffc.do(ctx, http.MethodPost, "/v1/me/agents/"+url.PathEscape(a)+"/archive", map[string]string{})
+	for _, a := range made {
 		switch {
-		case err == nil && ans.err() == nil:
-			c.archived++
-		case err == nil && ans.Status == http.StatusNotFound:
-			// The prune deleted the agent, archived before KIFF revoked
-			// an archived agent's keys: its keys go one by one.
-			for _, k := range keysOf[a] {
-				if r, err := kiffc.do(ctx, http.MethodDelete, "/v1/keys/"+url.PathEscape(k), nil); err == nil && (r.err() == nil || r.Status == http.StatusNotFound) {
-					c.revoked++
-				} else {
-					c.failed++
-				}
-			}
+		case a == setup:
+			// Setup's agent is the account's, never a run's to take.
+		case !there[a]:
+			c.gone++
 		default:
-			c.failed++
+			ans, err := kiffc.do(ctx, http.MethodPost, "/v1/me/agents/"+url.PathEscape(a)+"/archive", map[string]string{})
+			switch {
+			case err == nil && ans.err() == nil:
+				c.archived++
+			case err == nil && ans.Status == http.StatusNotFound:
+				// The prune deleted it between the read and the call.
+				c.gone++
+			default:
+				c.failed++
+			}
 		}
 	}
-	// What's still there, as KIFF lists it after: archiving revokes the keys.
-	if keys, err = activeKeys(ctx, kiffc); err == nil {
-		left, _ := sweepPlan(keys, made, now)
-		c.left = len(left)
+	// What's still there, as KIFF answers the phone after: an archived agent
+	// has left its access.
+	if there, _, err = phoneAccess(ctx, kiffc); err == nil {
+		for _, a := range made {
+			if a != setup && there[a] {
+				c.left++
+			}
+		}
 	}
 	if c.failed > 0 {
 		return c, fmt.Errorf("%d of the sweep's calls failed", c.failed)
 	}
-	return c, nil
+	return c, err
 }
 
-func activeKeys(ctx context.Context, kiffc *client) ([]listedKey, error) {
-	a, err := kiffc.do(ctx, http.MethodGet, "/v1/keys", nil)
+// phoneAccess is the account's agents that aren't archived, as KIFF tells
+// the phone (GET /v1/me/access), and which of them is Setup's.
+func phoneAccess(ctx context.Context, kiffc *client) (there map[string]bool, setup string, err error) {
+	a, err := kiffc.do(ctx, http.MethodGet, "/v1/me/access", nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := a.err(); err != nil {
-		return nil, fmt.Errorf("listing the account's keys: %w", err)
+		return nil, "", fmt.Errorf("reading the phone's access: %w", err)
 	}
 	var out struct {
-		Keys []listedKey `json:"keys"`
+		Agents     map[string]json.RawMessage `json:"agents"`
+		SetupAgent string                     `json:"setup_agent"`
 	}
 	if err := json.Unmarshal([]byte(a.Raw), &out); err != nil {
-		return nil, fmt.Errorf("listing the account's keys: %w", err)
+		return nil, "", fmt.Errorf("reading the phone's access: %w", err)
 	}
-	return out.Keys, nil
+	there = make(map[string]bool, len(out.Agents))
+	for id := range out.Agents {
+		there[id] = true
+	}
+	return there, out.SetupAgent, nil
 }
 
 // recordMade appends a taf this run made to -made, for the sweep after it.
