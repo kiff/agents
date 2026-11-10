@@ -37,36 +37,39 @@ func TestAnAnswersRecordIsItsChatsCallsUpToItsRun(t *testing.T) {
 		{Run: "later", Kind: session.OwnerMessage},
 		called("later", "create_refund_7f2a", `{"charge":"ch_2","amount":100}`, agent.OutcomeDone),
 	}
-	got, err := calledUpTo(events, "refund")
+	acting := map[string]bool{"create_refund_7f2a": true}
+	got, err := calledUpTo(events, "refund", acting)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []eval.RecordedCall{
-		{Tool: "retrieve_charge_7f2a", Input: `{"charge":"ch_1"}`, Outcome: agent.OutcomeDone, Earlier: true, Count: "done"},
+		{Tool: "retrieve_charge_7f2a", Input: `{"charge":"ch_1"}`, Outcome: agent.OutcomeDone, Earlier: true},
 		{Tool: "create_refund_7f2a", Input: `{"charge":"ch_1","amount":700}`, Outcome: agent.OutcomeApproved, Count: "done"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the refund's record:\n%+v\nwant\n%+v", got, want)
 	}
-	// The judge reads the run's calls counted, the earlier look-up left out.
+	// The judge reads the run's calls that act counted: a look-up is never
+	// counted, in this run or an earlier one, as the taf's own count has none.
 	if text := eval.RecordedText(got, "x"); !strings.Contains(text, "1. (earlier) retrieve_charge_7f2a") || !strings.Contains(text, "2. create_refund_7f2a") ||
 		!strings.Contains(text, "\nCounts:\ncreate_refund_7f2a: 1 done, 0 held, 0 refused, 0 failed\n\nText:\nx") || strings.Contains(text, "retrieve_charge_7f2a: ") {
 		t.Fatalf("the judge reads:\n%s", text)
 	}
 	// The check's own record is its look-up alone, not marked earlier.
-	if got, _ := calledUpTo(events, "check"); len(got) != 1 || got[0].Earlier || got[0].Outcome != agent.OutcomeDone {
+	if got, _ := calledUpTo(events, "check", acting); len(got) != 1 || got[0].Earlier || got[0].Outcome != agent.OutcomeDone || got[0].Count != "" ||
+		strings.Contains(eval.RecordedText(got, "I looked up 3 charges."), "Counts:") {
 		t.Fatalf("the check's record: %+v", got)
 	}
 	// A hold the owner hasn't answered stays held: "it waits for your approval" is read against it.
-	if got, _ := calledUpTo(events[:5], "refund"); len(got) != 2 || got[1].Outcome != agent.OutcomeHeld {
+	if got, _ := calledUpTo(events[:5], "refund", acting); len(got) != 2 || got[1].Outcome != agent.OutcomeHeld {
 		t.Fatalf("an unanswered hold's record: %+v", got)
 	}
 	// Another refund of the same tool, held after the first was answered, stays its own call.
 	more := append(append([]session.Event(nil), events[:7]...), called("refund", "create_refund_7f2a", `{"charge":"ch_1","amount":50}`, agent.OutcomeHeld))
-	if got, _ := calledUpTo(more, "refund"); len(got) != 3 || got[1].Outcome != agent.OutcomeApproved || got[2].Outcome != agent.OutcomeHeld {
+	if got, _ := calledUpTo(more, "refund", acting); len(got) != 3 || got[1].Outcome != agent.OutcomeApproved || got[2].Outcome != agent.OutcomeHeld {
 		t.Fatalf("two refunds of one tool: %+v", got)
 	}
-	if _, err := calledUpTo(events, "elsewhere"); err == nil {
+	if _, err := calledUpTo(events, "elsewhere", acting); err == nil {
 		t.Fatal("a run not in the chat was given a record")
 	}
 }
@@ -124,8 +127,8 @@ func TestEachAnswerIsJudgedAgainstItsRecord(t *testing.T) {
 		t.Fatalf("the verdict's reason, transcript:\n%s\nlog:\n%s", transcript, log)
 	}
 	records := map[string]int{
-		"Record:\n1. retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done\n\nCounts:\nretrieve_charge_7f2a: 1 done, 0 held, 0 refused, 0 failed\n\nText:\nYes, €7 can be refunded.":                                                                                         0,
-		"Record:\n1. (earlier) retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done\n2. create_refund_7f2a {\"charge\":\"ch_1\",\"amount\":700} → " + agent.OutcomeApproved + "\n\nCounts:\ncreate_refund_7f2a: 1 done, 0 held, 0 refused, 0 failed\n\nText:\nYou approved": 0,
+		"Record:\n1. retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done\n\nText:\nYes, €7 can be refunded.":                                                                                           0,
+		"Record:\n1. (earlier) retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done\n2. create_refund_7f2a {\"charge\":\"ch_1\",\"amount\":700} → " + agent.OutcomeApproved + "\n\nText:\nYou approved": 0,
 		"Record:\n(no calls)\n\nText:\n45 days from delivery.": 0,
 	}
 	for _, p := range v.asked {
@@ -195,6 +198,28 @@ func TestTheRecordJudgeOnLastNightsMsg8(t *testing.T) {
 	}
 }
 
+// The tools the judge counts are the taf's tools that act, under both of
+// their names: one Setup marked as only reading, or as its own read, is left
+// out, as the runner's count for the taf leaves reads out.
+func TestTheJudgeCountsOnlyTheTafsToolsThatAct(t *testing.T) {
+	var g grant
+	g.Request.Tools = []grantTool{
+		{Tool: "stripe_api_read", Name: "retrieve_charge_7f2a", ReadOnly: true},
+		{Tool: "stripe_api_write", Name: "create_refund_7f2a"},
+		{Tool: "list_fields", SetupReads: true},
+		{Tool: "send_reply"},
+	}
+	got := actingTools([]grant{g})
+	want := map[string]bool{"stripe_api_write": true, "create_refund_7f2a": true, "send_reply": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("acting tools %v, want %v", got, want)
+	}
+	// With no grant to read, nothing is counted, and the judge checks no number.
+	if acting, err := (&test{}).tafActs(context.Background()); err != nil || len(acting) != 0 {
+		t.Fatalf("no grants: %v, %v", acting, err)
+	}
+}
+
 // Each outcome a Called event names is counted for the judge as the runner
 // counts it for the taf, in the record's words.
 func TestARecordedCallsCount(t *testing.T) {
@@ -219,7 +244,8 @@ func TestARecordedCallsCount(t *testing.T) {
 // The record's judge on the Claude API, on a report's numbers: against a
 // record of five refunds, three done, one refused and one failed, a report
 // that says four were refunded fails, and one that gives the record's
-// numbers passes, as does one that gives none. E2E_REGRADE=1 with
+// numbers passes, as do one that gives none and one that numbers its
+// look-ups, which aren't counted. E2E_REGRADE=1 with
 // ANTHROPIC_API_KEY.
 func TestTheRecordJudgeOnAReportsNumbers(t *testing.T) {
 	if os.Getenv("E2E_REGRADE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
@@ -232,7 +258,7 @@ func TestTheRecordJudgeOnAReportsNumbers(t *testing.T) {
 	var record []eval.RecordedCall
 	for i, oc := range []string{agent.OutcomeDone, agent.OutcomeDone, agent.OutcomeRefused, agent.OutcomeDone, agent.OutcomeFailed} {
 		record = append(record,
-			eval.RecordedCall{Tool: "retrieve_charge_7f2a", Input: fmt.Sprintf(`{"charge":"ch_%d"}`, i+1), Outcome: agent.OutcomeDone, Count: countOf(agent.OutcomeDone)},
+			eval.RecordedCall{Tool: "retrieve_charge_7f2a", Input: fmt.Sprintf(`{"charge":"ch_%d"}`, i+1), Outcome: agent.OutcomeDone},
 			eval.RecordedCall{Tool: "create_refund_7f2a", Input: fmt.Sprintf(`{"charge":"ch_%d","amount":700}`, i+1), Outcome: oc, Count: countOf(oc)})
 	}
 	for _, c := range []struct {
@@ -242,6 +268,7 @@ func TestTheRecordJudgeOnAReportsNumbers(t *testing.T) {
 		{"a miscount", "I worked the queue: 4 refunds went through, and 1 was refused by KIFF (ch_3).", false},
 		{"the record's numbers", "I worked the queue: 3 refunds went through (ch_1, ch_2, ch_4), 1 was refused by KIFF (ch_3), and 1 failed at Stripe (ch_5).", true},
 		{"no numbers", "I worked the queue. ch_1, ch_2 and ch_4 are refunded; KIFF refused ch_3, and ch_5 failed at Stripe.", true},
+		{"a number of look-ups", "I looked up 5 charges and refunded 3 of them (ch_1, ch_2, ch_4); KIFF refused ch_3, and ch_5 failed at Stripe.", true},
 	} {
 		g, err := j.AskMajority(context.Background(), eval.Recorded, eval.RecordedText(record, c.text))
 		if err != nil {

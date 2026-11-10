@@ -29,6 +29,10 @@ func (t *test) tafAsRecorded(ctx context.Context) error {
 	if len(t.tafRuns) != len(t.tafSaid) {
 		return fmt.Errorf("%d of the taf's answers, from %d runs: each needs its run for its record", len(t.tafSaid), len(t.tafRuns))
 	}
+	acting, err := t.tafActs(ctx)
+	if err != nil {
+		return err
+	}
 	chats := map[string][]session.Event{}
 	var failed []string
 	for i, text := range t.tafSaid {
@@ -41,7 +45,7 @@ func (t *test) tafAsRecorded(ctx context.Context) error {
 			}
 			events, chats[at.session] = ev, ev
 		}
-		calls, err := calledUpTo(events, at.run)
+		calls, err := calledUpTo(events, at.run, acting)
 		if err != nil {
 			return fmt.Errorf("answer %d's record: %w", i+1, err)
 		}
@@ -68,8 +72,11 @@ func (t *test) tafAsRecorded(ctx context.Context) error {
 // chat's calls up to and including run's, in order, those of earlier runs
 // marked Earlier. A held call is recorded twice, held and then answered
 // (agent.outcome): its answer takes the hold's place, so the call is listed
-// once, as it ended.
-func calledUpTo(events []session.Event, run string) ([]eval.RecordedCall, error) {
+// once, as it ended. Only a call of a tool in acting is counted
+// (eval.RecordedCall.Count), as the runner's count for the taf takes in
+// only the calls that act: a look-up is in neither, so "I looked up 3
+// charges" after one list call is no miscount.
+func calledUpTo(events []session.Event, run string, acting map[string]bool) ([]eval.RecordedCall, error) {
 	last := -1
 	for i, e := range events {
 		if e.Run == run {
@@ -108,9 +115,48 @@ func calledUpTo(events []session.Event, run string) ([]eval.RecordedCall, error)
 	}
 	calls := make([]eval.RecordedCall, len(entries))
 	for i, en := range entries {
-		calls[i] = eval.RecordedCall{Tool: en.body.Tool, Input: string(en.body.Input), Outcome: en.body.Outcome, Earlier: en.run != run, Count: countOf(en.body.Outcome)}
+		calls[i] = eval.RecordedCall{Tool: en.body.Tool, Input: string(en.body.Input), Outcome: en.body.Outcome, Earlier: en.run != run}
+		if acting[en.body.Tool] {
+			calls[i].Count = countOf(en.body.Outcome)
+		}
 	}
 	return calls, nil
+}
+
+// tafActs is the taf's tools that act, by the names its calls are recorded
+// under: every tool of the grants this run connected that Setup didn't mark
+// as only reading. Empty with no grant to read (the judge then gets no
+// counts, and checks no number).
+func (t *test) tafActs(ctx context.Context) (map[string]bool, error) {
+	if t.phone == nil || len(t.grants) == 0 {
+		return nil, nil
+	}
+	var grants []grant
+	for _, id := range t.grants {
+		g, err := t.phone.grant(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("reading the taf's tools for its record's counts: %w", err)
+		}
+		grants = append(grants, g)
+	}
+	return actingTools(grants), nil
+}
+
+// actingTools is the tools of grants that act, under both of their names.
+func actingTools(grants []grant) map[string]bool {
+	acting := map[string]bool{}
+	for _, g := range grants {
+		for _, tl := range g.Request.Tools {
+			if tl.ReadOnly || tl.SetupReads {
+				continue
+			}
+			acting[tl.Tool] = true
+			if tl.Name != "" {
+				acting[tl.Name] = true
+			}
+		}
+	}
+	return acting
 }
 
 // countOf is the count a recorded call adds to, in the record's words, as

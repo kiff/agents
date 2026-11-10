@@ -330,3 +330,66 @@ func TestACallWhoseOutcomeComesLaterIsCounted(t *testing.T) {
 		}
 	}
 }
+
+// A run that crashed between an acting turn's two checkpoints is carried on
+// from the first, stored with the count from before the turn. The turn's
+// calls come back as the run's requirements, with their first outcomes, so
+// the count takes them in: it isn't short by that turn's calls.
+func TestACrashedTurnsCallsAreCountedWhenTheRunIsCarriedOn(t *testing.T) {
+	refund := &seqTool{name: "stripe_refund", access: tool.Write, results: []tool.Result{sent}}
+	m := &script{replies: []model.Reply{
+		uses("c1", "stripe_refund"),
+		uses("c2", "stripe_refund"),
+		say("Never read: the run crashed."),
+		say("Two refunded."),
+	}}
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s, err := rec.Open(ctx, "t1", "rae", session.KindRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := rec.Start(ctx, s, "r1", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAgent(m, refund)
+	var stored []run.Turn
+	a.Checkpoint = func(_ context.Context, turn run.Turn, _, _ string) error {
+		stored = append(stored, turn)
+		return nil
+	}
+	if _, _, err := agent.Run(ctx, a, r, nil, "Work the refund queue.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The second turn's first checkpoint: its calls out, no result kept.
+	crashed := stored[2]
+	if len(crashed.Results) != 0 || crashed.Tally["stripe_refund"] != (run.Tally{Sent: 1}) {
+		t.Fatalf("the turn stored before it acted: %+v", crashed)
+	}
+	if got := stored[3].Tally["stripe_refund"]; got != (run.Tally{Sent: 2}) {
+		t.Fatalf("the turn stored with its results counts %+v, want both", got)
+	}
+	carried := run.Run{ID: "r1", Tenant: "t1", Agent: "rae", Session: s.ID, Status: run.Running, Input: "Work the refund queue.",
+		Turns: 2, Resumes: 1, Paused: &crashed,
+		Requirements: []run.Requirement{{CallID: "c2", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_c2"}`), Kind: run.KindResume}}}
+	r, err = rec.Resume(ctx, s, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Checkpoint = nil
+	first := []agent.ToolResultBody{{CallID: "c2", Tool: "stripe_refund", Result: sent}}
+	if _, _, err := agent.Continue(ctx, a, r, nil, carried, first, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := counts(m.reqs[len(m.reqs)-1]), agent.TallyLine(map[string]run.Tally{"stripe_refund": {Sent: 2}}); got != want {
+		t.Fatalf("carried on, the run read\n%q\nwant\n%q", got, want)
+	}
+}
