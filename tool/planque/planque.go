@@ -535,6 +535,65 @@ type grantView struct {
 	Custody  string `json:"custody,omitempty"`
 }
 
+// AgentTools is, for each of agent's connected grants, the KIFF name of each
+// of its tools, as planque lists them for the setup agent, leaving out its
+// own reads (setup_reads): what the taf's Cards must cover (tool.Granted). A grant
+// whose addition waits for the owner isn't connected, and is left out:
+// KIFF has none of its new tools yet. known is false when the listing
+// doesn't say setup_reads (a planque before it did): then nothing is to be
+// checked.
+func (t *Tool) AgentTools(ctx context.Context, agent string) ([][]string, bool, error) {
+	if !pathSafe(agent) {
+		return nil, false, fmt.Errorf("planque: an agent id that can't be in a path")
+	}
+	raw, refused, err := t.do(ctx, http.MethodGet, "/v1/accounts/"+url.PathEscape(t.tenant)+"/agents/"+url.PathEscape(agent)+"/grants", nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if refused != nil {
+		return nil, false, fmt.Errorf("planque: %s", refused.Text)
+	}
+	var list struct {
+		Grants []struct {
+			Status string `json:"status"`
+			Tools  []struct {
+				Name       string `json:"name"`
+				Tool       string `json:"tool"`
+				SetupReads *bool  `json:"setup_reads"`
+			} `json:"tools"`
+		} `json:"grants"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, false, fmt.Errorf("planque: an agent's grants: %w", err)
+	}
+	var grants [][]string
+	for _, g := range list.Grants {
+		if g.Status != "connected" {
+			continue
+		}
+		var names []string
+		for _, tl := range g.Tools {
+			if tl.SetupReads == nil {
+				return nil, false, nil
+			}
+			if *tl.SetupReads {
+				continue
+			}
+			name := tl.Name
+			if name == "" {
+				name = tl.Tool
+			}
+			if name != "" && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+		if len(names) > 0 {
+			grants = append(grants, names)
+		}
+	}
+	return grants, true, nil
+}
+
 // grant calls planque and answers with the grant it returns.
 func (t *Tool) grant(ctx context.Context, method, path string, body []byte) (tool.Result, error) {
 	raw, refused, err := t.do(ctx, method, path, body)

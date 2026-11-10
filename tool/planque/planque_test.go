@@ -807,3 +807,34 @@ func TestARequestReusesASignIn(t *testing.T) {
 		t.Fatalf("a refused request reached planque: %v", bodies)
 	}
 }
+
+// The tools a taf's Cards must cover: its connected grants' tools by their
+// KIFF names, never Setup's own reads, nor a grant whose addition waits for
+// the owner (KIFF has none of its new tools yet). A listing that doesn't say
+// setup_reads (an older planque) can't be checked against.
+func TestAgentToolsAreTheConnectedGrantsToolsButSetupsReads(t *testing.T) {
+	listing := `{"grants":[
+	 {"id":"g1","status":"connected","tools":[
+	  {"name":"fields_ab12","tool":"stripe_api_details","read_only":true,"setup_reads":true},
+	  {"name":"get_charge","tool":"stripe_api_read","read_only":true,"setup_reads":false},
+	  {"name":"","tool":"create_refund","setup_reads":false}]},
+	 {"id":"g2","status":"approval_pending","tools":[{"name":"list_disputes","tool":"list_disputes","setup_reads":false}]}]}`
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Write([]byte(listing))
+	}))
+	defer srv.Close()
+	tl := planque.New(srv.URL, "t1", "kiff_key_setup", nil)
+	names, known, err := tl.AgentTools(context.Background(), "agt_refunds")
+	if err != nil || !known || len(names) != 1 || !slices.Equal(names[0], []string{"get_charge", "create_refund"}) || path != "/v1/accounts/t1/agents/agt_refunds/grants" {
+		t.Fatalf("%v %v %v at %s", names, known, err, path)
+	}
+	listing = `{"grants":[{"id":"g1","status":"connected","tools":[{"name":"get_charge","tool":"stripe_api_read","read_only":true}]}]}`
+	if names, known, err := tl.AgentTools(context.Background(), "agt_refunds"); err != nil || known || names != nil {
+		t.Fatalf("an older planque: %v %v %v", names, known, err)
+	}
+	if _, _, err := tl.AgentTools(context.Background(), "../other"); err == nil {
+		t.Fatal("an agent id outside the path was asked")
+	}
+}

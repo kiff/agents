@@ -779,14 +779,24 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		}
 		tools = append(tools, b.FollowUp(tenant, id, d.Version))
 	}
+	var draftTool tool.Tool
 	if d.Drafts {
 		if b.Drafts == nil {
 			return agent.Agent{}, d, ErrNoDrafts
 		}
-		tools = append(tools, b.Drafts(tenant, key))
+		draftTool = b.Drafts(tenant, key)
+		tools = append(tools, draftTool)
 	}
 	if d.Planque != "" {
-		tools = append(tools, b.Planque(d.Planque, d.Gateway, tenant, key))
+		pt := b.Planque(d.Planque, d.Gateway, tenant, key)
+		tools = append(tools, pt)
+		// The draft tool checks a draft against the taf's grants, as the
+		// setup agent's planque lists them: a Card must cover every tool given.
+		if c, ok := draftTool.(interface{ CheckGrants(tool.Granted) }); ok {
+			if g, ok := pt.(tool.Granted); ok {
+				c.CheckGrants(g)
+			}
+		}
 	}
 	if d.Workspace {
 		if b.Workspace == nil || run == "" {
