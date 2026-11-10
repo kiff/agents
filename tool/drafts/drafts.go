@@ -38,9 +38,12 @@ type Tool struct {
 // taf's granted tools uncovered, as g lists them (the setup agent's planque).
 func (t *Tool) CheckGrants(g tool.Granted) { t.granted = g }
 
-// uncovered is each of granted no Card of cards names in its grants'
-// actions, as KIFF matches them (ignoring case and spaces around).
-func uncovered(granted []string, cards []map[string]json.RawMessage) []string {
+// uncovered is each tool of a grant the draft covers in part that no Card of
+// cards names in its grants' actions, as KIFF matches them (ignoring case
+// and spaces around). A grant the draft names none of is left alone: the
+// agent's Cards in force may cover it, and a draft revises only the Cards it
+// names, so the setup agent, which can't read those Cards, can't tell.
+func uncovered(granted [][]string, cards []map[string]json.RawMessage) []string {
 	covered := map[string]bool{}
 	for _, c := range cards {
 		var grants []struct {
@@ -54,9 +57,15 @@ func uncovered(granted []string, cards []map[string]json.RawMessage) []string {
 		}
 	}
 	var out []string
-	for _, name := range granted {
-		if !covered[strings.ToLower(strings.TrimSpace(name))] {
-			out = append(out, name)
+	for _, grant := range granted {
+		var missing []string
+		for _, name := range grant {
+			if !covered[strings.ToLower(strings.TrimSpace(name))] {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) < len(grant) {
+			out = append(out, missing...)
 		}
 	}
 	return out
@@ -199,13 +208,15 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	// Every tool the taf was given goes on a Card, the reads too: KIFF
 	// refuses any call no Card covers, so a tool left off is one the taf
 	// can't use, and asks its owner for a Card it shouldn't need (Eval
-	// 42781271564). The setup agent's own reads aren't the taf's and aren't
-	// asked for. When planque can't be read, or can't tell those reads
-	// apart, nothing is checked: the draft goes as before.
+	// 42781271564). A connection the draft covers in part is covered whole;
+	// one it names none of may be covered by Cards in force (uncovered). The
+	// setup agent's own reads aren't the taf's and aren't asked for. When
+	// planque can't be read, or can't tell those reads apart, nothing is
+	// checked: the draft goes as before.
 	if t.granted != nil {
 		if names, known, err := t.granted.AgentTools(ctx, in.AgentID); err == nil && known {
 			if missing := uncovered(names, cards); len(missing) > 0 {
-				return tool.Result{Text: fmt.Sprintf("Not submitted: the taf was given %s, and no Card in this draft covers %s. "+
+				return tool.Result{Text: fmt.Sprintf("Not submitted: the taf was given %s, on a connection this draft covers in part, and no Card in it covers %s. "+
 					"KIFF refuses every call no Card covers (no_mandate_issued), so the taf couldn't use %s. "+
 					"Add each to a Card (a read gets a call count only, generous enough never to get in the way), then submit again.",
 					strings.Join(missing, ", "), them(len(missing)), them(len(missing))), IsError: true}, nil

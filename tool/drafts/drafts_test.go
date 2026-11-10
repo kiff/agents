@@ -190,20 +190,21 @@ func TestStateSaysWhatIsKeptOfEachShownDraft(t *testing.T) {
 
 // granted is a fake of the setup agent's planque listing (tool.Granted).
 type granted struct {
-	names []string
-	known bool
-	err   error
+	grants [][]string
+	known  bool
+	err    error
 }
 
-func (g granted) AgentTools(context.Context, string) ([]string, bool, error) {
-	return g.names, g.known, g.err
+func (g granted) AgentTools(context.Context, string) ([][]string, bool, error) {
+	return g.grants, g.known, g.err
 }
 
 // A draft whose Cards leave one of the taf's granted tools uncovered isn't
 // sent: the model reads which, and drafts again. Its own reads were never
 // listed. When planque can't be read, or can't tell its own reads apart,
 // the draft goes as before (Eval 42781271564: get_charge granted, its Card
-// covering only read_charge, every call of it refused).
+// covering only read_charge, every call of it refused). A connection the
+// draft names none of is left to the Cards in force.
 func TestADraftThatLeavesAGrantedToolUncoveredIsNotSent(t *testing.T) {
 	sent := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,17 +221,20 @@ func TestADraftThatLeavesAGrantedToolUncoveredIsNotSent(t *testing.T) {
 	}
 	draft := json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[` +
 		`{"id":"refunds","grants":[{"action":"Create_Refund_k3"},{"action":" read_charge "}]}]}`)
-	given := []string{"create_refund_k3", "read_charge", "get_charge"}
+	given := [][]string{{"create_refund_k3", "read_charge", "get_charge"}}
 
-	r, err := newTool(granted{names: given, known: true}).Call(context.Background(), draft)
+	r, err := newTool(granted{grants: given, known: true}).Call(context.Background(), draft)
 	if err != nil || !r.IsError || !strings.Contains(r.Text, "get_charge") || strings.Contains(r.Text, "read_charge,") || sent != 0 {
 		t.Fatalf("an uncovered tool: %+v %v, sent %d", r, err, sent)
 	}
 	for name, g := range map[string]granted{
-		"every tool covered":     {names: given[:2], known: true},
-		"an older planque":       {names: given, known: false},
+		"every tool covered":     {grants: [][]string{{"create_refund_k3", "read_charge"}}, known: true},
+		"an older planque":       {grants: given, known: false},
 		"planque can't be read":  {err: context.DeadlineExceeded},
 		"no grant connected yet": {known: true},
+		// A revision whose Cards cover only its new connection: the older
+		// one's tools are on Cards in force the setup agent can't read.
+		"another connection untouched": {grants: [][]string{{"create_refund_k3", "read_charge"}, {"list_disputes", "update_dispute"}}, known: true},
 	} {
 		before := sent
 		if r, err := newTool(g).Call(context.Background(), draft); err != nil || r.IsError || sent != before+1 {

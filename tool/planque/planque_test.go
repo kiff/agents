@@ -827,7 +827,7 @@ func TestAgentToolsAreTheConnectedGrantsToolsButSetupsReads(t *testing.T) {
 	defer srv.Close()
 	tl := planque.New(srv.URL, "t1", "kiff_key_setup", nil)
 	names, known, err := tl.AgentTools(context.Background(), "agt_refunds")
-	if err != nil || !known || !slices.Equal(names, []string{"get_charge", "create_refund"}) || path != "/v1/accounts/t1/agents/agt_refunds/grants" {
+	if err != nil || !known || len(names) != 1 || !slices.Equal(names[0], []string{"get_charge", "create_refund"}) || path != "/v1/accounts/t1/agents/agt_refunds/grants" {
 		t.Fatalf("%v %v %v at %s", names, known, err, path)
 	}
 	listing = `{"grants":[{"id":"g1","status":"connected","tools":[{"name":"get_charge","tool":"stripe_api_read","read_only":true}]}]}`

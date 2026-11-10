@@ -535,14 +535,14 @@ type grantView struct {
 	Custody  string `json:"custody,omitempty"`
 }
 
-// AgentTools is the KIFF name of each tool of agent's connected grants, as
-// planque lists them for the setup agent, leaving out its own reads
-// (setup_reads): what the taf's Cards must cover (tool.Granted). A grant
+// AgentTools is, for each of agent's connected grants, the KIFF name of each
+// of its tools, as planque lists them for the setup agent, leaving out its
+// own reads (setup_reads): what the taf's Cards must cover (tool.Granted). A grant
 // whose addition waits for the owner isn't connected, and is left out:
 // KIFF has none of its new tools yet. known is false when the listing
 // doesn't say setup_reads (a planque before it did): then nothing is to be
 // checked.
-func (t *Tool) AgentTools(ctx context.Context, agent string) ([]string, bool, error) {
+func (t *Tool) AgentTools(ctx context.Context, agent string) ([][]string, bool, error) {
 	if !pathSafe(agent) {
 		return nil, false, fmt.Errorf("planque: an agent id that can't be in a path")
 	}
@@ -566,11 +566,12 @@ func (t *Tool) AgentTools(ctx context.Context, agent string) ([]string, bool, er
 	if err := json.Unmarshal(raw, &list); err != nil {
 		return nil, false, fmt.Errorf("planque: an agent's grants: %w", err)
 	}
-	var names []string
+	var grants [][]string
 	for _, g := range list.Grants {
 		if g.Status != "connected" {
 			continue
 		}
+		var names []string
 		for _, tl := range g.Tools {
 			if tl.SetupReads == nil {
 				return nil, false, nil
@@ -586,8 +587,11 @@ func (t *Tool) AgentTools(ctx context.Context, agent string) ([]string, bool, er
 				names = append(names, name)
 			}
 		}
+		if len(names) > 0 {
+			grants = append(grants, names)
+		}
 	}
-	return names, true, nil
+	return grants, true, nil
 }
 
 // grant calls planque and answers with the grant it returns.
