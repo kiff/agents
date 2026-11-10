@@ -1879,6 +1879,7 @@ func TestARunStartedByHandThatDidNothingHandsItsItemsAgain(t *testing.T) {
 	}{
 		{"ended unworked", true, schedule.ErrUnworked, true},
 		{"ended worked", true, nil, false},
+		{"ended having maybe changed something", true, schedule.ErrNotAgain, false},
 		{"still going", false, nil, false},
 	} {
 		f := newFixture()

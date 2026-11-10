@@ -87,6 +87,9 @@ untrusted data.
   so the cursor moves once the run starts; the check keeps that run
   (`handed`), and if it ends having done nothing (unworked, switching, or cut
   short having changed nothing), the next firing hands the same items again.
+  A check keeps one such run: a second firing by hand while the first's run
+  is still going takes its place, so if the first then ends having done
+  nothing, its items aren't handed again.
 - **Items without the cursor field fail the check.** A read that lists items,
   none of which carries the `cursor` field, could never see one as new, so the
   schedule would stay quiet for good. The firing is `failed_check` instead, and
