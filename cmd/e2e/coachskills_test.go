@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"slices"
 	"testing"
 
 	"github.com/kiff/agents/agent"
@@ -23,7 +24,7 @@ func TestStartSkillsFollowTafsCloudsTable(t *testing.T) {
 		"other":   nil,
 	}
 	for entry, w := range want {
-		got := tt.startSkills(entry)
+		got := tt.startSkills(entry, false)
 		if len(got) != len(w) {
 			t.Fatalf("%s: %v, want %v", entry, got, w)
 		}
@@ -33,8 +34,20 @@ func TestStartSkillsFollowTafsCloudsTable(t *testing.T) {
 			}
 		}
 	}
+	// An account with a taf of its own: the holds and the halting join every
+	// start, in the definition's order; an entry that sends nothing still does.
+	withTaf := map[string][]string{
+		"free":    {"cards-and-holds@1", "connect-an-app@1", "draft-the-card@1", "halting@1", "name-the-tools@2", "set-up-a-taf@1", "usage-and-plans@1"},
+		"improve": {"cards-and-holds@1", "connect-an-app@1", "draft-the-card@1", "halting@1", "improve-a-taf@1", "name-the-tools@2"},
+		"other":   nil,
+	}
+	for entry, w := range withTaf {
+		if got := tt.startSkills(entry, true); !slices.Equal(got, w) {
+			t.Fatalf("%s with a taf: %v, want %v", entry, got, w)
+		}
+	}
 	old := &test{tenant: "t1", cfg: config{log: io.Discard}, setupSkills: []string{"change-a-taf"}, setupSkillRefs: []string{"change-a-taf@1"}}
-	if got := old.startSkills("free"); len(got) != 0 {
+	if got := old.startSkills("free", true); len(got) != 0 {
 		t.Fatalf("an older definition sent %v", got)
 	}
 	if got := old.skillOf([]string{"improve-a-taf", "change-a-taf"}); got != "change-a-taf" {

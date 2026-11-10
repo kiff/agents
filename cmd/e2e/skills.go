@@ -24,7 +24,8 @@ import (
 //   - the improve case has improve-a-taf (loaded by the start; change-a-taf,
 //     read, under kiff/tafs#218);
 //   - each question below has its skill, though the owner never names it:
-//     loaded by the account's state in tafs cloud, or read by the agent.
+//     loaded by the account's state in tafs cloud (an account with a taf
+//     starts with the holds and the halting), or read by the agent.
 
 // skillAsks are owner questions that need a skill without naming its topic,
 // by language, with the skill each must read.
@@ -116,10 +117,10 @@ func (t *test) skillChoice(ctx context.Context) error {
 		if skill == "" {
 			continue
 		}
-		// A free-text start, with no held call or halt on the account: the setup's skills, as
-		// tafs cloud sends them; the question's own skill is loaded only by the account's state,
-		// so here it comes by the agent's read, which is what this case measures.
-		ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free")}
+		// A free-text start on an account that has its taf by now, with no held call or halt: the
+		// setup's skills and what tafs cloud adds for an account with a taf (the holds, the
+		// halting). A skill neither loaded so nor read by the agent fails the case.
+		ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free", true)}
 		t.logf("owner: %s", c.ask)
 		r, err := ch.Send(ctx, c.ask, nil)
 		if err != nil {

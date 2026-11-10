@@ -897,7 +897,7 @@ func cardAnswer(c show.Component, msg string) (json.RawMessage, error) {
 // each component the agent shows, until it shows the result.
 func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) {
 	// A free start opens with the setup's skills, as tafs cloud names them (kiff/tafs#525).
-	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free")}
+	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free", false)}
 	defer func() { t.setupSession = ch.Session }()
 	o := owners[t.cfg.owner]
 	// What an owner would say: the outcome, in their words and language.
