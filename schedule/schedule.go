@@ -537,6 +537,12 @@ type Service struct {
 	// no run starts, what the firing was handed waits, and it's kept as
 	// FiredCredits.
 	Start func(ctx context.Context, f Firing) error
+	// RunEnded says how a run started by hand with a check's items
+	// (TriggerNow) ended: done false while it hasn't; once it has, err is
+	// what Start would have returned for it (ErrUnworked, ErrSwitching,
+	// ErrUnfinished, ErrNotAgain or nil). Nil: such a run is never looked
+	// at again, and its items aren't handed twice.
+	RunEnded func(ctx context.Context, tenant, run string) (done bool, err error)
 	// Busy reports whether the schedule's last run, other than the firing's
 	// own (a repeated delivery), is still at work: BusySkip skips the
 	// firing then. Nil: never busy.
@@ -744,23 +750,94 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 // timetable: the read first, and a run only when it finds something new, as
 // any firing. start starts that run and returns at once (the caller runs it
 // in the background), so the cursor moves once the run is started, not once
-// it ends. started says whether a run started; a quiet check starts none.
-func (sv *Service) TriggerNow(ctx context.Context, tenant, id string, start func(ctx context.Context, f Firing) error) (started bool, err error) {
+// it ends. outcome is what the firing was kept as: FiredRun when a run
+// started, else why not (quiet, too large, halted, switching, waiting for
+// credits); a check that couldn't read is FiredCheckFailed, with the read's
+// reason in err.
+func (sv *Service) TriggerNow(ctx context.Context, tenant, id string, start func(ctx context.Context, f Firing) error) (outcome string, err error) {
 	s, err := sv.Store.Get(ctx, tenant, id)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	now := sv.now()
 	f := Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: now.Truncate(time.Second)}
 	if s.AppCheck == nil || sv.Probe == nil {
-		return true, start(ctx, f)
+		if err := start(ctx, f); err != nil {
+			return "", err
+		}
+		return FiredRun, nil
 	}
 	once := *sv
+	once.History = keptOutcome{History: sv.History, outcome: &outcome}
 	once.Start = func(ctx context.Context, f Firing) error {
-		started = true
-		return start(ctx, f)
+		err := start(ctx, f)
+		if err == nil {
+			outcome = FiredRun
+		}
+		return err
 	}
-	return started, once.start(ctx, s, f, now)
+	prev := *s.AppCheck
+	err = once.start(ctx, s, f, now)
+	if outcome == "" && err == nil {
+		outcome = FiredRun // started, and its run kept no outcome of its own
+	}
+	if outcome == FiredRun && err == nil && !prev.Due.Equal(f.Due) {
+		// Its run goes on in the background: what was handed is kept, so
+		// the next firing can hand it again if that run ends having done
+		// nothing.
+		if stored, gerr := sv.Store.Get(ctx, tenant, id); gerr == nil && stored.AppCheck != nil {
+			stored.AppCheck.Handed = &Handed{Run: f.Key(), Last: prev.Last, Partial: prev.Partial}
+			if perr := sv.Store.Put(ctx, stored); perr != nil {
+				return outcome, perr
+			}
+		}
+	}
+	return outcome, err
+}
+
+// settleHanded looks at the run a firing by hand handed s's items to. Ended
+// having done nothing (or before it could, or cut short having changed
+// nothing), its items go again: the cursor goes back to where it was before
+// them. Ended otherwise, it is let go. Still going, it is kept, and this
+// firing reads past the cursor as it stands.
+func (sv *Service) settleHanded(ctx context.Context, s Schedule) (Schedule, error) {
+	h := s.AppCheck.Handed
+	if sv.RunEnded == nil {
+		return s, nil
+	}
+	done, why := sv.RunEnded(ctx, s.Tenant, h.Run)
+	if !done {
+		return s, nil
+	}
+	c := *s.AppCheck
+	if errors.Is(why, ErrUnworked) || errors.Is(why, ErrSwitching) || errors.Is(why, ErrUnfinished) {
+		c.Last, c.Partial = h.Last, h.Partial
+	}
+	c.Handed = nil
+	s.AppCheck = &c
+	return s, sv.Store.Put(ctx, s)
+}
+
+// keptOutcome is a History that also says what the last firing it kept
+// came to.
+type keptOutcome struct {
+	History
+	outcome *string
+}
+
+func (k keptOutcome) Add(ctx context.Context, tenant, id string, f Fired) error {
+	*k.outcome = f.Outcome
+	if k.History == nil {
+		return nil
+	}
+	return k.History.Add(ctx, tenant, id, f)
+}
+
+func (k keptOutcome) Firings(ctx context.Context, tenant, id string, limit int) ([]Fired, error) {
+	if k.History == nil {
+		return nil, nil
+	}
+	return k.History.Firings(ctx, tenant, id, limit)
 }
 
 // start runs the firing: for a schedule with a check, only when the read
@@ -768,6 +845,13 @@ func (sv *Service) TriggerNow(ctx context.Context, tenant, id string, start func
 // only once the run has started; a repeated delivery of the firing that
 // started it starts that run again (Firing.Key), not another read.
 func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Time) error {
+	if c := s.AppCheck; c != nil && c.Handed != nil && !c.Due.Equal(f.Due) {
+		settled, err := sv.settleHanded(ctx, s)
+		if err != nil {
+			return err
+		}
+		s = settled
+	}
 	if c := s.AppCheck; c != nil && !c.Due.Equal(f.Due) {
 		if sv.Probe == nil {
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredDropped})

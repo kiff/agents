@@ -57,6 +57,19 @@ type Check struct {
 	// cursor moves past them all the same, and Tries stays there, to say
 	// so, until the check hands a run items again.
 	Tries int `json:"tries,omitempty"`
+	// Handed is the run a firing by hand (Service.TriggerNow) handed items
+	// to, which runs in the background, with the check's state before it:
+	// if that run ends having done nothing, the next firing hands the same
+	// items again, as a firing's own unworked run does.
+	Handed *Handed `json:"handed,omitempty"`
+}
+
+// Handed is a run started by hand with a check's items, and the cursor and
+// partial state from before they were handed.
+type Handed struct {
+	Run     string   `json:"run"`
+	Last    string   `json:"last,omitempty"`
+	Partial *Partial `json:"partial,omitempty"`
 }
 
 // Partial is a cursor value part of whose items went to a run.
@@ -94,7 +107,7 @@ func sameJSON(a, b json.RawMessage) bool {
 // its cursor at its first firing. The state is the service's, never a
 // caller's.
 func (c Check) Fresh() Check {
-	c.Last, c.Due, c.Partial, c.Tries = "", time.Time{}, nil, 0
+	c.Last, c.Due, c.Partial, c.Tries, c.Handed = "", time.Time{}, nil, 0, nil
 	return c
 }
 
@@ -105,7 +118,7 @@ func (c Check) Fresh() Check {
 func (c Check) Keeping(o *Check) Check {
 	c = c.Fresh()
 	if o != nil && c.Reads(*o) {
-		c.Last, c.Due, c.Partial, c.Tries = o.Last, o.Due, o.Partial, o.Tries
+		c.Last, c.Due, c.Partial, c.Tries, c.Handed = o.Last, o.Due, o.Partial, o.Tries, o.Handed
 	}
 	return c
 }

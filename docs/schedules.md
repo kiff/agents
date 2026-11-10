@@ -80,8 +80,13 @@ untrusted data.
   next one is still the first.
 - **Fired by hand** (`POST /schedules/{id}/trigger`), a schedule with a check
   is fired as any firing: the read first, then a run only with what's new
-  (202 with the run), or `200 {"outcome": "quiet"}` with no run. Its run goes
-  to the background, so the cursor moves once the run starts.
+  (202 with the run). With no run, `200 {"outcome": …}` says what the
+  firing was kept as (`quiet`, `skipped_too_large`, `skipped_halted`,
+  `skipped_switching`, `skipped_credits`); a check that couldn't read is
+  `409 failed_check`, with the read's reason. Its run goes to the background,
+  so the cursor moves once the run starts; the check keeps that run
+  (`handed`), and if it ends having done nothing (unworked, switching, or cut
+  short having changed nothing), the next firing hands the same items again.
 - **Items without the cursor field fail the check.** A read that lists items,
   none of which carries the `cursor` field, could never see one as new, so the
   schedule would stay quiet for good. The firing is `failed_check` instead, and

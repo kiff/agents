@@ -348,6 +348,11 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	f.sweeper = sweeping(runs, rn, f.cont)
 	// A firing starts its run and executes it in its own invocation.
 	schedules.Start = f.fire
+	// A run started by hand with a check's items, looked at by the next
+	// firing: one that ended having done nothing hands its items again.
+	schedules.RunEnded = func(ctx context.Context, tenant, id string) (bool, error) {
+		return handedEnded(ctx, runs, tenant, id)
+	}
 	return f, nil
 }
 
