@@ -187,3 +187,59 @@ func TestStateSaysWhatIsKeptOfEachShownDraft(t *testing.T) {
 		t.Fatalf("with no draft shown, State said %q", text)
 	}
 }
+
+// granted is a fake of the setup agent's planque listing (tool.Granted).
+type granted struct {
+	names []string
+	known bool
+	err   error
+}
+
+func (g granted) AgentTools(context.Context, string) ([]string, bool, error) {
+	return g.names, g.known, g.err
+}
+
+// A draft whose Cards leave one of the taf's granted tools uncovered isn't
+// sent: the model reads which, and drafts again. Its own reads were never
+// listed. When planque can't be read, or can't tell its own reads apart,
+// the draft goes as before (Eval 42781271564: get_charge granted, its Card
+// covering only read_charge, every call of it refused).
+func TestADraftThatLeavesAGrantedToolUncoveredIsNotSent(t *testing.T) {
+	sent := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent++
+		w.WriteHeader(201)
+		w.Write([]byte(`{"id":"drf_1","agent_id":"agt_refunds","status":"draft","version":"v1","claim_secret":"kiff_claim_s3cret"}`))
+	}))
+	defer srv.Close()
+	m := memory.NewDrafts()
+	newTool := func(g tool.Granted) *tooldrafts.Tool {
+		tl := tooldrafts.New(&drafts.Service{Store: m, Keys: m, KIFF: kiffapi.New(srv.URL, nil)}, "t1", "kiff_key_setup")
+		tl.CheckGrants(g)
+		return tl
+	}
+	draft := json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[` +
+		`{"id":"refunds","grants":[{"action":"Create_Refund_k3"},{"action":" read_charge "}]}]}`)
+	given := []string{"create_refund_k3", "read_charge", "get_charge"}
+
+	r, err := newTool(granted{names: given, known: true}).Call(context.Background(), draft)
+	if err != nil || !r.IsError || !strings.Contains(r.Text, "get_charge") || strings.Contains(r.Text, "read_charge,") || sent != 0 {
+		t.Fatalf("an uncovered tool: %+v %v, sent %d", r, err, sent)
+	}
+	for name, g := range map[string]granted{
+		"every tool covered":     {names: given[:2], known: true},
+		"an older planque":       {names: given, known: false},
+		"planque can't be read":  {err: context.DeadlineExceeded},
+		"no grant connected yet": {known: true},
+	} {
+		before := sent
+		if r, err := newTool(g).Call(context.Background(), draft); err != nil || r.IsError || sent != before+1 {
+			t.Errorf("%s: %+v %v", name, r, err)
+		}
+	}
+	// No planque to ask: the draft goes, as before.
+	tl := tooldrafts.New(&drafts.Service{Store: m, Keys: m, KIFF: kiffapi.New(srv.URL, nil)}, "t1", "kiff_key_setup")
+	if r, _ := tl.Call(context.Background(), draft); r.IsError {
+		t.Errorf("without a planque: %+v", r)
+	}
+}

@@ -29,6 +29,37 @@ const Name = "kiff_draft"
 type Tool struct {
 	svc         *drafts.Service
 	tenant, key string
+	// granted, when set, says which tools the taf was given, so a draft
+	// that leaves one uncovered is refused before KIFF sees it.
+	granted tool.Granted
+}
+
+// CheckGrants has the tool refuse a draft whose Cards leave one of the
+// taf's granted tools uncovered, as g lists them (the setup agent's planque).
+func (t *Tool) CheckGrants(g tool.Granted) { t.granted = g }
+
+// uncovered is each of granted no Card of cards names in its grants'
+// actions, as KIFF matches them (ignoring case and spaces around).
+func uncovered(granted []string, cards []map[string]json.RawMessage) []string {
+	covered := map[string]bool{}
+	for _, c := range cards {
+		var grants []struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal(c["grants"], &grants) != nil {
+			continue
+		}
+		for _, g := range grants {
+			covered[strings.ToLower(strings.TrimSpace(g.Action))] = true
+		}
+	}
+	var out []string
+	for _, name := range granted {
+		if !covered[strings.ToLower(strings.TrimSpace(name))] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // New returns the draft tool for the agent whose KIFF key is key.
@@ -101,6 +132,14 @@ func (t *Tool) State(ctx context.Context, shown []json.RawMessage) (string, erro
 	return b.String(), nil
 }
 
+// them is "it" or "them", for n tools.
+func them(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
+}
+
 // takenID is KIFF's refusal of a draft's Card whose id is a Card the agent
 // doesn't hold alone and in force (kiff-cloud's draftCards), naming it by
 // its place in the draft.
@@ -156,6 +195,22 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	var cards []map[string]json.RawMessage
 	if err := json.Unmarshal(in.Cards, &cards); err != nil {
 		return tool.Result{Text: "cards is an array of Cards, each an object with its id", IsError: true}, nil
+	}
+	// Every tool the taf was given goes on a Card, the reads too: KIFF
+	// refuses any call no Card covers, so a tool left off is one the taf
+	// can't use, and asks its owner for a Card it shouldn't need (Eval
+	// 42781271564). The setup agent's own reads aren't the taf's and aren't
+	// asked for. When planque can't be read, or can't tell those reads
+	// apart, nothing is checked: the draft goes as before.
+	if t.granted != nil {
+		if names, known, err := t.granted.AgentTools(ctx, in.AgentID); err == nil && known {
+			if missing := uncovered(names, cards); len(missing) > 0 {
+				return tool.Result{Text: fmt.Sprintf("Not submitted: the taf was given %s, and no Card in this draft covers %s. "+
+					"KIFF refuses every call no Card covers (no_mandate_issued), so the taf couldn't use %s. "+
+					"Add each to a Card (a read gets a call count only, generous enough never to get in the way), then submit again.",
+					strings.Join(missing, ", "), them(len(missing)), them(len(missing))), IsError: true}, nil
+			}
+		}
 	}
 	// Each id goes as the model named it, so a Card the agent holds is
 	// revised. An account keeps the Cards of tafs made before (an Eval's

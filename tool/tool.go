@@ -17,6 +17,15 @@ import (
 	"github.com/kiff/agents/model"
 )
 
+// Granted lists the tools a taf's agent was given, for a check that its
+// Cards cover them: the KIFF name of each tool of the agent's connected
+// grants, leaving out the setup agent's own reads. known is false when the
+// source can't tell those reads apart (an older planque): then nothing is
+// to be checked.
+type Granted interface {
+	AgentTools(ctx context.Context, agent string) (names []string, known bool, err error)
+}
+
 // Access is what a tool can change.
 type Access int
 
