@@ -740,6 +740,29 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	return sv.start(ctx, s, f, now)
 }
 
+// TriggerNow fires a schedule with a check once, now, outside its
+// timetable: the read first, and a run only when it finds something new, as
+// any firing. start starts that run and returns at once (the caller runs it
+// in the background), so the cursor moves once the run is started, not once
+// it ends. started says whether a run started; a quiet check starts none.
+func (sv *Service) TriggerNow(ctx context.Context, tenant, id string, start func(ctx context.Context, f Firing) error) (started bool, err error) {
+	s, err := sv.Store.Get(ctx, tenant, id)
+	if err != nil {
+		return false, err
+	}
+	now := sv.now()
+	f := Firing{Tenant: tenant, Schedule: id, Agent: s.Agent, Input: s.Input, Due: now.Truncate(time.Second)}
+	if s.AppCheck == nil || sv.Probe == nil {
+		return true, start(ctx, f)
+	}
+	once := *sv
+	once.Start = func(ctx context.Context, f Firing) error {
+		started = true
+		return start(ctx, f)
+	}
+	return started, once.start(ctx, s, f, now)
+}
+
 // start runs the firing: for a schedule with a check, only when the read
 // finds something new, with it in the run's input. The check's cursor moves
 // only once the run has started; a repeated delivery of the firing that

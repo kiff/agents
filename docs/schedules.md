@@ -78,6 +78,10 @@ untrusted data.
   every item the read lists then, as the queue already there, and keeps the
   cursor past them. A first check that lists nothing starts nothing, and the
   next one is still the first.
+- **Fired by hand** (`POST /schedules/{id}/trigger`), a schedule with a check
+  is fired as any firing: the read first, then a run only with what's new
+  (202 with the run), or `200 {"outcome": "quiet"}` with no run. Its run goes
+  to the background, so the cursor moves once the run starts.
 - **Items without the cursor field fail the check.** A read that lists items,
   none of which carries the `cursor` field, could never see one as new, so the
   schedule would stay quiet for good. The firing is `failed_check` instead, and
