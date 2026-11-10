@@ -129,6 +129,12 @@ type Taf struct {
 	Kickoff      string `json:"kickoff,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 	Cron         string `json:"cron,omitempty"`
+	// Check is how a new taf on a schedule finds its work before the AI
+	// wakes: each firing reads the list of open work through one of its
+	// tools, without the model, and runs the taf only when the read finds
+	// something new (schedule.Check). Required with Cron, so a quiet firing
+	// costs nothing.
+	Check *Check `json:"check,omitempty"`
 	// Disclose names a taf's tools that write to someone outside the
 	// company, each with the free-text fields of its input (dotted paths):
 	// tafs puts them in the taf's definition, and the runtime ends each such
@@ -178,6 +184,62 @@ func checkDisclose(ds []Disclose) error {
 			if f == "" || len(f) > MaxDisclose.Length || slices.Contains(strings.Split(f, "."), "") {
 				return fmt.Errorf("a field of taf.disclose is a dotted path, such as body or evidence.uncategorized_text, not %q", f)
 			}
+		}
+	}
+	return nil
+}
+
+// Check is a new taf's schedule check, as schedule.Check takes it: the read
+// tool that lists the taf's work, its arguments, the dotted path to the list
+// in its result ("" when the result is the list), the field that only grows
+// (cursor), the field naming an item (id, "id" when empty), and what the
+// first check does ("all": hand the queue already there; "new": only take
+// the cursor).
+type Check struct {
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Items     string          `json:"items,omitempty"`
+	Cursor    string          `json:"cursor"`
+	ID        string          `json:"id,omitempty"`
+	First     string          `json:"first,omitempty"`
+}
+
+// MaxCheckArguments bounds a check's arguments, as JSON.
+const MaxCheckArguments = 2048
+
+// checkCheck says what's wrong with a new taf's check, if anything; tools
+// are the result's, which the check's read is one of when it names any.
+func checkCheck(c *Check, tools []string) error {
+	field := func(name, v string, required bool) error {
+		if v == "" && !required {
+			return nil
+		}
+		if v == "" || len(v) > MaxDisclose.Length || slices.Contains(strings.Split(v, "."), "") || strings.ContainsFunc(v, unicode.IsSpace) {
+			return fmt.Errorf("taf.check.%s is a field of the read's result, a dotted path such as data or created", name)
+		}
+		return nil
+	}
+	switch {
+	case c.Tool == "" || len(c.Tool) > MaxDisclose.Length:
+		return fmt.Errorf("taf.check.tool is the read that lists the taf's work, as KIFF names it")
+	case len(tools) > 0 && !slices.Contains(tools, c.Tool):
+		return fmt.Errorf("taf.check.tool %s isn't among the result's tools: name the read that lists the taf's work, as tools names it", c.Tool)
+	case c.First != "" && c.First != "new" && c.First != "all":
+		return fmt.Errorf(`taf.check.first is "all" (the first check works the queue already there) or "new"`)
+	}
+	if err := field("items", c.Items, false); err != nil {
+		return err
+	}
+	if err := field("cursor", c.Cursor, true); err != nil {
+		return err
+	}
+	if err := field("id", c.ID, false); err != nil {
+		return err
+	}
+	if len(c.Arguments) > 0 {
+		var args map[string]any
+		if len(c.Arguments) > MaxCheckArguments || json.Unmarshal(c.Arguments, &args) != nil || args == nil {
+			return fmt.Errorf("taf.check.arguments is the read's input, a JSON object of at most %d bytes", MaxCheckArguments)
 		}
 	}
 	return nil
@@ -338,6 +400,10 @@ func (t Tool) Spec() model.ToolSpec {
 			`"kickoff":{"type":"string","description":"a new taf: what each run is asked to do, in one or two sentences, drafted with the owner"},` +
 			`"instructions":{"type":"string","description":"a new taf: how it works, from what was agreed with the owner, and its never rules"},` +
 			`"cron":{"type":"string","description":"a new taf with a schedule: when it runs, five POSIX cron fields in the account's time zone, such as 0 9 * * 1-5"},` +
+			`"check":{"type":"object","description":"a new taf with a schedule (required with cron): the read that lists its open work, checked at each firing without the AI, which runs only when there's something new",` +
+			`"properties":{"tool":{"type":"string","description":"the read tool that lists the work, one of tools"},"arguments":{"type":"object","description":"its input, e.g. only open requests"},` +
+			`"items":{"type":"string","description":"the dotted path to the list in its result; empty when the result is the list"},"cursor":{"type":"string","description":"a field of each item that only grows: its created time or an increasing id"},` +
+			`"id":{"type":"string","description":"the field naming an item; id when empty"},"first":{"type":"string","enum":["all","new"],"description":"all: the first check works the queue already there; new: only what comes after"}},"required":["tool","cursor"]},` +
 			`"disclose":{"type":"array","description":"each of the taf's tools that writes to someone outside the company (an email, a reply, evidence), by its name in KIFF, with its free-text fields' dotted paths: each such call then ends with its AI disclosure; an improvement's adds to the taf's",` +
 			`"items":{"type":"object","properties":{"tool":{"type":"string"},"fields":{"type":"array","items":{"type":"string"}},` +
 			`"credit":{"type":"boolean","description":"false for evidence or a filing, to a bank or a card network: the disclosure alone, without \"Built with tafs.\"; leave it out for messages to people"}},"required":["tool","fields"]}},` +
@@ -613,6 +679,17 @@ func (c Component) check() error {
 				return fmt.Errorf("taf.cron is for a taf with a schedule; an unscheduled one has none")
 			case !c.Taf.Unscheduled && !cronPattern.MatchString(c.Taf.Cron):
 				return fmt.Errorf("taf.cron is when it runs, five POSIX cron fields such as \"0 9 * * 1-5\", or set taf.unscheduled")
+			case c.Taf.Unscheduled && c.Taf.Check != nil:
+				return fmt.Errorf("taf.check is for a taf on a schedule; an unscheduled one works from its chat")
+			case !c.Taf.Unscheduled && c.Taf.Check == nil:
+				// Every schedule checks first, so a firing with nothing to do
+				// wakes no AI and costs nothing.
+				return fmt.Errorf("a taf on a schedule checks its work first: add taf.check, the read that lists its open work (tool, items, cursor, first: all)")
+			}
+			if c.Taf.Check != nil {
+				if err := checkCheck(c.Taf.Check, c.Tools); err != nil {
+					return err
+				}
 			}
 		} else {
 			if !idPattern.MatchString(c.Taf.Job) {
@@ -623,6 +700,9 @@ func (c Component) check() error {
 			}
 			if c.Taf.Unscheduled {
 				return fmt.Errorf("taf.unscheduled is for a new taf: an improvement keeps its schedule")
+			}
+			if c.Taf.Check != nil {
+				return fmt.Errorf("taf.check is for a new taf: an improvement keeps its schedule, and the dial changes its check")
 			}
 			// An improvement may add a disclosure, for a tool it adds or one a taf
 			// from before never had; tafs adds it to the taf's, never taking one

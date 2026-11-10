@@ -836,3 +836,38 @@ func TestACheckReadRefusedForAHaltOrASwitchIsThatSkip(t *testing.T) {
 		t.Fatalf("a halt during a failed read: %v (asked %d times)", err, asked)
 	}
 }
+
+type handedRuns map[string]run.Run
+
+func (h handedRuns) Get(_ context.Context, _, id string) (run.Run, error) {
+	r, ok := h[id]
+	if !ok {
+		return run.Run{}, run.ErrNotFound
+	}
+	return r, nil
+}
+
+// handedEnded is how the next firing learns how a run started by hand with
+// a check's items ended: not done while it goes, let go once it's gone, and
+// a final one answers what a firing's own run would (ended).
+func TestHandedEndedSaysHowARunStartedByHandEnded(t *testing.T) {
+	runs := handedRuns{
+		"going":    {ID: "going", Status: run.Running},
+		"worked":   {ID: "worked", Status: run.Completed, Turns: 3},
+		"unworked": {ID: "unworked", Status: run.Error, Error: runner.FailedSwitching},
+	}
+	for id, want := range map[string]struct {
+		done bool
+		err  error
+	}{
+		"going":    {false, nil},
+		"gone":     {true, nil},
+		"worked":   {true, nil},
+		"unworked": {true, schedule.ErrSwitching},
+	} {
+		done, err := handedEnded(context.Background(), runs, "t1", id)
+		if done != want.done || !errors.Is(err, want.err) || (want.err == nil && err != nil) {
+			t.Errorf("%s: done %v, err %v; want %v, %v", id, done, err, want.done, want.err)
+		}
+	}
+}

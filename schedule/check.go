@@ -36,6 +36,11 @@ type Check struct {
 	// item the app changes since (read, replied to) is still the same one.
 	// An item without it is known by its content.
 	ID string `json:"id,omitempty"`
+	// First says what the first check does: FirstNew (the default) only
+	// takes the cursor, so nothing listed before the schedule is handed
+	// over; FirstAll hands every item the read lists then, as the queue
+	// already there, and keeps the cursor past them.
+	First string `json:"first,omitempty"`
 	// Last is the cursor's value at the last check, kept by the service;
 	// empty until the first check, which only takes it.
 	Last string `json:"last,omitempty"`
@@ -52,6 +57,19 @@ type Check struct {
 	// cursor moves past them all the same, and Tries stays there, to say
 	// so, until the check hands a run items again.
 	Tries int `json:"tries,omitempty"`
+	// Handed is the run a firing by hand (Service.TriggerNow) handed items
+	// to, which runs in the background, with the check's state before it:
+	// if that run ends having done nothing, the next firing hands the same
+	// items again, as a firing's own unworked run does.
+	Handed *Handed `json:"handed,omitempty"`
+}
+
+// Handed is a run started by hand with a check's items, and the cursor and
+// partial state from before they were handed.
+type Handed struct {
+	Run     string   `json:"run"`
+	Last    string   `json:"last,omitempty"`
+	Partial *Partial `json:"partial,omitempty"`
 }
 
 // Partial is a cursor value part of whose items went to a run.
@@ -89,7 +107,7 @@ func sameJSON(a, b json.RawMessage) bool {
 // its cursor at its first firing. The state is the service's, never a
 // caller's.
 func (c Check) Fresh() Check {
-	c.Last, c.Due, c.Partial, c.Tries = "", time.Time{}, nil, 0
+	c.Last, c.Due, c.Partial, c.Tries, c.Handed = "", time.Time{}, nil, 0, nil
 	return c
 }
 
@@ -100,10 +118,16 @@ func (c Check) Fresh() Check {
 func (c Check) Keeping(o *Check) Check {
 	c = c.Fresh()
 	if o != nil && c.Reads(*o) {
-		c.Last, c.Due, c.Partial, c.Tries = o.Last, o.Due, o.Partial, o.Tries
+		c.Last, c.Due, c.Partial, c.Tries, c.Handed = o.Last, o.Due, o.Partial, o.Tries, o.Handed
 	}
 	return c
 }
+
+// What a check's first firing does with the items already listed.
+const (
+	FirstNew = "new"
+	FirstAll = "all"
+)
 
 // MaxCheckItems bounds the new items one firing hands its run.
 const MaxCheckItems = 50
@@ -120,6 +144,9 @@ func (c Check) check() error {
 	}
 	if len(c.Arguments) > 0 && !json.Valid(c.Arguments) {
 		return errors.New("schedule: a check's arguments are JSON")
+	}
+	if c.First != "" && c.First != FirstNew && c.First != FirstAll {
+		return errors.New(`schedule: a check's first is "new" or "all"`)
 	}
 	return nil
 }
@@ -164,7 +191,11 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 			seen[d] = true
 		}
 	}
+	// The first check only takes the cursor, unless it hands the queue
+	// already there (FirstAll).
+	taking := c.Last == "" && c.First != FirstAll
 	var fresh []item
+	carried := 0
 	for _, it := range arr {
 		m, ok := it.(map[string]any)
 		if !ok {
@@ -174,8 +205,9 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 		if !ok {
 			continue
 		}
+		carried++
 		cur := cursorText(v)
-		if c.Last == "" {
+		if taking {
 			if next.Last == "" || after(cur, next.Last) {
 				next.Last = cur
 			}
@@ -188,7 +220,13 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 		}
 		fresh = append(fresh, item{cur, d, raw})
 	}
-	if c.Last == "" {
+	// Items, none of which carries the cursor field: the check could never
+	// see one as new and would stay quiet for good. It fails instead, so
+	// the schedule's failing count says so.
+	if len(arr) > 0 && carried == 0 {
+		return "", c, 0, 0, fmt.Errorf("schedule: the check's items have no %q field", c.Cursor)
+	}
+	if taking {
 		return "", next, 0, 0, nil
 	}
 	// Oldest first, whatever order the app lists them in.

@@ -23,6 +23,7 @@ import (
 	"github.com/kiff/agents/registry/registrytest"
 	"github.com/kiff/agents/registry/secretsmanager"
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/schedule"
 	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/server/lambdaurl"
 	"github.com/kiff/agents/session"
@@ -2288,4 +2289,73 @@ type goneKeys struct{}
 
 func (goneKeys) Key(context.Context, string, string) (string, error) {
 	return "", secretsmanager.ErrNotFound
+}
+
+// A schedule that checks first, fired by hand, is fired as any firing: the
+// read first, then a run only with what's new in its input. A quiet check
+// answers with no run; with a first of "all", the queue already listed is
+// the first run's work.
+func TestTriggerAScheduleThatChecksFirst(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	sc := scheduleBody("inbox")
+	sc.AppCheck = &schedule.Check{Tool: "helpdesk__open", Items: "data", Cursor: "created", First: schedule.FirstAll}
+	code, body := f.do("t1", "POST", "/schedules", sc)
+	f.want(201, code, body, "create schedule")
+	result := `{"data":[]}`
+	f.server.Schedules.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return result, nil }
+
+	code, body = f.do("t1", "POST", "/schedules/inbox/trigger", nil)
+	f.want(200, code, body, "a quiet check")
+	if body["outcome"] != schedule.FiredQuiet || len(f.background) != 0 {
+		t.Fatalf("quiet: %v, background %v", body, f.background)
+	}
+
+	result = `{"data":[{"id":"r1","created":100,"subject":"refund please"}]}`
+	code, body = f.do("t1", "POST", "/schedules/inbox/trigger", nil)
+	f.want(202, code, body, "a check that finds the queue")
+	if body["trigger"] != string(run.BySchedule) || body["source"] != "inbox" || len(f.background) != 1 {
+		t.Fatalf("got %v, background %v", body, f.background)
+	}
+	stored, err := f.runs.Get(ctx, "t1", body["id"].(string))
+	if err != nil || !strings.HasPrefix(stored.Input, sc.Input) || !strings.Contains(stored.Input, `"id":"r1"`) {
+		t.Fatalf("stored %+v (%v), want the schedule's input with the item", stored, err)
+	}
+	if got, _ := f.server.Schedules.Store.Get(ctx, "t1", "inbox"); got.AppCheck == nil || got.AppCheck.Last != "100" {
+		t.Fatalf("cursor %+v", got.AppCheck)
+	}
+}
+
+// A schedule that checks first, fired by hand, answers what its firing was
+// kept as when no run starts: never "quiet" for a halt or a switch, and a
+// check that couldn't read says why (409 failed_check), so whoever drafted
+// it can fix it.
+func TestTriggerAScheduleThatChecksFirstSaysWhyNoRunStarted(t *testing.T) {
+	cases := []struct {
+		name, result string
+		readErr      error
+		code         int
+		want         string
+	}{
+		{"halted", "", schedule.ErrHalted, 200, schedule.FiredHalted},
+		{"switching", "", schedule.ErrSwitching, 200, schedule.FiredSwitching},
+		{"read failed", "", errors.New("the read was refused: unauthorized"), 409, "unauthorized"},
+		{"no cursor field", `{"data":[{"id":"r1","created_at":100}]}`, nil, 409, `no "created" field`},
+	}
+	for _, tc := range cases {
+		f := newRunFixture(t)
+		f.putAgent("t1", "payouts")
+		sc := scheduleBody("inbox")
+		sc.AppCheck = &schedule.Check{Tool: "helpdesk__open", Items: "data", Cursor: "created", First: schedule.FirstAll}
+		code, body := f.do("t1", "POST", "/schedules", sc)
+		f.want(201, code, body, "create schedule")
+		f.server.Schedules.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return tc.result, tc.readErr }
+
+		code, body = f.do("t1", "POST", "/schedules/inbox/trigger", nil)
+		f.want(tc.code, code, body, tc.name)
+		got := fmt.Sprint(body["outcome"], body["error"], body["message"])
+		if !strings.Contains(got, tc.want) || len(f.background) != 0 {
+			t.Fatalf("%s: %v, background %v", tc.name, body, f.background)
+		}
+	}
 }

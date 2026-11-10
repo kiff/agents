@@ -136,7 +136,7 @@ func TestAnApprovalCardNeverStandsInForKIFFsApproval(t *testing.T) {
 	f.want(409, code, body, "the run still waits for KIFF")
 }
 
-const resultCard = `{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *"}}`
+const resultCard = `{"type":"result","id":"done","text":"Refunds is ready.","taf":{"agent":"refunds","name":"Refunds","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}}}`
 
 // A result is answered by the service that hands the owner over, naming
 // itself, and the run records it as that service's answer, never the

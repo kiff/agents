@@ -35,8 +35,8 @@ func TestEveryComponentIsShown(t *testing.T) {
 		`{"type":"sign_in","id":"connect-stripe","grant":"grt_AbC-1","service":"mcp.stripe.com"}`,
 		// The card's own words, in the owner's language (kiff/tafs#75).
 		`{"type":"sign_in","id":"entrar","grant":"grt_AbC-1","service":"mcp.stripe.com","title":"Inicia sesión en Stripe","text":"Se abre la página de Stripe.","yes":"Abrir","no":"Ahora no"}`,
-		`{"type":"result","id":"listo","taf":{"agent":"refunds","name":"Reembolsos","draft":"drf_01","kickoff":"Work the refund queue.","cron":"*/30 * * * *"},"text":"Listo.","yes":"Ver Reembolsos"}`,
-		`{"type":"result","id":"done","taf":{"agent":"refunds","name":"Refunds","job":"custom","draft":"drf_01","kickoff":"Work the refund queue.","cron":"*/30 * * * *","instructions":"Never refund twice."},"text":"Refunds is ready.","tools":["stripe_refund"]}`,
+		`{"type":"result","id":"listo","taf":{"agent":"refunds","name":"Reembolsos","draft":"drf_01","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"Listo.","yes":"Ver Reembolsos"}`,
+		`{"type":"result","id":"done","taf":{"agent":"refunds","name":"Refunds","job":"custom","draft":"drf_01","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},"instructions":"Never refund twice."},"text":"Refunds is ready.","tools":["stripe_refund","helpdesk_list_open"]}`,
 		// Its tools can't find its work: no schedule, the owner hands it work (kiff/tafs#138).
 		`{"type":"result","id":"chat","taf":{"agent":"refunds","name":"Refunds","draft":"drf_01","unscheduled":true,"kickoff":"Refund what the owner hands you."},"text":"Refunds is ready: tell it what to refund."}`,
 		// An improvement (kiff/tafs#107): the next version of a taf tafs runs, its Card
@@ -44,7 +44,7 @@ func TestEveryComponentIsShown(t *testing.T) {
 		`{"type":"result","id":"v2","taf":{"agent":"refunds-k3f9","name":"Reembolsos","job":"refunds","improves":"taf-0123456789abcdef0123","note":"Lee el cobro antes de reembolsar.","notes":"Revisa cada cobro antes.","draft":"drf_02"},"text":"Listo: es su versión 2."}`,
 		`{"type":"result","id":"v3","taf":{"agent":"refunds-k3f9","name":"Refunds","job":"refunds","improves":"taf-0123456789abcdef0123","note":"Asks before refunds over 50 EUR."},"text":"Ready as version 3."}`,
 		`{"type":"result","id":"v4","taf":{"agent":"refunds-k3f9","name":"Refunds","job":"refunds","improves":"taf-0123456789abcdef0123","note":"Offers a free month first.","summary":"Offers a free month to customers who cancel."},"text":"Ready as version 4."}`,
-		`{"type":"result","id":"new","taf":{"agent":"refunds","name":"Refunds","draft":"drf_01","summary":"Answers refund requests within its Card.","kickoff":"Work the refund queue.","cron":"*/30 * * * *"},"text":"Refunds is ready."}`,
+		`{"type":"result","id":"new","taf":{"agent":"refunds","name":"Refunds","draft":"drf_01","summary":"Answers refund requests within its Card.","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"Refunds is ready."}`,
 		// The dial version Coach drafted: the app draws it from tafs cloud's words.
 		`{"type":"knob","id":"dial-v8","taf_id":"taf-0123456789abcdef0123","version":8}`,
 	} {
@@ -118,18 +118,26 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"sign_in","id":"a","grant":"grt_1"}`:                                                                      "service is",
 		`{"type":"result","id":"a","text":"done"}`:                                                                         "taf.agent",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1"},"text":"done"}`:                          "taf.kickoff",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"billpay","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *"},"text":"done"}`:                                          "leave taf.job out",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k"},"text":"done"}`:                                                                                                     "taf.cron",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"every morning"},"text":"done"}`:                                                                              "taf.cron",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5","unscheduled":true},"text":"done"}`:                                                             "an unscheduled one",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"` + strings.Repeat("k", show.MaxJob+1) + `","cron":"0 9 * * 1-5"},"text":"done"}`:                                       "taf.kickoff",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","cron":"0 9 * * 1-5"},"text":"done"}`:                                                                "for a new taf",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","improves":"taf-1","note":"n"},"text":"done"}`:                                                                                                     "taf.job",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R"},"text":"done"}`:                                                                                                                                   "taf.draft",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","note":"x"},"text":"done"}`:                                                                                                        "for an improvement",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1"},"text":"done"}`:                                                                                                "taf.note",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","unscheduled":true},"text":"done"}`:                                                                  "for a new taf",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *","summary":"` + strings.Repeat("s", show.MaxLabel+1) + `"},"text":"done"}`: "taf.summary",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"billpay","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"done"}`: "leave taf.job out",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k"},"text":"done"}`:                                                                                                                                                  "taf.cron",
+		// Every schedule checks first: a scheduled taf names the read that lists its work.
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5"},"text":"done"}`:                                                                                                                                                                      "checks its work first",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","unscheduled":true,"check":{"tool":"t","cursor":"created"}},"text":"done"}`:                                                                                                                                "works from its chat",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5","check":{"tool":"other","cursor":"created"}},"text":"done","tools":["t"]}`:                                                                                                            "isn't among the result's tools",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5","check":{"tool":"t","cursor":"created","first":"some"}},"text":"done"}`:                                                                                                               "taf.check.first",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5","check":{"tool":"t","cursor":"created at"}},"text":"done"}`:                                                                                                                           "taf.check.cursor",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5","check":{"tool":"t","cursor":"created","arguments":[1]}},"text":"done"}`:                                                                                                              "taf.check.arguments",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","check":{"tool":"t","cursor":"created"}},"text":"done"}`:                                                                                                                                   "the dial changes its check",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"every morning"},"text":"done"}`:                                                                                                                                                                    "taf.cron",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},"unscheduled":true},"text":"done"}`:                                                             "an unscheduled one",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"` + strings.Repeat("k", show.MaxJob+1) + `","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"done"}`:                                       "taf.kickoff",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"done"}`:                                                                "for a new taf",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","improves":"taf-1","note":"n"},"text":"done"}`:                                                                                                                                                                                           "taf.job",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R"},"text":"done"}`:                                                                                                                                                                                                                         "taf.draft",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","note":"x"},"text":"done"}`:                                                                                                                                                                                              "for an improvement",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1"},"text":"done"}`:                                                                                                                                                                                      "taf.note",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","unscheduled":true},"text":"done"}`:                                                                                                                                                        "for a new taf",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},"summary":"` + strings.Repeat("s", show.MaxLabel+1) + `"},"text":"done"}`: "taf.summary",
 		`{"type":"knob","id":"d","version":8}`:                                     "taf_id is",
 		`{"type":"knob","id":"d","taf_id":"taf-1"}`:                                "version is",
 		`{"type":"knob","id":"d","taf_id":"taf-1","version":8,"text":"Runs at 9"}`: `has no field "text"`,
@@ -208,7 +216,7 @@ func TestAStepIsDoneOnlyOnceItsCallWentThrough(t *testing.T) {
 // their free-text fields: tafs gives the taf its AI disclosure there
 // (kiff/tafs#476, gap 9). What doesn't fit is refused in words for Coach.
 func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
-	ok := call(t, `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind each customer.","cron":"0 9 * * 1-5",`+
+	ok := call(t, `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind each customer.","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},`+
 		`"disclose":[{"tool":"send_message_k3f9","fields":["text"]}]},"text":"Invoices is ready."}`)
 	if ok.IsError || !strings.Contains(string(ok.Component), `"disclose":[{"tool":"send_message_k3f9","fields":["text"]}]`) {
 		t.Fatalf("a result with its disclosure: %+v", ok)
@@ -219,7 +227,7 @@ func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
 		"a path with a gap":                 `"disclose":[{"tool":"send","fields":["a..b"]}]`,
 		"an improvement's, without a field": `"improves":"taf-1","job":"refunds","note":"n","disclose":[{"tool":"send","fields":[]}]`,
 	} {
-		in := `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind.","cron":"0 9 * * 1-5",` + taf + `},"text":"t"}`
+		in := `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices","draft":"drf_01","kickoff":"Remind.","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},` + taf + `},"text":"t"}`
 		if strings.Contains(taf, "improves") {
 			in = `{"type":"result","id":"done","taf":{"agent":"invoices","name":"Invoices",` + taf + `},"text":"t"}`
 		}
@@ -239,7 +247,7 @@ func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
 // taf writes for the name the owner gave, on one line (kiff/tafs#476: the
 // owner's calls at 11:32, gaps 16 and 18).
 func TestAResultSaysWhoItWritesForAndWhereNoCreditGoes(t *testing.T) {
-	ok := call(t, `{"type":"result","id":"done","taf":{"agent":"disputes","name":"Chargebacks","draft":"drf_01","kickoff":"Answer each dispute.","cron":"0 9 * * 1-5",`+
+	ok := call(t, `{"type":"result","id":"done","taf":{"agent":"disputes","name":"Chargebacks","draft":"drf_01","kickoff":"Answer each dispute.","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},`+
 		`"writes_for":"Kiff Agents OÜ","disclose":[{"tool":"update_dispute","fields":["evidence.uncategorized_text"],"credit":false},{"tool":"send_reply","fields":["body"]}]},"text":"Chargebacks is ready."}`)
 	if ok.IsError || !strings.Contains(string(ok.Component), `{"tool":"update_dispute","fields":["evidence.uncategorized_text"],"credit":false},{"tool":"send_reply","fields":["body"]}`) ||
 		!strings.Contains(string(ok.Component), `"writes_for":"Kiff Agents OÜ"`) {
@@ -248,7 +256,7 @@ func TestAResultSaysWhoItWritesForAndWhereNoCreditGoes(t *testing.T) {
 	for name, w := range map[string]string{
 		"two lines": `"Kiff\nAgents"`, "padded": `" Kiff Agents"`, "too long": `"` + strings.Repeat("x", show.MaxWritesFor+1) + `"`,
 	} {
-		in := `{"type":"result","id":"done","taf":{"agent":"disputes","name":"Chargebacks","draft":"drf_01","kickoff":"Answer.","cron":"0 9 * * 1-5","writes_for":` + w + `},"text":"t"}`
+		in := `{"type":"result","id":"done","taf":{"agent":"disputes","name":"Chargebacks","draft":"drf_01","kickoff":"Answer.","cron":"0 9 * * 1-5","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},"writes_for":` + w + `},"text":"t"}`
 		if r := call(t, in); !r.IsError || !strings.Contains(r.Text, "writes_for") {
 			t.Errorf("%s: %+v", name, r)
 		}

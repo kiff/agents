@@ -173,6 +173,24 @@ func ended(r run.Run) error {
 	return nil
 }
 
+// handedEnded says how the run id, started by hand with a check's items,
+// ended: not yet, or what a firing's own run would have returned for it
+// (ended). A run that is gone is let go.
+func handedEnded(ctx context.Context, runs interface {
+	Get(ctx context.Context, tenant, id string) (run.Run, error)
+}, tenant, id string) (bool, error) {
+	r, err := runs.Get(ctx, tenant, id)
+	switch {
+	case errors.Is(err, run.ErrNotFound):
+		return true, nil
+	case err != nil:
+		return false, err
+	case !r.Status.Final():
+		return false, nil
+	}
+	return true, ended(r)
+}
+
 // fire starts the run a schedule's firing asks for, and executes it in this
 // invocation, which EventBridge Scheduler already started in the background.
 // The run's ID is the firing's key, so a repeated delivery finds the run

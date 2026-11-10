@@ -1541,6 +1541,7 @@ func TestACheckIsChecked(t *testing.T) {
 		"no tool":        {Cursor: "created"},
 		"no cursor":      {Tool: "x"},
 		"arguments, bad": {Tool: "x", Cursor: "c", Arguments: json.RawMessage(`{`)},
+		"first, unknown": {Tool: "x", Cursor: "c", First: "some"},
 	} {
 		s := scheduletest.Schedule("t1", "inbox")
 		s.AppCheck = c
@@ -1794,6 +1795,134 @@ func TestACheckReadRefusedForAHaltOrASwitchIsThatSkip(t *testing.T) {
 		}
 		if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing != nil || got.AppCheck.Last != "100" {
 			t.Fatalf("%s: cursor %q, failing %+v", c.outcome, got.AppCheck.Last, got.Failing)
+		}
+	}
+}
+
+// A check whose first is "all" hands the queue already listed at its first
+// firing, as work, instead of only taking the cursor; the next firing hands
+// only what came since. An empty queue starts nothing and stays "first".
+func TestACheckThatTakesAllHandsTheQueueAlreadyThere(t *testing.T) {
+	f := newFixture()
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "helpdesk__open", Items: "data", Cursor: "created", First: schedule.FirstAll}
+	if err := f.sv.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	result := `{"data":[]}`
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return result, nil }
+	at := func(m int) time.Time { return time.Date(2026, 11, 10, 9, m, 0, 0, time.UTC) }
+	fire := func(due time.Time) {
+		t.Helper()
+		if err := f.sv.Fire(ctx, "t1", "inbox", due); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fire(at(0)) // nothing open yet: quiet, and still first
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); len(f.started) != 0 || got.AppCheck.Last != "" {
+		t.Fatalf("empty queue: started %d, cursor %q", len(f.started), got.AppCheck.Last)
+	}
+	result = `{"data":[{"id":"r1","created":100},{"id":"r2","created":120}]}`
+	fire(at(15)) // the queue already there is the work
+	if len(f.started) != 1 || !strings.Contains(f.started[0].Input, `"id":"r1"`) || !strings.Contains(f.started[0].Input, `"id":"r2"`) {
+		t.Fatalf("first check with all: %+v", f.started)
+	}
+	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.AppCheck.Last != "120" {
+		t.Fatalf("cursor %q", got.AppCheck.Last)
+	}
+	result = `{"data":[{"id":"r2","created":120},{"id":"r3","created":130}]}`
+	fire(at(30))
+	if len(f.started) != 2 || strings.Contains(f.started[1].Input, `"id":"r2"`) || !strings.Contains(f.started[1].Input, `"id":"r3"`) {
+		t.Fatalf("after the first: %+v", f.started)
+	}
+}
+
+// A check whose items have none of its cursor field could never see one as
+// new, so it would stay quiet for good. It fails instead, and the schedule
+// counts it as failing, whether or not it took a cursor yet.
+func TestACheckWhoseItemsLackTheCursorFails(t *testing.T) {
+	for _, first := range []string{"", schedule.FirstAll} {
+		f := newFixture()
+		s := scheduletest.Schedule("t1", "inbox")
+		s.Cron = "*/15 * * * *"
+		s.AppCheck = &schedule.Check{Tool: "helpdesk__open", Items: "data", Cursor: "created_at", First: first}
+		if err := f.sv.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+			return `{"data":[{"id":"r1","created":100}]}`, nil
+		}
+		due := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+		if err := f.sv.Fire(ctx, "t1", "inbox", due); err == nil || !strings.Contains(err.Error(), `no "created_at" field`) {
+			t.Fatalf("first %q: fire = %v", first, err)
+		}
+		h, _ := f.history.Firings(ctx, "t1", "inbox", 10)
+		got, _ := f.store.Get(ctx, "t1", "inbox")
+		if len(h) != 1 || h[0].Outcome != schedule.FiredCheckFailed || got.Failing == nil || len(f.started) != 0 {
+			t.Fatalf("first %q: history %+v, failing %+v, started %d", first, h, got.Failing, len(f.started))
+		}
+	}
+}
+
+// A firing by hand hands its run the queue, and that run goes on in the
+// background. If it ends having done nothing, the next firing hands the same
+// items again; if it worked, they aren't handed twice; while it's still
+// going, the next firing reads past the cursor as it stands.
+func TestARunStartedByHandThatDidNothingHandsItsItemsAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		done  bool
+		why   error
+		again bool
+	}{
+		{"ended unworked", true, schedule.ErrUnworked, true},
+		{"ended worked", true, nil, false},
+		{"ended having maybe changed something", true, schedule.ErrNotAgain, false},
+		{"still going", false, nil, false},
+	} {
+		f := newFixture()
+		s := scheduletest.Schedule("t1", "inbox")
+		s.Cron = "*/15 * * * *"
+		s.AppCheck = &schedule.Check{Tool: "helpdesk__open", Items: "data", Cursor: "created", First: schedule.FirstAll}
+		if err := f.sv.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) {
+			return `{"data":[{"id":"r1","created":100},{"id":"r2","created":120}]}`, nil
+		}
+		f.sv.Now = func() time.Time { return time.Date(2026, 11, 10, 9, 3, 7, 0, time.UTC) }
+		var byHand []schedule.Firing
+		outcome, err := f.sv.TriggerNow(ctx, "t1", "inbox", func(_ context.Context, fi schedule.Firing) error {
+			byHand = append(byHand, fi)
+			return nil
+		})
+		if err != nil || outcome != schedule.FiredRun || len(byHand) != 1 || !strings.Contains(byHand[0].Input, `"id":"r2"`) {
+			t.Fatalf("%s: by hand %q %v %+v", tc.name, outcome, err, byHand)
+		}
+		got, _ := f.store.Get(ctx, "t1", "inbox")
+		if got.AppCheck.Last != "120" || got.AppCheck.Handed == nil || got.AppCheck.Handed.Run != byHand[0].Key() || got.AppCheck.Handed.Last != "" {
+			t.Fatalf("%s: kept %+v", tc.name, got.AppCheck)
+		}
+		f.sv.RunEnded = func(_ context.Context, tenant, run string) (bool, error) {
+			if tenant != "t1" || run != byHand[0].Key() {
+				t.Fatalf("looked at %s/%s", tenant, run)
+			}
+			return tc.done, tc.why
+		}
+		due := time.Date(2026, 11, 10, 9, 15, 0, 0, time.UTC)
+		f.sv.Now = func() time.Time { return due }
+		if err := f.sv.Fire(ctx, "t1", "inbox", due); err != nil {
+			t.Fatalf("%s: fire %v", tc.name, err)
+		}
+		handedAgain := len(f.started) == 1 && strings.Contains(f.started[0].Input, `"id":"r1"`)
+		if handedAgain != tc.again || (!tc.again && len(f.started) != 0) {
+			t.Fatalf("%s: started %+v, want again %v", tc.name, f.started, tc.again)
+		}
+		after, _ := f.store.Get(ctx, "t1", "inbox")
+		if wantHanded := !tc.done; (after.AppCheck.Handed != nil) != wantHanded {
+			t.Fatalf("%s: handed kept %+v", tc.name, after.AppCheck.Handed)
 		}
 	}
 }

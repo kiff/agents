@@ -1444,6 +1444,30 @@ func (s *Server) triggerSchedule(ctx context.Context, c Caller, r *http.Request)
 	if err != nil {
 		return 0, nil, err
 	}
+	if sc.AppCheck != nil && s.Schedules.Probe != nil {
+		// A schedule that checks first is fired as any firing: the read,
+		// then a run only with something new in its input. With no run, the
+		// answer says what the firing was kept as (quiet, halted…), and a
+		// check that couldn't read says why, for whoever drafted it to fix.
+		var rn run.Run
+		outcome, err := s.Schedules.TriggerNow(ctx, c.Tenant, id, func(ctx context.Context, f schedule.Firing) error {
+			r, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: sc.Agent, Trigger: run.BySchedule, Source: id, Input: f.Input, ID: f.Key()})
+			if err != nil {
+				return err
+			}
+			rn = r
+			return s.toBackground(ctx, r)
+		})
+		switch {
+		case outcome == schedule.FiredCheckFailed:
+			return 0, nil, conflict(schedule.FiredCheckFailed, err.Error())
+		case err != nil:
+			return 0, nil, err
+		case outcome == schedule.FiredRun:
+			return http.StatusAccepted, s.viewRun(rn), nil
+		}
+		return http.StatusOK, map[string]any{"outcome": outcome}, nil
+	}
 	rn, err := s.start(ctx, Start{Tenant: c.Tenant, Agent: sc.Agent, Trigger: run.BySchedule, Source: id, Input: sc.Input})
 	if err != nil {
 		return 0, nil, err
