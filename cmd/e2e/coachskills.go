@@ -22,10 +22,20 @@ var coachStart = map[string][]string{
 	"improve": {"improve-a-taf", "connect-an-app", "name-the-tools", "draft-the-card"},
 }
 
+// coachWithTaf is what an account with a taf of its own adds to every start,
+// whatever its state: an owner asks why a taf did nothing, or to stop
+// everything, in words that name no skill (tafs cloud's CoachState.hasTaf).
+var coachWithTaf = []string{"cards-and-holds", "halting"}
+
 // startSkills is the entry point's skills as stored versions, in the
-// definition's order, as kiff/agents keeps them.
-func (t *test) startSkills(entry string) []string {
+// definition's order, as kiff/agents keeps them. hasTaf says the account has
+// a taf of its own by then: the first setup chat doesn't, every chat after it
+// does.
+func (t *test) startSkills(entry string, hasTaf bool) []string {
 	want := coachStart[entry]
+	if hasTaf && len(want) > 0 {
+		want = append(slices.Clone(want), coachWithTaf...)
+	}
 	var out []string
 	for _, ref := range t.setupSkillRefs {
 		name, _, _ := strings.Cut(ref, "@")

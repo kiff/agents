@@ -328,7 +328,7 @@ type improvement struct {
 // a result naming the taf it improves and a draft revising its Cards. An approval
 // of that draft in the chat fails the case: the owner confirms it at the switch.
 func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID string) (improvement, error) {
-	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("improve")}
+	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("improve", true)}
 	answered := map[string]bool{}
 	approvedGrant := ""
 	msg := first
