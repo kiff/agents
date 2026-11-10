@@ -382,6 +382,10 @@ type Outcome struct {
 	// standard: a fast agent's turn ran at standard speed, so the rest of
 	// the run does too.
 	standard bool
+	// tally counts the run's calls that act, by tool, those it waits for
+	// left out (run.Turn.Tally): what the count after a turn's results
+	// starts from.
+	tally tally
 }
 
 // ModelFailed is the Error event a failed model turn records.
@@ -518,6 +522,32 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	msgs := append(append([]model.Message(nil), history...), model.Message{Role: model.User, Blocks: asked})
 	// Paired again here: a run paused before pairing was kept may hold half a pair.
 	msgs = append(msgs, pairedServer(r.Paused.Before)...)
+	// The count goes on from the paused turn's, the calls the run waited
+	// for counted as they ended, and follows the results as in any turn
+	// that acted.
+	count := tally(r.Paused.Tally).with(nil)
+	// Said again whenever the paused turn acted, held calls or not: its
+	// results are sent as the run kept them, without the line that followed.
+	counted := slices.ContainsFunc(r.Paused.Reply.Blocks, func(b model.Block) bool {
+		return b.Kind == model.ToolUse && acts(a.tool(b.Tool), b.Input)
+	})
+	for _, h := range held {
+		q, ok := requirement(r, h.CallID)
+		if !ok || q.Card() || !acts(a.tool(h.Tool), q.Input) {
+			continue
+		}
+		oc := outcome(h, q.Answer)
+		if q.Event() {
+			oc = OutcomeCame
+			if q.Answered.IsZero() {
+				oc = OutcomeNotCame
+			}
+		}
+		count.add(h.Tool, oc)
+	}
+	if counted {
+		results = append(results, model.Block{Kind: model.Text, Text: TallyLine(count)})
+	}
 	// What the run did, from its record, after the results: a continued run
 	// says what was done from it, not from the chat (the R-3005 test).
 	if note := a.recordNote(r, held); note != "" {
@@ -541,7 +571,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	refused, declined := refusals(r, held)
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}, emit)
 }
 
 // refusals counts the held calls of r whose outcome is in: those the owner
@@ -825,7 +855,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 
 		var acting *run.Turn
 		if a.Checkpoint != nil && slices.ContainsFunc(calls, func(c model.Block) bool { return acts(byName[c.Tool], c.Input) }) {
-			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history), Preface: slices.Clone(a.Preface)}
+			acting = &run.Turn{Reply: msgs[len(msgs)-1], Before: before(msgs, a.history), Preface: slices.Clone(a.Preface), Tally: out.tally}
 			if err := a.Checkpoint(ctx, *acting, out.Source, out.Region); err != nil {
 				return out, msgs, fmt.Errorf("agent: storing the turn before it acts: %w", err)
 			}
@@ -846,6 +876,25 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		blocks := make([]model.Block, len(results))
 		var held bool
 		waited = make([]session.ToolTiming, len(results))
+		// The count of the calls that act, as their Called events have them:
+		// those that ended go on with the run, those it waits for are
+		// counted in what this turn reads, and again as they end.
+		waiting, counted := tally{}, false
+		out.tally = out.tally.with(nil)
+		for i, r := range results {
+			if acts(byName[r.Tool], calls[i].Input) && r.Trial == nil && TallyOf(outcome(r, "")) != "" {
+				counted = true
+				if r.Waits() {
+					waiting.add(r.Tool, outcome(r, ""))
+				} else {
+					out.tally.add(r.Tool, outcome(r, ""))
+				}
+			}
+		}
+		count := ""
+		if counted {
+			count = TallyLine(out.tally.with(waiting))
+		}
 		for i, r := range results {
 			blocks[i] = resultBlock(r)
 			held = held || r.Waits()
@@ -861,16 +910,22 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			waited[i] = session.ToolTiming{Tool: r.Tool, MS: r.took.Milliseconds(), ResultBytes: len(r.Text), Batch: r.batch, IsError: r.IsError, NotMade: r.NotMade, InputHash: session.InputHash(calls[i].Input)}
 		}
 		if held {
-			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1]}, results, specs, emit)
+			return a.pause(ctx, rec, msgs, out, run.Turn{Reply: msgs[len(msgs)-1], Tally: out.tally}, results, count, specs, emit)
 		}
 		if acting != nil {
 			// A passing failure here leaves the turn stored as it was before it
 			// acted, which a crash still carries on from (its calls give back
 			// their first outcomes): the run goes on. A lost lease ends it.
-			acting.Results = blocks
+			acting.Results, acting.Tally = blocks, out.tally
 			if err := a.Checkpoint(ctx, *acting, out.Source, out.Region); errors.Is(err, run.ErrLeaseLost) {
 				return out, msgs, fmt.Errorf("agent: storing what the turn did: %w", err)
 			}
+		}
+		if count != "" {
+			// After the results, never in one: a result is cleared once
+			// read (clearRead) and cut when a pause keeps it (before), and
+			// what the turn stored of itself (Turn.Results) stays the calls'.
+			blocks = append(slices.Clone(blocks), model.Block{Kind: model.Text, Text: count})
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 		msgs = clearRead(msgs, ClearAfter, func(name string) bool { return shows(byName[name]) })
@@ -996,7 +1051,7 @@ func (a Agent) steer(ctx context.Context, rec *session.Recording, msgs *[]model.
 // for each held one, the others' results kept with the turn. If the caps
 // allow, the agent first gets one turn to say what it waits for, offered its
 // tools but forbidden to call them.
-func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, specs []model.ToolSpec, emit func(Event)) (Outcome, []model.Message, error) {
+func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.Message, out Outcome, turn run.Turn, results []ToolResultBody, count string, specs []model.ToolSpec, emit func(Event)) (Outcome, []model.Message, error) {
 	turn.Results = nil
 	turn.Before = before(msgs, a.history)
 	turn.Preface = slices.Clone(a.Preface)
@@ -1046,6 +1101,11 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 		out.Requirements = append(out.Requirements, q)
 	}
 	out.Stop, out.Turn = Paused, &turn
+	if count != "" {
+		// The count, the held calls as held: the turn that says what the
+		// run waits for reads it. Continue counts them again, as they ended.
+		blocks = append(blocks, model.Block{Kind: model.Text, Text: count})
+	}
 	msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 	if a.capped(out) != "" {
 		return out, msgs, nil
@@ -1424,6 +1484,16 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 // to check it went before the look-up's result was read (kiff/tafs, the 859
 // device test). The reads in that turn are made.
 const OneAtATime = "Read first: this call acts, so it doesn't go beside a read, and it was not made. Read the other calls' results first, then make it if it's still right."
+
+// tool is the agent's tool of a name, nil when it has none.
+func (a Agent) tool(name string) tool.Tool {
+	for _, t := range a.Tools {
+		if t.Spec().Name == name {
+			return t
+		}
+	}
+	return nil
+}
 
 // acts reports whether a call of t with input changes something outside the
 // agent: a Write tool's call that doesn't only read (tool.Reads), the kind

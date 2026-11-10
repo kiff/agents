@@ -252,6 +252,24 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   characters). Later runs read it on the record line, quoted as the tool's
   answer: data, never what was done. It can still name what the vendor's
   error named, such as a customer, as the result did while the run lived.
+- **The count of what a run did.** The runner counts a run's calls that act,
+  by tool and by what came of each, from the same outcome each call's
+  `Called` line has (`agent.TallyOf`): sent, held, refused (by KIFF or the
+  owner, or its hold expired: not sent), failed, and sent with no word on
+  whether it took effect. After the results of every turn that acted, the
+  model reads the count so far (`agent.TallyLine`): "Count so far of this
+  run's calls that act, from its record: stripe_refund: 3 sent, 0 held,
+  1 refused, 0 failed. Any number you give of calls sent, held, refused or
+  failed is one of these, never your own total." So a number in a report is
+  one the model read, not one it made. Reads aren't counted, nor a call
+  refused back unmade (beside a read). It's a line after the results, never
+  inside one, so clearing a read result or cutting a kept one can't lose
+  it. Across a pause the count is kept with the paused turn
+  (`run.Turn.Tally`), without the calls the run waits for: the turn that
+  says what it waits for reads them as held (a call whose outcome comes
+  later, as sent), and the continued run counts each as it ended. It's
+  never recorded: the `Called` lines are the record, and the count is what
+  they add up to (`TestARunsActsAreCountedAfterTheirResults`).
 - **Dates.** Each run reads today's date just before its input, in UTC:
   "Today is Friday 6 November 2026 (2026-11-06), 10:15 UTC."
   (`runner.Today`). It's never recorded, so a later run reads only its own.

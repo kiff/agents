@@ -1693,7 +1693,8 @@ func TestTheOwnerSteersARunThatGoes(t *testing.T) {
 	}
 	reqs := f.model.requests()
 	last := reqs[1].Messages[len(reqs[1].Messages)-1]
-	if len(last.Blocks) != 2 || last.Blocks[1].Text != agent.SteerNote+"only the €20 one" {
+	// The result, the count of the calls that acted, then what the owner wrote.
+	if len(last.Blocks) != 3 || !strings.HasPrefix(last.Blocks[1].Text, agent.TallyNote+"stripe_refund: 1 sent, ") || last.Blocks[2].Text != agent.SteerNote+"only the €20 one" {
 		t.Fatalf("the model read %+v", last)
 	}
 	if !slices.Equal(steered, []string{"only the €20 one"}) {
@@ -1942,7 +1943,9 @@ func TestAnUnapprovedHoldIsntAskedAgainAfterAnotherPause(t *testing.T) {
 // ownTexts is texts without a continued run's note of its record
 // (agent.RecordNote), which follows the held calls' results.
 func ownTexts(msgs []model.Message) []string {
-	return slices.DeleteFunc(texts(msgs), func(t string) bool { return strings.HasPrefix(t, "user: "+agent.RecordNote) })
+	return slices.DeleteFunc(texts(msgs), func(t string) bool {
+		return strings.HasPrefix(t, "user: "+agent.RecordNote) || strings.HasPrefix(t, "user: "+agent.TallyNote)
+	})
 }
 
 // lookUp is a tool that only reads. Each call runs onCall, if set.

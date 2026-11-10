@@ -530,6 +530,27 @@ type Turn struct {
 	// Kept with the turn, and gone with it once the run ends. Empty for a
 	// turn stored before it was kept: that continuation makes its own.
 	Preface []model.Block `json:"preface,omitempty"`
+	// Tally counts the run's calls that act, by tool and by what came of
+	// each, up to and including this turn's Results: the calls the run
+	// still waits for aren't in it, and are counted as they ended when it
+	// continues. Kept with the turn so the count the model is shown
+	// (agent.TallyNote) carries on across a pause. Empty for a run that
+	// hasn't acted, and for a turn stored before it was kept: that
+	// continuation counts from there.
+	Tally map[string]Tally `json:"tally,omitempty"`
+}
+
+// Tally counts a run's calls of one tool that act, by what came of each:
+// sent (it went through), held (KIFF holds it for the owner, who hasn't
+// answered), refused (KIFF, or the owner, refused it, or its hold expired:
+// not sent), failed (sent, and the vendor refused it or it failed), and
+// unknown (sent, with no word on whether it took effect).
+type Tally struct {
+	Sent    int `json:"sent,omitempty"`
+	Held    int `json:"held,omitempty"`
+	Refused int `json:"refused,omitempty"`
+	Failed  int `json:"failed,omitempty"`
+	Unknown int `json:"unknown,omitempty"`
 }
 
 // NewID returns a new run ID.

@@ -18,8 +18,10 @@ import (
 // about them): no answer says something was done, or not done, that its
 // record contradicts (eval.Recorded), by majority. An answer's record is its
 // chat's calls up to its run's: a look-up one message before counts, marked
-// "earlier" (qa-kiff). The judges' reasons may quote the chat, so they go to
-// the transcript, after the taf's answers; the log counts them.
+// "earlier" (qa-kiff). A number an answer gives of its calls is checked too,
+// against the record's counts by tool (eval.RecordedCall.Count). The judges'
+// reasons may quote the chat, so they go to the transcript, after the taf's
+// answers; the log counts them.
 func (t *test) tafAsRecorded(ctx context.Context) error {
 	if t.cfg.judge == nil || len(t.tafSaid) == 0 {
 		return nil
@@ -106,9 +108,19 @@ func calledUpTo(events []session.Event, run string) ([]eval.RecordedCall, error)
 	}
 	calls := make([]eval.RecordedCall, len(entries))
 	for i, en := range entries {
-		calls[i] = eval.RecordedCall{Tool: en.body.Tool, Input: string(en.body.Input), Outcome: en.body.Outcome, Earlier: en.run != run}
+		calls[i] = eval.RecordedCall{Tool: en.body.Tool, Input: string(en.body.Input), Outcome: en.body.Outcome, Earlier: en.run != run, Count: countOf(en.body.Outcome)}
 	}
 	return calls, nil
+}
+
+// countOf is the count a recorded call adds to, in the record's words, as
+// the runner counts it for the taf (agent.TallyOf): the judge checks the
+// taf's numbers against the same count the taf was shown.
+func countOf(outcome string) string {
+	if c := agent.TallyOf(outcome); c != "sent" {
+		return c
+	}
+	return "done"
 }
 
 // sameInput is whether two inputs are the same JSON, however stored: the
