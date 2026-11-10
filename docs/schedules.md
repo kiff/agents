@@ -66,14 +66,22 @@ untrusted data.
 
 ```json
 "check": {"tool": "list_charges", "arguments": {"limit": 50},
-          "items": "data", "cursor": "created", "id": "id"}
+          "items": "data", "cursor": "created", "id": "id", "first": "new"}
 ```
 
 - `items` is the dotted path to the list in the read's result (empty: the
   result is the list); `cursor` the field compared with the last check's value
   (numbers as numbers, anything else as text); `id` names an item for good
   (`id` when empty).
-- The first check only takes the cursor: nothing is new yet.
+- `first` says what the first check does. `"new"` (the default) only takes the
+  cursor, so nothing listed before the schedule is handed over. `"all"` hands
+  every item the read lists then, as the queue already there, and keeps the
+  cursor past them. A first check that lists nothing starts nothing, and the
+  next one is still the first.
+- **Items without the cursor field fail the check.** A read that lists items,
+  none of which carries the `cursor` field, could never see one as new, so the
+  schedule would stay quiet for good. The firing is `failed_check` instead, and
+  counts toward `failing`.
 - One firing hands its run at most 50 new items, oldest first, as many as fit
   the run's input. The cursor moves only past items handed over; the rest come
   with the next check. An item too large for any run is counted, said in the
