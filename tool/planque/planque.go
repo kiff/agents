@@ -537,7 +537,8 @@ type grantView struct {
 
 // AgentTools is, for each of agent's connected grants, the KIFF name of each
 // of its tools, as planque lists them for the setup agent, leaving out its
-// own reads (setup_reads): what the taf's Cards must cover (tool.Granted). A grant
+// own reads (setup_reads) and any tool listed with no KIFF name: what the
+// taf's Cards must cover (tool.Granted). A grant
 // whose addition waits for the owner isn't connected, and is left out:
 // KIFF has none of its new tools yet. known is false when the listing
 // doesn't say setup_reads (a planque before it did): then nothing is to be
@@ -579,11 +580,10 @@ func (t *Tool) AgentTools(ctx context.Context, agent string) ([][]string, bool, 
 			if *tl.SetupReads {
 				continue
 			}
-			name := tl.Name
-			if name == "" {
-				name = tl.Tool
-			}
-			if name != "" && !slices.Contains(names, name) {
+			// A tool with no KIFF name is left out: the vendor's own name
+			// (tool) isn't what a Card covers, so comparing it would refuse
+			// a good draft. planque names every tool when it's requested.
+			if name := tl.Name; name != "" && !slices.Contains(names, name) {
 				names = append(names, name)
 			}
 		}
