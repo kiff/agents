@@ -284,8 +284,11 @@ func TestAHeldCallPausesTheRun(t *testing.T) {
 	// That turn is told the run pauses and to report, after the results (#78);
 	// the results the run keeps for Continue carry no note.
 	last := m.reqs[1].Messages[len(m.reqs[1].Messages)-1]
-	if n := len(last.Blocks); n != 3 || last.Blocks[0].Kind != model.ToolResult || last.Blocks[1].Kind != model.ToolResult ||
-		last.Blocks[2].Kind != model.Text || last.Blocks[2].Text != agent.PauseNote {
+	// Between them, the count: the held call as held.
+	held := agent.TallyLine(map[string]run.Tally{"stripe_refund": {Held: 1}})
+	if n := len(last.Blocks); n != 4 || last.Blocks[0].Kind != model.ToolResult || last.Blocks[1].Kind != model.ToolResult ||
+		last.Blocks[2].Kind != model.Text || last.Blocks[2].Text != held ||
+		last.Blocks[3].Kind != model.Text || last.Blocks[3].Text != agent.PauseNote {
 		t.Fatalf("the turn after a hold read %+v", last)
 	}
 	for _, b := range out.Turn.Results {
@@ -662,6 +665,7 @@ func TestAPausedRunContinues(t *testing.T) {
 		{Role: model.User, Blocks: []model.Block{
 			{Kind: model.ToolResult, CallID: "c1", Result: `{"amount":90000}`},
 			{Kind: model.ToolResult, CallID: "c2", Result: "refunded re_1"},
+			{Kind: model.Text, Text: agent.TallyLine(map[string]run.Tally{"stripe_refund": {Sent: 1}})},
 			{Kind: model.Text, Text: agent.RecordNote + "\n- [called] asked to change: stripe_refund {\"charge\":\"ch_big\"} → done"},
 		}},
 	}
