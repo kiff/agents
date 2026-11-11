@@ -256,6 +256,46 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 	return http.StatusOK, s.viewRun(rn), nil
 }
 
+// pausedRuns lists the caller tenant's PAUSED runs across its agents, newest
+// first, from the tenant's own paused list: one read for a whole account,
+// whatever its agents' histories (tafs cloud's sweep of the steps handed to
+// owners). ?tool= keeps the runs waiting on a call of that tool. Read as the
+// service or as one requester, as an agent's runs are.
+func (s *Server) pausedRuns(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100 {
+			return 0, nil, bad("limit is 1 to 100")
+		}
+		limit = n
+	}
+	q, err := readerOf(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	tool := r.URL.Query().Get("tool")
+	runs, err := s.Runs.ListTenantPaused(ctx, c.Tenant, ActiveScanned)
+	if err != nil {
+		return 0, nil, err
+	}
+	out := []runView{}
+	for _, rn := range runs {
+		if rn.Tenant != c.Tenant || !readBy(rn, q) || tool != "" && !waitsOn(rn, tool) {
+			continue
+		}
+		if out = append(out, s.viewRun(rn)); len(out) == limit {
+			break
+		}
+	}
+	return http.StatusOK, map[string]any{"runs": out}, nil
+}
+
+// waitsOn is whether a paused run waits on a call of tool.
+func waitsOn(rn run.Run, tool string) bool {
+	return slices.ContainsFunc(rn.Requirements, func(q run.Requirement) bool { return q.Tool == tool })
+}
+
 // readerOf is who reads a run: the person the requester parameter names
 // (member:<subject>), or no one when the caller reads as the service
 // (as=service). Neither is a bad request: a missing person never means

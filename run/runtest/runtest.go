@@ -57,6 +57,7 @@ func Run(t *testing.T, newRuns func(t *testing.T, now func() time.Time) run.Runs
 		{"ListNewestFirst", listNewestFirst},
 		{"ListBySource", listBySource},
 		{"OperatorsListAcrossTenants", operatorsListAcrossTenants},
+		{"TenantsListTheirPaused", tenantsListTheirPaused},
 		{"ARunIsFoundByItsHold", aRunIsFoundByItsHold},
 		{"AnAnswerIsRecordedOnce", anAnswerIsRecordedOnce},
 		{"AnAnswerOutlivesTheRunsEnd", anAnswerOutlivesTheRunsEnd},
@@ -974,6 +975,57 @@ func operatorsListAcrossTenants(t *testing.T, s run.Runs, c *clock) {
 	check(t, s.DeleteAgent(ctx, "t1", "refunds"))
 	if paused, _ := s.ListPaused(ctx, 0); len(paused) != 0 {
 		t.Fatalf("a deleted paused run %s is still listed: %v", p.ID, ids(paused))
+	}
+}
+
+// A tenant lists its own PAUSED runs, across its agents, newest first: a run
+// is listed only while it is paused, never another tenant's, and not once it
+// is deleted.
+func tenantsListTheirPaused(t *testing.T, s run.Runs, c *clock) {
+	pause := func(r run.Run, tool string) run.Run {
+		t.Helper()
+		got, err := run.Claim(ctx, s, r.Tenant, r.ID, "i1", c.now().Add(15*time.Minute), c.now())
+		check(t, err)
+		got, err = run.Save(ctx, s, got, c.now(), func(n *run.Run) error {
+			n.Status = run.Paused
+			n.Requirements = []run.Requirement{{CallID: "c1", Tool: tool, Operation: "op_" + r.ID, Exception: "ex_" + r.ID, Expires: c.now().Add(time.Hour)}}
+			return nil
+		})
+		check(t, err)
+		return got
+	}
+	running := created(t, s, c, "t1", "refunds")
+	c.add(time.Second)
+	first := pause(created(t, s, c, "t1", "refunds"), "your_step")
+	c.add(time.Second)
+	other := pause(created(t, s, c, "t2", "refunds"), "your_step")
+	c.add(time.Second)
+	second := pause(created(t, s, c, "t1", "chargebacks"), "stripe_refund")
+	mine, err := s.ListTenantPaused(ctx, "t1", 0)
+	check(t, err)
+	if want := []string{second.ID, first.ID}; !slices.Equal(ids(mine), want) {
+		t.Fatalf("t1's paused = %v, want %v (not %s, running, nor t2's %s)", ids(mine), want, running.ID, other.ID)
+	}
+	if mine[1].Requirements[0].Tool != "your_step" || mine[0].Paused != nil {
+		t.Fatalf("listed %+v: want each with its requirements, without its paused turn", mine)
+	}
+	if one, _ := s.ListTenantPaused(ctx, "t1", 1); !slices.Equal(ids(one), []string{second.ID}) {
+		t.Fatalf("limit 1: %v", ids(one))
+	}
+	if theirs, _ := s.ListTenantPaused(ctx, "t2", 0); !slices.Equal(ids(theirs), []string{other.ID}) {
+		t.Fatalf("t2's paused = %v", ids(theirs))
+	}
+	// Continued (its requirement past its expiry): no longer listed. Deleted
+	// while paused: gone too.
+	c.add(2 * time.Hour)
+	_, err = run.Claim(ctx, s, "t1", first.ID, "i2", c.now().Add(15*time.Minute), c.now())
+	check(t, err)
+	check(t, s.DeleteAgent(ctx, "t1", "chargebacks"))
+	if mine, _ := s.ListTenantPaused(ctx, "t1", 0); len(mine) != 0 {
+		t.Fatalf("t1 still lists %v: a continued run and a deleted one", ids(mine))
+	}
+	if theirs, _ := s.ListTenantPaused(ctx, "t2", 0); len(theirs) != 1 {
+		t.Fatalf("t2's paused run went with t1's: %v", ids(theirs))
 	}
 }
 

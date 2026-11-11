@@ -217,6 +217,10 @@ type Runs interface {
 	ListAll(ctx context.Context, limit int) ([]Run, error)
 	// ListPaused is ListAll for PAUSED runs only.
 	ListPaused(ctx context.Context, limit int) ([]Run, error)
+	// ListTenantPaused returns the tenant's PAUSED runs, newest first, at
+	// most limit, without their paused turn: one read for a whole account,
+	// whatever its agents' histories.
+	ListTenantPaused(ctx context.Context, tenant string, limit int) ([]Run, error)
 	// Due returns RUNNING and PENDING runs whose Due is before now, across
 	// tenants, the oldest due first, at most limit, without their paused turn.
 	Due(ctx context.Context, now time.Time, limit int) ([]Run, error)
