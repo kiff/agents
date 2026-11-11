@@ -1704,6 +1704,73 @@ func TestListRunsAndTheActiveOnes(t *testing.T) {
 	f.want(400, code, body, "a bad limit")
 }
 
+// An account's paused runs come in one read, across its agents, from its own
+// paused list: never another tenant's, only the paused ones, and with ?tool=
+// only those waiting on that tool (tafs cloud's sweep of the steps handed to
+// owners). Read as the service or as one requester.
+func TestPausedRunsOfTheCallersTenantOnly(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "other")
+	f.putAgent("t2", "payouts")
+	ana := run.Requester{Kind: "member", ID: "u_ana"}
+	mk := func(tenant, agent string, st run.Status, tool string, by run.Requester) run.Run {
+		r := run.New(tenant, agent, "s1", run.ByOwner, "x", now)
+		r.Status, r.Requester = st, by
+		if tool != "" {
+			r.Requirements = []run.Requirement{{CallID: "c1", Tool: tool, Operation: "op_" + r.ID, Exception: "ex_" + r.ID, Expires: now.Add(time.Hour)}}
+		}
+		if err := f.runs.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	step := mk("t1", "payouts", run.Paused, "your_step", run.Requester{})
+	held := mk("t1", "other", run.Paused, "stripe_refund", ana)
+	mk("t1", "payouts", run.Running, "", run.Requester{})
+	mk("t1", "payouts", run.Completed, "", run.Requester{})
+	theirs := mk("t2", "payouts", run.Paused, "your_step", run.Requester{})
+	ids := func(body map[string]any) map[string]bool {
+		out := map[string]bool{}
+		for _, r := range body["runs"].([]any) {
+			out[r.(map[string]any)["id"].(string)] = true
+		}
+		return out
+	}
+	code, body := f.do("t1", "GET", "/runs/paused?as=service", nil)
+	f.want(200, code, body, "paused")
+	if got := ids(body); len(got) != 2 || !got[step.ID] || !got[held.ID] || got[theirs.ID] {
+		t.Fatalf("t1's paused: %v, want %s and %s, never t2's %s", got, step.ID, held.ID, theirs.ID)
+	}
+	code, body = f.do("t1", "GET", "/runs/paused?tool=your_step&as=service", nil)
+	f.want(200, code, body, "waiting on your_step")
+	if got := ids(body); len(got) != 1 || !got[step.ID] {
+		t.Fatalf("t1's your_step runs: %v", got)
+	}
+	if reqs := body["runs"].([]any)[0].(map[string]any)["requirements"].([]any); len(reqs) != 1 {
+		t.Fatalf("listed without its requirement: %v", body)
+	}
+	code, body = f.do("t2", "GET", "/runs/paused?tool=your_step&as=service", nil)
+	f.want(200, code, body, "the other tenant")
+	if got := ids(body); len(got) != 1 || !got[theirs.ID] {
+		t.Fatalf("t2's your_step runs: %v", got)
+	}
+	code, body = f.do("t1", "GET", "/runs/paused?requester=member:u_ana", nil)
+	f.want(200, code, body, "as one requester")
+	if got := ids(body); len(got) != 1 || !got[held.ID] {
+		t.Fatalf("u_ana's paused runs: %v", got)
+	}
+	code, body = f.do("t1", "GET", "/runs/paused?as=service&limit=1", nil)
+	f.want(200, code, body, "limit 1")
+	if got := ids(body); len(got) != 1 {
+		t.Fatalf("limit 1: %v", got)
+	}
+	code, body = f.do("t1", "GET", "/runs/paused", nil)
+	f.want(400, code, body, "neither the service nor a requester")
+	code, body = f.do("t1", "GET", "/runs/paused?as=service&limit=101", nil)
+	f.want(400, code, body, "a bad limit")
+}
+
 // One run at a time per door thread: a door message to a session whose door
 // run is still at work waits for it (after), isn't handed on, and the next
 // waits for the newest; the sweep lets each go once the one before is done.

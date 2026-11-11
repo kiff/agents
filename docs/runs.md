@@ -551,7 +551,17 @@ ERROR.
 ```go
 runs.List(ctx, "t1", "rae", 20)                              // an agent's, newest first
 runs.ListSource(ctx, "t1", run.BySchedule, scheduleID, 20)   // one schedule's
+runs.ListTenantPaused(ctx, "t1", 100)                        // a tenant's PAUSED runs, across its agents
 ```
+
+`GET /runs/paused?tool=your_step&as=service` serves the last: the caller
+tenant's paused runs, newest first, from its own paused list, so a sweep of a
+whole account's waiting steps is one read, whatever its agents' histories.
+`tool` keeps the runs waiting on a call of that tool; `limit` is 1 to 100
+(100 by default); read as the service or as one `requester`, as an agent's
+runs are. Another tenant's runs are never in it. A run paused before this list
+existed is only in the operators' list until it leaves PAUSED: read it there,
+or wait it out, rather than counting on this route for it.
 
 ## Evals
 
@@ -578,6 +588,7 @@ One table, `pk`/`sk`, TTL on `ttl`, on-demand. Key parts are length-prefixed
 | `O\|tenant\|trigger\|source` | `created\|id` | one source's runs |
 | `A` | `created\|tenant\|id` | every run, for operators (`ListAll`) |
 | `PA` | `created\|tenant\|id` | PAUSED runs, for operators (`ListPaused`) |
+| `PT\|tenant` | `created\|tenant\|id` | a tenant's PAUSED runs (`ListTenantPaused`), kept with `PA` in the same writes |
 | `W` | `due\|tenant\|id` | RUNNING and PENDING runs the sweep must look at |
 | `WP` | `due\|tenant\|id` | PAUSED runs the sweep must look at |
 

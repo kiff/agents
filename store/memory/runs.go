@@ -174,6 +174,14 @@ func (m *Runs) ListPaused(_ context.Context, limit int) ([]run.Run, error) {
 	return limitTo(out, limit), nil
 }
 
+func (m *Runs) ListTenantPaused(_ context.Context, tenant string, limit int) ([]run.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.all(func(r run.Run) bool { return r.Tenant == tenant && r.Status == run.Paused })
+	newestFirst(out)
+	return limitTo(out, limit), nil
+}
+
 func (m *Runs) ListSource(_ context.Context, tenant string, trigger run.Trigger, source string, limit int) ([]run.Run, error) {
 	if source == "" {
 		return nil, nil

@@ -196,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 	route("DELETE /agents/{id}/memories/{name}", s.forget)
 	route("POST /agents/{id}/memories/{name}/share", s.shareMemory)
 
+	route("GET /runs/paused", s.pausedRuns)
 	route("GET /sessions", s.listSessions)
 	route("GET /sessions/{id}", s.getSession)
 	route("DELETE /sessions/{id}", s.deleteSession)

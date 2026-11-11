@@ -100,11 +100,24 @@ func allSK(r run.Run) string {
 	return fmt.Sprintf("%020d|%s", r.Created.UnixNano(), key("", r.Tenant, r.ID))
 }
 
-// pausedItem is r's entry in the paused list.
-func pausedItem(r run.Run) map[string]types.AttributeValue {
-	item := pkey(pausedListPK, allSK(r))
-	item["tenant"], item["id"] = s(r.Tenant), s(r.ID)
-	return item
+// tenantPausedPK is the tenant's own list of its PAUSED runs, beside the
+// operators' pausedListPK and kept in the same transactions: a tenant's
+// paused runs in one read (ListTenantPaused).
+func tenantPausedPK(tenant string) string { return key("PT", tenant) }
+
+// pausedItems are r's entries in the paused lists: the operators' and its
+// tenant's.
+func pausedItems(r run.Run) []map[string]types.AttributeValue {
+	all := pkey(pausedListPK, allSK(r))
+	all["tenant"], all["id"] = s(r.Tenant), s(r.ID)
+	own := pkey(tenantPausedPK(r.Tenant), allSK(r))
+	own["id"] = s(r.ID)
+	return []map[string]types.AttributeValue{all, own}
+}
+
+// pausedKeys are the keys of r's entries in the paused lists.
+func pausedKeys(r run.Run) []map[string]types.AttributeValue {
+	return []map[string]types.AttributeValue{pkey(pausedListPK, allSK(r)), pkey(tenantPausedPK(r.Tenant), allSK(r))}
 }
 func holdPK(tenant, exception string) string { return key("H", tenant, exception) }
 
@@ -429,9 +442,13 @@ func (rs *Runs) Put(ctx context.Context, prev, next run.Run) error {
 	items = append(items, rs.holdItems(next, holds, now.ttl)...)
 	switch {
 	case prev.Status != run.Paused && next.Status == run.Paused:
-		items = append(items, rs.put(pausedItem(next), ""))
+		for _, item := range pausedItems(next) {
+			items = append(items, rs.put(item, ""))
+		}
 	case prev.Status == run.Paused && next.Status != run.Paused:
-		items = append(items, rs.del(pkey(pausedListPK, allSK(prev))))
+		for _, k := range pausedKeys(prev) {
+			items = append(items, rs.del(k))
+		}
 	}
 	if !prev.Due().Equal(next.Due()) || (prev.Status == run.Paused) != (next.Status == run.Paused) {
 		if !prev.Due().IsZero() {
@@ -546,6 +563,11 @@ func (rs *Runs) ListPaused(ctx context.Context, limit int) ([]run.Run, error) {
 	return rs.list(ctx, "", pausedListPK, limit)
 }
 
+// ListTenantPaused leaves out the runs' paused turns: Get has them.
+func (rs *Runs) ListTenantPaused(ctx context.Context, tenant string, limit int) ([]run.Run, error) {
+	return rs.list(ctx, tenant, tenantPausedPK(tenant), limit)
+}
+
 // list reads runs in a list partition, newest first: the tenant's, or with
 // no tenant, an operators' list across tenants.
 func (rs *Runs) list(ctx context.Context, tenant, pk string, limit int) ([]run.Run, error) {
@@ -568,7 +590,7 @@ func (rs *Runs) list(ctx context.Context, tenant, pk string, limit int) ([]run.R
 			keys[i] = [2]string{t, getS(item, "id")}
 		}
 		runs, err := rs.runs(ctx, keys)
-		if pk == pausedListPK {
+		if pk == pausedListPK || pk == tenantPausedPK(tenant) {
 			runs = slices.DeleteFunc(runs, func(r run.Run) bool { return r.Status != run.Paused })
 		}
 		out = append(out, runs...)
@@ -705,7 +727,9 @@ func (rs *Runs) removeAt(ctx context.Context, r run.Run) error {
 		items = append(items, rs.del(activeKey(r)))
 	}
 	if r.Status == run.Paused {
-		items = append(items, rs.del(pkey(pausedListPK, allSK(r))))
+		for _, k := range pausedKeys(r) {
+			items = append(items, rs.del(k))
+		}
 	}
 	_, err = rs.db.TransactWriteItems(ctx, &ddb.TransactWriteItemsInput{TransactItems: items})
 	return err

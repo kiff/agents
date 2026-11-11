@@ -37,8 +37,11 @@ func scan(t *testing.T, db *ddb.Client, name string) map[string][]map[string]typ
 	by := map[string][]map[string]types.AttributeValue{}
 	for _, item := range out.Items {
 		k := item["pk"].(*types.AttributeValueMemberS).Value[:1]
-		if k == "R" {
+		switch k {
+		case "R":
 			k += item["sk"].(*types.AttributeValueMemberS).Value[:1]
+		case "P": // the paused lists: the operators' (PA) and each tenant's (PT)
+			k = item["pk"].(*types.AttributeValueMemberS).Value[:2]
 		}
 		by[k] = append(by[k], item)
 	}
@@ -366,9 +369,10 @@ func TestTheActiveCountReadsConsistently(t *testing.T) {
 	}
 }
 
-// A run is in the operators' paused list only while it is paused: its entry
-// goes when it is claimed again, and when it is deleted. An entry left behind
-// (written outside a run's own write) never lists a run that isn't paused.
+// A run is in the paused lists, the operators' and its tenant's, only while
+// it is paused: both entries go when it is claimed again, cancelled, or
+// deleted, so neither list grows. An entry left behind (written outside a
+// run's own write) never lists a run that isn't paused.
 func TestPausedListItems(t *testing.T) {
 	db := local(t)
 	name := table(t, db)
@@ -390,30 +394,48 @@ func TestPausedListItems(t *testing.T) {
 		}
 		return r
 	}
-	r := pause()
-	if by := scan(t, db, name); len(by["P"]) != 1 || len(by["A"]) != 1 {
-		t.Fatalf("a paused run: %d paused entries, %d in the list of all; want 1 and 1", len(by["P"]), len(by["A"]))
+	none := func(when string) {
+		t.Helper()
+		if by := scan(t, db, name); len(by["PA"]) != 0 || len(by["PT"]) != 0 {
+			t.Fatalf("%s: %d operators' and %d tenant's paused entries, want none", when, len(by["PA"]), len(by["PT"]))
+		}
 	}
-	item := scan(t, db, name)["P"][0]
+	r := pause()
+	if by := scan(t, db, name); len(by["PA"]) != 1 || len(by["PT"]) != 1 || len(by["A"]) != 1 {
+		t.Fatalf("a paused run: %d operators' and %d tenant's paused entries, %d in the list of all; want 1, 1 and 1", len(by["PA"]), len(by["PT"]), len(by["A"]))
+	}
+	item, own := scan(t, db, name)["PA"][0], scan(t, db, name)["PT"][0]
 	if _, err := run.Claim(ctx, rs, "t1", r.ID, "i2", at.Add(15*time.Minute), at); err != nil {
 		t.Fatal(err)
 	}
-	if by := scan(t, db, name); len(by["P"]) != 0 {
-		t.Fatalf("claimed again: %d paused entries, want none", len(by["P"]))
+	none("claimed again")
+	cancelled := pause()
+	// Cancelled as a paused run is: it holds no lease, so it changes without one (run.Change).
+	if _, err := run.Change(ctx, rs, cancelled, at, func(n *run.Run) error { n.Status = run.Cancelled; return nil }); err != nil {
+		t.Fatal(err)
 	}
+	none("cancelled while paused")
 	other := pause()
 	if err := rs.Delete(ctx, "t1", other.ID); err != nil {
 		t.Fatal(err)
 	}
-	if by := scan(t, db, name); len(by["P"]) != 0 {
-		t.Fatalf("deleted while paused: %d paused entries, want none", len(by["P"]))
-	}
-	// An entry left behind for r, which is now RUNNING: not listed.
-	if _, err := db.PutItem(ctx, &ddb.PutItemInput{TableName: &name, Item: item}); err != nil {
+	none("deleted while paused")
+	pause()
+	if err := rs.DeleteAgent(ctx, "t1", "refunds"); err != nil {
 		t.Fatal(err)
+	}
+	none("its agent deleted while paused")
+	// Entries left behind for r, which is now RUNNING: not listed.
+	for _, it := range []map[string]types.AttributeValue{item, own} {
+		if _, err := db.PutItem(ctx, &ddb.PutItemInput{TableName: &name, Item: it}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if paused, err := rs.ListPaused(ctx, 0); err != nil || len(paused) != 0 {
 		t.Fatalf("listed %d paused runs from an entry left behind, err = %v", len(paused), err)
+	}
+	if paused, err := rs.ListTenantPaused(ctx, "t1", 0); err != nil || len(paused) != 0 {
+		t.Fatalf("t1 listed %d paused runs from an entry left behind, err = %v", len(paused), err)
 	}
 }
 
