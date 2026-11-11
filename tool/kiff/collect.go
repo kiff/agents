@@ -34,6 +34,15 @@ func Collect(ctx context.Context, a agent.Agent, held []run.Requirement) ([]agen
 		if q.Operation == "" {
 			return nil, fmt.Errorf("kiff: call %s has no operation ID to collect it by", q.CallID)
 		}
+		// A step handed to the owner: its answer, from KIFF's API.
+		if ys := findYourStep(a, q.Tool); ys != nil {
+			res, err := ys.Collect(ctx, q)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, agent.ToolResultBody{CallID: q.CallID, Tool: q.Tool, Result: res})
+			continue
+		}
 		t := find(a, q.Tool)
 		if t == nil {
 			return nil, fmt.Errorf("kiff: call %s: the agent has no gateway tool %q", q.CallID, q.Tool)
@@ -59,6 +68,16 @@ func find(a agent.Agent, name string) *gatewayTool {
 	for _, t := range a.Tools {
 		if g, ok := t.(*gatewayTool); ok && g.spec.Name == name {
 			return g
+		}
+	}
+	return nil
+}
+
+// findYourStep is the agent's your_step tool named name, or nil.
+func findYourStep(a agent.Agent, name string) *YourStep {
+	for _, t := range a.Tools {
+		if y, ok := t.(*YourStep); ok && name == YourStepName {
+			return y
 		}
 	}
 	return nil

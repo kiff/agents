@@ -136,6 +136,10 @@ type Definition struct {
 	// FollowUps gives the agent the follow_up tool: its own one-off
 	// follow-ups, bounded by the server. Off unless set.
 	FollowUps bool `json:"follow_ups,omitempty"`
+	// YourStep gives the agent the your_step tool: it hands its owner a step
+	// it may never take itself, prepared, and waits for "Done" or "Skip it"
+	// (KIFF's hand-offs). Off unless set; the server must offer it.
+	YourStep bool `json:"your_step,omitempty"`
 	// Disclose puts a line saying an AI agent wrote it in each call that
 	// writes outside the company, in the fields it names, whatever the model
 	// wrote (agent.Disclosure). Nil: none.
@@ -345,6 +349,10 @@ func Digest(d Definition) (string, error) {
 // ErrNoFollowUps means a definition asks for follow-ups the server doesn't
 // offer.
 var ErrNoFollowUps = errors.New("registry: this server doesn't offer follow-ups")
+
+// ErrNoYourStep means a definition asks for your_step the server doesn't
+// offer.
+var ErrNoYourStep = errors.New("registry: this server doesn't offer your_step")
 
 // ErrNoVersion is a version the agent doesn't have.
 var ErrNoVersion = errors.New("registry: no such version")
@@ -696,6 +704,9 @@ type Builder struct {
 	// Drafts, when set, returns the draft tool for an agent whose KIFF key
 	// is key.
 	Drafts func(tenant, key string) tool.Tool
+	// YourStep returns the your_step tool for an agent whose KIFF key is key.
+	// Nil: the server doesn't offer it.
+	YourStep func(key string) tool.Tool
 	// Planques are the planque URLs a definition may name, exactly.
 	Planques []string
 	// Planque returns the planque tool for an agent whose KIFF key is key,
@@ -778,6 +789,12 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 			return agent.Agent{}, d, ErrNoFollowUps
 		}
 		tools = append(tools, b.FollowUp(tenant, id, d.Version))
+	}
+	if d.YourStep {
+		if b.YourStep == nil {
+			return agent.Agent{}, d, ErrNoYourStep
+		}
+		tools = append(tools, b.YourStep(key))
 	}
 	var draftTool tool.Tool
 	if d.Drafts {
