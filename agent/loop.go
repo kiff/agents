@@ -45,31 +45,35 @@ var cursorArgs = map[string]bool{
 type pages struct {
 	shape string
 	n     int
-	prev  string // the latest such read's result
+	prev  string         // the latest such read's result
+	args  map[string]any // and its arguments
 }
 
 // shapeOf is a read call as pages compares it: its tool and its arguments
-// without its cursor, those named like one (cursorArgs), KIFF's own (kiff_),
-// and a string the previous page's result held in quotes (the last item's
-// id, as a cursor). Keys come out sorted, so the same arguments give the
-// same shape.
-func shapeOf(name string, input json.RawMessage, prev string) string {
+// without its cursor: those named like one (cursorArgs), KIFF's own (kiff_),
+// and a string that changed since the previous page's call (was) to a value
+// that page's result held in quotes (the last item's id, as a cursor). A
+// filter that stays the same stays in the shape, whatever the results hold.
+// Keys come out sorted, so the same arguments give the same shape. It also
+// returns the call's arguments, for the next page's.
+func shapeOf(name string, input json.RawMessage, prev string, was map[string]any) (string, map[string]any) {
 	var args map[string]any
 	if json.Unmarshal(input, &args) != nil {
-		return name + "|" + string(input)
+		return name + "|" + string(input), nil
 	}
+	kept := make(map[string]any, len(args))
 	for k, v := range args {
 		lk := strings.ToLower(k)
 		if cursorArgs[lk] || strings.HasPrefix(lk, "kiff_") {
-			delete(args, k)
 			continue
 		}
-		if s, ok := v.(string); ok && len(s) >= 4 && prev != "" && strings.Contains(prev, `"`+s+`"`) {
-			delete(args, k)
+		if s, ok := v.(string); ok && len(s) >= 4 && prev != "" && was != nil && was[k] != v && strings.Contains(prev, `"`+s+`"`) {
+			continue
 		}
+		kept[k] = v
 	}
-	raw, _ := json.Marshal(args)
-	return name + "|" + string(raw)
+	raw, _ := json.Marshal(kept)
+	return name + "|" + string(raw), args
 }
 
 // see counts a turn's calls and says which result, if any, gives way to a
@@ -84,12 +88,12 @@ func (p *pages) see(byName map[string]tool.Tool, calls []ToolResultBody, inputs 
 			*p = pages{}
 			continue
 		}
-		shape := shapeOf(r.Tool, inputs[i], p.prev)
+		shape, args := shapeOf(r.Tool, inputs[i], p.prev, p.args)
 		if shape != p.shape {
 			*p = pages{shape: shape}
 		}
 		p.n++
-		p.prev = r.Text
+		p.prev, p.args = r.Text, args
 		if p.n >= LoopPages && at < 0 {
 			at = i
 		}

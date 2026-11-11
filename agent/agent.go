@@ -1325,7 +1325,8 @@ func nudgeAt(stop Stop) string {
 // closeAtCap gives a CloseInText run that reached its turn or cost limit on
 // its tool results its closing message: one turn, offered no tool use, told
 // why (nudge). At the cost limit that turn is paid from what the cap held
-// back (reserve), so the run stays within MaxCost. The note isn't kept in the
+// back (reserve), as much as the latest turn cost: it reads the same
+// conversation, so it can come out slightly over. The note isn't kept in the
 // conversation, as a pause's isn't; an empty reply isn't kept either. The run
 // still stops TurnCap or CostCap.
 func (a Agent) closeAtCap(ctx context.Context, rec *session.Recording, msgs []model.Message, specs []model.ToolSpec, out Outcome, emit func(Event), nudge string) (Outcome, []model.Message, error) {

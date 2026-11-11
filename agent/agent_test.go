@@ -2438,7 +2438,7 @@ func TestARunStaysWhereItStarted(t *testing.T) {
 
 // CloseInText at the cost cap: the run holds back its closing turn's cost
 // (reserve), stops its tool calls there, and answers from what it read in one
-// turn with no tool use; the whole run stays within MaxCost. Off, it spends
+// turn with no tool use; here the whole run stays within MaxCost. Off, it spends
 // its whole cap and says nothing, as before.
 func TestCloseInTextAnswersAtTheCostCapWithinIt(t *testing.T) {
 	lookup := &fakeTool{name: "stripe_list", access: tool.Read, gateway: true, result: tool.Result{Text: `{"data":[{"id":"dp_1"}],"has_more":true}`}}

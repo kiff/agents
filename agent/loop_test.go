@@ -147,3 +147,26 @@ func TestAnUnansweredLoopCardStopsReading(t *testing.T) {
 		t.Fatalf("outcome %+v, %v; no tools: %v", out, err, m.reqs[len(m.reqs)-1].NoToolUse)
 	}
 }
+
+// A filter that stays the same stays in the shape, even when every page's
+// result quotes it ("status":"open" on each dispute): the tenth page of an
+// open-disputes list asks, as the first nine don't.
+func TestAFixedFilterCountsAsTheSameList(t *testing.T) {
+	open := &fakeTool{name: "stripe_list", access: tool.Read, gateway: true, result: tool.Result{Text: `{"data":[{"id":"dp_0042","status":"open"}],"has_more":true}`}}
+	var replies []model.Reply
+	for i := range agent.LoopPages {
+		in := `{"status":"open"}`
+		if i > 0 {
+			in = fmt.Sprintf(`{"status":"open","starting_after":"dp_%04d"}`, i)
+		}
+		replies = append(replies, use(fmt.Sprintf("c%d", i+1), "stripe_list", in))
+	}
+	m := &script{replies: append(replies, say("Waiting for you."))}
+	a := newAgent(m, open)
+	a.CloseInText = true
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	if err != nil || out.Stop != agent.Paused || len(out.Requirements) != 1 || out.Requirements[0].CallID != fmt.Sprintf("c%d", agent.LoopPages) {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+}
