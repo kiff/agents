@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -343,6 +344,7 @@ type gwTool struct {
 	name   string
 	access tool.Access
 	in     json.RawMessage
+	res    *tool.Result // what it answers; a plain list when nil
 }
 
 func (g *gwTool) Spec() model.ToolSpec { return model.ToolSpec{Name: g.name} }
@@ -350,6 +352,9 @@ func (g *gwTool) Access() tool.Access  { return g.access }
 func (g *gwTool) Gateway() bool        { return true }
 func (g *gwTool) Call(_ context.Context, in json.RawMessage) (tool.Result, error) {
 	g.in = in
+	if g.res != nil {
+		return *g.res, nil
+	}
 	return tool.Result{Text: `{"data":[]}`}, nil
 }
 
@@ -372,5 +377,36 @@ func TestProbeReadsThroughTheAgentsGateway(t *testing.T) {
 	}
 	if _, err := probe(ctx, b, "t1", "payouts", schedule.Check{Tool: "nope", Cursor: "c"}); err == nil {
 		t.Fatal("a tool the agent hasn't")
+	}
+}
+
+// A read KIFF's gateway sent comes back "forwarded": the check reads it like
+// one with no state. A held, refused or failed read, or an error, isn't made.
+func TestProbeTakesAForwardedRead(t *testing.T) {
+	agents := memory.NewAgents()
+	_ = agents.Put(ctx, registrytest.Definition("t1", "disputes"))
+	list := &gwTool{name: "list_disputes", access: tool.Read}
+	b := &registry.Builder{Agents: agents, Secrets: keys{}, Model: &replies{}, Gateways: []string{"https://gateway.test/mcp"},
+		Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+			return []tool.Tool{list}, nil
+		}}
+	check := schedule.Check{Tool: "list_disputes", Items: "data", Cursor: "created"}
+	list.res = &tool.Result{Text: `{"data":[{"id":"du_1","created":1}]}`, State: tool.StateForwarded}
+	if got, err := probe(ctx, b, "t1", "disputes", check); err != nil || got != list.res.Text {
+		t.Fatalf("a forwarded read: %q, %v", got, err)
+	}
+	for _, res := range []tool.Result{
+		{Text: "held", State: tool.StateHeld},
+		{Text: "refused", State: tool.StateRefused},
+		{Text: "failed", State: tool.StateFailed},
+		{Text: "not sent yet", State: "deciding"},
+		{Text: "the vendor said no", IsError: true, State: tool.StateForwarded},
+	} {
+		list.res = &res
+		_, err := probe(ctx, b, "t1", "disputes", check)
+		var ce *schedule.CheckError
+		if !errors.As(err, &ce) || ce.Reason != schedule.ReasonReadNotMade {
+			t.Fatalf("%+v: %v", res, err)
+		}
 	}
 }

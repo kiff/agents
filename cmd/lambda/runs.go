@@ -570,7 +570,10 @@ func probe(ctx context.Context, b *registry.Builder, tenant, agent string, c sch
 		if err != nil {
 			return "", err
 		}
-		if res.IsError || res.State != "" {
+		// KIFF's gateway says "forwarded" of a call it sent, or nothing:
+		// either is the read made. Any other state (held, refused, failed,
+		// or one whose sending isn't settled) is a read the check can't use.
+		if res.IsError || (res.State != "" && res.State != tool.StateForwarded) {
 			return "", &schedule.CheckError{Reason: schedule.ReasonReadNotMade, Err: fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, res.State)}
 		}
 		return res.Text, nil

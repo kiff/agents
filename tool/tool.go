@@ -38,11 +38,13 @@ const (
 	Write
 )
 
-// The states KIFF's gateway reports for a call it didn't simply forward
-// (its result's _meta "dev.kiff/call").
+// The states KIFF's gateway reports for a call (its result's _meta
+// "dev.kiff/call"): StateForwarded for one it sent, the rest for one it
+// didn't simply send.
 const (
-	StateHeld    = "held"    // waits for the owner's answer
-	StateRefused = "refused" // outside the Card, and not held
+	StateForwarded = "forwarded" // sent to the tool, which answered
+	StateHeld      = "held"      // waits for the owner's answer
+	StateRefused   = "refused"   // outside the Card, and not held
 	// StateAwaiting is a card shown to the owner that waits for their answer
 	// (show's answerable types): the run pauses as for a hold, and the
 	// answer comes back as the call's result, never as the owner's text.
