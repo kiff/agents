@@ -45,7 +45,7 @@ func (t *test) setupTimings(ctx context.Context) {
 	}
 	// What the owner waited for: from each message they sent in the chat to
 	// Coach's first words after it. The summary goes to the log too: it's
-	// times and a cost, nothing of the chat.
+	// times and counts, nothing of the chat. Its cost is the transcript's only.
 	if t.words == nil {
 		return
 	}
@@ -86,9 +86,8 @@ func (t *test) setupTimings(ctx context.Context) {
 		fmt.Fprintln(t.cfg.log, line)
 	}
 	if med, p90, n := percentiles(waits); n > 0 {
-		line := fmt.Sprintf("setup speed: first words median %s, p90 %s, over %d messages; %d turns, output %d tokens (thinking about %d); cost %s",
-			med.Round(10*time.Millisecond), p90.Round(10*time.Millisecond), n, s.turns, s.output, s.thinking, usd(s.cost))
-		t.logf("%s", line)
+		line := speedLine(med, p90, n, s)
+		t.logf("%s; cost %s", line, usd(s.cost))
 		fmt.Fprintln(t.cfg.log, line)
 	}
 }
@@ -520,6 +519,13 @@ func summarize(turns []turnTiming) turnSummary {
 		s.medianFirst = time.Duration(firsts[len(firsts)/2]) * time.Millisecond
 	}
 	return s
+}
+
+// speedLine is what the owner waited for, for the public log: times and
+// counts only, never a cost.
+func speedLine(med, p90 time.Duration, n int, s turnSummary) string {
+	return fmt.Sprintf("setup speed: first words median %s, p90 %s, over %d messages; %d turns, output %d tokens (thinking about %d)",
+		med.Round(10*time.Millisecond), p90.Round(10*time.Millisecond), n, s.turns, s.output, s.thinking)
 }
 
 // usd is a cost in millionths of a US dollar, to the cent's tenth.

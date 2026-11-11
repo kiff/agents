@@ -551,7 +551,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	reportPath := fs.String("report", "", "write a Markdown report here: the configuration, each case over its runs, and each run's checks")
 	maxCost := fs.Float64("max-cost", 2, "-run: the most one case's run may cost, in US dollars")
 	skillsDir := fs.String("skills", "", "-run: a directory of skills, <name>/<version>/SKILL.md each, that the definitions may name (#101)")
-	public := fs.Bool("public", false, "the log is public (CI): print each run's score, cost and failed checks' names only, with no ids or reasons, and no results on stdout; -out and -report hold the rest")
+	public := fs.Bool("public", false, "the log is public (CI): print each run's score and failed checks' names only, with no ids, reasons or cost, and no results on stdout; -out and -report hold the rest")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -791,15 +791,16 @@ func gateFailures(results []eval.Result) []string {
 }
 
 // printResult says how one run graded. A public log (-public) shows no
-// session and no check's reason: the reason is the judge's prose about the
-// run, which can quote its ids and amounts.
+// session, no check's reason and no cost: the reason is the judge's prose
+// about the run, which can quote its ids and amounts, and a run's AI cost
+// stays in the private report (-out, -report), where it's read.
 func printResult(stderr io.Writer, res eval.Result, public bool) {
-	session := res.Session
 	if public {
-		session = "…"
+		fmt.Fprintf(stderr, "%s  %d/%d  (…)\n", res.Case, res.Passed, res.Graded)
+	} else {
+		fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
+			res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), res.Session)
 	}
-	fmt.Fprintf(stderr, "%s  %d/%d  $%.4f a run, $%.4f an item, judge $%.4f  (%s)\n",
-		res.Case, res.Passed, res.Graded, dollars(res.CostMicroUSD), dollars(res.PerItemMicro), dollars(res.JudgeMicroUSD), session)
 	if cx := res.Context; cx.Turns > 0 {
 		room := "unknown"
 		if cx.LeastRoomTokens >= 0 {

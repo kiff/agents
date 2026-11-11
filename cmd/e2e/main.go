@@ -1403,8 +1403,13 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 			advised++
 		}
 	}
-	fmt.Fprintf(t.cfg.log, "setup  %d/%d gate, %d advice  %d messages, %d components  judge $%.4f\n", passed, gates, advised,
-		len(t.said.messages), len(t.said.order), float64(t.cfg.judge.Spent())/1e6)
+	fmt.Fprintf(t.cfg.log, "setup  %d/%d gate, %d advice  %d messages, %d components\n", passed, gates, advised,
+		len(t.said.messages), len(t.said.order))
+	// What the judges cost is the private transcript's only: the log is public,
+	// and a run's cost has no place there.
+	if t.cfg.transcript != nil {
+		fmt.Fprintf(t.cfg.transcript, "setup judge $%.4f\n", float64(t.cfg.judge.Spent())/1e6)
+	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the setup chat failed: %s", strings.Join(failed, ", "))
 	}

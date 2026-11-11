@@ -542,3 +542,29 @@ func TestTheDeskChecks(t *testing.T) {
 		}
 	}
 }
+
+// The nightly log is public: neither the setup grade's line nor the speed
+// line says what the run cost. The judges' cost is in the private transcript.
+func TestThePublicLogSaysNoCost(t *testing.T) {
+	var log, transcript bytes.Buffer
+	tt := &test{out: &redacting{w: &log, ci: true}, said: said{messages: []string{"Hola."}},
+		cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{}}}
+	if err := tt.reportSetup([]eval.CheckResult{{Name: "concise", Grade: eval.Grade{Pass: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "setup  1/1 gate, 0 advice  1 messages, 0 components\n") {
+		t.Fatalf("the setup line: %q", log.String())
+	}
+	if !strings.Contains(transcript.String(), "setup judge $0.0000") {
+		t.Fatalf("the transcript has no judge cost: %q", transcript.String())
+	}
+	line := speedLine(1234*time.Millisecond, 2*time.Second, 3, turnSummary{turns: 4, output: 500, thinking: 100, cost: 123456})
+	if line != "setup speed: first words median 1.23s, p90 2s, over 3 messages; 4 turns, output 500 tokens (thinking about 100)" {
+		t.Fatalf("the speed line: %q", line)
+	}
+	for _, public := range []string{log.String(), line} {
+		if strings.ContainsAny(public, "$") || strings.Contains(public, "cost") || strings.Contains(public, "judge $") {
+			t.Fatalf("a cost in the public log: %q", public)
+		}
+	}
+}

@@ -747,9 +747,9 @@ func TestRepeatedSeededRunsAreReportedOverTheirMean(t *testing.T) {
 	}
 }
 
-// A public log (-public, in CI) shows each run's score, cost and failed
-// checks' names, and nothing that names the run: no session, no check's
-// reason, no hold's exception, no results on stdout. -out still holds them
+// A public log (-public, in CI) shows each run's score and failed checks'
+// names, and nothing that names the run or what it cost: no session, no
+// check's reason, no hold's exception, no cost, no results on stdout. -out still holds them
 // all, and an error keeps its words with its ids hidden (#78).
 func TestAPublicLogNamesNothing(t *testing.T) {
 	withReader(t, fakeReader{"sesn_r": emptyRun("sesn_r")})
@@ -762,13 +762,17 @@ func TestAPublicLogNamesNothing(t *testing.T) {
 		t.Errorf("stdout %q, want nothing", stdout.String())
 	}
 	log := stderr.String()
-	if !strings.Contains(log, "refunds  2/6  $1.4000 a run, $0.2000 an item, judge $0.0000  (…)") || !strings.Contains(log, "FAIL  does the job\n") {
+	if !strings.Contains(log, "refunds  2/6  (…)\n") || !strings.Contains(log, "FAIL  does the job\n") {
 		t.Errorf("log:\n%s", log)
+	}
+	// A run's AI cost stays in the private report: none in the public log.
+	if strings.Contains(log, "$") || strings.Contains(log, "a run,") {
+		t.Errorf("the public log shows a cost:\n%s", log)
 	}
 	if strings.Contains(log, "sesn_r") || strings.Contains(log, "missed") {
 		t.Errorf("the public log names the run or a reason:\n%s", log)
 	}
-	if b, _ := os.ReadFile(out); !bytes.Contains(b, []byte(`"sesn_r"`)) {
+	if b, _ := os.ReadFile(out); !bytes.Contains(b, []byte(`"sesn_r"`)) || !bytes.Contains(b, []byte(`"cost_micro_usd"`)) {
 		t.Errorf("-out lost the details: %s", b)
 	}
 
