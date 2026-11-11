@@ -1135,13 +1135,22 @@ func readSchedule(r *http.Request, c Caller) (schedule.Schedule, error) {
 	return sc, nil
 }
 
-// putSchedule stores and sets sc; a schedule that fails its check is the
-// caller's to fix.
-func (s *Server) putSchedule(ctx context.Context, sc schedule.Schedule) error {
+// putSchedule stores and sets sc, and returns it as stored (the service
+// keeps its own fields, a resumed schedule's failing cleared); a schedule
+// that fails its check is the caller's to fix.
+func (s *Server) putSchedule(ctx context.Context, sc *schedule.Schedule) error {
 	if err := sc.Check(); err != nil {
 		return badRequest{err}
 	}
-	return s.Schedules.Put(ctx, sc)
+	if err := s.Schedules.Put(ctx, *sc); err != nil {
+		return err
+	}
+	stored, err := s.Schedules.Store.Get(ctx, sc.Tenant, sc.ID)
+	if err != nil {
+		return err
+	}
+	*sc = stored
+	return nil
 }
 
 // createSchedule makes a new schedule; one with that ID already is a
@@ -1157,7 +1166,7 @@ func (s *Server) createSchedule(ctx context.Context, c Caller, r *http.Request) 
 	case !errors.Is(err, schedule.ErrNotFound):
 		return 0, nil, err
 	}
-	if err := s.putSchedule(ctx, sc); err != nil {
+	if err := s.putSchedule(ctx, &sc); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusCreated, s.view(sc), nil
@@ -1202,13 +1211,9 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 	}
 	sc.ID = id
 	// Its firings' run of failures stays, until a run works, and so does
-	// the last firing that waited for credits. Switched on again, it starts
-	// anew: a schedule paused for its failures (schedule.PauseAfter) fires
-	// at its full rate once the owner resumes it.
+	// the last firing that waited for credits; switched on again, it starts
+	// anew (schedule.Service.Put).
 	sc.Failing, sc.Waited, sc.Ceiling = old.Failing, old.Waited, old.Ceiling
-	if sc.Enabled && !old.Enabled {
-		sc.Failing = nil
-	}
 	// A check that reads what the stored one reads keeps its cursor: an
 	// update that only moves its times, or writes the same dial again, never
 	// skips what came since the last check. One that reads something else,
@@ -1218,7 +1223,7 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 		kept := sc.AppCheck.Keeping(old.AppCheck)
 		sc.AppCheck = &kept
 	}
-	if err := s.putSchedule(ctx, sc); err != nil {
+	if err := s.putSchedule(ctx, &sc); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, s.view(sc), nil
@@ -1241,7 +1246,7 @@ func (s *Server) switchSchedule(ctx context.Context, c Caller, r *http.Request, 
 		return 0, nil, err
 	}
 	sc.Enabled = on
-	if err := s.putSchedule(ctx, sc); err != nil {
+	if err := s.putSchedule(ctx, &sc); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, s.view(sc), nil

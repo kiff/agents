@@ -219,3 +219,52 @@ func TestTheCeilingIsBounded(t *testing.T) {
 		t.Fatalf("an off schedule's ceiling %d", got)
 	}
 }
+
+// Half rate is twice the step, not the step: a daily schedule that keeps
+// failing runs every other day, where the hour's floor can't hide it.
+func TestADailyFailingScheduleRunsEveryOtherDay(t *testing.T) {
+	f, _, _ := failingFixture(t)
+	s, _ := f.store.Get(ctx, "t1", "inbox")
+	s.Cron = "0 9 * * *"
+	if err := f.store.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	day := func(n int) time.Time { return time.Date(2026, 11, 2+n, 9, 0, 0, 0, time.UTC) }
+	for n := 0; n < schedule.SlowAfter; n++ {
+		_ = f.sv.Fire(ctx, "t1", "inbox", day(n))
+	}
+	want := []string{schedule.FiredSlowed, schedule.FiredUnworked, schedule.FiredSlowed, schedule.FiredUnworked}
+	for i, w := range want {
+		_ = f.sv.Fire(ctx, "t1", "inbox", day(schedule.SlowAfter+i))
+		if got := last(t, f).Outcome; got != w {
+			t.Fatalf("day %d after %d failures: %s, want %s", schedule.SlowAfter+i, schedule.SlowAfter, got, w)
+		}
+	}
+}
+
+// Only the agent's own schedules' runs count toward its ceiling: another
+// agent's busy day in the same account stops nothing of this one's.
+func TestAnotherAgentsRunsDontCountTowardTheCeiling(t *testing.T) {
+	f := newFixture()
+	mine := scheduletest.Schedule("t1", "inbox")
+	mine.Cron, mine.TimeZone = "0 9 * * *", "UTC"
+	theirs := scheduletest.Schedule("t1", "refunds-daily")
+	theirs.Agent, theirs.Cron, theirs.TimeZone = "refunds", "0 9 * * *", "UTC"
+	for _, s := range []schedule.Schedule{mine, theirs} {
+		if err := f.store.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	day := time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < schedule.CeilingMax; i++ {
+		if err := f.history.Add(ctx, "t1", "refunds-daily", schedule.Fired{Due: day.Add(time.Duration(i) * time.Minute), Outcome: schedule.FiredRun}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.sv.Fire(ctx, "t1", "inbox", day.Add(9*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.started) != 1 || last(t, f).Outcome != schedule.FiredRun {
+		t.Fatalf("stopped by another agent's runs: started %d, %s", len(f.started), last(t, f).Outcome)
+	}
+}

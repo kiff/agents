@@ -618,6 +618,35 @@ func TestResumingAPausedScheduleStartsClean(t *testing.T) {
 	}
 }
 
+// The app pauses and resumes with the switch (POST …/disable, …/enable):
+// resumed that way, a schedule paused by its failures starts anew too, and
+// switching it off keeps them.
+func TestResumingWithTheSwitchStartsClean(t *testing.T) {
+	f := newFixture(t)
+	f.putAgent("t1", "payouts")
+	code, got := f.do("t1", "POST", "/schedules", scheduleBody("morning"))
+	f.want(201, code, got, "create")
+	stored, _ := f.schedSvc.Store.Get(context.Background(), "t1", "morning")
+	stored.Enabled = false
+	stored.Failing = &schedule.Failing{Since: now, Firings: schedule.PauseAfter, Paused: true}
+	if err := f.schedSvc.Store.Put(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	code, got = f.do("t1", "POST", "/schedules/morning/disable", nil)
+	f.want(200, code, got, "switched off again")
+	if failing, _ := got["failing"].(map[string]any); failing["paused"] != true {
+		t.Fatalf("switching it off lost its failing: %v", got)
+	}
+	code, got = f.do("t1", "POST", "/schedules/morning/enable", nil)
+	f.want(200, code, got, "resume")
+	if _, ok := got["failing"]; ok {
+		t.Fatalf("resumed with its failing: %v", got)
+	}
+	if s, _ := f.schedSvc.Store.Get(context.Background(), "t1", "morning"); s.Failing != nil || !s.Enabled {
+		t.Fatalf("stored: enabled %v failing %+v", s.Enabled, s.Failing)
+	}
+}
+
 // A check's state (its cursor, the firing that last started a run, what it
 // handed over of a cursor value's items) is the service's, like failing: a
 // body's is ignored, and an update whose check reads the same thing keeps

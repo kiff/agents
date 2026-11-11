@@ -623,7 +623,8 @@ type Service struct {
 }
 
 // Put stores s and sets it to fire. Its agent must exist: schedules are
-// made only for live agents. If setting it fails, the schedule is stored but
+// made only for live agents. One switched from off to on loses its
+// failing. If setting it fails, the schedule is stored but
 // may not fire as stored: the caller retries Put, which is safe to repeat.
 func (sv *Service) Put(ctx context.Context, s Schedule) error {
 	if err := s.Check(); err != nil {
@@ -635,6 +636,18 @@ func (sv *Service) Put(ctx context.Context, s Schedule) error {
 	}
 	if !live {
 		return ErrNoAgent
+	}
+	// Switched from off to on, by an update or by its switch, it starts
+	// anew: a schedule paused for its failures (PauseAfter) fires at its
+	// full rate once the owner resumes it.
+	if s.Enabled && s.Failing != nil {
+		old, err := sv.Store.Get(ctx, s.Tenant, s.ID)
+		switch {
+		case err == nil && !old.Enabled:
+			s.Failing = nil
+		case err != nil && !errors.Is(err, ErrNotFound):
+			return err
+		}
 	}
 	if err := sv.Store.Put(ctx, s); err != nil {
 		return err

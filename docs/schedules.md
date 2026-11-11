@@ -213,8 +213,9 @@ Nothing keeps spending on work that can't succeed:
 - **at 6, it switches itself off:** `enabled` is false and `failing.paused` is
   true, so tafs can say it was the failures, not the owner;
 - **one run that works** ends `failing`, at the full rate again, and so does
-  **switching it on again** (an update from off to on), so a resumed schedule
-  starts clean.
+  **switching it on again**, by an update or by `POST /schedules/{id}/enable`
+  (the service clears it on any off-to-on switch), so a resumed schedule starts
+  clean.
 
 Quiet firings, credit waits, halts and switches are never failures, so they
 never slow it. A once schedule (an agent's follow-up) fires once anyway and is
