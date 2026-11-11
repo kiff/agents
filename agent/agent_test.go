@@ -2435,3 +2435,46 @@ func TestARunStaysWhereItStarted(t *testing.T) {
 		t.Fatalf("pinned: asked %q, %v", m.reqs[0].Source, err)
 	}
 }
+
+// CloseInText at the cost cap: the run holds back its closing turn's cost
+// (reserve), stops its tool calls there, and answers from what it read in one
+// turn with no tool use; the whole run stays within MaxCost. Off, it spends
+// its whole cap and says nothing, as before.
+func TestCloseInTextAnswersAtTheCostCapWithinIt(t *testing.T) {
+	lookup := &fakeTool{name: "stripe_list", access: tool.Read, gateway: true, result: tool.Result{Text: `{"data":[{"id":"dp_1"}],"has_more":true}`}}
+	m := &script{replies: []model.Reply{use("c1", "stripe_list", `{}`), use("c2", "stripe_list", `{"starting_after":"dp_1"}`),
+		say("Read 200 disputes; more remain unread."), use("c3", "stripe_list", `{"starting_after":"dp_2"}`)}}
+	_, r := start(t, session.KindRun)
+	a := newAgent(m, lookup)
+	a.CloseInText, a.MaxCost = true, 3000 // a turn costs 1000: two with tools, one held back to close
+	out, msgs, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.CostCap || out.Text != "Read 200 disputes; more remain unread." || len(m.reqs) != 3 {
+		t.Fatalf("stop %s, text %q, %d turns", out.Stop, out.Text, len(m.reqs))
+	}
+	if out.Cost > a.MaxCost {
+		t.Fatalf("cost %d over the cap %d", out.Cost, a.MaxCost)
+	}
+	asked := m.reqs[2]
+	if !asked.NoToolUse || asked.Messages[len(asked.Messages)-1].Blocks[len(asked.Messages[len(asked.Messages)-1].Blocks)-1].Text != agent.CostNudge {
+		t.Fatalf("the closing turn was asked %+v", asked.Messages[len(asked.Messages)-1])
+	}
+	for _, msg := range msgs {
+		for _, b := range msg.Blocks {
+			if b.Text == agent.CostNudge {
+				t.Fatal("the note was kept in the conversation")
+			}
+		}
+	}
+
+	// A turn dearer than a tenth of the cap is what's held back.
+	m = &script{replies: []model.Reply{use("c1", "stripe_list", `{}`), use("c2", "stripe_list", `{}`), say("Read what I could.")}}
+	_, r = start(t, session.KindRun)
+	a = newAgent(m, lookup)
+	a.CloseInText, a.MaxCost = true, 2500 // 1000 a turn > 250: stops after one turn with tools, then closes
+	if out, _, err = agent.Run(context.Background(), a, r, nil, "List them.", nil); err != nil || out.Stop != agent.CostCap || len(m.reqs) != 2 || out.Cost > a.MaxCost {
+		t.Fatalf("a dear turn: stop %s, %d turns, cost %d, %v", out.Stop, len(m.reqs), out.Cost, err)
+	}
+}
