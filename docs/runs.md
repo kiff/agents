@@ -559,7 +559,9 @@ tenant's paused runs, newest first, from its own paused list, so a sweep of a
 whole account's waiting steps is one read, whatever its agents' histories.
 `tool` keeps the runs waiting on a call of that tool; `limit` is 1 to 100
 (100 by default); read as the service or as one `requester`, as an agent's
-runs are. Another tenant's runs are never in it.
+runs are. Another tenant's runs are never in it. A run paused before this list
+existed is only in the operators' list until it leaves PAUSED: read it there,
+or wait it out, rather than counting on this route for it.
 
 ## Evals
 

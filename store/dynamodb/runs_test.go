@@ -410,7 +410,8 @@ func TestPausedListItems(t *testing.T) {
 	}
 	none("claimed again")
 	cancelled := pause()
-	if _, err := run.Save(ctx, rs, cancelled, at, func(n *run.Run) error { n.Status = run.Cancelled; return nil }); err != nil {
+	// Cancelled as a paused run is: it holds no lease, so it changes without one (run.Change).
+	if _, err := run.Change(ctx, rs, cancelled, at, func(n *run.Run) error { n.Status = run.Cancelled; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	none("cancelled while paused")
