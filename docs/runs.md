@@ -376,6 +376,11 @@ A run never ends on nothing because it kept reading: a taf's, a chat's or Coach'
   - **Answer with what's read** (`tafs_loop_summarise`), or **no answer** by
     the card's wait: one turn with no tool use (`LoopNudge`), from what was
     read, saying what's left unread. The run ends answered.
+  - **A run with no person behind it** (a schedule's, a door's: no member
+    asked for it) has no one to answer the card, so it shows none and doesn't
+    pause. It keeps the tenth page and closes in one turn with no tool use
+    (`LoopEndNudge`: no one can be asked, so answer from what was read and say
+    what's left). The run ends answered, and its report is that answer.
   - Only the answer recorded on the run counts: the person's, through
     `POST …/cards/{card}/answer`. A tool's result or the model's words never
     answer it.

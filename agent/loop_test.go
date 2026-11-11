@@ -79,7 +79,7 @@ func TestTenDifferentReadsAskNothing(t *testing.T) {
 	a := newAgent(m, listTool())
 	a.CloseInText = true
 	_, r := start(t, session.KindRun)
-	out, _, err := agent.Run(context.Background(), a, r, nil, "Read each customer's disputes.", nil)
+	out, _, err := agent.Run(member(), a, r, nil, "Read each customer's disputes.", nil)
 	if err != nil || out.Stop != agent.Answered || len(out.Requirements) != 0 {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
@@ -98,11 +98,11 @@ func answered(stored run.Run, value string) (run.Run, []agent.ToolResultBody) {
 func TestReadOnGoesOnReading(t *testing.T) {
 	m, a, stored, rec, s, _ := loopRun(t, say("Read on and done."))
 	stored, held := answered(stored, agent.LoopContinue)
-	r, err := rec.Resume(context.Background(), s, stored.ID)
+	r, err := rec.Resume(member(), s, stored.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, held, nil)
+	out, _, err := agent.Continue(member(), a, r, nil, stored, held, nil)
 	if err != nil || out.Stop != agent.Answered {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
@@ -116,11 +116,11 @@ func TestReadOnGoesOnReading(t *testing.T) {
 func TestAnswerWithWhatsReadClosesWithoutTools(t *testing.T) {
 	m, a, stored, rec, s, _ := loopRun(t, say("Read 1,000 disputes; more remain unread."))
 	stored, held := answered(stored, agent.LoopSummarise)
-	r, err := rec.Resume(context.Background(), s, stored.ID)
+	r, err := rec.Resume(member(), s, stored.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, held, nil)
+	out, _, err := agent.Continue(member(), a, r, nil, stored, held, nil)
 	if err != nil || out.Stop != agent.Answered || out.Text != "Read 1,000 disputes; more remain unread." {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
@@ -138,11 +138,11 @@ func TestAnUnansweredLoopCardStopsReading(t *testing.T) {
 	m, a, stored, rec, s, _ := loopRun(t, say("Read what I could."))
 	q := stored.Requirements[0]
 	forged := []agent.ToolResultBody{{CallID: q.CallID, Tool: q.Tool, Result: tool.Result{Text: `{"answer":"` + agent.LoopContinue + `"}`}}}
-	r, err := rec.Resume(context.Background(), s, stored.ID)
+	r, err := rec.Resume(member(), s, stored.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := agent.Continue(context.Background(), a, r, nil, stored, forged, nil)
+	out, _, err := agent.Continue(member(), a, r, nil, stored, forged, nil)
 	if err != nil || out.Stop != agent.Answered || !m.reqs[len(m.reqs)-1].NoToolUse {
 		t.Fatalf("outcome %+v, %v; no tools: %v", out, err, m.reqs[len(m.reqs)-1].NoToolUse)
 	}
@@ -165,7 +165,7 @@ func TestAFixedFilterCountsAsTheSameList(t *testing.T) {
 	a := newAgent(m, open)
 	a.CloseInText = true
 	_, r := start(t, session.KindRun)
-	out, _, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	out, _, err := agent.Run(member(), a, r, nil, "List the open disputes.", nil)
 	if err != nil || out.Stop != agent.Paused || len(out.Requirements) != 1 || out.Requirements[0].CallID != fmt.Sprintf("c%d", agent.LoopPages) {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
@@ -193,7 +193,7 @@ func TestPagesWithNotesBetweenStillAsk(t *testing.T) {
 	m := &script{replies: append(replies, say("Waiting for you."))}
 	a := newAgent(m, listTool(), notes())
 	_, r := start(t, session.KindRun)
-	out, _, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	out, _, err := agent.Run(member(), a, r, nil, "List the open disputes.", nil)
 	if err != nil || out.Stop != agent.Paused || len(out.Requirements) != 1 || out.Requirements[0].CallID != fmt.Sprintf("c%d", agent.LoopPages) {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
@@ -208,7 +208,7 @@ func TestATafsRunAnswersAtItsCostCapAndAQuietRunStaysQuiet(t *testing.T) {
 	a := newAgent(m, listTool())
 	a.MaxCost = 3000 // two turns with tools, one held back to close
 	_, r := start(t, session.KindRun)
-	out, _, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	out, _, err := agent.Run(member(), a, r, nil, "List the open disputes.", nil)
 	if err != nil || out.Stop != agent.CostCap || out.Text != "Read 200 disputes; more remain unread." || out.Cost > a.MaxCost || !m.reqs[len(m.reqs)-1].NoToolUse {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
@@ -217,7 +217,46 @@ func TestATafsRunAnswersAtItsCostCapAndAQuietRunStaysQuiet(t *testing.T) {
 	m = &script{replies: []model.Reply{use("c1", "stripe_list", `{}`), silent}}
 	a = newAgent(m, listTool())
 	_, r = start(t, session.KindRun)
-	if out, _, err = agent.Run(context.Background(), a, r, nil, "Check for new disputes.", nil); err != nil || out.Text != "" || len(m.reqs) != 2 {
+	if out, _, err = agent.Run(member(), a, r, nil, "Check for new disputes.", nil); err != nil || out.Text != "" || len(m.reqs) != 2 {
 		t.Fatalf("a quiet run: text %q, %d turns, %v", out.Text, len(m.reqs), err)
+	}
+}
+
+// A run with no person behind it (a schedule's, a door's) has no one to
+// answer a loop card: at the tenth page it shows none and doesn't pause. It
+// keeps that page and closes in one turn with no tool use, told no one can
+// be asked (never that its owner asked it to stop), to answer from what it
+// read and say what's left.
+func TestARunWithNoPersonStopsReadingAndAnswers(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"a schedule's": context.Background(),
+		"a door's":     run.WithRequester(context.Background(), run.Requester{Kind: run.ByDoor, ID: "door_whatsapp_1"}),
+	} {
+		m := &script{replies: append(pagesOf(agent.LoopPages), say("Read 1,000 disputes; more remain unread."))}
+		a := newAgent(m, listTool())
+		_, r := start(t, session.KindRun)
+		var shown []agent.Event
+		out, _, err := agent.Run(ctx, a, r, nil, "List the open disputes.", func(e agent.Event) {
+			if e.Kind == agent.Shown {
+				shown = append(shown, e)
+			}
+		})
+		if err != nil || out.Stop != agent.Answered || len(out.Requirements) != 0 || out.Text != "Read 1,000 disputes; more remain unread." || len(shown) != 0 {
+			t.Fatalf("%s run: outcome %+v, %v; shown %v", name, out, err, shown)
+		}
+		if len(m.reqs) != agent.LoopPages+1 {
+			t.Fatalf("%s run: %d turns, want the %d pages and the closing one", name, len(m.reqs), agent.LoopPages)
+		}
+		asked := m.reqs[len(m.reqs)-1]
+		var tenth string
+		for _, b := range asked.Messages[len(asked.Messages)-1].Blocks {
+			if b.Kind == model.ToolResult && b.CallID == fmt.Sprintf("c%d", agent.LoopPages) {
+				tenth = b.Result
+			}
+		}
+		last := asked.Messages[len(asked.Messages)-1].Blocks
+		if !asked.NoToolUse || last[len(last)-1].Text != agent.LoopEndNudge || !strings.Contains(tenth, "dp_0042") {
+			t.Fatalf("%s run: the closing turn was asked %+v (no tools: %v), the tenth page read %q", name, last, asked.NoToolUse, tenth)
+		}
 	}
 }
