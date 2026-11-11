@@ -21,6 +21,7 @@ import (
 	_ "image/jpeg" // likewise
 	_ "image/png"  // likewise
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -244,7 +245,34 @@ func (t *gatewayTool) ResultSchema() json.RawMessage { return t.result }
 // the result's _meta.
 func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
 	out, _, err := t.callMeta(ctx, input)
+	if err == nil {
+		t.checkStep(ctx, input, out)
+	}
 	return out, err
+}
+
+// checkStep names this call as the check of a step the owner answered "done" in this run (your_step), when it is
+// the run's first read about the same case since: a read (a tool KIFF marks read-only, or a read of a tool that
+// both reads and writes), sent and not failed, never a write, held or refused call. Each step takes one check;
+// one KIFF refuses, or a failure to post it, leaves the step to settle "not checked" after KIFF's hour, as without.
+func (t *gatewayTool) checkStep(ctx context.Context, input json.RawMessage, out tool.Result) {
+	checks := run.ChecksFrom(ctx)
+	if checks == nil || out.IsError || out.State == tool.StateHeld || out.State == tool.StateRefused || out.State == tool.StateWaiting ||
+		out.Trial != nil || !tool.Reads(t, input) {
+		return
+	}
+	ref, ok := run.RefFrom(ctx)
+	id := tool.CallFrom(ctx)
+	if !ok || ref.Run == "" || id == "" {
+		return
+	}
+	w, ok := checks.Take(aboutOf(input))
+	if !ok {
+		return
+	}
+	if err := w.Post(ctx, run.OperationOf(ref.Run, id, input)); err != nil {
+		slog.WarnContext(ctx, "your_step check not kept", "handoff", w.Handoff, "err", err)
+	}
 }
 
 // callMeta is Call, with what the gateway said in MetaKey.

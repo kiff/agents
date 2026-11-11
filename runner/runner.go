@@ -510,6 +510,10 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	// reads and writes that person's notes (#219).
 	ctx = run.WithRef(ctx, run.Ref{Session: r.Session, Run: r.ID})
 	loop = run.WithRef(loop, run.Ref{Session: r.Session, Run: r.ID})
+	ctx, loop = run.WithDone(ctx, r.Done), run.WithDone(loop, r.Done)
+	// One set of checks for this execution: a step answered "done" as it's collected waits for the run's read.
+	checks := &run.Checks{}
+	ctx, loop = run.WithChecks(ctx, checks), run.WithChecks(loop, checks)
 	if r.Requester.Key() != "" {
 		ctx = run.WithRequester(ctx, r.Requester)
 		loop = run.WithRequester(loop, r.Requester)
