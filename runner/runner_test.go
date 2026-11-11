@@ -729,6 +729,54 @@ func TestAPausedRunContinues(t *testing.T) {
 	}
 }
 
+// seesTheRun is a read that notes the run's checks and what the run has done, as its context gives them.
+type seesTheRun struct {
+	checks *run.Checks
+	done   []run.Done
+}
+
+func (s *seesTheRun) Spec() model.ToolSpec {
+	return model.ToolSpec{Name: "stripe_get", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+func (s *seesTheRun) Access() tool.Access { return tool.Read }
+func (s *seesTheRun) Gateway() bool       { return true }
+func (s *seesTheRun) Call(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
+	s.checks, s.done = run.ChecksFrom(ctx), run.DoneFrom(ctx)
+	return tool.Result{Text: `{"status":"paid"}`}, nil
+}
+
+// A continued run's collect and its tools share one set of checks: a step its
+// owner answered "done" as it's collected waits on the same Checks the run's
+// later read finds (your_step's check), and the read sees what the run has done,
+// the collected call among it. Another execution gets its own.
+func TestACollectedStepAndTheRunsReadShareTheirChecks(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Waiting for approval."))
+	reader := &seesTheRun{}
+	f.extra = append(f.extra, reader)
+	r := f.start(server.Start{Input: "refund order 42"})
+	f.pause(r)
+	f.answer(r)
+	var collected *run.Checks
+	f.r.Collect = func(ctx context.Context, _ agent.Agent, _ []run.Requirement) ([]agent.ToolResultBody, error) {
+		collected = run.ChecksFrom(ctx)
+		collected.Await(run.CheckWait{Handoff: "ho_1", About: "order 42", Post: func(context.Context, string) error { return nil }})
+		return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded", Invocation: "tc-1"}}}, nil
+	}
+	f.model.add(use("r1", "stripe_get", `{"order":42}`), say("Refunded order 42."))
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if collected == nil || reader.checks != collected {
+		t.Fatalf("the read's checks %p, the collect's %p: want the same, set", reader.checks, collected)
+	}
+	if w, ok := reader.checks.Take("order 42"); !ok || w.Handoff != "ho_1" {
+		t.Fatalf("the step collected done isn't waiting for the read: %+v %v", w, ok)
+	}
+	if len(reader.done) != 1 || reader.done[0].CallID != "c1" {
+		t.Fatalf("the read saw done %+v, want the collected refund", reader.done)
+	}
+}
+
 // A continued run sends the preface its run first sent, its date as of then,
 // and what changed since after the held calls' results: everything it sent
 // before them is byte for byte what the run's last request before the pause
