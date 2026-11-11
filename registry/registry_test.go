@@ -418,6 +418,36 @@ func TestDraftsIsOptIn(t *testing.T) {
 	}
 }
 
+// your_step is the definition's to turn on, only where the server offers
+// it, and built with the agent's own KIFF key.
+func TestYourStepIsOptIn(t *testing.T) {
+	f := newFixture(t)
+	d := registrytest.Definition("t1", "payouts")
+	d.YourStep = true
+	_ = f.agents.Put(ctx, d)
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrNoYourStep) {
+		t.Fatalf("without your_step on the server: %v", err)
+	}
+	var keys []string
+	f.b.YourStep = func(key string) tool.Tool {
+		keys = append(keys, key)
+		return stub{name: "your_step", access: tool.Own}
+	}
+	a, _, err := f.b.Build(ctx, "t1", "payouts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "key-t1" || a.Tools[len(a.Tools)-1].Spec().Name != "your_step" {
+		t.Fatalf("your_step built with %v", keys)
+	}
+	d.YourStep = false
+	_ = f.agents.Put(ctx, d)
+	keys = nil
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); err != nil || len(keys) != 0 {
+		t.Fatalf("an agent that didn't ask got your_step: %v %v", keys, err)
+	}
+}
+
 // A definition can't send its key to a planque the server doesn't allow;
 // one it allows gets the planque tool, with the agent's own key and gateway.
 func TestBuildGivesThePlanqueToolOnlyForAnAllowedPlanque(t *testing.T) {

@@ -1,6 +1,7 @@
 // Package kiffalert receives KIFF's hold_answered alerts: the owner answered
 // a call KIFF held for a run (approved or refused), its hold expired, or it
-// was withdrawn. The handler checks KIFF's signature, records the answer on
+// was withdrawn. And its handoff_answered alerts: a step a taf handed its
+// owner (your_step) was answered done or skipped, or expired. The handler checks KIFF's signature, records the answer on
 // the run that paused on that hold, and hands a run that no longer waits for
 // anything to Continue, which executes it in the background. Without
 // Continue, the answer is only recorded: the run is due ResolvedGrace later,
@@ -33,6 +34,11 @@ import (
 // HoldAnswered is the alert's outcome for an answered, expired or withdrawn
 // hold. Other outcomes are acknowledged and ignored.
 const HoldAnswered = "hold_answered"
+
+// HandoffAnswered is the alert's outcome for a step a taf handed its owner
+// (your_step) that closed: done, skipped or no_answer. The run paused on it
+// as on a held call, by the hand-off's id, and continues the same way.
+const HandoffAnswered = "handoff_answered"
 
 // SignatureHeader carries "t=<unix seconds>,v1=<hex HMAC-SHA256(secret,
 // "<t>.<body>")>".
@@ -85,6 +91,11 @@ type Alert struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	} `json:"hold"`
+	// Handoff is the hand-off that closed, on handoff_answered.
+	Handoff *struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"handoff"`
 }
 
 func (h *Handler) now() time.Time {
@@ -136,25 +147,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the alert doesn't check", http.StatusUnauthorized)
 		return
 	}
-	if a.Outcome != HoldAnswered {
+	var id, status string
+	switch a.Outcome {
+	case HoldAnswered:
+		if a.Hold == nil || a.Hold.ID == "" || a.Hold.Status == "" {
+			http.Error(w, "a hold_answered alert names its hold and status", http.StatusBadRequest)
+			return
+		}
+		id, status = a.Hold.ID, a.Hold.Status
+	case HandoffAnswered:
+		if a.Handoff == nil || a.Handoff.ID == "" || a.Handoff.Status == "" {
+			http.Error(w, "a handoff_answered alert names its hand-off and status", http.StatusBadRequest)
+			return
+		}
+		id, status = a.Handoff.ID, a.Handoff.Status
+	default:
 		w.WriteHeader(http.StatusOK) // not ours to act on; don't have it sent again
 		return
 	}
-	if a.Hold == nil || a.Hold.ID == "" || a.Hold.Status == "" {
-		http.Error(w, "a hold_answered alert names its hold and status", http.StatusBadRequest)
-		return
-	}
-	rn, err := run.Answer(ctx, h.Runs, tenant, a.Hold.ID, a.Hold.Status, h.now())
+	rn, err := run.Answer(ctx, h.Runs, tenant, id, status, h.now())
 	switch {
 	case errors.Is(err, run.ErrNotFound) && h.recent(a.DecidedAt):
 		http.Error(w, "no run has paused on this hold yet", http.StatusNotFound)
 		return
 	case errors.Is(err, run.ErrNotFound):
-		h.log().Info("kiffalert: no run paused on the hold", "tenant", tenant, "hold", a.Hold.ID)
+		h.log().Info("kiffalert: no run paused on the hold", "tenant", tenant, "hold", id)
 		w.WriteHeader(http.StatusOK)
 		return
 	case err != nil:
-		h.log().Error("kiffalert: recording the answer", "hold", a.Hold.ID, "err", err)
+		h.log().Error("kiffalert: recording the answer", "hold", id, "err", err)
 		http.Error(w, "try again", http.StatusServiceUnavailable)
 		return
 	}

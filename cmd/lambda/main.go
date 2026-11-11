@@ -240,7 +240,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Own: func(tenant, agent string, version int) []tool.Tool {
 			return []tool.Tool{toolmemory.New(store, tenant, agent, version)}
 		},
-		Drafts:   draftTool(claims),
+		Drafts: draftTool(claims),
+		// A taf hands its owner a step it may never take, with its own key.
+		YourStep: func(key string) tool.Tool { return kiff.NewYourStep(kiffAPI, key, nil) },
 		Planques: planques,
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
 			return planque.New(base, tenant, key, nil).ReadThrough(kiff.New(gateway, key, nil))

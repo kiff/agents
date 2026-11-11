@@ -357,3 +357,25 @@ func TestAnAccountWithNoSecretIsRefused(t *testing.T) {
 		t.Fatalf("%d, want 401", w.Code)
 	}
 }
+
+// A step a taf handed its owner (your_step) pauses its run like a held call,
+// by the hand-off's id: KIFF's handoff_answered records the answer the same
+// way, and one without its hand-off is refused.
+func TestAHandoffAnswerIsRecordedLikeAHold(t *testing.T) {
+	e := setup(t)
+	alert := func(id, status string) string {
+		return fmt.Sprintf(`{"schema_version":"kiff.alert.v1","type":"kiff.handoff.answered","tenant_id":"kiff-acct-1","action":"hand_off",`+
+			`"entity_id":"rae","outcome":"handoff_answered","handoff":{"id":%q,"agent":"rae","status":%q},"decided_at":"2026-11-11T17:00:00Z","event_id":"evt_2"}`, id, status)
+	}
+	body := alert("exc_1", "done")
+	if w := e.post(body, signed(body, e.now)); w.Code != http.StatusOK {
+		t.Fatalf("handoff_answered: %d %s", w.Code, w.Body)
+	}
+	if q := e.stored(t).Requirements[0]; q.Answer != "done" || q.Answered.IsZero() {
+		t.Fatalf("requirement after the hand-off's answer: %+v", q)
+	}
+	body = `{"tenant_id":"kiff-acct-1","outcome":"handoff_answered","decided_at":"2026-11-11T17:00:00Z"}`
+	if w := e.post(body, signed(body, e.now)); w.Code != http.StatusBadRequest {
+		t.Fatalf("a handoff_answered without its hand-off: %d", w.Code)
+	}
+}
