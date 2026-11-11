@@ -357,6 +357,37 @@ run pauses on it as on a held call, by KIFF's hand-off id, and collects
   case's read or another run's. With no such read, or none about a case, KIFF
   settles the step "not checked" after its hour.
 
+## A run that reads page after page, and its cost cap
+
+A taf's run (`CloseInText`) never ends on nothing because it kept reading.
+
+- **Page after page of the same list asks the owner.** `LoopPages` (10) reads
+  in a row of the same read tool, with the same arguments but their cursor
+  (`starting_after`, `cursor`, `page`, `offset`…, `kiff_` arguments, or a
+  value the previous page held as an id), and nothing else between, pause the
+  run on a loop card. The card is a `confirm` (`show.Component`, id
+  `tafs-loop-…`, `loop: {tool, pages}`) that stands in place of the tenth
+  read, whose page isn't kept. Its words are tafs cloud's, in the owner's
+  language, from `loop`.
+  - **Read on** (`tafs_loop_continue`): the run goes on, told to read that page
+    again; after 10 more pages it asks again. It never lifts the cost cap.
+  - **Answer with what's read** (`tafs_loop_summarise`), or **no answer** by
+    the card's wait: one turn with no tool use (`LoopNudge`), from what was
+    read, saying what's left unread. The run ends answered.
+  - Only the answer recorded on the run counts: the person's, through
+    `POST …/cards/{card}/answer`. A tool's result or the model's words never
+    answer it.
+  - Ten different reads, or the same read with other arguments, ask nothing.
+- **At its cost cap, a taf's run still answers.** It holds back its closing
+  turn's cost: a tenth of the cap, or its latest turn's cost when that's more
+  (at most half). It stops its tool calls before a turn that would leave no
+  room for it, then takes one turn with no tool use (`CostNudge`): answer from
+  what was read, say plainly what's left unread, and never give a partial
+  count as the total. The run still ends `cost_cap`, within `MaxCost`.
+
+A run that doesn't close in text has neither: it spends its whole cap and
+stops silently, as before.
+
 ## When a call's outcome comes later
 
 Some writes end elsewhere: a reply to a ticket is answered by the customer,

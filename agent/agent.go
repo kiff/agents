@@ -479,6 +479,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if len(r.Requirements) == 0 && len(r.Paused.Reply.Blocks) == 0 {
 		return a.restart(ctx, rec, history, r, emit)
 	}
+	held, stopReading := loopAnswers(r, held)
 	results, err := merge(r, held)
 	if err != nil {
 		return base, history, err
@@ -574,7 +575,44 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	refused, declined := refusals(r, held)
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}, emit)
+	out := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}
+	if stopReading {
+		// The owner chose to stop reading, or didn't answer: one turn with
+		// no tool use, from what was read.
+		specs := make([]model.ToolSpec, 0, len(a.Tools))
+		for _, t := range a.Tools {
+			specs = append(specs, t.Spec())
+		}
+		out.Stop = Answered
+		return a.closeAtCap(ctx, rec, msgs, specs, out, emit, LoopNudge)
+	}
+	return a.loop(ctx, rec, msgs, out, emit)
+}
+
+// loopAnswers is held with each loop card's result said for the run: LoopRead
+// when the person chose to read on, and a stop otherwise, the card unanswered
+// included (stopReading). Only the answer recorded on the run counts, which
+// only the person gives (run.AnswerCard): never a tool's result or the
+// model's words.
+func loopAnswers(r run.Run, held []ToolResultBody) ([]ToolResultBody, bool) {
+	stop := false
+	out := slices.Clone(held)
+	for i, h := range out {
+		q, ok := requirement(r, h.CallID)
+		if !ok || !q.Card() || !isLoopCard(q.Input) {
+			continue
+		}
+		var answer struct {
+			Answer string `json:"answer"`
+		}
+		if !q.Answered.IsZero() && json.Unmarshal(q.Result, &answer) == nil && answer.Answer == LoopContinue {
+			out[i].Result = tool.Result{Text: LoopRead}
+			continue
+		}
+		out[i].Result = tool.Result{Text: "[tafs] Your owner asked you to stop reading here."}
+		stop = true
+	}
+	return out, stop
 }
 
 // refusals counts the held calls of r whose outcome is in: those the owner
@@ -792,7 +830,8 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		return ""
 	})
-	nudged := false // CloseInText's one more turn, at most once a run
+	nudged := false  // CloseInText's one more turn, at most once a run
+	var listed pages // reads of the same list in a row: LoopPages of them ask the owner
 	for first := true; ; first = false {
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
@@ -874,6 +913,20 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 				}
 			}
 			return out, msgs, err
+		}
+		inputs := make([]json.RawMessage, len(calls))
+		for i, c := range calls {
+			inputs[i] = c.Input
+		}
+		if i, ok := listed.see(byName, results, inputs); ok && a.CloseInText {
+			// Page after page of the same list, in a taf's run: the owner
+			// says whether to read on, on a card in place of this read,
+			// whose page isn't kept (LoopRead asks it again).
+			results[i].Result = loopCard(results[i], fmt.Sprintf("%s%d", LoopCard, out.Turns), LoopPages)
+			if err := rec.Record(session.Component, results[i].Component); err != nil {
+				return out, msgs, err
+			}
+			emit(Event{Kind: Shown, CallID: results[i].CallID, Component: results[i].Component})
 		}
 		for _, r := range results {
 			latest[r.Tool] = outcome(r, "")
@@ -1086,7 +1139,12 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 			// waiting after CardWait.
 			for _, b := range turn.Reply.Blocks {
 				if b.Kind == model.ToolUse && b.CallID == r.CallID {
-					out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: b.Input,
+					// A loop card stands in for a read: the card is what waits.
+					input := b.Input
+					if isLoopCard(r.Component) {
+						input = r.Component
+					}
+					out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: input,
 						Kind: run.KindCard, Expires: a.clock().Add(run.CardWait).UTC()})
 				}
 			}
