@@ -170,3 +170,54 @@ func TestAFixedFilterCountsAsTheSameList(t *testing.T) {
 		t.Fatalf("outcome %+v, %v", out, err)
 	}
 }
+
+// notes is a run's own tool: it saves a note and never reaches a vendor.
+func notes() *fakeTool {
+	return &fakeTool{name: "memory", access: tool.Own, result: tool.Result{Text: "saved"}}
+}
+
+// The incident: a taf's run (no CloseInText) saved a note between pages. Its
+// own tools never reset the count, so the tenth page still asks, and a note
+// read beside a page in the same turn doesn't reset it either.
+func TestPagesWithNotesBetweenStillAsk(t *testing.T) {
+	var replies []model.Reply
+	for i := range agent.LoopPages {
+		page := model.Block{Kind: model.ToolUse, CallID: fmt.Sprintf("c%d", i+1), Tool: "stripe_list", Input: json.RawMessage(fmt.Sprintf(`{"limit":100,"starting_after":"dp_%04d"}`, i))}
+		note := model.Block{Kind: model.ToolUse, CallID: fmt.Sprintf("n%d", i+1), Tool: "memory", Input: json.RawMessage(`{"name":"scratch","text":"cursor"}`)}
+		if i%2 == 0 {
+			replies = append(replies, model.Reply{Blocks: []model.Block{page, note}}) // a page and a note in one turn
+		} else {
+			replies = append(replies, use(note.CallID, "memory", string(note.Input)), model.Reply{Blocks: []model.Block{page}}) // a note, then a page
+		}
+	}
+	m := &script{replies: append(replies, say("Waiting for you."))}
+	a := newAgent(m, listTool(), notes())
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	if err != nil || out.Stop != agent.Paused || len(out.Requirements) != 1 || out.Requirements[0].CallID != fmt.Sprintf("c%d", agent.LoopPages) {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+}
+
+// A taf's run (no CloseInText) that reaches its cost cap on its tool results
+// ends with the closing answer, within its cap; one that ends quietly on its
+// tool results, under its caps, still says nothing (no CloseNudge).
+func TestATafsRunAnswersAtItsCostCapAndAQuietRunStaysQuiet(t *testing.T) {
+	m := &script{replies: []model.Reply{use("c1", "stripe_list", `{}`), use("c2", "stripe_list", `{"starting_after":"dp_0042"}`),
+		say("Read 200 disputes; more remain unread."), use("c3", "stripe_list", `{}`)}}
+	a := newAgent(m, listTool())
+	a.MaxCost = 3000 // two turns with tools, one held back to close
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), a, r, nil, "List the open disputes.", nil)
+	if err != nil || out.Stop != agent.CostCap || out.Text != "Read 200 disputes; more remain unread." || out.Cost > a.MaxCost || !m.reqs[len(m.reqs)-1].NoToolUse {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+
+	silent := model.Reply{Blocks: []model.Block{{Kind: model.Thinking, Text: "Nothing new.", Signature: "sig"}}}
+	m = &script{replies: []model.Reply{use("c1", "stripe_list", `{}`), silent}}
+	a = newAgent(m, listTool())
+	_, r = start(t, session.KindRun)
+	if out, _, err = agent.Run(context.Background(), a, r, nil, "Check for new disputes.", nil); err != nil || out.Text != "" || len(m.reqs) != 2 {
+		t.Fatalf("a quiet run: text %q, %d turns, %v", out.Text, len(m.reqs), err)
+	}
+}
