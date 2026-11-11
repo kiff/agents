@@ -152,6 +152,8 @@ schedule and due time, so a repeated delivery replaces it.
 | `skipped_switching` | its agent was switching versions: no run, nothing used up, so a check's cursor stays and the next firing hands the same items to the new version; `failing` stays as it was |
 | `failed_check` | its check couldn't read the app: no run, a check's cursor stays, and it counts toward `failing` |
 | `skipped_credits` | the account's tafs wait for credits (runs.md): no run, and what it was handed waits, as a check's cursor stays, for the next firing that runs; `failing` stays as it was, and `waited` says why |
+| `skipped_slowed` | its schedule keeps failing (below): it fires at half its rate, so this one starts nothing, hands nothing, and isn't a failure |
+| `skipped_ceiling` | its agent's scheduled runs reached the day's ceiling (below): no run, nothing handed, a check's cursor stays, and it isn't a failure |
 
 A `failed_check` also logs one line at the source, so why a check fails can be
 read from the service's logs: `{"msg": "check_failed", "agent", "tool",
@@ -199,6 +201,39 @@ and its turns may be behind what it did, so it never counts.
 A repeated delivery of a firing whose run did nothing does nothing either,
 says the same, and counts once in `failing`, and so does a late delivery of an
 older firing that comes after a newer one was counted.
+
+## A schedule that keeps failing slows down, then pauses
+
+Nothing keeps spending on work that can't succeed:
+- **from 3 failures in a row** (`failing.firings`: runs that did nothing, checks
+  that couldn't read, check runs that didn't finish), a firing runs only once at
+  least twice its step, and at least an hour, has passed since the last failure.
+  The others are `skipped_slowed`: no run, nothing handed, and not counted. A
+  schedule every 15 minutes runs hourly; a daily one, every other day;
+- **at 6, it switches itself off:** `enabled` is false and `failing.paused` is
+  true, so tafs can say it was the failures, not the owner;
+- **one run that works** ends `failing`, at the full rate again, and so does
+  **switching it on again**, by an update or by `POST /schedules/{id}/enable`
+  (the service clears it on any off-to-on switch), so a resumed schedule starts
+  clean.
+
+Quiet firings, credit waits, halts and switches are never failures, so they
+never slow it. A once schedule (an agent's follow-up) fires once anyway and is
+never slowed or paused by it. Each step logs one line at the source:
+`{"msg": "schedule_slowed" | "schedule_paused", "agent", "schedule", "failing"}`.
+
+## A daily ceiling on an agent's scheduled runs
+
+An agent's scheduled runs in a day (in the schedule's time zone) stop at its
+ceiling: the firings its schedules that are on have due that day, plus 8 for the
+follow-ups it sets itself, never above 96 (a run every 15 minutes). The runs
+counted are its schedules' `run` firings that day, from their history. Past it,
+a firing is `skipped_ceiling` and starts nothing until the next day, so a check
+that hands everything, or follow-ups that keep coming, can't wake it without
+end. The first stop of a day is said once: the schedule's `ceiling: {day, runs}`
+(kept by the service; a body's is ignored) and one log line, `{"msg":
+"run_ceiling", "agent", "schedule", "runs", "ceiling"}`. A schedule fired by hand
+(its trigger route) isn't stopped.
 
 ## A check's run that doesn't finish
 

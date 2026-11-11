@@ -1763,9 +1763,17 @@ func TestACheckThatCouldntReadIsKeptAsFailing(t *testing.T) {
 	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing == nil || got.Failing.Firings != 3 {
 		t.Fatalf("failing %+v", got.Failing)
 	}
-	// The read works and its run works: the failing ends.
+	// Three in a row: it's slowed, so the next firing, 15 minutes on, is
+	// skipped, and the one an hour after the last failure runs.
 	result = `{"data":[{"id":"m1","created":110}]}`
 	if err := f.sv.Fire(ctx, "t1", "inbox", at(45)); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := f.history.Firings(ctx, "t1", "inbox", 1); len(h) != 1 || h[0].Outcome != schedule.FiredSlowed {
+		t.Fatalf("history %+v", h)
+	}
+	// The read works and its run works: the failing ends.
+	if err := f.sv.Fire(ctx, "t1", "inbox", at(90)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.store.Get(ctx, "t1", "inbox"); got.Failing != nil || got.AppCheck.Last != "110" {
