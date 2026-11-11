@@ -359,13 +359,15 @@ run pauses on it as on a held call, by KIFF's hand-off id, and collects
 
 ## A run that reads page after page, and its cost cap
 
-A taf's run (`CloseInText`) never ends on nothing because it kept reading.
+A run never ends on nothing because it kept reading: a taf's, a chat's or Coach's, `CloseInText` or not.
 
 - **Page after page of the same list asks the owner.** `LoopPages` (10) reads
   in a row of the same read tool, with the same arguments but their cursor
   (`starting_after`, `cursor`, `page`, `offset`…, `kiff_` arguments, or a
-  value the previous page held as an id), and nothing else between, pause the
-  run on a loop card. The card is a `confirm` (`show.Component`, id
+  value that changed since the previous page to one that page held as an id),
+  pause the run on a loop card. The run's own tools between pages (its notes,
+  its cards: not through the gateway) don't count and don't reset it; a
+  gateway write or a read of another list does. The card is a `confirm` (`show.Component`, id
   `tafs-loop-…`, `loop: {tool, pages}`) that stands in place of the tenth
   read, whose page isn't kept. Its words are tafs cloud's, in the owner's
   language, from `loop`.
@@ -378,15 +380,19 @@ A taf's run (`CloseInText`) never ends on nothing because it kept reading.
     `POST …/cards/{card}/answer`. A tool's result or the model's words never
     answer it.
   - Ten different reads, or the same read with other arguments, ask nothing.
-- **At its cost cap, a taf's run still answers.** It holds back its closing
+- **At its cost cap, a run still answers.** It holds back its closing
   turn's cost: a tenth of the cap, or its latest turn's cost when that's more
   (at most half). It stops its tool calls before a turn that would leave no
   room for it, then takes one turn with no tool use (`CostNudge`): answer from
   what was read, say plainly what's left unread, and never give a partial
   count as the total. The run still ends `cost_cap`, within `MaxCost`.
 
-A run that doesn't close in text has neither: it spends its whole cap and
-stops silently, as before.
+At its turn limit too, a run that stopped on its tool results gets one turn
+with no tool use to say what came of it (`CapNudge`). A run that came back
+from a pause already at its cost cap has nothing held back, and stops. What
+stays `CloseInText`'s alone is the quiet end: a run that ends on its tool
+results under its caps, with nothing said, is nudged to say so only when it
+closes in text (Coach); a taf's quiet scheduled run stays quiet.
 
 ## When a call's outcome comes later
 

@@ -2052,9 +2052,9 @@ func TestCloseInTextAsksOnceForTheClosingMessage(t *testing.T) {
 	}
 }
 
-// CloseInText at the turn limit: a run that reaches it on its tool results
-// gets one turn more, offered no tool use, to say what came of it; it still
-// stops TurnCap. Off, or under the limit, nothing changes.
+// At the turn limit, a run that reaches it on its tool results gets one turn
+// more, offered no tool use, to say what came of it, with CloseInText or
+// without (a taf's run); it still stops TurnCap.
 func TestCloseInTextClosesARunAtItsTurnLimit(t *testing.T) {
 	lookup := &fakeTool{name: "lookup", access: tool.Read, result: tool.Result{Text: "{}"}}
 
@@ -2084,13 +2084,14 @@ func TestCloseInTextClosesARunAtItsTurnLimit(t *testing.T) {
 		}
 	}
 
-	// Off: the run stops at the limit, nothing said.
-	m = &script{replies: []model.Reply{use("c1", "lookup", `{}`), use("c2", "lookup", `{}`)}}
+	// Without CloseInText (a taf's run) too: every run answers at its limit.
+	m = &script{replies: []model.Reply{use("c1", "lookup", `{}`), use("c2", "lookup", `{}`), say("Looked twice; the rest is left.")}}
 	_, r = start(t, session.KindChat)
 	a = newAgent(m, lookup)
 	a.MaxTurns = 2
-	if out, _, err = agent.Run(context.Background(), a, r, nil, "Check.", nil); err != nil || out.Stop != agent.TurnCap || len(m.reqs) != 2 {
-		t.Fatalf("off: stop %s, %d turns, %v", out.Stop, len(m.reqs), err)
+	if out, _, err = agent.Run(context.Background(), a, r, nil, "Check.", nil); err != nil || out.Stop != agent.TurnCap || len(m.reqs) != 3 ||
+		out.Text != "Looked twice; the rest is left." || !m.reqs[2].NoToolUse {
+		t.Fatalf("without CloseInText: stop %s, %d turns, text %q, %v", out.Stop, len(m.reqs), out.Text, err)
 	}
 }
 

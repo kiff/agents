@@ -84,6 +84,11 @@ func (p *pages) see(byName map[string]tool.Tool, calls []ToolResultBody, inputs 
 	at := -1
 	for i, r := range calls {
 		t := byName[r.Tool]
+		if t != nil && !t.Gateway() {
+			// The run's own tools (its notes, its cards) never reach a
+			// vendor: a note saved between pages is still the same list.
+			continue
+		}
 		if t == nil || t.Access() != tool.Read || acts(t, inputs[i]) {
 			*p = pages{}
 			continue

@@ -75,7 +75,8 @@ func TestServerToolPairsSurviveAPauseAndAContinue(t *testing.T) {
 			}
 			var replies []model.Reply
 			for i := range turns {
-				replies = append(replies, search(fmt.Sprintf("srvtoolu_%d", i), fmt.Sprintf("r%d", i), "stripe_get", `{"charge":"ch_1"}`))
+				// A different charge each turn: the same read over and over would be a list read page after page.
+				replies = append(replies, search(fmt.Sprintf("srvtoolu_%d", i), fmt.Sprintf("r%d", i), "stripe_get", fmt.Sprintf(`{"charge":"ch_%04d"}`, i)))
 			}
 			replies = append(replies, search("srvtoolu_last", "c2", "stripe_refund", `{"charge":"ch_big"}`), say("Waiting."), say("Refunded."))
 			m := &script{replies: replies}
