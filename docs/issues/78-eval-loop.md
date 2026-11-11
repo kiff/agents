@@ -126,7 +126,7 @@ eval -run -public -definitions defs -seed -repeat 3 -baseline eval/baseline.json
 The repository is public, so its Actions log and its artifacts are too. Any
 signed-in GitHub user can download a public repository's artifacts. So:
 
-- **`-public`** prints each run's score, cost and failed checks' *names*.
+- **`-public`** prints each run's score and failed checks' *names*. No cost: a run's AI cost stays in the private report.
   It shows no session, no check's why (the judge's prose can quote the run's
   ids and amounts), no hold's exception, and nothing on stdout. An error
   keeps its words, with anything shaped like an id (`dp_…`, `exc_…`) hidden.

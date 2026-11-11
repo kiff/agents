@@ -13,7 +13,7 @@ run-name: ${{ (inputs.model != '' || inputs.effort != '') && format('Eval, overr
 # are advice, reported and never failing the run (the owner, 6 Nov 2026).
 #
 # This log is public, and so are a public repository's artifacts. So the eval
-# prints only each run's score, cost and failed checks' names (-public), and
+# prints only each run's score and failed checks' names (-public), and
 # the full report (each check's why, the runs' ids) goes to a private bucket,
 # written by a role that may only put reports there (infra/aws.sh). The log
 # names only the report's key.
