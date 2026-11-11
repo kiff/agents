@@ -617,7 +617,9 @@ func TestACaseRunsAsTafsDefinesIt(t *testing.T) {
 		first.System != "You handle refund requests. The kiff skill: …" {
 		t.Fatalf("asked %+v", first)
 	}
-	if len(m.asked) != 1 { // the definition's one turn: the server would stop it there too
+	// The definition's one turn, then its closing turn with no tool use: the
+	// server stops it there too, and every run answers at its turn limit.
+	if len(m.asked) != 2 || !m.asked[1].NoToolUse {
 		t.Fatalf("%d model turns with max_turns 1", len(m.asked))
 	}
 
