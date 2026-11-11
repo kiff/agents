@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -524,8 +525,12 @@ type Service struct {
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
 	// Probe makes a check's read through the agent's own Card, without the
 	// model, and returns its result. Without it, a schedule with a check
-	// starts nothing and is kept as skipped.
+	// starts nothing and is kept as skipped. An error that is a *CheckError
+	// says why in its Reason; any other is a failed read.
 	Probe func(ctx context.Context, tenant, agent string, c Check) (string, error)
+	// Log, when set, gets one line for each check that couldn't be used
+	// ("check_failed": the agent, the check's tool and a CheckReason).
+	Log *slog.Logger
 	// Version, when set, is the agent's live version: a follow-up set under
 	// another starts nothing, and is dropped.
 	Version func(ctx context.Context, tenant, agent string) (int, error)
@@ -1038,6 +1043,15 @@ func (sv *Service) unworked(ctx context.Context, s Schedule, f Firing, now time.
 // firing reads the same items again. The read's error is answered too, so the
 // invocation logs it.
 func (sv *Service) checkFailed(ctx context.Context, s Schedule, f Firing, now time.Time, read error) error {
+	// Why, at the source, in one line: the agent, the check's tool and a fixed reason. Never the read's
+	// text, the vendor's words, its ids or the tenant.
+	if sv.Log != nil {
+		tool := ""
+		if s.AppCheck != nil {
+			tool = s.AppCheck.Tool
+		}
+		sv.Log.InfoContext(ctx, "check_failed", "agent", s.Agent, "tool", tool, "reason", string(reasonOf(read)))
+	}
 	if err := sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredCheckFailed}); err != nil {
 		return errors.Join(read, err)
 	}

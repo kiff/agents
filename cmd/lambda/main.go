@@ -260,6 +260,8 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	scheduleStore := dynamodb.NewSchedules(db, table)
 	schedules := &schedule.Service{
 		Store: scheduleStore,
+		// A check that couldn't be used says why, in one line (schedule.CheckReason).
+		Log: log,
 		// Each firing is kept in its schedule's history: run, or skipped as
 		// missed or busy (schedule.Schedule's rules).
 		History: scheduleStore,

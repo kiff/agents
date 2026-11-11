@@ -560,7 +560,7 @@ func probe(ctx context.Context, b *registry.Builder, tenant, agent string, c sch
 			continue
 		}
 		if t.Access() != tool.Read || !t.Gateway() {
-			return "", fmt.Errorf("lambda: the check's tool %s isn't a read through the gateway", c.Tool)
+			return "", &schedule.CheckError{Reason: schedule.ReasonNotARead, Err: fmt.Errorf("lambda: the check's tool %s isn't a read through the gateway", c.Tool)}
 		}
 		in := c.Arguments
 		if len(in) == 0 {
@@ -571,9 +571,9 @@ func probe(ctx context.Context, b *registry.Builder, tenant, agent string, c sch
 			return "", err
 		}
 		if res.IsError || res.State != "" {
-			return "", fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, res.State)
+			return "", &schedule.CheckError{Reason: schedule.ReasonReadNotMade, Err: fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, res.State)}
 		}
 		return res.Text, nil
 	}
-	return "", fmt.Errorf("lambda: the agent has no tool %s to check with", c.Tool)
+	return "", &schedule.CheckError{Reason: schedule.ReasonNoTool, Err: fmt.Errorf("lambda: the agent has no tool %s to check with", c.Tool)}
 }
