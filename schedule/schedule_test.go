@@ -1,10 +1,12 @@
 package schedule_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -1923,6 +1925,54 @@ func TestARunStartedByHandThatDidNothingHandsItsItemsAgain(t *testing.T) {
 		after, _ := f.store.Get(ctx, "t1", "inbox")
 		if wantHanded := !tc.done; (after.AppCheck.Handed != nil) != wantHanded {
 			t.Fatalf("%s: handed kept %+v", tc.name, after.AppCheck.Handed)
+		}
+	}
+}
+
+// A check that couldn't be used says why at the source, in one line: the
+// agent, the check's tool and a fixed reason. Never the read's text, the
+// vendor's words or the tenant.
+func TestACheckThatCouldntBeUsedLogsItsReason(t *testing.T) {
+	cases := []struct {
+		read   error
+		result string
+		want   schedule.CheckReason
+	}{
+		{&schedule.CheckError{Reason: schedule.ReasonReadNotMade, Err: errors.New("lambda: the check's read gmail__list wasn't made: unauthorized for ana@example.com")}, "", schedule.ReasonReadNotMade},
+		{&schedule.CheckError{Reason: schedule.ReasonNoTool, Err: errors.New("lambda: the agent has no tool gmail__list to check with")}, "", schedule.ReasonNoTool},
+		{errors.New("gateway: connection reset by acct_1Secret"), "", schedule.ReasonReadFailed},
+		{nil, `<html>Order 1042</html>`, schedule.ReasonNotJSON},
+		{nil, `{"other":[]}`, schedule.ReasonNotAList},
+		{nil, `[1,2]`, schedule.ReasonNoCursor},
+		{nil, `{"data":"Order 1042 for ana@example.com"}`, schedule.ReasonNotAList},
+		{nil, `{"data":[{"id":"cus_9"}]}`, schedule.ReasonNoCursor},
+	}
+	for i, c := range cases {
+		f := newFixture()
+		var out bytes.Buffer
+		f.sv.Log = slog.New(slog.NewJSONHandler(&out, nil))
+		s := scheduletest.Schedule("t1", "inbox")
+		s.Cron = "*/15 * * * *"
+		s.AppCheck = &schedule.Check{Tool: "gmail__list", Items: "data", Cursor: "created", Last: "100"}
+		if c.result == "[1,2]" {
+			s.AppCheck.Items = ""
+		}
+		if err := f.store.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return c.result, c.read }
+		if err := f.sv.Fire(ctx, "t1", "inbox", time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC)); err == nil {
+			t.Fatalf("%d: fire = nil, want the check's error", i)
+		}
+		var line map[string]any
+		if err := json.Unmarshal(out.Bytes(), &line); err != nil {
+			t.Fatalf("%d: log %q: %v", i, out.String(), err)
+		}
+		if line["msg"] != "check_failed" || line["agent"] != s.Agent || line["tool"] != "gmail__list" || line["reason"] != string(c.want) || len(line) != 6 {
+			t.Fatalf("%d: line %v, want reason %s", i, line, c.want)
+		}
+		if raw := out.String(); strings.Contains(raw, "example.com") || strings.Contains(raw, "acct_") || strings.Contains(raw, "Order") || strings.Contains(raw, "t1") || strings.Contains(raw, "cus_") {
+			t.Fatalf("%d: the line carries the vendor's words or the tenant: %s", i, raw)
 		}
 	}
 }

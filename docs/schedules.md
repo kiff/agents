@@ -153,6 +153,17 @@ schedule and due time, so a repeated delivery replaces it.
 | `failed_check` | its check couldn't read the app: no run, a check's cursor stays, and it counts toward `failing` |
 | `skipped_credits` | the account's tafs wait for credits (runs.md): no run, and what it was handed waits, as a check's cursor stays, for the next firing that runs; `failing` stays as it was, and `waited` says why |
 
+A `failed_check` also logs one line at the source, so why a check fails can be
+read from the service's logs: `{"msg": "check_failed", "agent", "tool",
+"reason"}`. `reason` is a fixed word:
+- `read_failed`: the read's call failed;
+- `read_not_made`: KIFF didn't let the read through, or the tool answered with an error;
+- `not_a_read`: the check's tool isn't a read through the gateway;
+- `no_tool`: the agent has no tool by that name;
+- `not_json`, `no_items_path`, `not_a_list`, `no_cursor_field`: the answer came back unusable.
+
+The line never carries the read's text, the vendor's words or ids, or the tenant.
+
 A schedule keeps its last firing that waited for credits, kept by the service
 and shown on every read: `waited: {due, why}`, why being KIFF's code
 (`credits_used_up`, `limit_reached` or `no_plan`). A run that starts unsets it,

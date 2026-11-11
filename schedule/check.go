@@ -161,25 +161,65 @@ func (c Check) check() error {
 // too large for any run's input is counted in tooLarge, said in the
 // firing's outcome, and not read again. With no Last yet, nothing is new and
 // the cursor is taken.
+// CheckReason is why a check's read couldn't be used, as its log line says it: a fixed word, never the
+// read's text or the vendor's own words.
+type CheckReason string
+
+const (
+	// ReasonReadFailed: the read's call failed (the gateway or the vendor didn't answer).
+	ReasonReadFailed CheckReason = "read_failed"
+	// ReasonReadNotMade: KIFF didn't let the read through, or the tool answered with an error.
+	ReasonReadNotMade CheckReason = "read_not_made"
+	// ReasonNotARead: the check's tool isn't a read through the gateway.
+	ReasonNotARead CheckReason = "not_a_read"
+	// ReasonNoTool: the agent has no tool by the check's name.
+	ReasonNoTool CheckReason = "no_tool"
+	// ReasonNotJSON, ReasonNoItems, ReasonNotAList, ReasonNoCursor: the read came back, but its answer
+	// isn't JSON, lacks the items' path, has no list there, or its items lack the cursor field.
+	ReasonNotJSON  CheckReason = "not_json"
+	ReasonNoItems  CheckReason = "no_items_path"
+	ReasonNotAList CheckReason = "not_a_list"
+	ReasonNoCursor CheckReason = "no_cursor_field"
+)
+
+// CheckError is a check that couldn't be used, with its reason. Its message is the one the firing
+// reports.
+type CheckError struct {
+	Reason CheckReason
+	Err    error
+}
+
+func (e *CheckError) Error() string { return e.Err.Error() }
+func (e *CheckError) Unwrap() error { return e.Err }
+
+// reasonOf is why err stopped a check: its CheckReason when it carries one, else a failed read.
+func reasonOf(err error) CheckReason {
+	var ce *CheckError
+	if errors.As(err, &ce) {
+		return ce.Reason
+	}
+	return ReasonReadFailed
+}
+
 func (c Check) batch(input, result string) (runInput string, next Check, n, tooLarge int, err error) {
 	next = c
 	var root any
 	if err := json.Unmarshal([]byte(result), &root); err != nil {
-		return "", c, 0, 0, fmt.Errorf("schedule: the check's read isn't JSON: %w", err)
+		return "", c, 0, 0, &CheckError{ReasonNotJSON, fmt.Errorf("schedule: the check's read isn't JSON: %w", err)}
 	}
 	list := root
 	if c.Items != "" {
 		for _, k := range strings.Split(c.Items, ".") {
 			m, ok := list.(map[string]any)
 			if !ok {
-				return "", c, 0, 0, fmt.Errorf("schedule: the check's read has no %q", c.Items)
+				return "", c, 0, 0, &CheckError{ReasonNoItems, fmt.Errorf("schedule: the check's read has no %q", c.Items)}
 			}
 			list = m[k]
 		}
 	}
 	arr, ok := list.([]any)
 	if !ok {
-		return "", c, 0, 0, fmt.Errorf("schedule: the check's read has no list at %q", c.Items)
+		return "", c, 0, 0, &CheckError{ReasonNotAList, fmt.Errorf("schedule: the check's read has no list at %q", c.Items)}
 	}
 	type item struct {
 		cur, digest string
@@ -224,7 +264,7 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 	// see one as new and would stay quiet for good. It fails instead, so
 	// the schedule's failing count says so.
 	if len(arr) > 0 && carried == 0 {
-		return "", c, 0, 0, fmt.Errorf("schedule: the check's items have no %q field", c.Cursor)
+		return "", c, 0, 0, &CheckError{ReasonNoCursor, fmt.Errorf("schedule: the check's items have no %q field", c.Cursor)}
 	}
 	if taking {
 		return "", next, 0, 0, nil
