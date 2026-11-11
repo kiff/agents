@@ -21,10 +21,11 @@ import (
 // fakeHandoffs is KIFF's /v1/me/handoffs: one hand-off per operation, whose
 // status the test sets.
 type fakeHandoffs struct {
-	mu     sync.Mutex
-	status string
-	got    []map[string]string
-	code   int
+	mu      sync.Mutex
+	status  string
+	got     []map[string]string
+	code    int
+	already bool
 }
 
 func (f *fakeHandoffs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +45,7 @@ func (f *fakeHandoffs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": "ho_1", "status": f.status, "link_host": "app.example.com",
-		"expires_at": "2026-11-18T17:00:00Z"})
+		"expires_at": "2026-11-18T17:00:00Z", "already_waiting": f.already})
 }
 
 func inRun(callID string) context.Context {
@@ -118,5 +119,17 @@ func TestYourStepRefusedAndOutsideARun(t *testing.T) {
 	down := kiff.NewYourStep("http://127.0.0.1:1", "kiff_agent_secret", nil)
 	if _, err := down.Call(inRun("call_3"), stepInput); err == nil || strings.Contains(err.Error(), "kiff_agent_secret") {
 		t.Errorf("unreachable KIFF: %v", err)
+	}
+}
+
+// A step an earlier run handed over and that still waits doesn't pause this
+// run: it's told the step is already with the owner.
+func TestYourStepAlreadyWaitingDoesntPause(t *testing.T) {
+	f := &fakeHandoffs{status: "waiting", already: true}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	res, err := kiff.NewYourStep(srv.URL, "kiff_agent_secret", nil).Call(inRun("call_9"), stepInput)
+	if err != nil || res.Held() || res.Hold != nil || res.IsError || !strings.Contains(res.Text, "already with your owner") {
+		t.Fatalf("already waiting = %+v, %v", res, err)
 	}
 }

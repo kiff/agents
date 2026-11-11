@@ -73,6 +73,9 @@ type handoff struct {
 	Status    string    `json:"status"`
 	LinkHost  string    `json:"link_host"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// AlreadyWaiting: an earlier call (a run before this one, which found
+	// the same work) handed this step over, and it still waits.
+	AlreadyWaiting bool `json:"already_waiting"`
 }
 
 // Call raises the hand-off with the call's operation ID: the same each time
@@ -162,6 +165,10 @@ func (t *YourStep) raise(ctx context.Context, input json.RawMessage, op string) 
 func yourStepResult(h handoff, op string) tool.Result {
 	switch h.Status {
 	case "waiting":
+		if h.AlreadyWaiting {
+			// Another run handed it over and waits on it: this run doesn't.
+			return tool.Result{Text: "This step is already with your owner as \"Your step\", handed over by an earlier run. Don't hand it over again: leave it to them, and say so."}
+		}
 		return tool.Result{State: tool.StateHeld, Hold: &tool.Hold{Operation: op, Exception: h.ID, Expires: h.ExpiresAt},
 			Text: "Handed to your owner as \"Your step\". Your run waits for their answer."}
 	case "done":
