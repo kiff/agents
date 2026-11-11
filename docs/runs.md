@@ -301,6 +301,14 @@ were named in), each as `# Skill: <name>`; one added mid-conversation is
 read before the next model turn (`Agent.Reload`) and appended, never
 inserted, so the cached prefix holds. No tool's answer ever carries one.
 
+A run keeps the first skill it took up beyond what its session held when it
+started, by name, as `first_skill` on its head: one added to the session
+mid-run, or one the agent read with `read_skill` and found. It's set once,
+with the run's next save, and empty for a run that took up none. It counts a
+run's cost by the kind of work it did (a new job, a change, a question). It
+changes nothing the model reads, the API's run view doesn't show it, and
+nothing logs it.
+
 ## When KIFF holds a call
 
 ```go
