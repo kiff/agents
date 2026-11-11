@@ -923,15 +923,23 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		for i, c := range calls {
 			inputs[i] = c.Input
 		}
+		stopReading := false
 		if i, ok := listed.see(byName, results, inputs); ok {
-			// Page after page of the same list: the owner says whether to
-			// read on, on a card in place of this read, whose page isn't
-			// kept (LoopRead asks it again).
-			results[i].Result = loopCard(results[i], fmt.Sprintf("%s%d", LoopCard, out.Turns), LoopPages)
-			if err := rec.Record(session.Component, results[i].Component); err != nil {
-				return out, msgs, err
+			if attended(ctx) {
+				// Page after page of the same list: the owner says whether to
+				// read on, on a card in place of this read, whose page isn't
+				// kept (LoopRead asks it again).
+				results[i].Result = loopCard(results[i], fmt.Sprintf("%s%d", LoopCard, out.Turns), LoopPages)
+				if err := rec.Record(session.Component, results[i].Component); err != nil {
+					return out, msgs, err
+				}
+				emit(Event{Kind: Shown, CallID: results[i].CallID, Component: results[i].Component})
+			} else {
+				// No person behind the run (a schedule, a door) to answer a
+				// card: it keeps this page and answers from what it read,
+				// as when the owner chooses to stop.
+				stopReading = true
 			}
-			emit(Event{Kind: Shown, CallID: results[i].CallID, Component: results[i].Component})
 		}
 		for _, r := range results {
 			latest[r.Tool] = outcome(r, "")
@@ -992,7 +1000,19 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		msgs = append(msgs, model.Message{Role: model.User, Blocks: blocks})
 		msgs = clearRead(msgs, ClearAfter, func(name string) bool { return shows(byName[name]) })
+		if stopReading {
+			out.Stop = Answered
+			return a.closeAtCap(ctx, rec, msgs, specs, out, emit, LoopEndNudge)
+		}
 	}
+}
+
+// attended reports whether a person is behind the run, one who can answer
+// its cards: a member of the account asked for it (run.ByMember). A
+// scheduled run, a door's, or one with no requester has none.
+func attended(ctx context.Context) bool {
+	q, ok := run.RequesterFrom(ctx)
+	return ok && q.Kind == run.ByMember
 }
 
 // ClearAfter is how many bytes of tool results the model has already read

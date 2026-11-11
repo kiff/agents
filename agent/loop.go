@@ -29,6 +29,12 @@ const (
 // stop reading: one turn more, with no tool, to answer from what it read.
 const LoopNudge = "[tafs] Your owner asked you to stop reading and answer now, from what you have read. Write your message as text, with no tool call, and say plainly what is left unread. A count of what you read is never the total: say how many you read, and that more remain."
 
+// LoopEndNudge is what a run with no person behind it (a schedule's, a
+// door's) is told at its LoopPages-th page of the same list: no one can be
+// asked whether to read on, so one turn more, with no tool, to answer from
+// what it read.
+const LoopEndNudge = "[tafs] You have read 10 pages of the same list in a row, and no one is here to ask whether to read on. Stop reading and answer now, from what you have read. Write your message as text, with no tool call, and say plainly what is left unread. A count of what you read is never the total: say how many you read, and that more remain."
+
 // LoopRead is the result a loop card's call gets when the owner chose to read
 // on: the page that call read wasn't kept, so the run reads it again.
 const LoopRead = "[tafs] Your owner chose to read on. The page this call read wasn't kept: read it again, then go on. After 10 more pages you'll be asked again."

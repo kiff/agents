@@ -326,7 +326,7 @@ func TestACapNeverSkipsAPause(t *testing.T) {
 // the run as it would be stored, and its session.
 func paused(t *testing.T, store *memory.Store, rec *session.Recorder, a agent.Agent) (run.Run, session.Session) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := member()
 	s, err := rec.Open(ctx, "t1", "rae", session.KindRun)
 	if err != nil {
 		t.Fatal(err)
@@ -2478,4 +2478,10 @@ func TestCloseInTextAnswersAtTheCostCapWithinIt(t *testing.T) {
 	if out, _, err = agent.Run(context.Background(), a, r, nil, "List them.", nil); err != nil || out.Stop != agent.CostCap || len(m.reqs) != 2 || out.Cost > a.MaxCost {
 		t.Fatalf("a dear turn: stop %s, %d turns, cost %d, %v", out.Stop, len(m.reqs), out.Cost, err)
 	}
+}
+
+// member is a run's context with a person behind it: a member of the
+// account asked for it, so its cards can be answered.
+func member() context.Context {
+	return run.WithRequester(context.Background(), run.Requester{Kind: run.ByMember, ID: "user_ana"})
 }
