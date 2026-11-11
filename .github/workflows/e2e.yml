@@ -45,8 +45,9 @@ jobs:
       # Whether step 9's people are signed in: a step's if can't read secrets.
       HAS_PEOPLE: ${{ secrets.E2E_MARIA_SESSION != '' && secrets.E2E_LUIS_SESSION != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Unchanged since the last pass?
         # A scheduled night measures nothing new when the latest completed
@@ -72,11 +73,11 @@ jobs:
             echo "skipped: unchanged since run $id (${sha:0:12})"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: steps.unchanged.outputs.skip != 'true'
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.unchanged.outputs.skip != 'true'
         with:
           node-version: 22
@@ -163,7 +164,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
         run: go run ./cmd/e2e -sweep
       # The role assumes only from main (infra/aws.sh).
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         if: steps.unchanged.outputs.skip != 'true' && (always() && github.ref == 'refs/heads/main')
         with:
           role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
