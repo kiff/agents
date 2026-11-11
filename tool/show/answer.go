@@ -28,6 +28,10 @@ type Outcome struct {
 	TafID   string `json:"taf_id,omitempty"`
 	Version int    `json:"version,omitempty"`
 	Failed  string `json:"failed,omitempty"`
+	// Check, beside TafID, is why the new taf's first check couldn't read
+	// its work: the taf is set up, but it finds no work until its check is
+	// fixed. Said in the same answer, so the run never calls the taf working.
+	Check string `json:"check,omitempty"`
 }
 
 // MaxOwn bounds the owner's own words in an answer.
@@ -64,7 +68,8 @@ type QuestionAnswer struct {
 //     their own signature), or "failed: <why>" (the phone's approval didn't
 //     go through);
 //   - sign_in: "signed in", "not now", or "failed: <why>";
-//   - result: an Outcome, {"taf_id": …} | {"version": n} | {"failed": "<why>"};
+//   - result: an Outcome, {"taf_id": …, "check"?: "<why its first check couldn't read>"} | {"version": n} |
+//     {"failed": "<why>"};
 //   - drive: "approved: the drive is on" (the person approved it with the
 //     approval key, which tafs cloud checked before answering) or "declined".
 func Answer(c Component, answer json.RawMessage) (Answered, error) {
@@ -140,7 +145,7 @@ func answerResult(c Component, answer json.RawMessage) (Answered, error) {
 	dec := json.NewDecoder(bytes.NewReader(answer))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&o); err != nil {
-		return Answered{}, errors.New(`a result's answer is {"taf_id": "…"}, {"version": n} or {"failed": "<why>"}`)
+		return Answered{}, errors.New(`a result's answer is {"taf_id": "…"} (with "check": "<why>" when its first check couldn't read), {"version": n} or {"failed": "<why>"}`)
 	}
 	set := 0
 	for _, b := range []bool{o.TafID != "", o.Version != 0, o.Failed != ""} {
@@ -148,15 +153,23 @@ func answerResult(c Component, answer json.RawMessage) (Answered, error) {
 			set++
 		}
 	}
+	check := strings.TrimSpace(o.Check)
 	switch {
 	case set != 1:
 		return Answered{}, errors.New(`a result's answer sets exactly one of taf_id, version and failed`)
+	case o.Check != "" && o.TafID == "":
+		return Answered{}, errors.New("check goes only with taf_id: why a new taf's first check couldn't read")
+	case o.Check != "" && (check == "" || utf8.RuneCountInString(check) > MaxOwn):
+		return Answered{}, errors.New("check says why, at most 2000 characters")
 	case o.TafID != "":
 		if c.Taf.Improves != "" {
 			return Answered{}, errors.New("this result improves a taf: its answer is {version} or {failed}")
 		}
 		if !refPattern.MatchString(o.TafID) {
 			return Answered{}, errors.New("taf_id is the new taf's tafs id")
+		}
+		if check != "" {
+			return Answered{Answer: answer, Words: c.Taf.Name + " is set up, but its first check couldn't read its work: " + check}, nil
 		}
 		return Answered{Answer: answer, Words: c.Taf.Name + " is set up"}, nil
 	case o.Version != 0:

@@ -101,6 +101,7 @@ func TestAResultIsAnsweredWithWhatCameOfIt(t *testing.T) {
 		words  string
 	}{
 		{newTaf, `{"taf_id":"taf_9"}`, "Refunds is set up"},
+		{newTaf, `{"taf_id":"taf_9","check":"the read answered with an error"}`, "Refunds is set up, but its first check couldn't read its work: the read answered with an error"},
 		{improves, `{"version":3}`, "Version 3 of Refunds is ready to try"},
 		{newTaf, `{"failed":"the name is taken"}`, "It didn't go through: the name is taken"},
 	} {
@@ -118,6 +119,9 @@ func TestAResultIsAnsweredWithWhatCameOfIt(t *testing.T) {
 		{newTaf, `{}`, "exactly one"},
 		{newTaf, `{"taf_id":"taf_9","failed":"x"}`, "exactly one"},
 		{newTaf, `{"taf_id":"taf_9","by":"me"}`, `{"taf_id": "…"}`},
+		{newTaf, `{"failed":"taken","check":"x"}`, "check goes only with taf_id"},
+		{newTaf, `{"taf_id":"taf_9","check":"  "}`, "check says why"},
+		{improves, `{"version":3,"check":"x"}`, "check goes only with taf_id"},
 		{newTaf, `{"version":2}`, "sets up a new taf"},
 		{improves, `{"taf_id":"taf_9"}`, "improves a taf"},
 		{improves, `{"version":-1}`, "from 1"},
