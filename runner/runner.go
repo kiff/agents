@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -522,6 +523,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
 	sp.add("build", a.StartSpans)
+	a.Tools = x.watchSkillReads(a.Tools)
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
 	a.Checkpoint = x.checkpoint
@@ -971,6 +973,31 @@ type execution struct {
 	// noAccess: the member who asked may no longer use the agent (#221), so
 	// the run stopped at a checkpoint, saying so.
 	noAccess bool
+	// firstSkill is the first skill this invocation saw the run take up
+	// (tookSkill), stored on the run with its next save (Run.FirstSkill).
+	skillMu    sync.Mutex
+	firstSkill string
+}
+
+// tookSkill notes a skill the run took up, "name" or "name@version": the
+// first one is kept, the rest change nothing.
+func (x *execution) tookSkill(ref string) {
+	name, _, _ := strings.Cut(ref, "@")
+	if name = strings.TrimSpace(name); name == "" {
+		return
+	}
+	x.skillMu.Lock()
+	defer x.skillMu.Unlock()
+	if x.firstSkill == "" {
+		x.firstSkill = name
+	}
+}
+
+// tookFirst is the first skill tookSkill noted, or "".
+func (x *execution) tookFirst() string {
+	x.skillMu.Lock()
+	defer x.skillMu.Unlock()
+	return x.firstSkill
 }
 
 // cancelled is the loop's checkpoint: whether the run was asked to stop. A
@@ -1123,7 +1150,18 @@ func (x *execution) save(ctx context.Context, change func(*run.Run) error) (run.
 	if r.Claim != x.claim {
 		return r, run.ErrLeaseLost
 	}
-	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), change)
+	// The first skill the run took up rides on whatever this save stores,
+	// once: a run that took one up ends with it whichever way it stops.
+	first := x.tookFirst()
+	return run.Save(ctx, x.rn.Runs, r, x.rn.now(), func(n *run.Run) error {
+		if err := change(n); err != nil {
+			return err
+		}
+		if n.FirstSkill == "" {
+			n.FirstSkill = first
+		}
+		return nil
+	})
 }
 
 // addedSkills is the agent's Reload: the bodies of the skills the session
@@ -1146,6 +1184,7 @@ func (x *execution) addedSkills(d registry.Definition, loaded []string) func(ctx
 		if len(added) == 0 {
 			return "", nil
 		}
+		x.tookSkill(added[0])
 		return registry.AddedSkillText(ctx, x.rn.Builder.Skills, x.tenant, d, added)
 	}
 }

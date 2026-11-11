@@ -173,3 +173,53 @@ func TestSkillsAddedMidConversationKeepTheOrderTheyWereAddedIn(t *testing.T) {
 		t.Fatalf("the third turn's context isn't the second with cards appended:\n%s", third)
 	}
 }
+
+// The run's head keeps the first skill the run took up beyond what its
+// session held when it started, by name: here wakes, added mid-run before
+// cards. A later run in the session that takes up nothing new keeps none.
+func TestARunKeepsTheFirstSkillItTookUpMidRun(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{}`), use("c2", "stripe_refund", `{}`), say("Done."), say("Again."))
+	withSkills(t, f)
+	f.refund.result = tool.Result{Text: "refunded"}
+	adds := []string{"wakes@1", "cards@1"}
+	f.refund.onCall = func() {
+		add := adds[0]
+		adds = adds[1:]
+		if _, err := f.store.AddSkills(ctx, "t1", f.get(f.runs0().ID).Session, []string{add}); err != nil {
+			t.Error(err)
+		}
+	}
+	r := f.start(server.Start{Input: "go"})
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get(r.ID); got.Status != run.Completed || got.FirstSkill != "wakes" {
+		t.Fatalf("the run: %s, first skill %q, want wakes", got.Status, got.FirstSkill)
+	}
+	next := f.start(server.Start{Session: r.Session, Input: "more"})
+	if _, err := f.r.Execute(ctx, "t1", next.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get(next.ID).FirstSkill; got != "" {
+		t.Fatalf("a run that took up nothing new kept %q", got)
+	}
+}
+
+// A skill the agent reads with read_skill counts as taken up too, once it was
+// found; a read of a skill it doesn't have counts for nothing. What the
+// model reads is the skill tool's own answer, unchanged.
+func TestARunKeepsTheFirstSkillItRead(t *testing.T) {
+	f := newFixture(t, use("c1", skill.ToolName, `{"name":"other"}`), use("c2", skill.ToolName, `{"name":"cards"}`), use("c3", skill.ToolName, `{"name":"wakes"}`), say("Done."))
+	withSkills(t, f)
+	r := f.start(server.Start{Input: "go"})
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.get(r.ID).FirstSkill; got != "cards" {
+		t.Fatalf("first skill %q, want cards", got)
+	}
+	reqs := f.model.requests()
+	if res := reqs[2].Messages[len(reqs[2].Messages)-1].Blocks[0].Result; res != "The cards procedure: step one, step two." {
+		t.Fatalf("read_skill's answer changed: %q", res)
+	}
+}
