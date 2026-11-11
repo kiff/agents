@@ -48,7 +48,7 @@ var yourStepSchema = json.RawMessage(`{"type":"object","properties":{` +
 	`"what":{"type":"string","description":"What the owner does, in their language, in one line: \"Approve 3 supplier payments, €4,210 in all\"."},` +
 	`"why":{"type":"string","description":"Why it is theirs to do, in one line: \"Your bank asks you to approve transfers yourself\"."},` +
 	`"link":{"type":"string","description":"The vendor's https link where the owner does it, as the vendor returned it. Optional."},` +
-	`"about":{"type":"string","description":"The case, as your calls' kiff_about name it (\"Batch 11 Nov\"). Optional."}},` +
+	`"about":{"type":"string","description":"The case, as your calls' kiff_about name it (\"Batch 11 Nov\"). Set it: with it, a later run that finds the same step waiting doesn't hand it over twice."}},` +
 	`"required":["what","why"],"additionalProperties":false}`)
 
 // Spec says when to use it: only for a step the agent may never take, once
