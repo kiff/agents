@@ -1127,7 +1127,7 @@ func readSchedule(r *http.Request, c Caller) (schedule.Schedule, error) {
 	sc.Tenant = c.Tenant
 	// The service keeps them, from the firings: a body's are ignored, and so
 	// is what a body's check says it kept (its cursor).
-	sc.Failing, sc.Waited = nil, nil
+	sc.Failing, sc.Waited, sc.Ceiling = nil, nil, nil
 	if sc.AppCheck != nil {
 		fresh := sc.AppCheck.Fresh()
 		sc.AppCheck = &fresh
@@ -1202,8 +1202,13 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 	}
 	sc.ID = id
 	// Its firings' run of failures stays, until a run works, and so does
-	// the last firing that waited for credits.
-	sc.Failing, sc.Waited = old.Failing, old.Waited
+	// the last firing that waited for credits. Switched on again, it starts
+	// anew: a schedule paused for its failures (schedule.PauseAfter) fires
+	// at its full rate once the owner resumes it.
+	sc.Failing, sc.Waited, sc.Ceiling = old.Failing, old.Waited, old.Ceiling
+	if sc.Enabled && !old.Enabled {
+		sc.Failing = nil
+	}
 	// A check that reads what the stored one reads keeps its cursor: an
 	// update that only moves its times, or writes the same dial again, never
 	// skips what came since the last check. One that reads something else,

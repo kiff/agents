@@ -83,7 +83,30 @@ type Schedule struct {
 	// time and why. Unset once one of its runs starts. A caller that sets it
 	// is ignored.
 	Waited *Waited `json:"waited,omitempty"`
+	// Ceiling, kept by the service, is the last day a firing of it was
+	// stopped by its agent's daily ceiling (CeilingOf): that day, in the
+	// schedule's time zone, and the runs counted. A caller that sets it is
+	// ignored.
+	Ceiling *Ceiling `json:"ceiling,omitempty"`
 }
+
+// Ceiling is a day an agent's scheduled runs reached its ceiling: the day
+// (YYYY-MM-DD, in the schedule's time zone) and the runs it had started.
+type Ceiling struct {
+	Day  string `json:"day"`
+	Runs int    `json:"runs"`
+}
+
+// An agent's scheduled runs in a day stop at its ceiling: the firings its
+// recurring schedules have due that day, plus CeilingFollowUps for the
+// follow-ups it sets itself, never above CeilingMax (a run every 15
+// minutes, MinGap's most). Past it, a firing starts nothing until the next
+// day, so a check that hands everything, or follow-ups that keep coming,
+// can't wake the agent without end.
+const (
+	CeilingFollowUps = 8
+	CeilingMax       = 96
+)
 
 // Waited is a firing that started no run because the account's tafs wait
 // for credits: its due time, and why, KIFF's code (credits_used_up,
@@ -112,6 +135,36 @@ type Failing struct {
 	// (a repeated delivery, or a late one of an older firing) is counted
 	// already. Zero on a failing stored before it was kept.
 	Last time.Time `json:"last,omitzero"`
+	// Paused: the schedule switched itself off at PauseAfter firings in a
+	// row, so whoever tells the owner can say it was the failures, not
+	// them. Switching it on again starts its count anew.
+	Paused bool `json:"paused,omitempty"`
+}
+
+// A schedule that keeps failing backs off on its own: from SlowAfter
+// firings in a row that did no work it fires at half its rate, never more
+// often than hourly (slowed), and at PauseAfter it switches itself off. One
+// run that works, or the owner switching it on again, starts it anew.
+// Quiet firings, credit waits and halts are never failures, so they never
+// slow it. A once schedule (a follow-up) fires once anyway: never slowed.
+const (
+	SlowAfter  = 3
+	PauseAfter = 6
+)
+
+// slowed reports whether the firing due at due is one a failing schedule
+// skips: less than twice its step, and less than an hour, after the last
+// firing that failed.
+func (s Schedule) slowed(due time.Time) bool {
+	f := s.Failing
+	if f == nil || f.Firings < SlowAfter || f.Last.IsZero() || s.KindOf() == KindOnce {
+		return false
+	}
+	gap := time.Hour
+	if next := s.Next(f.Last); !next.IsZero() {
+		gap = max(gap, 2*next.Sub(f.Last))
+	}
+	return due.Sub(f.Last) < gap
 }
 
 // How a schedule fires. The plain forms the dial shows (daily,
@@ -445,6 +498,14 @@ const (
 	// items to the new version. The schedule's failing is left as it was,
 	// since nothing ran or failed.
 	FiredSwitching = "skipped_switching"
+	// FiredSlowed: its schedule kept failing (SlowAfter firings in a row),
+	// so it fires at half its rate: no run, nothing handed, and it isn't
+	// counted as a failure.
+	FiredSlowed = "skipped_slowed"
+	// FiredCeiling: its agent's scheduled runs reached the day's ceiling
+	// (CeilingOf). No run, nothing handed: a check's cursor stays, so the
+	// next day's first firing hands the same items. Not a failure.
+	FiredCeiling = "skipped_ceiling"
 )
 
 // Waiting is the agent's one firing waiting for it to be free.
@@ -724,6 +785,12 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	if late := now.Sub(due); late > MissedAfter && (s.MissedRule() == MissedSkip || late > MissedWithin) {
 		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredMissed})
 	}
+	if s.slowed(due) {
+		if sv.Log != nil {
+			sv.Log.InfoContext(ctx, "schedule_slowed", "agent", s.Agent, "schedule", id, "failing", s.Failing.Firings)
+		}
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredSlowed})
+	}
 	if sv.Busy != nil {
 		busy, err := sv.Busy(ctx, f)
 		if err != nil {
@@ -748,7 +815,94 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 			return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredBusy})
 		}
 	}
+	if over, err := sv.overCeiling(ctx, s, due); err != nil {
+		return err
+	} else if over {
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredCeiling})
+	}
 	return sv.start(ctx, s, f, now)
+}
+
+// dayOf is the day due falls on in s's time zone, and its bounds.
+func (s Schedule) dayOf(due time.Time) (string, time.Time, time.Time) {
+	loc, err := s.Location()
+	if err != nil {
+		loc = time.UTC
+	}
+	d := due.In(loc)
+	start := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
+	return start.Format(time.DateOnly), start, start.AddDate(0, 0, 1)
+}
+
+// dueIn counts the firings s has due in [from, to): none for a once
+// schedule, which CeilingFollowUps covers.
+func (s Schedule) dueIn(from, to time.Time) int {
+	if s.KindOf() == KindOnce || !s.Enabled {
+		return 0
+	}
+	n := 0
+	for t := s.Next(from.Add(-time.Nanosecond)); !t.IsZero() && t.Before(to) && n <= CeilingMax; t = s.Next(t) {
+		if s.names(t) {
+			n++
+		}
+	}
+	return n
+}
+
+// CeilingOf is an agent's ceiling on the day from..to, from its schedules.
+func CeilingOf(schedules []Schedule, from, to time.Time) int {
+	n := CeilingFollowUps
+	for _, s := range schedules {
+		n += s.dueIn(from, to)
+	}
+	return min(n, CeilingMax)
+}
+
+// overCeiling reports whether the firing due at due would start a run past
+// its agent's ceiling for that day: the runs its schedules started that
+// day, from their history, against CeilingOf. The first firing stopped on a
+// day is said once, on the schedule (Ceiling) and in the log. Without a
+// History nothing is counted, so nothing is stopped.
+func (sv *Service) overCeiling(ctx context.Context, s Schedule, due time.Time) (bool, error) {
+	if sv.History == nil {
+		return false, nil
+	}
+	all, err := sv.Store.List(ctx, s.Tenant)
+	if err != nil {
+		return false, err
+	}
+	day, from, to := s.dayOf(due)
+	mine := slices.DeleteFunc(all, func(o Schedule) bool { return o.Agent != s.Agent })
+	runs := 0
+	for _, o := range mine {
+		h, err := sv.History.Firings(ctx, s.Tenant, o.ID, MaxHistory)
+		if err != nil {
+			return false, err
+		}
+		for _, fired := range h {
+			if fired.Outcome == FiredRun && !fired.Due.Before(from) && fired.Due.Before(to) {
+				runs++
+			}
+		}
+	}
+	ceiling := CeilingOf(mine, from, to)
+	if runs < ceiling {
+		return false, nil
+	}
+	if s.Ceiling == nil || s.Ceiling.Day != day {
+		if sv.Log != nil {
+			sv.Log.InfoContext(ctx, "run_ceiling", "agent", s.Agent, "schedule", s.ID, "runs", runs, "ceiling", ceiling)
+		}
+		stored, err := sv.Store.Get(ctx, s.Tenant, s.ID)
+		if err != nil {
+			return false, err
+		}
+		stored.Ceiling = &Ceiling{Day: day, Runs: runs}
+		if err := sv.Store.Put(ctx, stored); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // TriggerNow fires a schedule with a check once, now, outside its
@@ -1077,6 +1231,13 @@ func (sv *Service) failed(ctx context.Context, s Schedule, f Firing, fired Fired
 		stored.Failing = &Failing{Since: stored.Failing.Since, Firings: stored.Failing.Firings + 1, Run: f.Key(), Outcome: fired.Outcome, Last: f.Due}
 	default:
 		stored.Failing = &Failing{Since: f.Due, Firings: 1, Run: f.Key(), Outcome: fired.Outcome, Last: f.Due}
+	}
+	if stored.Failing.Firings >= PauseAfter && stored.Enabled && stored.KindOf() != KindOnce {
+		// Off until the owner switches it on again: nothing more spent on work that can't succeed.
+		stored.Enabled, stored.Failing.Paused = false, true
+		if sv.Log != nil {
+			sv.Log.InfoContext(ctx, "schedule_paused", "agent", stored.Agent, "schedule", stored.ID, "failing", stored.Failing.Firings)
+		}
 	}
 	offOnce(&stored, f.Due)
 	if err := sv.Store.Put(ctx, stored); err != nil {

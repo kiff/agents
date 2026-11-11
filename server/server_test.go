@@ -588,6 +588,36 @@ func TestFailingIsTheServices(t *testing.T) {
 	}
 }
 
+// A schedule paused by its failures starts anew when the owner switches it
+// on again: its run of failures goes, so it fires at its full rate. An
+// update that leaves it off keeps it.
+func TestResumingAPausedScheduleStartsClean(t *testing.T) {
+	f := newFixture(t)
+	f.putAgent("t1", "payouts")
+	code, got := f.do("t1", "POST", "/schedules", scheduleBody("morning"))
+	f.want(201, code, got, "create")
+	stored, _ := f.schedSvc.Store.Get(context.Background(), "t1", "morning")
+	stored.Enabled = false
+	stored.Failing = &schedule.Failing{Since: now, Firings: schedule.PauseAfter, Paused: true}
+	if err := f.schedSvc.Store.Put(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	off := scheduleBody("")
+	off.ID, off.Enabled = "", false
+	code, got = f.do("t1", "PUT", "/schedules/morning", off)
+	f.want(200, code, got, "update, still off")
+	if failing, _ := got["failing"].(map[string]any); failing["paused"] != true {
+		t.Fatalf("an update that left it off lost its failing: %v", got)
+	}
+	on := scheduleBody("")
+	on.ID, on.Enabled = "", true
+	code, got = f.do("t1", "PUT", "/schedules/morning", on)
+	f.want(200, code, got, "resume")
+	if _, ok := got["failing"]; ok {
+		t.Fatalf("resumed with its failing: %v", got)
+	}
+}
+
 // A check's state (its cursor, the firing that last started a run, what it
 // handed over of a cursor value's items) is the service's, like failing: a
 // body's is ignored, and an update whose check reads the same thing keeps
