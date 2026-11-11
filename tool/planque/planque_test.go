@@ -69,7 +69,7 @@ func call(t *testing.T, tl *planque.Tool, in string) (string, bool) {
 func TestRequestAndStatus(t *testing.T) {
 	srv, seen := fake(t, true)
 	tl := planque.New(srv.URL+"/", "tnt_1", "k_setup", nil)
-	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","name":"Refunds","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
+	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","name":"Refunds","taf_name":"Refunds","tools":[{"tool":"stripe_api_write","name":"stripe_refund","title":"Refund a payment"}]}`)
 	var g struct{ Agent string }
 	json.Unmarshal([]byte(text), &g)
 	if isErr || !regexp.MustCompile(`^refunds-[a-z2-7]{8}$`).MatchString(g.Agent) ||
@@ -77,7 +77,7 @@ func TestRequestAndStatus(t *testing.T) {
 		t.Fatalf("request: %s %v", text, isErr)
 	}
 	// planque is asked for the agent the model reads back, random part and all.
-	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"` + g.Agent + `","server":"https://mcp.stripe.com","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`
+	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"` + g.Agent + `","agent_name":"Refunds","server":"https://mcp.stripe.com","tools":[{"tool":"stripe_api_write","name":"stripe_refund","title":"Refund a payment"}]}`
 	if (*seen)[0] != want {
 		t.Fatalf("sent %s\nwant %s", (*seen)[0], want)
 	}
@@ -125,7 +125,7 @@ func TestARESTVendorIsAskedForByKey(t *testing.T) {
 func TestRefusalsAreReadable(t *testing.T) {
 	srv, seen := fake(t, false)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"a","tools":[{"tool":"x"}]}`)
+	text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","agent":"a","tools":[{"tool":"x","title":"Do x"}]}`)
 	if !isErr || !strings.Contains(text, "409") || !strings.Contains(text, "not enrolled") {
 		t.Fatalf("before enrolment: %s", text)
 	}
@@ -175,11 +175,11 @@ func TestConnectFirstThenCatalogThenTools(t *testing.T) {
 	if isErr || !strings.Contains(text, `"account":"acct_1"`) || !strings.Contains(text, `"input_schema":{"type":"object"}`) || strings.Contains(text, `"title"`) {
 		t.Fatalf("catalog: %s", text)
 	}
-	text, isErr = call(t, tl, `{"action":"tools","grant":"grt_1","tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}`)
+	text, isErr = call(t, tl, `{"action":"tools","grant":"grt_1","tools":[{"tool":"stripe_api_write","name":"stripe_refund","title":"Refund a payment"}]}`)
 	if isErr || !strings.Contains(text, `"account":"acct_1"`) || strings.Contains(text, "digest") {
 		t.Fatalf("tools: %s", text)
 	}
-	if seen[2] != `POST /v1/accounts/tnt_1/grants/grt_1/tools {"tools":[{"tool":"stripe_api_write","name":"stripe_refund"}]}` {
+	if seen[2] != `POST /v1/accounts/tnt_1/grants/grt_1/tools {"tools":[{"tool":"stripe_api_write","name":"stripe_refund","title":"Refund a payment"}]}` {
 		t.Fatalf("tools sent: %s", seen[2])
 	}
 	for _, in := range []string{`{"action":"tools","grant":"grt_1"}`, `{"action":"tools","grant":"grt_1","tools":[]}`, `{"action":"catalog","grant":"../x"}`} {
@@ -527,11 +527,11 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	}
 	// The chosen app is connected by its entry: no URL, no tools yet, the
 	// taf's agent named; planque answers the grant to approve.
-	text, isErr = call(t, tl, `{"action":"request","entry":"connector:composio:quickbooks","name":"Invoices"}`)
+	text, isErr = call(t, tl, `{"action":"request","entry":"connector:composio:quickbooks","name":"Invoices","taf_name":"Invoices"}`)
 	var made struct{ ID, Agent string }
 	_ = json.Unmarshal([]byte(text), &made)
 	if isErr || made.ID != "grt_9" || !strings.HasPrefix(made.Agent, "invoices-") ||
-		seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"`+made.Agent+`"}` {
+		seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"`+made.Agent+`","agent_name":"Invoices"}` {
 		t.Fatalf("request by entry: %s %v", text, seen)
 	}
 	// With the tools search found that the taf will use: planque narrows the sign-in to them (gap 5 of kiff/tafs#476).
@@ -766,11 +766,18 @@ func TestARequestNamesTheTaf(t *testing.T) {
 			t.Fatalf("sent %v", b)
 		}
 	}
-	if _, isErr := call(t, tl, `{"action":"request","server":"https://mcp.stripe.com","name":"reminders"}`); isErr {
-		t.Fatal("a request without a name")
+	// A new taf's request without its name is refused, and nothing is sent:
+	// the approval would name the taf by its agent id.
+	for _, in := range []string{
+		`{"action":"request","server":"https://mcp.stripe.com","name":"reminders"}`,
+		`{"action":"request","entry":"connector:composio:agentmail","name":"reminders","taf_name":" \n "}`,
+	} {
+		if text, isErr := call(t, tl, in); !isErr || text != planque.NoTafName {
+			t.Fatalf("%s: %q, %t", in, text, isErr)
+		}
 	}
-	if _, ok := bodies[3]["agent_name"]; ok {
-		t.Fatalf("a request without a name sent one: %v", bodies[3])
+	if len(bodies) != 3 {
+		t.Fatalf("a request without a name sent %v", bodies[3:])
 	}
 }
 
@@ -788,7 +795,7 @@ func TestARequestReusesASignIn(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-	if text, isErr := call(t, tl, `{"action":"request","reuse":"grt_9","name":"offers","taf_name":"Cancellation offers","tools":[{"tool":"list_subscriptions","read_only":true}]}`); isErr {
+	if text, isErr := call(t, tl, `{"action":"request","reuse":"grt_9","name":"offers","taf_name":"Cancellation offers","tools":[{"tool":"list_subscriptions","title":"List subscriptions","read_only":true}]}`); isErr {
 		t.Fatalf("reuse: %s", text)
 	}
 	sent := bodies[0]["body"].(map[string]any)
@@ -837,5 +844,67 @@ func TestAgentToolsAreTheConnectedGrantsToolsButSetupsReads(t *testing.T) {
 	}
 	if _, _, err := tl.AgentTools(context.Background(), "../other"); err == nil {
 		t.Fatal("an agent id outside the path was asked")
+	}
+}
+
+// A tool asked for without its title is refused before anything reaches
+// planque, whichever way the request goes or when tools are added: the
+// owner's approval names each tool by its title, never by its name.
+func TestAToolWithoutATitleIsRefusedAndNothingIsSent(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"grt_1","status":"pending","text":"Connect…","request":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	api := `{"url":"https://desk.example/openapi.json","base":"https://desk.example/v1","auth":{"in":"header","name":"X-Desk-Key"}}`
+	for _, in := range []string{
+		`{"action":"request","server":"https://mcp.vendor.test","name":"refunds","taf_name":"Refunds","tools":[{"tool":"create_refund"}]}`,
+		`{"action":"request","server":"https://mcp.vendor.test","agent":"refunds-a1","tools":[{"tool":"list_charges","title":"List charges"},{"tool":"create_refund","title":"  "}]}`,
+		`{"action":"request","reuse":"grt_9","name":"refunds","taf_name":"Refunds","tools":[{"tool":"create_refund","read_only":false}]}`,
+		`{"action":"request","api":` + api + `,"agent":"support-a1","tools":[{"tool":"post_reply"}]}`,
+		`{"action":"tools","grant":"grt_1","tools":[{"tool":"create_refund","name":"refund"}]}`,
+	} {
+		text, isErr := call(t, tl, in)
+		if !isErr || !strings.Contains(text, "each tool needs a title") || !strings.Contains(text, "Nothing was sent") {
+			t.Fatalf("%s: %q, %t", in, text, isErr)
+		}
+	}
+	// Each untitled tool is named, so the next ask fixes them all.
+	text, _ := call(t, tl, `{"action":"tools","grant":"grt_1","tools":[{"tool":"list_charges"},{"tool":"read_charge","title":"Read a charge"},{"tool":"create_refund"}]}`)
+	if !strings.Contains(text, "list_charges, create_refund has none") {
+		t.Fatalf("named %q", text)
+	}
+	// A tool with no vendor name is refused too.
+	if text, isErr := call(t, tl, `{"action":"tools","grant":"grt_1","tools":[{"title":"Refund a charge"}]}`); !isErr || !strings.Contains(text, "each tool needs tool") {
+		t.Fatalf("no tool: %q, %t", text, isErr)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("an untitled ask reached planque: %v", seen)
+	}
+	// Connecting first, with no tools, needs no title.
+	if text, isErr := call(t, tl, `{"action":"request","server":"https://mcp.vendor.test","name":"refunds","taf_name":"Refunds"}`); isErr {
+		t.Fatalf("connect first: %s", text)
+	}
+}
+
+// The schema the model reads says the same: each tool has tool and title.
+func TestTheSchemaRequiresEachToolsTitle(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Tools struct {
+				Items struct {
+					Required []string `json:"required"`
+				} `json:"items"`
+			} `json:"tools"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(planque.New("https://x", "t", "k", nil).Spec().InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if got := schema.Properties.Tools.Items.Required; !slices.Equal(got, []string{"tool", "title"}) {
+		t.Fatalf("items.required = %v", got)
 	}
 }

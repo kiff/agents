@@ -147,7 +147,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"taf_name":{"type":"string","description":"the taf's name as the owner will read it, on one line (request): the approval names the taf by it"},` +
 			`"reuse":{"type":"string","description":"a connected grant's id, from grants: a new taf's grant uses its sign-in or key, so the owner approves the tools alone (request, instead of server, api or entry)"},` +
-			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object"}},` +
+			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object","properties":{"tool":{"type":"string"},"title":{"type":"string","minLength":1}},"required":["tool","title"]}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
@@ -241,6 +241,10 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if ways != 1 || (in.Agent == "") == (in.Name == "") {
 			return tool.Result{Text: "request needs one of server (an MCP server), api (a REST vendor by its key), entry (an app from search, such as connector:composio:gmail) or reuse (a connected grant whose sign-in to use), not two, and either name (a new taf's agent) or agent (an id already made); and tools, unless you connect first or name an entry", IsError: true}, nil
 		}
+		if in.Name != "" && tafName(in.TafName) == "" {
+			// The approval names a new taf by it, never by its agent id.
+			return tool.Result{Text: NoTafName, IsError: true}, nil
+		}
 		if in.Entry != "" {
 			// An app from search is connected by its catalog entry: planque
 			// sets up its sign-in, and its tools are listed once the owner
@@ -290,6 +294,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" {
 			tools = json.RawMessage("[]") // connect first
+		}
+		if msg := untitled(tools); msg != "" {
+			return tool.Result{Text: msg, IsError: true}, nil
 		}
 		// A name makes a new id here (kiff/tafs#78); an agent id is sent as
 		// given, for Setups whose instructions still make their own.
@@ -406,6 +413,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if len(in.Tools) == 0 || in.Tools[0] != '[' || string(in.Tools) == "[]" {
 				return tool.Result{Text: "tools needs the taf's tools, from the grant's catalog", IsError: true}, nil
 			}
+			if msg := untitled(in.Tools); msg != "" {
+				return tool.Result{Text: msg, IsError: true}, nil
+			}
 			ask := map[string]any{"tools": in.Tools}
 			if len(in.Profile) > 0 && string(in.Profile) != "null" {
 				if in.Profile[0] != '{' {
@@ -423,6 +433,36 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
 	return tool.Result{Text: "action is request, status, catalog, tools, read, grants, search or events", IsError: true}, nil
+}
+
+// NoTafName is the refusal of a new taf's request without taf_name.
+const NoTafName = "request with name (a new taf) also needs taf_name, the taf's name as the owner will read it (e.g. Refunds): the approval names the taf by it, never by its agent id. Nothing was sent: add it and ask again."
+
+// untitled is the refusal of tools any of which has no tool or no title: the
+// owner's approval, KIFF's Card and the record name each tool by its title,
+// so nothing is asked without one. Empty when every tool has both.
+func untitled(tools json.RawMessage) string {
+	var list []struct {
+		Tool  string `json:"tool"`
+		Title string `json:"title"`
+	}
+	if json.Unmarshal(tools, &list) != nil {
+		return "tools is a list of {tool, title, …}"
+	}
+	var missing []string
+	for _, t := range list {
+		switch {
+		case strings.TrimSpace(t.Tool) == "":
+			return "each tool needs tool, the vendor's tool name as the catalog lists it"
+		case strings.TrimSpace(t.Title) == "":
+			missing = append(missing, t.Tool)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "each tool needs a title, what it does in the owner's words and language on one line (e.g. Refund a payment): the owner's approval names the tool by it, never by its name. " +
+		strings.Join(missing, ", ") + " has none. Nothing was sent: add the titles and ask again."
 }
 
 // pathSafe says whether an id the model gives can go into planque's path as
