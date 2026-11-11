@@ -124,6 +124,21 @@ func RefFrom(ctx context.Context) (Ref, bool) {
 	return r, ok
 }
 
+type doneKey struct{}
+
+// WithDone marks ctx with the calls the run has made that acted and went
+// through so far (Run.Done, and the ones made since it was last stored): what
+// a tool that names the run's own work reads (your_step's prepared_by).
+func WithDone(ctx context.Context, done []Done) context.Context {
+	return context.WithValue(ctx, doneKey{}, done)
+}
+
+// DoneFrom is the run's calls that went through, as ctx is marked with them.
+func DoneFrom(ctx context.Context) []Done {
+	d, _ := ctx.Value(doneKey{}).([]Done)
+	return d
+}
+
 // MaxRequesterID is the longest requester ID.
 const MaxRequesterID = 200
 

@@ -23,9 +23,12 @@ import (
 type fakeHandoffs struct {
 	mu      sync.Mutex
 	status  string
-	got     []map[string]string
+	got     []map[string]any
 	code    int
 	already bool
+	// refusePrepared refuses a raise that names prepared_by, as KIFF does
+	// when one of its calls isn't this agent's sent call.
+	refusePrepared bool
 }
 
 func (f *fakeHandoffs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -36,9 +39,14 @@ func (f *fakeHandoffs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b, _ := io.ReadAll(r.Body)
-	var in map[string]string
+	var in map[string]any
 	_ = json.Unmarshal(b, &in)
 	f.got = append(f.got, in)
+	if _, named := in["prepared_by"]; named && f.refusePrepared {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":"prepared_by_invalid","detail":"prepared_by: op-x is not one of this agent's calls"}`))
+		return
+	}
 	if f.code != 0 {
 		w.WriteHeader(f.code)
 		_, _ = w.Write([]byte(`{"error":"prepared_by_invalid","detail":"what is required, at most 300 characters"}`))
@@ -131,5 +139,59 @@ func TestYourStepAlreadyWaitingDoesntPause(t *testing.T) {
 	res, err := kiff.NewYourStep(srv.URL, "kiff_agent_secret", nil).Call(inRun("call_9"), stepInput)
 	if err != nil || res.Held() || res.Hold != nil || res.IsError || !strings.Contains(res.Text, "already with your owner") {
 		t.Fatalf("already waiting = %+v, %v", res, err)
+	}
+}
+
+// The raise names what the run did to prepare the step: its calls that went
+// through and that KIFF recorded, about the same case, newest first, by their
+// operation IDs. A call KIFF didn't record, another case's, or one kept
+// without its input is left out. Refused by KIFF, the step is raised again
+// without them: it reaches its owner either way.
+func TestYourStepNamesTheCallsThatPreparedIt(t *testing.T) {
+	f := &fakeHandoffs{status: "waiting"}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	ys := kiff.NewYourStep(srv.URL, "kiff_agent_secret", nil)
+	draft := json.RawMessage(`{"amount":4210,"kiff_about":"Batch 11 Nov"}`)
+	named := json.RawMessage(`{"amount":1,"kiff_about":"Batch 11 Nov","kiff_operation_id":"draft-2"}`)
+	done := []run.Done{
+		{CallID: "c1", Tool: "bank_draft_transfer", Input: draft, Invocation: "inv_1"},
+		{CallID: "c2", Tool: "bank_draft_transfer", Input: named, Invocation: "inv_2"},
+		{CallID: "c3", Tool: "bank_draft_transfer", Input: json.RawMessage(`{"kiff_about":"Batch 4 Nov"}`), Invocation: "inv_3"},
+		{CallID: "c4", Tool: "memory_write", Input: json.RawMessage(`{"kiff_about":"Batch 11 Nov"}`)},
+		{CallID: "c5", Tool: "bank_draft_transfer", Invocation: "inv_5"},
+	}
+	ctx := run.WithDone(inRun("call_9"), done)
+	if res, err := ys.Call(ctx, stepInput); err != nil || !res.Held() {
+		t.Fatalf("raise = %+v, %v", res, err)
+	}
+	want := []any{run.OperationOf("run_1", "c2", named), run.OperationOf("run_1", "c1", draft)}
+	if got, _ := f.got[0]["prepared_by"].([]any); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("prepared_by = %v, want %v", f.got[0]["prepared_by"], want)
+	}
+	// Without an about, every recorded call of the run, still not one KIFF didn't record.
+	f.got = nil
+	if _, err := ys.Call(ctx, json.RawMessage(`{"what":"Sign the lease","why":"Only you may sign"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.got[0]["prepared_by"].([]any); len(got) != 3 {
+		t.Fatalf("prepared_by without about = %v, want c3, c2 and c1", f.got[0]["prepared_by"])
+	}
+	// Nothing done: no prepared_by at all.
+	f.got = nil
+	if _, err := ys.Call(inRun("call_8"), stepInput); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := f.got[0]["prepared_by"]; sent {
+		t.Fatalf("sent prepared_by with nothing done: %v", f.got[0])
+	}
+	// KIFF refuses the list: raised again without it, and still handed over.
+	f.got, f.refusePrepared = nil, true
+	res, err := ys.Call(ctx, stepInput)
+	if err != nil || !res.Held() || len(f.got) != 2 {
+		t.Fatalf("after a refused prepared_by: %+v, %v, %d raises", res, err, len(f.got))
+	}
+	if _, sent := f.got[1]["prepared_by"]; sent || f.got[1]["operation"] != f.got[0]["operation"] {
+		t.Fatalf("the second raise %v: want the same operation, without prepared_by", f.got[1])
 	}
 }

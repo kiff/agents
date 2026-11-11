@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -93,7 +94,8 @@ func (t *YourStep) Call(ctx context.Context, input json.RawMessage) (tool.Result
 	if _, trial := run.TrialFrom(ctx); trial {
 		return tool.Result{Text: "This is a trial: the step would be handed to your owner as \"Your step\". Nothing was handed over.", IsError: false}, nil
 	}
-	return t.raise(ctx, input, op)
+	res, _, err := t.raise(ctx, input, op)
+	return res, err
 }
 
 // Collect is the hand-off's outcome for a run that paused on it, once KIFF
@@ -103,17 +105,55 @@ func (t *YourStep) Collect(ctx context.Context, q run.Requirement) (tool.Result,
 	if q.Operation == "" {
 		return tool.Result{}, fmt.Errorf("kiff: your_step call %s has no operation ID to collect it by", q.CallID)
 	}
-	res, err := t.raise(ctx, q.Input, q.Operation)
+	res, h, err := t.raise(ctx, q.Input, q.Operation)
 	if err != nil {
 		return tool.Result{}, err
 	}
 	if res.Held() {
 		return tool.Result{}, fmt.Errorf("%w: your_step call %s still waits for the owner", ErrNotFinal, q.CallID)
 	}
+	if h.Status == "done" {
+		// Answered done: the run's first read of the vendor about the same case is the step's check.
+		id := h.ID
+		run.ChecksFrom(ctx).Await(run.CheckWait{Handoff: id, About: stepAbout(q.Input), Post: func(ctx context.Context, op string) error {
+			return t.check(ctx, id, op)
+		}})
+	}
 	return res, nil
 }
 
-func (t *YourStep) raise(ctx context.Context, input json.RawMessage, op string) (tool.Result, error) {
+// stepAbout is a your_step call's about, or "".
+func stepAbout(input json.RawMessage) string {
+	var in struct {
+		About string `json:"about"`
+	}
+	_ = json.Unmarshal(input, &in)
+	return in.About
+}
+
+// check names the read that checked a step answered done (KIFF's POST /v1/me/handoffs/{id}/check), by the read's
+// operation ID. KIFF takes it only for this agent's sent call made after the answer, once.
+func (t *YourStep) check(ctx context.Context, handoff, op string) error {
+	body, _ := json.Marshal(map[string]string{"operation": op})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.api+"/v1/me/handoffs/"+url.PathEscape(handoff)+"/check", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("kiff: your_step check: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+t.key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("kiff: your_step check: %w", scrub(err, t.key))
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("kiff: your_step check: KIFF answered %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (t *YourStep) raise(ctx context.Context, input json.RawMessage, op string) (tool.Result, handoff, error) {
 	var in struct {
 		What  string `json:"what"`
 		Why   string `json:"why"`
@@ -121,25 +161,56 @@ func (t *YourStep) raise(ctx context.Context, input json.RawMessage, op string) 
 		About string `json:"about"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
-		return tool.Result{Text: "your_step takes {what, why, link?, about?}.", IsError: true}, nil
+		return tool.Result{Text: "your_step takes {what, why, link?, about?}.", IsError: true}, handoff{}, nil
 	}
-	body, _ := json.Marshal(map[string]string{"what": in.What, "why": in.Why, "link": in.Link, "about": in.About, "operation": op})
+	prepared := preparedBy(ctx, in.About)
+	raw, status, err := t.post(ctx, in.What, in.Why, in.Link, in.About, op, prepared)
+	if err == nil && status == http.StatusUnprocessableEntity && len(prepared) > 0 && refusalCode(raw) == "prepared_by_invalid" {
+		// KIFF wouldn't take one of the calls as this step's preparation: the step reaching its owner matters more
+		// than the link in its receipt, so it's raised again without them.
+		raw, status, err = t.post(ctx, in.What, in.Why, in.Link, in.About, op, nil)
+	}
+	if err != nil {
+		return tool.Result{}, handoff{}, err
+	}
+	return t.answer(raw, status, op)
+}
+
+// post sends the raise to KIFF and returns its answer's body and status.
+func (t *YourStep) post(ctx context.Context, what, why, link, about, op string, prepared []string) ([]byte, int, error) {
+	payload := map[string]any{"what": what, "why": why, "link": link, "about": about, "operation": op}
+	if len(prepared) > 0 {
+		payload["prepared_by"] = prepared
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.api+"/v1/me/handoffs", bytes.NewReader(body))
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("kiff: your_step: %w", err)
+		return nil, 0, fmt.Errorf("kiff: your_step: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+t.key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.hc.Do(req)
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("kiff: your_step: %w", scrub(err, t.key))
+		return nil, 0, fmt.Errorf("kiff: your_step: %w", scrub(err, t.key))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("kiff: your_step: %w", err)
+		return nil, 0, fmt.Errorf("kiff: your_step: %w", err)
 	}
-	switch resp.StatusCode {
+	return raw, resp.StatusCode, nil
+}
+
+// refusalCode is the error code of KIFF's refusal, or "".
+func refusalCode(raw []byte) string {
+	var e struct{ Error string }
+	_ = json.Unmarshal(raw, &e)
+	return e.Error
+}
+
+// answer is KIFF's answer to a raise, as the run reads it.
+func (t *YourStep) answer(raw []byte, status int, op string) (tool.Result, handoff, error) {
+	switch status {
 	case http.StatusOK, http.StatusCreated:
 	case http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusForbidden:
 		// KIFF's refusal, for the model to act on: nothing was handed over.
@@ -149,15 +220,56 @@ func (t *YourStep) raise(ctx context.Context, input json.RawMessage, op string) 
 		if why == "" {
 			why = e.Error
 		}
-		return tool.Result{Text: "Nothing was handed to your owner. KIFF said: " + why, IsError: true}, nil
+		return tool.Result{Text: "Nothing was handed to your owner. KIFF said: " + why, IsError: true}, handoff{}, nil
 	default:
-		return tool.Result{}, fmt.Errorf("kiff: your_step: KIFF answered %d", resp.StatusCode)
+		return tool.Result{}, handoff{}, fmt.Errorf("kiff: your_step: KIFF answered %d", status)
 	}
 	var h handoff
 	if err := json.Unmarshal(raw, &h); err != nil || h.ID == "" {
-		return tool.Result{}, errors.New("kiff: your_step: KIFF's answer names no hand-off")
+		return tool.Result{}, handoff{}, errors.New("kiff: your_step: KIFF's answer names no hand-off")
 	}
-	return yourStepResult(h, op), nil
+	return yourStepResult(h, op), h, nil
+}
+
+// maxPreparedBy is the most calls a hand-off names as its preparation (KIFF's MaxPreparedBy).
+const maxPreparedBy = 20
+
+// preparedBy is what the run did to prepare the step, as KIFF names calls: the operation IDs of its calls that
+// acted, went through and that KIFF recorded (each with KIFF's invocation), newest first, at most maxPreparedBy.
+// With about, only the calls about the same case (their kiff_about). A call kept without its input is left out:
+// its operation ID can't be told from its call ID alone.
+func preparedBy(ctx context.Context, about string) []string {
+	ref, ok := run.RefFrom(ctx)
+	if !ok || ref.Run == "" {
+		return nil
+	}
+	done := run.DoneFrom(ctx)
+	var out []string
+	seen := map[string]bool{}
+	for i := len(done) - 1; i >= 0 && len(out) < maxPreparedBy; i-- {
+		d := done[i]
+		if d.Invocation == "" || len(d.Input) == 0 {
+			continue
+		}
+		if about != "" && aboutOf(d.Input) != about {
+			continue
+		}
+		op := run.OperationOf(ref.Run, d.CallID, d.Input)
+		if !seen[op] {
+			seen[op] = true
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// aboutOf is a call's kiff_about, or "".
+func aboutOf(input json.RawMessage) string {
+	var args struct {
+		About string `json:"kiff_about"`
+	}
+	_ = json.Unmarshal(input, &args)
+	return args.About
 }
 
 // yourStepResult is the hand-off as the run reads it: waiting pauses the run

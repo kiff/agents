@@ -860,7 +860,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 				return out, msgs, fmt.Errorf("agent: storing the turn before it acts: %w", err)
 			}
 		}
-		results, err := a.callTools(ctx, rec, byName, calls, emit)
+		// The tools see what the run has done so far: stored before this went, and since.
+		done := append(slices.Clip(run.DoneFrom(ctx)), out.Done...)
+		results, err := a.callTools(run.WithDone(ctx, done), rec, byName, calls, emit)
 		if err != nil {
 			// Their results never came back: each call that acts may have gone out.
 			for _, c := range calls {

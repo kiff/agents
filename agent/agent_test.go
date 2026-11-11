@@ -736,6 +736,39 @@ func TestTheFirstTurnAfterContinueIsMarkedResumed(t *testing.T) {
 	}
 }
 
+// doneSeer is a tool that notes what the run had done when it was called.
+type doneSeer struct {
+	fakeTool
+	saw []run.Done
+}
+
+func (d *doneSeer) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+	d.saw = run.DoneFrom(ctx)
+	return tool.Result{Text: "noted"}, nil
+}
+
+// A tool sees what the run has done: what it had done before this went (as
+// the runner marks the run's context), then each call that went through since,
+// as of the turn it is called in.
+func TestAToolSeesWhatTheRunHasDone(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1", Invocation: "tc-1"}}
+	seer := &doneSeer{fakeTool: fakeTool{name: "your_step", access: tool.Own}}
+	m := &script{replies: []model.Reply{
+		use("c1", "stripe_refund", `{"charge":"ch_1"}`),
+		use("c2", "your_step", `{"what":"x","why":"y"}`),
+		say("Done."),
+	}}
+	_, r := start(t, session.KindRun)
+	before := run.Done{CallID: "c0", Tool: "stripe_draft", Input: json.RawMessage(`{}`), Invocation: "tc-0"}
+	ctx := run.WithDone(context.Background(), []run.Done{before})
+	if _, _, err := agent.Run(ctx, newAgent(m, refund, seer), r, nil, "Refund ch_1.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(seer.saw) != 2 || seer.saw[0].CallID != "c0" || seer.saw[1].CallID != "c1" {
+		t.Fatalf("your_step saw %+v, want c0 then c1", seer.saw)
+	}
+}
+
 // A run keeps the calls that acted and went through, from their results
 // (#249): a run whose next turn fails still says the refund was made. Reads,
 // a write that failed and an act refused unmade aren't kept.

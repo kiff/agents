@@ -337,6 +337,26 @@ for _, q := range r.Requirements {
   it is then claimed again, records the outcomes and ends CANCELLED. A run
   cancelled while RUNNING that then pauses does the same once KIFF resolves it.
 
+### A step handed to the owner
+
+`your_step` (tool/kiff) hands the owner a step the agent may never take; the
+run pauses on it as on a held call, by KIFF's hand-off id, and collects
+"done", "skipped" or no answer.
+
+- **What prepared it:** the raise names the run's calls that acted, went
+  through and that KIFF recorded (`Run.Done`, which the runner and the loop
+  give tools as `run.DoneFrom`), about the same case (`kiff_about`) when the
+  step names one, newest first, at most 20, by operation ID (`prepared_by`).
+  KIFF refusing one of them (`prepared_by_invalid`) has the step raised again
+  without them: it reaches its owner either way.
+- **Its check:** once "done" is collected, the run's first read through the
+  gateway about the same case is the step's check (`POST
+  /v1/me/handoffs/{id}/check` with the read's operation ID): a read (a tool
+  KIFF marks read-only, or a read of one that also writes), sent and not
+  failed, in this run's execution. Once per step, never for a write, another
+  case's read or another run's. With no such read, or none about a case, KIFF
+  settles the step "not checked" after its hour.
+
 ## When a call's outcome comes later
 
 Some writes end elsewhere: a reply to a ticket is answered by the customer,
