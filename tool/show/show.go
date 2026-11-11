@@ -264,6 +264,13 @@ const MaxJob = 2000
 var cronPattern = regexp.MustCompile(`^[0-9*/,-]+( [0-9*/,-]+){4}$`)
 
 // Component is one component. Which fields it has depends on its type.
+// Loop is what a loop card asks about: the read a run made page after page,
+// and how many pages it read before asking.
+type Loop struct {
+	Tool  string `json:"tool"`
+	Pages int    `json:"pages"`
+}
+
 type Component struct {
 	Type    string   `json:"type"`
 	ID      string   `json:"id"`
@@ -292,6 +299,10 @@ type Component struct {
 	// the app from the taf's dial, never the agent's.
 	TafID   string `json:"taf_id,omitempty"`
 	Version int    `json:"version,omitempty"`
+	// Loop is a loop card's (the runtime's own confirm, never the agent's):
+	// the read a run repeated, and how many pages it read, for tafs cloud to
+	// word the card in the owner's language.
+	Loop *Loop `json:"loop,omitempty"`
 	// Waits says the run pauses on this card until it's answered, and who
 	// answers it: WaitsOwner (Answerable: the person) or WaitsService
 	// (ByService: the service that hands the owner over). The show tool sets

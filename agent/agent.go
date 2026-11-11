@@ -344,7 +344,10 @@ const (
 type Outcome struct {
 	// since is Turns when the run last went on after a pause.
 	since int
-	Stop  Stop `json:"stop"`
+	// turnCost is what the run's latest model turn cost: the least a closing
+	// turn is held back for at the cost cap (reserve).
+	turnCost int64
+	Stop     Stop `json:"stop"`
 	// Text is the agent's last answer; for a paused run, what it waits for.
 	Text string `json:"text"`
 	// Refusal is the category a Refused run's turn was declined for, or ""
@@ -476,6 +479,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	if len(r.Requirements) == 0 && len(r.Paused.Reply.Blocks) == 0 {
 		return a.restart(ctx, rec, history, r, emit)
 	}
+	held, stopReading := loopAnswers(r, held)
 	results, err := merge(r, held)
 	if err != nil {
 		return base, history, err
@@ -571,7 +575,44 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	refused, declined := refusals(r, held)
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}, emit)
+	out := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}
+	if stopReading {
+		// The owner chose to stop reading, or didn't answer: one turn with
+		// no tool use, from what was read.
+		specs := make([]model.ToolSpec, 0, len(a.Tools))
+		for _, t := range a.Tools {
+			specs = append(specs, t.Spec())
+		}
+		out.Stop = Answered
+		return a.closeAtCap(ctx, rec, msgs, specs, out, emit, LoopNudge)
+	}
+	return a.loop(ctx, rec, msgs, out, emit)
+}
+
+// loopAnswers is held with each loop card's result said for the run: LoopRead
+// when the person chose to read on, and a stop otherwise, the card unanswered
+// included (stopReading). Only the answer recorded on the run counts, which
+// only the person gives (run.AnswerCard): never a tool's result or the
+// model's words.
+func loopAnswers(r run.Run, held []ToolResultBody) ([]ToolResultBody, bool) {
+	stop := false
+	out := slices.Clone(held)
+	for i, h := range out {
+		q, ok := requirement(r, h.CallID)
+		if !ok || !q.Card() || !isLoopCard(q.Input) {
+			continue
+		}
+		var answer struct {
+			Answer string `json:"answer"`
+		}
+		if !q.Answered.IsZero() && json.Unmarshal(q.Result, &answer) == nil && answer.Answer == LoopContinue {
+			out[i].Result = tool.Result{Text: LoopRead}
+			continue
+		}
+		out[i].Result = tool.Result{Text: "[tafs] Your owner asked you to stop reading here."}
+		stop = true
+	}
+	return out, stop
 }
 
 // refusals counts the held calls of r whose outcome is in: those the owner
@@ -789,13 +830,14 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		return ""
 	})
-	nudged := false // CloseInText's one more turn, at most once a run
+	nudged := false  // CloseInText's one more turn, at most once a run
+	var listed pages // reads of the same list in a row: LoopPages of them ask the owner
 	for first := true; ; first = false {
 		if !(first && checked) {
 			if stop := a.capped(out); stop != "" {
 				out.Stop = stop
-				if stop == TurnCap && a.CloseInText && afterTools(msgs) {
-					return a.closeAtCap(ctx, rec, msgs, specs, out, emit)
+				if (stop == TurnCap || stop == CostCap) && a.CloseInText && afterTools(msgs) {
+					return a.closeAtCap(ctx, rec, msgs, specs, out, emit, nudgeAt(stop))
 				}
 				return out, msgs, nil
 			}
@@ -871,6 +913,20 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 				}
 			}
 			return out, msgs, err
+		}
+		inputs := make([]json.RawMessage, len(calls))
+		for i, c := range calls {
+			inputs[i] = c.Input
+		}
+		if i, ok := listed.see(byName, results, inputs); ok && a.CloseInText {
+			// Page after page of the same list, in a taf's run: the owner
+			// says whether to read on, on a card in place of this read,
+			// whose page isn't kept (LoopRead asks it again).
+			results[i].Result = loopCard(results[i], fmt.Sprintf("%s%d", LoopCard, out.Turns), LoopPages)
+			if err := rec.Record(session.Component, results[i].Component); err != nil {
+				return out, msgs, err
+			}
+			emit(Event{Kind: Shown, CallID: results[i].CallID, Component: results[i].Component})
 		}
 		for _, r := range results {
 			latest[r.Tool] = outcome(r, "")
@@ -1083,7 +1139,12 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 			// waiting after CardWait.
 			for _, b := range turn.Reply.Blocks {
 				if b.Kind == model.ToolUse && b.CallID == r.CallID {
-					out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: b.Input,
+					// A loop card stands in for a read: the card is what waits.
+					input := b.Input
+					if isLoopCard(r.Component) {
+						input = r.Component
+					}
+					out.Requirements = append(out.Requirements, run.Requirement{CallID: r.CallID, Tool: r.Tool, Input: input,
 						Kind: run.KindCard, Expires: a.clock().Add(run.CardWait).UTC()})
 				}
 			}
@@ -1248,14 +1309,30 @@ const CloseNudge = "[tafs] Your turn ended after your tool results without a mes
 // it.
 const CapNudge = "[tafs] This run has reached its turn limit. Write your closing message to the owner now, as text, with no tool call: what you did, and what is left."
 
-// closeAtCap gives a CloseInText run that reached its turn limit on its tool
-// results its closing message: one turn, offered no tool use, told why. The
-// note isn't kept in the conversation, as a pause's isn't; an empty reply
-// isn't kept either. The run still stops TurnCap.
-func (a Agent) closeAtCap(ctx context.Context, rec *session.Recording, msgs []model.Message, specs []model.ToolSpec, out Outcome, emit func(Event)) (Outcome, []model.Message, error) {
+// CostNudge is what a CloseInText agent is told when its run reached its cost
+// limit on its tool results: one turn more, with no tool, held back for it
+// (reserve), to answer from what it read.
+const CostNudge = "[tafs] This run has reached its cost limit. Write your closing message to the owner now, as text, with no tool call: answer from what you have read, and say plainly what is left unread. A count of what you read is never the total: say how many you read, and that more remain."
+
+// nudgeAt is what a CloseInText run is told at the cap it reached.
+func nudgeAt(stop Stop) string {
+	if stop == CostCap {
+		return CostNudge
+	}
+	return CapNudge
+}
+
+// closeAtCap gives a CloseInText run that reached its turn or cost limit on
+// its tool results its closing message: one turn, offered no tool use, told
+// why (nudge). At the cost limit that turn is paid from what the cap held
+// back (reserve), as much as the latest turn cost: it reads the same
+// conversation, so it can come out slightly over. The note isn't kept in the
+// conversation, as a pause's isn't; an empty reply isn't kept either. The run
+// still stops TurnCap or CostCap.
+func (a Agent) closeAtCap(ctx context.Context, rec *session.Recording, msgs []model.Message, specs []model.ToolSpec, out Outcome, emit func(Event), nudge string) (Outcome, []model.Message, error) {
 	asked := slices.Clone(msgs)
 	last := &asked[len(asked)-1]
-	last.Blocks = append(slices.Clone(last.Blocks), model.Block{Kind: model.Text, Text: CapNudge})
+	last.Blocks = append(slices.Clone(last.Blocks), model.Block{Kind: model.Text, Text: nudge})
 	reply, err := a.turn(ctx, rec, asked, specs, true, nil, &out, emit)
 	if err != nil || reply.Stop == model.Refused || !hasContent(reply.Blocks) {
 		return out, msgs, err
@@ -1289,6 +1366,19 @@ func jsonSize(msgs []model.Message) int {
 	return len(raw)
 }
 
+// reserve is what a CloseInText run holds back from its cost cap for its
+// closing turn (closeAtCap): a tenth of the cap, or the latest turn's cost
+// when that's more, since the closing turn reads the same conversation. At
+// most half the cap, so the reserve never stops a run before it starts. A
+// run that doesn't close in text holds nothing back and spends its whole cap
+// (its turnCost counts only for a CloseInText run).
+func (a Agent) reserve(out Outcome) int64 {
+	if !a.CloseInText {
+		return 0
+	}
+	return min(max(a.MaxCost/10, out.turnCost), a.MaxCost/2)
+}
+
 // capped is the cap a run has reached, if any.
 func (a Agent) capped(out Outcome) Stop {
 	maxTurns := a.MaxTurns
@@ -1296,7 +1386,9 @@ func (a Agent) capped(out Outcome) Stop {
 		maxTurns = DefaultMaxTurns
 	}
 	switch {
-	case out.Cost >= a.MaxCost:
+	case out.Cost >= a.MaxCost, a.CloseInText && out.Cost+out.turnCost+a.reserve(out) > a.MaxCost:
+		// A CloseInText run stops before a turn that, like its latest, would
+		// leave no room for its closing turn.
 		return CostCap
 	case out.Turns-out.since >= maxTurns:
 		return TurnCap
@@ -1332,6 +1424,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	}
 	cost := reply.Cost(price) // at the price where it ran
 	out.Cost += cost
+	out.turnCost = cost
 	out.Turns++
 	if out.Source == "" {
 		out.Source, out.Region = reply.Source, reply.Region
