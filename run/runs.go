@@ -694,6 +694,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		case r.Status == Running && r.Resumes >= MaxResumes:
 			n.Status, n.Error = Error, NeedsYou
 		case r.Status == Running:
+			// This reason and "no invocation claimed it in time" below are worded
+			// by tafs cloud by their exact text, as runner's Failed* are.
 			n.Status, n.Error = Error, "its lease ran out: the invocation crashed or timed out"
 		case r.Resumes >= MaxResumes:
 			n.Status, n.Error = Error, NeverStarted
