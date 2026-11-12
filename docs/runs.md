@@ -73,6 +73,12 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
   done. Stored at each pause and at the end, and shown by the API. The inputs
   together stay within `MaxDoneBytes` (64 KB), so the run fits its store item.
   Past that, a call is still listed, without its `input`.
+- `sent`: how many of the run's calls that act may have reached the vendor:
+  those in `done`, and those whose outcome isn't known (KIFF sent one and lost
+  the answer, or its result never came back). Counted from KIFF's word on each
+  call. Shown by the API, always, 0 included: 0 means nothing the run did can
+  have changed anything; more than `done` lists means something may have,
+  though no result said so.
 - `source`: set when a schedule or an event started the run (the schedule's ID).
 - `ended`: when the run moved to a final status, kept however it's written after.
 - `refused`, `declined`: how many of its calls KIFF refused outright (outside the
