@@ -3,6 +3,7 @@ package anthropic
 import (
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -42,4 +43,17 @@ func CreditRefused(err error) bool {
 	var apiErr *sdk.Error
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
 		string(apiErr.Type()) == "invalid_request_error" && strings.Contains(strings.ToLower(apiErr.Error()), "credit balance")
+}
+
+// toolsField is where the API's words for a refused request name one of its
+// tools: "tools.3.custom.input_schema: …".
+var toolsField = regexp.MustCompile(`\btools\.\d+\.`)
+
+// ToolsRefused says whether err is the Claude API refusing a request for
+// one of the tools it offered: matched on its status (400), its error type
+// (invalid_request_error) and the field its words name (tools.N.…).
+func ToolsRefused(err error) bool {
+	var apiErr *sdk.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+		string(apiErr.Type()) == "invalid_request_error" && toolsField.MatchString(apiErr.Error())
 }

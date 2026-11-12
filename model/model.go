@@ -16,6 +16,12 @@ import (
 // the turn ran.
 var ErrProviderBalance = errors.New("model: the provider refused the turn for our account's balance")
 
+// ErrToolsRefused is a turn the provider refused because of the tools the
+// request offered (a name or an argument it won't take): the request itself,
+// never the agent's work. Nothing of the turn ran, and the same tools are
+// refused on every turn, so the run can't go on.
+var ErrToolsRefused = errors.New("model: the provider refused the request's tools")
+
 // Role is who wrote a message.
 type Role string
 

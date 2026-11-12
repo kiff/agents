@@ -67,6 +67,12 @@ const (
 	// FailedHalted: the agent, or its tenant, was halted before the run
 	// started or went on from a pause.
 	FailedHalted = "the agent is halted, so the run didn't go on"
+	// FailedTools: the AI provider refused the tools the run offered
+	// (model.ErrToolsRefused) before its first turn, so nothing ran.
+	FailedTools = "the AI provider refused the agent's tools, so the run didn't start"
+	// FailedFirstTurn: the run failed before its first turn came back, so it
+	// made no call: told apart from FailedRun, which may have acted before.
+	FailedFirstTurn = "the run failed before its first step, so nothing was done"
 )
 
 // ErrNoCollect means a paused run can't be continued: no Collect is set to get
@@ -921,26 +927,35 @@ func (rn *Runner) fold(ctx context.Context, a agent.Agent, rec *session.Recordin
 }
 
 // Own reports whether a run's error is one this runner stored itself: when it
-// ended the run (FailedRun, FailedTime, FailedAIUnavailable) or stopped it before its loop
+// ended the run (FailedRun, FailedTime, FailedAIUnavailable, FailedTools,
+// FailedFirstTurn) or stopped it before its loop
 // (FailedBuild, FailedStart, FailedSwitching). Never one the sweep set for a
 // run nobody was left to end, whose stored turns may be behind what it did.
 func Own(err string) bool {
 	switch err {
-	case FailedRun, FailedTime, FailedAIUnavailable, FailedBuild, FailedStart, FailedSwitching:
+	case FailedRun, FailedTime, FailedAIUnavailable, FailedBuild, FailedStart, FailedSwitching, FailedTools, FailedFirstTurn:
 		return true
 	}
 	return false
 }
 
-// failed is what the Error of a run whose loop failed with err says.
-func failed(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
+// failed is what the Error of a run whose loop failed with err says. turns
+// is how many of its model turns came back, from the run's start: with none,
+// it made no call, and a failure that isn't the time limit or our balance
+// says so, so the person can tell a run that never started from one that
+// stopped partway.
+func failed(err error, turns int) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
 		return FailedTime
-	}
-	if errors.Is(err, model.ErrProviderBalance) {
+	case errors.Is(err, model.ErrProviderBalance):
 		return FailedAIUnavailable
+	case turns > 0:
+		return FailedRun
+	case errors.Is(err, model.ErrToolsRefused):
+		return FailedTools
 	}
-	return FailedRun
+	return FailedFirstTurn
 }
 
 // UnknownKeep is how long a run is kept once it has ended when its agent's
@@ -1308,7 +1323,7 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		}
 		switch {
 		case runErr != nil:
-			n.Status, n.Stop, n.Error = run.Error, "", failed(runErr)
+			n.Status, n.Stop, n.Error = run.Error, "", failed(runErr, out.Turns)
 			// Taken, but no turn read them: given back, for the caller to send on.
 			for _, i := range x.unread {
 				if i < len(n.Steering) {

@@ -1111,7 +1111,9 @@ func TestAFailedModelIsAnError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no more replies") {
 		t.Fatalf("got %v, want the model's failure for the caller to log", err)
 	}
-	if got.Status != run.Error || got.Error != runner.FailedRun || got.Expires.IsZero() {
+	// Its first turn never came back, so it says it did nothing: a run that never
+	// started reads apart from one that stopped partway.
+	if got.Status != run.Error || got.Error != runner.FailedFirstTurn || !runner.Own(got.Error) || got.Expires.IsZero() {
 		t.Fatalf("failed to %+v", got)
 	}
 	if !f.state(r).Ended || !slices.Contains(f.events(r), session.Error) {
@@ -1137,6 +1139,24 @@ func TestARunRefusedForOurBalanceSaysSo(t *testing.T) {
 	}
 }
 
+// A run whose tools the AI provider refused says so, without the provider's
+// words, and is the runner's own failure: its first turn never ran.
+func TestARunWhoseToolsAreRefusedSaysSo(t *testing.T) {
+	f := newFixture(t)
+	f.model.fail = fmt.Errorf("%w: 400 invalid_request_error: tools.3.custom.input_schema.properties: Property keys should match pattern", model.ErrToolsRefused)
+	r := f.start(server.Start{Input: "go"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if !errors.Is(err, model.ErrToolsRefused) {
+		t.Fatalf("got %v, want the refusal for the caller to log", err)
+	}
+	if got.Status != run.Error || got.Error != runner.FailedTools || !runner.Own(got.Error) || run.ErrorCode(got.Error) != "" {
+		t.Fatalf("failed to %+v", got)
+	}
+	if strings.Contains(got.Error, "tools.3") || strings.Contains(got.Error, "pattern") {
+		t.Fatal("the provider's own words reached the person")
+	}
+}
+
 // A run that fails after a call went through keeps it on the run (#249), so
 // whoever shows the failure can say what was done.
 func TestAFailedRunKeepsWhatItDid(t *testing.T) {
@@ -1147,7 +1167,8 @@ func TestAFailedRunKeepsWhatItDid(t *testing.T) {
 		t.Fatal("want the model's failure")
 	}
 	want := []run.Done{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`)}}
-	if got.Status != run.Error || !reflect.DeepEqual(got.Done, want) {
+	// It stopped partway: its words never say nothing was done.
+	if got.Status != run.Error || got.Error != runner.FailedRun || !reflect.DeepEqual(got.Done, want) {
 		t.Fatalf("failed to %+v, want done %+v", got, want)
 	}
 	if stored := f.get(r.ID); !reflect.DeepEqual(stored.Done, want) {
@@ -1436,7 +1457,7 @@ func TestTheServerShowsNoPrivateCause(t *testing.T) {
 			t.Errorf("the model's failure is %s: %s", name, body)
 		}
 	}
-	if !strings.Contains(replay, agent.ModelFailed) || !strings.Contains(string(read), runner.FailedRun) {
+	if !strings.Contains(replay, agent.ModelFailed) || !strings.Contains(string(read), runner.FailedFirstTurn) {
 		t.Fatalf("replayed %s\nread %s", replay, read)
 	}
 }
