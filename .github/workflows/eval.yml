@@ -213,6 +213,24 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -transcript desk.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - name: Setup on billing, invoices that stay drafts
+        # A write whose argument decides whether it's final (kiff/tafs#771):
+        # the fake vendor's billing, by its REST API and the key the phone
+        # gives, where create_invoice finalizes an invoice when its status is
+        # left out. The owner wants drafts to approve and sends them
+        # themselves. Graded like the desk, and checked once billing's tools
+        # are connected: create_invoice pinned to status draft
+        # (fixed_arguments), and no send_invoice.
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -invoices -grade -max-cost 3 -owner-turns 14 -transcript invoices.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off
@@ -246,12 +264,12 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
-          for f in report.md report-handoff.md setup.md desk.md; do
+          for f in report.md report-handoff.md setup.md desk.md invoices.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json setup.md desk.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json setup.md desk.md invoices.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"
