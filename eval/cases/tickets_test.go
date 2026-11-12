@@ -65,6 +65,17 @@ func TestTicketsIsGradedOnTheDesk(t *testing.T) {
 			t.Errorf("%s: failed %v, want %q among them", name, failed(res), c.check)
 		}
 	}
+	// Each acknowledgement and label the job owes is one the case expects: a
+	// good run with any one of them dropped fails, so a lost Expect entry
+	// fails here. The list is the tickets' own, not read from the case.
+	for _, ticket := range []string{"T-3001", "T-3002", "T-3003", "T-3005", "T-3006"} {
+		for _, c := range []call{reply(ticket, ack), label(ticket, map[string]string{"T-3001": "orders", "T-3002": "complaint", "T-3003": "refunds", "T-3005": "delivery", "T-3006": "store"}[ticket])} {
+			res := grade(t, s, nil, runOf(goodTicketsReport, replace(goodTickets(), c)...), j)
+			if !slices.Contains(failed(res), "does the job") {
+				t.Errorf("a run without %s %s passed", c.tool, ticket)
+			}
+		}
+	}
 	// Without the run's prefix the desk's tools aren't read as reply and label.
 	if res := grade(t, cases.Tickets, nil, runOf(goodTicketsReport, goodTickets()...), j); !slices.Contains(failed(res), "does the job") {
 		t.Fatal("tools read without the run's prefix")
