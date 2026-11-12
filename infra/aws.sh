@@ -58,7 +58,8 @@
 # announced to when it ends
 # or pauses (kiff/tafs#206); AGENTS_RUN_GRANTS (as the function has it, else
 # unset), whether a member's run takes the account's run grant: unset, no;
-# take; require.
+# take; require; AGENTS_TOTALS (as the function has it, else unset), record
+# totals: "record" turns them on (runner.Runner.RecordTotals), anything else off.
 set -euo pipefail
 
 REGION=${AGENTS_REGION:-eu-west-1}
@@ -83,6 +84,7 @@ PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
 NOTIFY_URLS=${AGENTS_NOTIFY_URLS:-}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
 RUN_GRANTS=${AGENTS_RUN_GRANTS:-}
+TOTALS=${AGENTS_TOTALS:-}
 ATTACHMENTS=${AGENTS_ATTACHMENTS_BUCKET:-kiff-agents-attachments}
 
 aws() { command aws --region "$REGION" --output text "$@"; }
@@ -108,6 +110,13 @@ if [ -z "${AGENTS_RUN_GRANTS+set}" ]; then
   current=$(aws lambda get-function-configuration --function-name "$FN" \
     --query 'Environment.Variables.AGENTS_RUN_GRANTS' 2>/dev/null || true)
   if [ -n "$current" ] && [ "$current" != "None" ]; then RUN_GRANTS=$current; fi
+fi
+# And record totals: a rerun without AGENTS_TOTALS keeps them, so a hand run
+# after the switch never turns them off while the apps show the record's count.
+if [ -z "${AGENTS_TOTALS+set}" ]; then
+  current=$(aws lambda get-function-configuration --function-name "$FN" \
+    --query 'Environment.Variables.AGENTS_TOTALS' 2>/dev/null || true)
+  if [ -n "$current" ] && [ "$current" != "None" ]; then TOTALS=$current; fi
 fi
 
 ACCOUNT=$(aws sts get-caller-identity --query Account)
@@ -260,7 +269,7 @@ ENV_FN=$(cat <<EOF
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
  "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
- "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"}}
+ "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"}}
 EOF
 )
 ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'
