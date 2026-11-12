@@ -47,6 +47,9 @@ const MaxHistory = 50
 // What a run's Error says, for each way it fails. Run.Error is shown to the
 // tenant, so it says what failed, never why: the cause can carry a backend's
 // own diagnostics, and Execute returns it to its caller to log instead.
+// tafs cloud words each of these in the person's language by its exact text
+// (kiff/tafs runtime/src/cloud/work.ts, FAILED_WORDS): one reworded here is
+// reworded there too, or it reads as a plain "It failed".
 const (
 	FailedBuild = "the agent could not be built"
 	FailedStart = "the run could not be started"
