@@ -1,8 +1,8 @@
 name: Eval recipe
 # One recipe's Eval case, before the recipe is at eval/tafs.ref: its taf as
-# kiff/tafs defines a recipe's (infra/eval-definitions.sh), from a kiff/tafs
-# branch or commit still in review (recipe_ref), with every other definition
-# and skill at eval/tafs.ref. Today the one case is tickets (eval/cases,
+# kiff/tafs defines a recipe's (infra/eval-definitions.sh), with the recipe's
+# words from a kiff/tafs branch or commit still in review (recipe_ref) and all
+# code, every other definition and the skills at eval/tafs.ref. Today the one case is tickets (eval/cases,
 # tickets.go), a fresh agent each run on the test account's fake desk.
 #
 # By hand only, one case a run: it spends money and depends on live
@@ -47,23 +47,38 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: tafs' definitions at eval/tafs.ref, the recipe's at recipe_ref
+      - name: tafs' definitions at eval/tafs.ref, with the recipe's words from recipe_ref
+        # Only the recipe's words come from recipe_ref, as data: its file in
+        # English and in each of the other seven languages, read with git show
+        # and never checked out. Every line of code that runs, the recipes'
+        # build included, is kiff/tafs at eval/tafs.ref. A branch still in
+        # review never runs beside the test account's secrets.
         env:
+          CASE: ${{ inputs.case }}
           RECIPE_REF: ${{ inputs.recipe_ref }}
         run: |
+          case "$CASE" in
+            tickets) recipe=acknowledge-every-ticket ;;
+            *) echo "case: no recipe for $CASE" >&2; exit 1 ;;
+          esac
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
-          infra/eval-definitions.sh tafs defs
           if [ -n "$RECIPE_REF" ]; then
             if ! [[ "$RECIPE_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || [[ "$RECIPE_REF" == *..* ]]; then
               echo "recipe_ref: a branch or commit, letters, digits, '.', '_', '/' and '-'" >&2
               exit 1
             fi
-            git clone --quiet https://github.com/kiff/tafs tafs-recipe
-            git -C tafs-recipe fetch --quiet origin "$RECIPE_REF"
-            git -C tafs-recipe checkout --quiet FETCH_HEAD
-            infra/eval-definitions.sh tafs-recipe defs-recipe
-            cp defs-recipe/recipe-*.json defs/
+            git -C tafs fetch --quiet --depth=1 origin "$RECIPE_REF"
+            for path in "recipes/$recipe.md" $(for l in de fr es it pt nl pl; do echo "recipes/$l/$recipe.md"; done); do
+              mkdir -p "tafs/$(dirname "$path")"
+              git -C tafs show "FETCH_HEAD:$path" > "tafs/$path"
+            done
+            (cd tafs/runtime && node scripts/recipes.mjs)
+          fi
+          infra/eval-definitions.sh tafs defs
+          if [ ! -f "defs/recipe-$recipe.json" ]; then
+            echo "recipe: kiff/tafs has no recipe $recipe at ${RECIPE_REF:-eval/tafs.ref}" >&2
+            exit 1
           fi
       - name: The case
         env:
