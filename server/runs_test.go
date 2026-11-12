@@ -652,7 +652,8 @@ func (w *withdrawals) withdraw(_ context.Context, r run.Run, exception string) (
 }
 
 // A run shows the calls that acted and went through (#249), so whoever shows
-// a failed run can say what it did.
+// a failed run can say what it did, and how many may have reached the vendor
+// (sent), so a write whose outcome isn't known never reads as nothing done.
 func TestARunShowsWhatItDid(t *testing.T) {
 	f := newRunFixture(t)
 	f.putAgent("t1", "payouts")
@@ -660,6 +661,7 @@ func TestARunShowsWhatItDid(t *testing.T) {
 	got, _ := f.runs.Get(ctx, "t1", r.ID)
 	if _, err := run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
 		n.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`), Resource: "ch_1"}}
+		n.Sent = 2
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -668,6 +670,25 @@ func TestARunShowsWhatItDid(t *testing.T) {
 	f.want(200, code, body, "read the run")
 	done, _ := body["done"].([]any)
 	if len(done) != 1 || fmt.Sprint(done[0]) != "map[call_id:c1 input:map[charge:ch_1] resource:ch_1 tool:stripe_refund]" {
+		t.Fatalf("done %v", body["done"])
+	}
+	if body["sent"] != float64(2) {
+		t.Fatalf("sent %v", body["sent"])
+	}
+}
+
+// A run that sent nothing says so: sent is 0, written, not left out, so a
+// caller tells "nothing was done" from a server that doesn't say.
+func TestARunThatSentNothingSaysZero(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.heldOn("exc_1")
+	code, body := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
+	f.want(200, code, body, "read the run")
+	if v, ok := body["sent"]; !ok || v != float64(0) {
+		t.Fatalf("sent %v (present %v)", v, ok)
+	}
+	if _, ok := body["done"]; ok {
 		t.Fatalf("done %v", body["done"])
 	}
 }
