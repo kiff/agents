@@ -84,7 +84,11 @@ func DeskTools(prefix string) []map[string]any {
 	ticket := map[string]any{"path": "ticket", "type": "string", "required": true}
 	return []map[string]any{
 		{"tool": "searchTickets", "name": prefix + "_search_tickets", "title": "Search the tickets", "read_only": true,
-			"fixed_arguments": ws, "arguments": map[string]any{"status": map[string]any{"path": "status", "type": "string"}}},
+			// The desk's statuses are open, pending and solved: an argument
+			// with no words for them leaves the agent to guess one ("new"),
+			// and the search answers nothing.
+			"fixed_arguments": ws, "arguments": map[string]any{"status": map[string]any{"path": "status", "type": "string",
+				"description": "open, pending or solved: a new ticket is open. Leave it out for every ticket."}}},
 		{"tool": "fetchTicket", "name": prefix + "_fetch_ticket", "title": "Read one ticket", "read_only": true,
 			"fixed_arguments": ws, "arguments": map[string]any{"ticket": ticket}},
 		{"tool": "postReply", "name": prefix + "_reply", "title": "Reply to a ticket's requester", "resource_argument": "ticket",
