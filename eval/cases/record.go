@@ -1,11 +1,14 @@
 package cases
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/eval"
@@ -142,8 +145,7 @@ func tallyWords(t run.Tally) string {
 //   - the hand-off the taf wrote, when it wrote one with something in it;
 //   - when the taf wrote "Nothing to hand over" and its record shows calls
 //     that went through, the record's own lines for them, each call's tool
-//     and what it acted on where KIFF named it: the taf's word isn't taken
-//     against its record;
+//     and what it acted on: the taf's word isn't taken against its record;
 //   - nothing, when it wrote "Nothing to hand over" and its record shows no
 //     call that went through.
 //
@@ -166,20 +168,111 @@ func handed(report string, done []run.Done) (text string, any, wrote bool) {
 }
 
 // recordLines is what a run's record shows went through, one line a call:
-// its tool, and what it acted on when KIFF named it. Never the call's input,
-// and never the model's words.
+// its tool and what it acted on, never the model's words. What it acted on is
+// KIFF's resource when KIFF names one; else the call's own id-like arguments
+// (idArgs), since a connection may name no resource: a dispute closed with
+// none named would hand the next taf only "- close_dispute". At most fifty
+// calls, and names and ids cut to a line each. tafs' recordLines, line for
+// line.
 func recordLines(done []run.Done) []string {
 	var lines []string
 	for _, d := range done {
-		tool := strings.TrimSpace(d.Tool)
+		tool := cleanLine(d.Tool, 120)
 		if tool == "" {
 			continue
 		}
+		if len(lines) == 50 {
+			break
+		}
+		if on := cleanLine(d.Resource, 120); on != "" {
+			lines = append(lines, "- "+tool+" on "+on)
+			continue
+		}
+		var ids []string
+		for _, a := range idArgs(d.Input) {
+			ids = append(ids, cleanLine(a[0], 40)+": "+cleanLine(a[1], 60))
+		}
 		line := "- " + tool
-		if on := strings.TrimSpace(d.Resource); on != "" {
-			line += " on " + on
+		if len(ids) > 0 {
+			line += " (" + strings.Join(ids, ", ") + ")"
 		}
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+var controls = regexp.MustCompile(`[\x00-\x1f\x7f]+`)
+
+// cleanLine is x on one line, without the space around it, cut to n
+// characters.
+func cleanLine(x string, n int) string {
+	x = strings.TrimSpace(controls.ReplaceAllString(x, " "))
+	if r := []rune(x); len(r) > n {
+		return string(r[:n])
+	}
+	return x
+}
+
+var (
+	noSpace   = regexp.MustCompile(`^\S{1,64}$`)
+	hasDigit  = regexp.MustCompile(`\d`)
+	hasLetter = regexp.MustCompile(`[A-Za-z_-]`)
+)
+
+// idArgs is a call's id-like arguments, at most two, in the input's order:
+// those whose name ends in "id" with a short string or a number for a value;
+// else, with none so named, a short string with no space, a digit, and a
+// letter, a dash or an underscore, the shape of an id ("T-2002", "in_123").
+// Never a long or free-text value: a message or a note isn't what a call
+// acted on. An input that is itself a string of JSON is read as that JSON.
+func idArgs(input json.RawMessage) [][2]string {
+	var inner string
+	if json.Unmarshal(input, &inner) == nil {
+		input = json.RawMessage(inner)
+	}
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil
+	}
+	var named, shaped [][2]string
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, _ := k.(string)
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil
+		}
+		var v any
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.UseNumber()
+		if d.Decode(&v) != nil {
+			continue
+		}
+		byName := strings.HasSuffix(strings.ToLower(key), "id")
+		switch v := v.(type) {
+		case string:
+			if byName && strings.TrimSpace(v) != "" && utf8.RuneCountInString(v) <= 64 {
+				named = append(named, [2]string{key, v})
+			}
+			if noSpace.MatchString(v) && hasDigit.MatchString(v) && hasLetter.MatchString(v) {
+				shaped = append(shaped, [2]string{key, v})
+			}
+		case json.Number:
+			if byName {
+				named = append(named, [2]string{key, v.String()})
+			}
+		}
+	}
+	out := shaped
+	if len(named) > 0 {
+		out = named
+	}
+	if len(out) > 2 {
+		out = out[:2]
+	}
+	return out
 }

@@ -248,11 +248,16 @@ func TestWhatIsHandedComesFromTheRecordWhenTheTafSaysNothing(t *testing.T) {
 	if got := check(with(saysNothing, other), handsOn); got.Pass || !strings.Contains(got.Why, "T-2002") {
 		t.Errorf("handed from a record without T-2002: %+v", got)
 	}
-	// KIFF named no resource for the call: the record's line is the tool alone, as tafs cloud hands it,
-	// so the next taf isn't told which dispute. The call's input isn't handed.
-	byInput := []run.Done{{Tool: "close_dispute", Input: json.RawMessage(`{"dispute":"dp_2002"}`)}}
-	if got := check(with(saysNothing, byInput), handsOn); got.Pass || !strings.Contains(got.Why, "T-2002") {
-		t.Errorf("a line with no resource passed for T-2002: %+v", got)
+	// KIFF named no resource for the call, as on the Eval's account: the record's line names the call's own
+	// id-like argument, as tafs cloud hands it, so the next taf is told which dispute.
+	byInput := []run.Done{{Tool: "close_dispute", Input: json.RawMessage(`{"dispute":"dp_2002","note":"Accepted: small amount"}`)}}
+	if got := check(with(saysNothing, byInput), handsOn); !got.Pass {
+		t.Errorf("named by the call's own argument: %s", got.Why)
+	}
+	// Only a note says which: a note isn't what a call acted on, and isn't handed.
+	byNote := []run.Done{{Tool: "close_dispute", Input: json.RawMessage(`{"note":"accepted dp_2002 today"}`)}}
+	if got := check(with(saysNothing, byNote), handsOn); got.Pass || !strings.Contains(got.Why, "T-2002") {
+		t.Errorf("a note passed for T-2002: %+v", got)
 	}
 	// No section at all: nothing is handed, whatever the record shows.
 	if got := check(with("Answered T-2001; accepted T-2002.", senderDone), handsOn); got.Pass {
