@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -788,4 +789,52 @@ func shortLines(lines []string) eval.Grade {
 		return eval.Grade{Why: "not one short line: " + strings.Join(long, "; ")}
 	}
 	return eval.Grade{Pass: true}
+}
+
+// signsWhatWasAgreed is the setup's gate on the Card: what KIFF holds for the
+// taf is the rules the owner agreed in the chat, line for line. A Card can't
+// hold "1,000 reads a day each" as "4,000 a day" for all four tools, or change
+// a number, without the rules being shown and agreed again (a from-zero test
+// on a phone, 12 Nov 2026).
+const signsWhatWasAgreed = "signs what was agreed"
+
+// agreedRule is the judge's question for signsWhatWasAgreed.
+const agreedRule = "The rules below are what the owner agreed in the chat, in the order shown: a later notice replaces an earlier one. " +
+	"The taf's Cards below are what KIFF holds for it. Pass if the Cards hold the last rules shown, line for line: each limit at its number, " +
+	"on the tools it names, over its period (a day, an hour, each call), held for the owner or refused as the rules say. " +
+	"Fail if a limit was merged with another (two limits of 1,000 a day each held as one of 2,000 a day), if a number, a period or the tools " +
+	"a limit covers differ, or if the Cards allow something the rules hold or refuse; name the rule it breaks. A read the rules call generous " +
+	"with no number passes with any daily count. How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
+	"an aggregate's limit over its window bounds the calls together; on_exceed \"owner\" (or none) holds past a limit, \"refuse\" refuses."
+
+// agreedRules are the rules notices Setup showed, in order, each as its title
+// and text: what the owner agreed by confirming.
+func agreedRules(s said) []string {
+	var out []string
+	for _, id := range s.order {
+		c, ok := s.cards[id]
+		if !ok || c.Type != "notice" {
+			continue
+		}
+		if t := strings.TrimSpace(strings.TrimSpace(c.Title) + "\n" + strings.TrimSpace(c.Text)); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// gradeAgreed grades signsWhatWasAgreed: the notices Setup showed against the
+// Cards KIFF holds. Skipped when Setup showed no rules, or KIFF holds no Card:
+// another check says so.
+func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]any) (eval.CheckResult, error) {
+	rules := agreedRules(s)
+	if len(rules) == 0 || len(cards) == 0 {
+		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Skipped: true, Why: "no rules shown, or no Card held, to compare"}}, nil
+	}
+	b, _ := json.MarshalIndent(cards, "", "  ")
+	g, err := j.AskMajority(ctx, agreedRule, "The rules shown:\n"+numbered(rules)+"\nThe taf's Cards, as KIFF holds them:\n"+string(b)+"\n")
+	if err != nil {
+		return eval.CheckResult{}, err
+	}
+	return eval.CheckResult{Name: signsWhatWasAgreed, Grade: g}, nil
 }
