@@ -33,7 +33,7 @@ func newStripe(key string, hc *http.Client) (*stripe, error) {
 	return &stripe{key: key, hc: hc}, nil
 }
 
-func (s *stripe) do(ctx context.Context, method, path string, form url.Values) (map[string]any, error) {
+func (s *stripe) Do(ctx context.Context, method, path string, form url.Values) (map[string]any, error) {
 	req, err := http.NewRequestWithContext(ctx, method, "https://api.stripe.com"+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -58,12 +58,12 @@ func (s *stripe) do(ctx context.Context, method, path string, form url.Values) (
 // payment makes a test payment of 20.00 EUR to refund, and names the
 // account (the grant pins its tools to it).
 func (s *stripe) payment(ctx context.Context) (account, intent string, err error) {
-	a, err := s.do(ctx, http.MethodGet, "/v1/account", nil)
+	a, err := s.Do(ctx, http.MethodGet, "/v1/account", nil)
 	if err != nil {
 		return "", "", err
 	}
 	account, _ = a["id"].(string)
-	pi, err := s.do(ctx, http.MethodPost, "/v1/payment_intents", url.Values{"amount": {"2000"}, "currency": {"eur"},
+	pi, err := s.Do(ctx, http.MethodPost, "/v1/payment_intents", url.Values{"amount": {"2000"}, "currency": {"eur"},
 		"payment_method": {"pm_card_visa"}, "confirm": {"true"}, "automatic_payment_methods[enabled]": {"true"},
 		"automatic_payment_methods[allow_redirects]": {"never"}, "description": {"kiff/agents e2e"}})
 	if err != nil {
@@ -75,7 +75,7 @@ func (s *stripe) payment(ctx context.Context) (account, intent string, err error
 
 // refunds are the amounts refunded on the payment, by Stripe's account.
 func (s *stripe) refunds(ctx context.Context, intent string) ([]int64, error) {
-	r, err := s.do(ctx, http.MethodGet, "/v1/refunds?payment_intent="+url.QueryEscape(intent), nil)
+	r, err := s.Do(ctx, http.MethodGet, "/v1/refunds?payment_intent="+url.QueryEscape(intent), nil)
 	if err != nil {
 		return nil, err
 	}

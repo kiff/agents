@@ -53,9 +53,9 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	for _, c := range cards {
 		before[c["id"].(string)] = true
 	}
-	calls, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/activity?actor="+url.QueryEscape(tafID)+"&limit=20", nil)
-	if err != nil || calls.err() != nil {
-		return fmt.Errorf("reading the taf's calls: %v %v", err, calls.err())
+	calls, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/activity?actor="+url.QueryEscape(tafID)+"&limit=20", nil)
+	if err != nil || calls.Err() != nil {
+		return fmt.Errorf("reading the taf's calls: %v %v", err, calls.Err())
 	}
 	var act activity
 	_ = json.Unmarshal([]byte(calls.Raw), &act)
@@ -91,9 +91,9 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	draft := result.Draft
 	t.out.hide(draft, "<a draft>")
 	// The draft revises the taf's own Card under the same id, and waits for the owner.
-	d, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil)
-	if err != nil || d.err() != nil {
-		return fmt.Errorf("reading the version's draft: %v %v", err, d.err())
+	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil)
+	if err != nil || d.Err() != nil {
+		return fmt.Errorf("reading the version's draft: %v %v", err, d.Err())
 	}
 	if d.Body["agent_id"] != tafID || d.Body["status"] != "draft" {
 		return fmt.Errorf("the version's draft is for %v and %v; want this taf's agent, waiting", d.Body["agent_id"], d.Body["status"])
@@ -165,8 +165,8 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 		return err
 	}
 	// Going back leaves the draft waiting again, under its own version.
-	if d, err = t.kiff.do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil); err != nil || d.err() != nil {
-		return fmt.Errorf("reading the version's draft after its trial: %v %v", err, d.err())
+	if d, err = t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil); err != nil || d.Err() != nil {
+		return fmt.Errorf("reading the version's draft after its trial: %v %v", err, d.Err())
 	}
 
 	// The switch, through kiff/agents' own routes as tafs cloud calls them: begun
@@ -185,9 +185,9 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 		return fmt.Errorf("beginning the switch: %d %v", status, body)
 	}
 	version, _ := d.Body["version"].(string)
-	c, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version})
-	if err != nil || c.err() != nil {
-		return fmt.Errorf("confirming the version's Card: %v %v", err, c.err())
+	c, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version})
+	if err != nil || c.Err() != nil {
+		return fmt.Errorf("confirming the version's Card: %v %v", err, c.Err())
 	}
 	revs, err := t.cardRevisions(ctx, tafID)
 	if err != nil {
@@ -237,14 +237,14 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 // decided on the trial Card. Going back ends KIFF's trial from the phone, and
 // the version keeps one line with KIFF's counts.
 func (t *test) tryVersion(ctx context.Context, tafID string, n int, draft string) error {
-	d, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil)
-	if err != nil || d.err() != nil {
-		return fmt.Errorf("reading the draft to try: %v %v", err, d.err())
+	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+draft, nil)
+	if err != nil || d.Err() != nil {
+		return fmt.Errorf("reading the draft to try: %v %v", err, d.Err())
 	}
 	version, _ := d.Body["version"].(string)
-	c, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version, "as": "trial"})
-	if err != nil || c.err() != nil {
-		return fmt.Errorf("starting the trial on the phone: %v %v", err, c.err())
+	c, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version, "as": "trial"})
+	if err != nil || c.Err() != nil {
+		return fmt.Errorf("starting the trial on the phone: %v %v", err, c.Err())
 	}
 	if c.Body["status"] != "trying" {
 		return fmt.Errorf("the draft confirmed as a trial is %v; want trying", c.Body["status"])
@@ -278,9 +278,9 @@ func (t *test) tryVersion(ctx context.Context, tafID string, n int, draft string
 	}
 
 	// Back to live, from the phone: KIFF ends the trial and answers its counts.
-	e, err := t.kiff.do(ctx, http.MethodDelete, "/v1/me/agent-drafts/"+draft+"/trial", nil)
-	if err != nil || e.err() != nil {
-		return fmt.Errorf("going back on the phone: %v %v", err, e.err())
+	e, err := t.kiff.Do(ctx, http.MethodDelete, "/v1/me/agent-drafts/"+draft+"/trial", nil)
+	if err != nil || e.Err() != nil {
+		return fmt.Errorf("going back on the phone: %v %v", err, e.Err())
 	}
 	counts := map[string]int{}
 	for _, k := range []string{"calls", "allowed", "held", "refused"} {
@@ -415,9 +415,9 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 // heldCards are the taf's active Cards as KIFF shows them, with the fields a
 // revision names again, as tafs cloud gives them to Setup.
 func (t *test) heldCards(ctx context.Context, agentID string) ([]map[string]any, error) {
-	m, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/mandates", nil)
-	if err != nil || m.err() != nil {
-		return nil, fmt.Errorf("reading the taf's Cards: %v %v", err, m.err())
+	m, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/mandates", nil)
+	if err != nil || m.Err() != nil {
+		return nil, fmt.Errorf("reading the taf's Cards: %v %v", err, m.Err())
 	}
 	var out []map[string]any
 	for _, c := range asList(m.Body["mandates"]) {
@@ -563,9 +563,9 @@ func (t *test) cardRevisions(ctx context.Context, agentID string) ([]registry.Ca
 	var out []registry.CardRevision
 	for _, c := range held {
 		id, _ := c["id"].(string)
-		s, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/mandates/"+url.PathEscape(id)+"/statement", nil)
-		if err != nil || s.err() != nil {
-			return nil, fmt.Errorf("reading Card %s's statement: %v %v", id, err, s.err())
+		s, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/mandates/"+url.PathEscape(id)+"/statement", nil)
+		if err != nil || s.Err() != nil {
+			return nil, fmt.Errorf("reading Card %s's statement: %v %v", id, err, s.Err())
 		}
 		var latest int64
 		for _, r := range asList(s.Body["revisions"]) {

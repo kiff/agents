@@ -45,9 +45,9 @@ func signAnswer(key *ecdsa.PrivateKey, msg []byte) (string, error) {
 // unsigned, is refused: the signature is what makes it the owner's.
 func (t *test) answerHold(ctx context.Context, exception, answer string) error {
 	path := "/v1/me/card-exceptions/" + url.PathEscape(exception)
-	e, err := t.kiff.do(ctx, http.MethodGet, path, nil)
-	if err != nil || e.err() != nil {
-		return fmt.Errorf("reading the held call: %v %v", err, e.err())
+	e, err := t.kiff.Do(ctx, http.MethodGet, path, nil)
+	if err != nil || e.Err() != nil {
+		return fmt.Errorf("reading the held call: %v %v", err, e.Err())
 	}
 	if status, _ := e.Body["status"].(string); status != "held" {
 		return fmt.Errorf("the held call is %q, not held", status)
@@ -57,7 +57,7 @@ func (t *test) answerHold(ctx context.Context, exception, answer string) error {
 		return fmt.Errorf("the held call has no accounting_version")
 	}
 
-	unsigned, err := t.kiff.do(ctx, http.MethodPost, path+"/"+answer, map[string]any{})
+	unsigned, err := t.kiff.Do(ctx, http.MethodPost, path+"/"+answer, map[string]any{})
 	if err != nil {
 		return err
 	}
@@ -70,9 +70,9 @@ func (t *test) answerHold(ctx context.Context, exception, answer string) error {
 	if err != nil {
 		return err
 	}
-	a, err := t.kiff.do(ctx, http.MethodPost, path+"/"+answer, map[string]any{"signature": map[string]string{"signed_at": signedAt, "value": sig}})
-	if err != nil || a.err() != nil {
-		return fmt.Errorf("the phone's signed %s: %v %v", answer, err, a.err())
+	a, err := t.kiff.Do(ctx, http.MethodPost, path+"/"+answer, map[string]any{"signature": map[string]string{"signed_at": signedAt, "value": sig}})
+	if err != nil || a.Err() != nil {
+		return fmt.Errorf("the phone's signed %s: %v %v", answer, err, a.Err())
 	}
 	return nil
 }

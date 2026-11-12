@@ -133,7 +133,7 @@ func (t *test) tafActs(ctx context.Context) (map[string]bool, error) {
 	}
 	var grants []grant
 	for _, id := range t.grants {
-		g, err := t.phone.grant(ctx, id)
+		g, err := t.phone.Grant(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("reading the taf's tools for its record's counts: %w", err)
 		}

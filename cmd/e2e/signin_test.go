@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/kiff/agents/cmd/internal/testaccount"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -54,7 +56,7 @@ func TestTheTestSignsInOnItsOwnAccount(t *testing.T) {
 	if len(lines) != 3 || lines[0] != "sess-e2e" || lines[1] != "setup-key" {
 		t.Fatalf("wrote %q", out.String())
 	}
-	if _, err := parsePhone(lines[2]); err != nil {
+	if _, err := testaccount.ParsePhone(lines[2]); err != nil {
 		t.Fatalf("the phone key doesn't parse: %v", err)
 	}
 	if len(*signedOut) != 0 {

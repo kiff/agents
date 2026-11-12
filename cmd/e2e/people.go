@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/kiff/agents/cmd/internal/testaccount"
+
 	"context"
 	"crypto/ecdsa"
 	"errors"
@@ -49,13 +51,13 @@ func peopleFrom(env func(string) string, kiffBase, cloudBase string, hc *http.Cl
 			missing++
 			continue
 		}
-		key, err := parsePhone(keyText)
+		key, err := testaccount.ParsePhone(keyText)
 		if err != nil {
 			return nil, fmt.Errorf("E2E_%s_PHONE_KEY: %w", upper, err)
 		}
 		out = append(out, &someone{name: p.name, role: p.role, key: key, session: session,
-			kiff:  kiffSession(kiffBase, session, "", key, hc),
-			cloud: &client{base: strings.TrimRight(cloudBase, "/"), http: hc, auth: bearerAuth(session)}})
+			kiff:  testaccount.KIFFSession(kiffBase, session, "", key, hc),
+			cloud: &client{Base: strings.TrimRight(cloudBase, "/"), HTTP: hc, Auth: bearerAuth(session)}})
 	}
 	switch {
 	case missing == 2:
@@ -74,12 +76,12 @@ func bearerAuth(token string) func(*http.Request, []byte) {
 // its draft, it is shared with Support, each person asks it for their own
 // refunds, and what KIFF shows each of them is checked.
 func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error {
-	admin := &client{base: strings.TrimRight(t.cfg.cloud, "/"), http: t.hc, auth: bearerAuth(t.cfg.session)}
+	admin := &client{Base: strings.TrimRight(t.cfg.cloud, "/"), HTTP: t.hc, Auth: bearerAuth(t.cfg.session)}
 
 	for _, p := range t.people {
-		me, err := p.kiff.do(ctx, http.MethodGet, "/v1/me", nil)
-		if err != nil || me.err() != nil {
-			return fmt.Errorf("KIFF didn't take %s's session (renew it with infra/e2e-people-signin.sh): %v %v", p.name, err, me.err())
+		me, err := p.kiff.Do(ctx, http.MethodGet, "/v1/me", nil)
+		if err != nil || me.Err() != nil {
+			return fmt.Errorf("KIFF didn't take %s's session (renew it with infra/e2e-people-signin.sh): %v %v", p.name, err, me.Err())
 		}
 		tenant, _ := me.Body["tenant_id"].(string)
 		role, _ := me.Body["member_role"].(string)
@@ -95,7 +97,7 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 			return fmt.Errorf("KIFF says %s (%s, separation of duties %v) may answer holds: %v; want %v", p.name, p.role, separated, p.answers, want)
 		}
 		t.logf("%s, separation of duties %v, answers holds: %v", p.name, separated, p.answers)
-		p.kiff = kiffSession(kiff.APIURL, p.session, tenant, p.key, t.hc)
+		p.kiff = testaccount.KIFFSession(kiff.APIURL, p.session, tenant, p.key, t.hc)
 		p.inside, p.held = "ch_e2e_"+p.name+"_"+t.run, "ch_e2e_"+p.name+"held_"+t.run
 		t.out.hide(p.inside, "<"+p.name+"'s charge>")
 		t.out.hide(p.held, "<"+p.name+"'s held charge>")
@@ -106,10 +108,10 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 	if err != nil {
 		return fmt.Errorf("the taf's draft: %w", err)
 	}
-	made, err := admin.do(ctx, http.MethodPost, "/v1/tafs", map[string]any{"name": "E2E people " + t.run, "job": "refunds",
+	made, err := admin.Do(ctx, http.MethodPost, "/v1/tafs", map[string]any{"name": "E2E people " + t.run, "job": "refunds",
 		"draft_id": draftID, "claim_secret": rec.Secret, "unscheduled": true})
-	if err != nil || made.err() != nil {
-		return fmt.Errorf("tafs cloud didn't start the taf: %v %v", err, made.err())
+	if err != nil || made.Err() != nil {
+		return fmt.Errorf("tafs cloud didn't start the taf: %v %v", err, made.Err())
 	}
 	taf, _ := made.Body["taf"].(map[string]any)
 	cloudID, _ := taf["id"].(string)
@@ -121,17 +123,17 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 	t.logf("tafs cloud runs the taf from Setup's draft")
 
 	// Shared with Support: a grant on the test's own taf, nothing on the group.
-	gs, err := t.kiff.do(ctx, http.MethodGet, "/v1/groups", nil)
-	if err != nil || gs.err() != nil {
-		return fmt.Errorf("listing the account's groups: %v %v", err, gs.err())
+	gs, err := t.kiff.Do(ctx, http.MethodGet, "/v1/groups", nil)
+	if err != nil || gs.Err() != nil {
+		return fmt.Errorf("listing the account's groups: %v %v", err, gs.Err())
 	}
 	support := groupNamed(gs.Body, "Support")
 	if support == "" {
 		return errors.New("the account has no Support group; make it in the app")
 	}
-	sh, err := t.kiff.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(tafAgent)+"/grants", map[string]string{"group": support})
-	if err != nil || sh.err() != nil {
-		return fmt.Errorf("sharing the taf with Support: %v %v", err, sh.err())
+	sh, err := t.kiff.Do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(tafAgent)+"/grants", map[string]string{"group": support})
+	if err != nil || sh.Err() != nil {
+		return fmt.Errorf("sharing the taf with Support: %v %v", err, sh.Err())
 	}
 	t.shared = append(t.shared, [2]string{tafAgent, support})
 	t.logf("the taf is shared with Support")
@@ -139,9 +141,9 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 	// Each person asks for a refund inside the Card, and one over its limit.
 	for _, p := range t.people {
 		for _, ask := range []string{"Refund charge " + p.inside + " for 200 cents.", "Refund charge " + p.held + " for 900 cents."} {
-			m, err := p.cloud.do(ctx, http.MethodPost, "/v1/tafs/"+url.PathEscape(cloudID)+"/messages", map[string]any{"text": ask, "new_chat": true})
-			if err != nil || m.err() != nil {
-				return fmt.Errorf("%s's message to the shared taf: %v %v", p.name, err, m.err())
+			m, err := p.cloud.Do(ctx, http.MethodPost, "/v1/tafs/"+url.PathEscape(cloudID)+"/messages", map[string]any{"text": ask, "new_chat": true})
+			if err != nil || m.Err() != nil {
+				return fmt.Errorf("%s's message to the shared taf: %v %v", p.name, err, m.Err())
 			}
 		}
 	}
@@ -218,14 +220,14 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 		if p.role != "viewer" {
 			continue
 		}
-		d, err := p.cloud.do(ctx, http.MethodGet, "/v1/tafs/"+url.PathEscape(cloudID)+"/doors", nil)
-		if err != nil || d.err() != nil {
-			return fmt.Errorf("the shared taf's Doors as %s: %v %v", p.name, err, d.err())
+		d, err := p.cloud.Do(ctx, http.MethodGet, "/v1/tafs/"+url.PathEscape(cloudID)+"/doors", nil)
+		if err != nil || d.Err() != nil {
+			return fmt.Errorf("the shared taf's Doors as %s: %v %v", p.name, err, d.Err())
 		}
 		if knocks, _ := d.Body["knocks"].([]any); len(knocks) > 0 {
 			failures = append(failures, fmt.Sprintf("%s reads %d of the shared taf's knocks", p.name, len(knocks)))
 		}
-		if s, _ := p.kiff.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(tafAgent)+"/grants", nil); s.Status/100 == 2 {
+		if s, _ := p.kiff.Do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(tafAgent)+"/grants", nil); s.Status/100 == 2 {
 			failures = append(failures, p.name+" reads who the taf is shared with")
 		}
 	}
@@ -280,9 +282,9 @@ func (t *test) waitForRefunds(ctx context.Context, reader *client, agent string,
 
 // holdsOf is agent's calls KIFF holds, as reader may see them in Needs you.
 func holdsOf(ctx context.Context, reader *client, agent string) ([]hold, error) {
-	a, err := reader.do(ctx, http.MethodGet, "/v1/me/card-exceptions?status=held", nil)
-	if err != nil || a.err() != nil {
-		return nil, fmt.Errorf("Needs you: %v %v", err, a.err())
+	a, err := reader.Do(ctx, http.MethodGet, "/v1/me/card-exceptions?status=held", nil)
+	if err != nil || a.Err() != nil {
+		return nil, fmt.Errorf("Needs you: %v %v", err, a.Err())
 	}
 	var out []hold
 	es, _ := a.Body["exceptions"].([]any)
@@ -323,9 +325,9 @@ func heldCharges(ctx context.Context, reader *client, agent string) ([]string, e
 // refundCount is how many of agent's calls KIFF sent and reader sees: writes
 // allowed, not held, not reads.
 func refundCount(ctx context.Context, reader *client, agent string) (int, error) {
-	a, err := reader.do(ctx, http.MethodGet, "/v1/me/activity?actor="+url.QueryEscape(agent)+"&show=allowed&limit=100", nil)
-	if err != nil || a.err() != nil {
-		return 0, fmt.Errorf("activity: %v %v", err, a.err())
+	a, err := reader.Do(ctx, http.MethodGet, "/v1/me/activity?actor="+url.QueryEscape(agent)+"&show=allowed&limit=100", nil)
+	if err != nil || a.Err() != nil {
+		return 0, fmt.Errorf("activity: %v %v", err, a.Err())
 	}
 	n := 0
 	calls, _ := a.Body["calls"].([]any)
@@ -432,9 +434,9 @@ func (t *test) answerAs(ctx context.Context, k *client, key *ecdsa.PrivateKey, e
 		return 0, errors.New("no held call to answer")
 	}
 	path := "/v1/me/card-exceptions/" + url.PathEscape(exception)
-	e, err := t.kiff.do(ctx, http.MethodGet, path, nil)
-	if err != nil || e.err() != nil {
-		return 0, fmt.Errorf("reading the held call: %v %v", err, e.err())
+	e, err := t.kiff.Do(ctx, http.MethodGet, path, nil)
+	if err != nil || e.Err() != nil {
+		return 0, fmt.Errorf("reading the held call: %v %v", err, e.Err())
 	}
 	version, _ := e.Body["accounting_version"].(float64)
 	signedAt := time.Now().UTC().Format(time.RFC3339)
@@ -442,7 +444,7 @@ func (t *test) answerAs(ctx context.Context, k *client, key *ecdsa.PrivateKey, e
 	if err != nil {
 		return 0, err
 	}
-	a, err := k.do(ctx, http.MethodPost, path+"/"+answer, map[string]any{"signature": map[string]string{"signed_at": signedAt, "value": sig}})
+	a, err := k.Do(ctx, http.MethodPost, path+"/"+answer, map[string]any{"signature": map[string]string{"signed_at": signedAt, "value": sig}})
 	if err != nil {
 		return 0, err
 	}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/kiff/agents/cmd/internal/testaccount"
+
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -98,7 +100,7 @@ func TestHoldsAndRefundsAreReadFromKIFF(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	reader := &client{base: srv.URL, http: srv.Client()}
+	reader := &client{Base: srv.URL, HTTP: srv.Client()}
 	hs, err := holdsOf(context.Background(), reader, "taf-shared")
 	if err != nil || len(hs) != 2 || hs[0] != (hold{"exc_1", "ch_e2e_luisheld_1"}) || hs[1].charge != "ch_e2e_mariaheld_1" {
 		t.Fatalf("holds %v %v", hs, err)
@@ -146,7 +148,7 @@ func TestCleanupUnsharesByQuery(t *testing.T) {
 	}))
 	defer srv.Close()
 	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err := unshare(context.Background(), kiffSession(srv.URL, "s", "t_1", k, srv.Client()), "taf-shared", "grp_support"); err != nil {
+	if err := unshare(context.Background(), testaccount.KIFFSession(srv.URL, "s", "t_1", k, srv.Client()), "taf-shared", "grp_support"); err != nil {
 		t.Fatal(err)
 	}
 	if method != http.MethodDelete || path != "/v1/agents/taf-shared/grants" || group != "grp_support" {

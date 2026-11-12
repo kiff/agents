@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/kiff/agents/cmd/internal/testaccount"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,7 +22,7 @@ import (
 func (t *test) setupReadsRecorded(ctx context.Context) error {
 	var reads []string
 	for _, id := range t.grants {
-		g, err := t.phone.grant(ctx, id)
+		g, err := t.phone.Grant(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -30,18 +32,18 @@ func (t *test) setupReadsRecorded(ctx context.Context) error {
 		t.logf("Setup's reads: none asked for, nothing to check")
 		return nil
 	}
-	setup := kiffSession(kiff.APIURL, t.cfg.setupKey, t.tenant, nil, t.hc)
-	me, err := setup.do(ctx, http.MethodGet, "/v1/me", nil)
-	if err != nil || me.err() != nil {
-		return fmt.Errorf("Setup's key in KIFF: %v %v", err, me.err())
+	setup := testaccount.KIFFSession(kiff.APIURL, t.cfg.setupKey, t.tenant, nil, t.hc)
+	me, err := setup.Do(ctx, http.MethodGet, "/v1/me", nil)
+	if err != nil || me.Err() != nil {
+		return fmt.Errorf("Setup's key in KIFF: %v %v", err, me.Err())
 	}
 	agent, _ := me.Body["agent_id"].(string)
 	if agent == "" {
 		return fmt.Errorf("Setup's key names no agent in KIFF")
 	}
-	a, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/activity?actor="+url.QueryEscape(agent)+"&limit=100", nil)
-	if err != nil || a.err() != nil {
-		return fmt.Errorf("reading Setup's calls in KIFF: %v %v", err, a.err())
+	a, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/activity?actor="+url.QueryEscape(agent)+"&limit=100", nil)
+	if err != nil || a.Err() != nil {
+		return fmt.Errorf("reading Setup's calls in KIFF: %v %v", err, a.Err())
 	}
 	var act setupActivity
 	if err := json.Unmarshal([]byte(a.Raw), &act); err != nil {
