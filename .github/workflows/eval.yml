@@ -71,7 +71,7 @@ jobs:
       MODEL: ${{ inputs.model }}
       EFFORT: ${{ inputs.effort }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -99,11 +99,11 @@ jobs:
             echo "skipped: unchanged since run $id (${sha:0:12})"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.unchanged.outputs.skip != 'true'
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.unchanged.outputs.skip != 'true'
         with:
           node-version: 22
@@ -204,7 +204,7 @@ jobs:
       # check that fails there can be read too (infra/aws.sh). Only a pushed
       # branch's run assumes either: never a pull request's. A red run means a
       # check failed, not the upload.
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: steps.unchanged.outputs.skip != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
         with:
           role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.AWS_EVAL_ROLE || secrets.AWS_EVAL_BRANCH_ROLE }}
