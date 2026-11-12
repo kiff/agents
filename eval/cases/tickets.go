@@ -94,6 +94,12 @@ func DeskTools(prefix string) []map[string]any {
 	}
 }
 
+// cardDomain is the KIFF domain a connection's tools are declared in: every
+// tool planque connects goes to KIFF's gateway domain, so a Card over them
+// names it (a Card with none is checked against the default domain, which
+// declares none of them).
+const cardDomain = "gateway"
+
 // DeskCards are the recipe's Card for a tickets run's agent, in KIFF's form:
 // the reads, up to 1,000 a day; one acknowledgement per ticket and up to 50 a
 // day, the rest held for the owner; labels, up to 200 a day. Closing,
@@ -107,13 +113,13 @@ func DeskCards(prefix string) []map[string]any {
 		return a
 	}
 	return []map[string]any{
-		{"id": prefix + "-reads", "title": "Reading tickets", "on_exceed": "owner",
+		{"id": prefix + "-reads", "domain": cardDomain, "title": "Reading tickets", "on_exceed": "owner",
 			"grants":     []map[string]any{{"action": prefix + "_search_tickets"}, {"action": prefix + "_fetch_ticket"}},
 			"aggregates": []map[string]any{count(1000, "calendar_day", "")}},
-		{"id": prefix + "-acks", "title": "Acknowledgements", "on_exceed": "owner",
+		{"id": prefix + "-acks", "domain": cardDomain, "title": "Acknowledgements", "on_exceed": "owner",
 			"grants":     []map[string]any{{"action": prefix + "_reply"}},
 			"aggregates": []map[string]any{count(50, "calendar_day", ""), count(1, "lifetime", "ticket")}},
-		{"id": prefix + "-labels", "title": "Labels on tickets", "on_exceed": "owner",
+		{"id": prefix + "-labels", "domain": cardDomain, "title": "Labels on tickets", "on_exceed": "owner",
 			"grants":     []map[string]any{{"action": prefix + "_label"}},
 			"aggregates": []map[string]any{count(200, "calendar_day", "")}},
 	}

@@ -101,6 +101,9 @@ func TestTicketsAgentAsksForTheDeskAndItsCard(t *testing.T) {
 	var covered []string
 	acks := false
 	for _, c := range cases.DeskCards(pre) {
+		if c["domain"] != "gateway" {
+			t.Fatalf("%v doesn't name the gateway's domain, where planque's tools are declared", c)
+		}
 		if c["on_exceed"] != "owner" {
 			t.Fatalf("%v doesn't hold for the owner", c)
 		}
