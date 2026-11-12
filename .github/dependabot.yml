@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # The workflows pin each action by commit (# its tag beside it): Dependabot
+  # proposes moving a pin once a new release is a week old.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
