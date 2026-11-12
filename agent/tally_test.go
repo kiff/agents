@@ -393,3 +393,41 @@ func TestACrashedTurnsCallsAreCountedWhenTheRunIsCarriedOn(t *testing.T) {
 		t.Fatalf("carried on, the run read\n%q\nwant\n%q", got, want)
 	}
 }
+
+// A read KIFF refuses is counted as refused (Eval 43243736555: two reads
+// refused, a count of none, and a report that none were refused), while a
+// read that went through isn't counted at all. The run's count comes back on
+// its outcome (Outcome.Count), the same as the model read last.
+func TestARefusedReadIsCountedAndTheCountComesBack(t *testing.T) {
+	get := &seqTool{name: "shop_get_order", access: tool.Read, results: []tool.Result{refused, {Text: `{"order":"o1"}`}}}
+	refund := &seqTool{name: "stripe_refund", access: tool.Write, results: []tool.Result{sent}}
+	m := &script{replies: []model.Reply{
+		uses("c1", "shop_get_order"),
+		uses("c2", "shop_get_order"),
+		uses("c3", "stripe_refund"),
+		say("Done."),
+	}}
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m, get, refund), r, nil, "Work the queue.", nil)
+	if err != nil || out.Stop != agent.Answered {
+		t.Fatalf("outcome %+v, %v", out, err)
+	}
+	first := agent.TallyLine(map[string]run.Tally{"shop_get_order": {Refused: 1}})
+	last := agent.TallyLine(map[string]run.Tally{"shop_get_order": {Refused: 1}, "stripe_refund": {Sent: 1}})
+	if got := counts(m.reqs[1]); got != first {
+		t.Errorf("after the refused read, the model read\n%q\nwant\n%q", got, first)
+	}
+	if got := counts(m.reqs[2]); got != "" {
+		t.Errorf("after a read that went through, the model read a count: %q", got)
+	}
+	if got := counts(m.reqs[3]); got != last {
+		t.Errorf("after the refund, the model read\n%q\nwant\n%q", got, last)
+	}
+	want := map[string]run.Tally{"shop_get_order": {Refused: 1}, "stripe_refund": {Sent: 1}}
+	if got := out.Count(); len(got) != len(want) || got["shop_get_order"] != want["shop_get_order"] || got["stripe_refund"] != want["stripe_refund"] {
+		t.Fatalf("the run's count %+v, want %+v", got, want)
+	}
+	if !strings.Contains(agent.TallyRule, "never write a number of calls") {
+		t.Fatalf("the rule still asks the model to give a number: %q", agent.TallyRule)
+	}
+}

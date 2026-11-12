@@ -662,6 +662,7 @@ func TestARunShowsWhatItDid(t *testing.T) {
 	if _, err := run.Change(ctx, f.runs, got, now, func(n *run.Run) error {
 		n.Done = []run.Done{{CallID: "c1", Tool: "stripe_refund", Input: json.RawMessage(`{"charge":"ch_1"}`), Resource: "ch_1"}}
 		n.Sent = 2
+		n.Tally = map[string]run.Tally{"stripe_refund": {Sent: 1, Unknown: 1}, "shop_get_order": {Refused: 2}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -674,6 +675,10 @@ func TestARunShowsWhatItDid(t *testing.T) {
 	}
 	if body["sent"] != float64(2) {
 		t.Fatalf("sent %v", body["sent"])
+	}
+	// The count from the record, for the caller to show beside the run's words.
+	if got := fmt.Sprint(body["tally"]); got != "map[shop_get_order:map[refused:2] stripe_refund:map[sent:1 unknown:1]]" {
+		t.Fatalf("tally %v", got)
 	}
 }
 

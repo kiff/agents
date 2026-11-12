@@ -657,6 +657,12 @@ func (a Agent) restart(ctx context.Context, rec *session.Recording, history []mo
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns}, emit)
 }
 
+// Count is the run's count of its calls, by tool, from their record: those
+// that act and those KIFF refused, the calls a paused run waits for left out
+// until they end. The runner keeps it on the run (run.Run.Tally). Nil when
+// this part of the run counted nothing from the run's start (a restart).
+func (o Outcome) Count() map[string]run.Tally { return o.tally }
+
 // outcomesIn is how the run's calls in msgs, its own turns after history,
 // ended, by tool, the latest call last: what a continued run starts from, so
 // a held call the owner refused isn't shown done once the run goes on. A call
@@ -953,7 +959,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		waiting, counted := tally{}, false
 		out.tally = out.tally.with(nil)
 		for i, r := range results {
-			if acts(byName[r.Tool], calls[i].Input) && r.Trial == nil && TallyOf(outcome(r, "")) != "" {
+			if counts(byName[r.Tool], calls[i].Input, outcome(r, "")) && r.Trial == nil && TallyOf(outcome(r, "")) != "" {
 				counted = true
 				if r.Waits() {
 					waiting.add(r.Tool, outcome(r, ""))

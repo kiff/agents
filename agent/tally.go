@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
 	"github.com/kiff/agents/run"
+	"github.com/kiff/agents/tool"
 )
 
 // The count of a run's calls that act (run.Tally). A model that totals its
@@ -16,12 +18,30 @@ import (
 // Called event has it, and says the count after the results of every turn
 // that acted: the number the model reports is one it read, not one it made.
 
+// Shown the count, a model still wrote its own: "I submitted evidence on six
+// disputes" with five sent and one held, and "none were refused" with two
+// reads refused that the count left out (Eval 43243736555). So a refused read
+// is counted too (counts), the run keeps its count (run.Run.Tally) for the
+// caller to show beside the model's words, and the rule no longer asks the
+// model to copy a number: it asks it to give none.
+
 // TallyNote opens the count the model reads after the results of a turn
 // that acted, and TallyRule closes it.
 const (
-	TallyNote = "Count so far of this run's calls that act, from its record: "
-	TallyRule = " Any number you give of calls sent, held, refused or failed is one of these, never your own total."
+	TallyNote = "Count so far of this run's calls that act, and of those KIFF refused, from its record: "
+	TallyRule = " This count is shown beside your words from the record, so never write a number of calls sent, held, refused or failed, nor that none were: say what was done and what waits, in words."
 )
+
+// counts is whether a call goes in the count: one that acts, and one KIFF
+// refused, a read included. A refused read changed nothing, but it is a call
+// that didn't go through, and a report saying "none were refused" would be
+// wrong without it.
+func counts(t tool.Tool, input json.RawMessage, outcome string) bool {
+	if acts(t, input) {
+		return true
+	}
+	return TallyOf(outcome) == "refused" && (t == nil || t.Access() != tool.Own)
+}
 
 // TallyOf is the count a call's outcome, as its Called event has it, adds
 // to: one of sent, held, refused, failed or unknown, and "" for a call that

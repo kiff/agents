@@ -310,6 +310,13 @@ type Run struct {
 	// error mark. Zero: nothing the run did can have changed anything, so
 	// what it was handed can go to another run (a schedule's check).
 	Sent int `json:"sent,omitempty"`
+	// Tally counts the run's calls by tool and by what came of each, from
+	// their record (agent.Outcome.Count): those that act, and those KIFF
+	// refused, reads included. A caller shows it beside the run's words, so
+	// a count the model got wrong can't reach the owner as the run's
+	// (Eval 43243736555). Empty for a run that counted nothing, and for one
+	// that ended before it was kept.
+	Tally map[string]Tally `json:"tally,omitempty"`
 
 	// Cancel records that the run was asked to stop: a running run stops at
 	// its next checkpoint (before a model turn, after a tool batch).
