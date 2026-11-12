@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -919,5 +920,123 @@ func TestAGateCheckFailsTheRunAndAdviceDoesnt(t *testing.T) {
 	err := run(context.Background(), []string{"-gate", "refunds=sesn_r"}, io.Discard, io.Discard, keys)
 	if err == nil || !strings.Contains(err.Error(), "a gate check failed: refunds run 1: does the job") {
 		t.Fatalf("with -gate: %v", err)
+	}
+}
+
+// closingStripe is fakeStripe that also keeps each request's method and path.
+type closingStripe struct {
+	fakeStripe
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *closingStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+	f.mu.Unlock()
+	f.fakeStripe.ServeHTTP(w, r)
+}
+
+// A hand-off's cases run kiff/tafs' own words (kiff/tafs#760): the sender is
+// the chargebacks taf with a taf place, from its own definition file, and the
+// receiver's task is tafs' task for a hand-off around the case's text, behind
+// a fence made for the run. The receiver's seed closes one dispute after
+// seeding it, and a case with nothing open seeds no payment.
+func TestAHandoffsCasesRunAsTafsWritesThem(t *testing.T) {
+	done := model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn}
+	f := &closingStripe{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	old := stripeURL
+	stripeURL = srv.URL
+	t.Cleanup(func() { stripeURL = old })
+
+	defs := t.TempDir()
+	def := func(instructions string) []byte {
+		return []byte(`{"instructions": "` + instructions + `", "model": "claude-opus-5-5",
+			"price": {"Input": 4000000, "Output": 20000000, "CacheRead": 200000, "CacheWrite": 5000000}, "max_tokens": 16000, "effort": "high", "history": 10}`)
+	}
+	_ = os.WriteFile(filepath.Join(defs, "chargebacks.json"), def("You work the disputes."), 0o644)
+	_ = os.WriteFile(filepath.Join(defs, "chargebacks-handoff.json"), def("You work the disputes. Your result is also handed to another taf."), 0o644)
+	task := `{"task": "@@FROM@@, another taf, handed you its result. It says how things stood when @@FROM@@ wrote it.\n@@FENCE@@\n@@HANDOFF@@\n@@FENCE@@"}`
+	_ = os.WriteFile(filepath.Join(defs, "handoff-task.json"), []byte(task), 0o644)
+	vars := map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}
+	args := func(more ...string) []string {
+		return append([]string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-seed"}, more...)
+	}
+
+	m := &script{replies: []model.Reply{done, done, done, done}}
+	withAgent(t, m)
+	var stderr bytes.Buffer
+	if err := run(context.Background(), args("handoff-sender", "handoff-nothing", "handoff-nothing-fr", "handoff-receiver"), io.Discard, &stderr, env(vars)); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	if len(m.asked) != 4 {
+		t.Fatalf("%d model turns for 4 runs", len(m.asked))
+	}
+	for i, want := range []string{"handed to another taf", "handed to another taf", "handed to another taf", "You work the disputes."} {
+		if !strings.Contains(m.asked[i].System, want) || (i == 3 && strings.Contains(m.asked[i].System, "handed to another taf")) {
+			t.Errorf("run %d ran as %q", i+1, m.asked[i].System)
+		}
+	}
+	asked := func(i int) string { b, _ := json.Marshal(m.asked[i].Messages); return string(b) }
+	if !strings.Contains(asked(0), "Work the open disputes") || !strings.Contains(asked(2), "Traite les litiges ouverts") {
+		t.Errorf("the senders were asked %s and %s", asked(0), asked(2))
+	}
+	var got struct{ Text string }
+	for _, msg := range m.asked[3].Messages {
+		for _, b := range msg.Blocks {
+			if b.Kind == model.Text && strings.Contains(b.Text, "another taf") {
+				got.Text = b.Text
+			}
+		}
+	}
+	fence := regexp.MustCompile(`----- hand-off [0-9a-f]{16} -----`).FindAllString(got.Text, -1)
+	switch {
+	case !strings.HasPrefix(got.Text, "Support, another taf, handed you its result. It says how things stood when Support wrote it.\n"):
+		t.Errorf("the receiver's task starts %q", got.Text)
+	case len(fence) != 2 || fence[0] != fence[1] || !strings.HasSuffix(got.Text, "\n"+cases.Handed+"\n"+fence[0]):
+		t.Errorf("the hand-off isn't between one fence: %q", got.Text)
+	case strings.Contains(got.Text, "@@"):
+		t.Errorf("a mark is left in the task: %q", got.Text)
+	}
+
+	// Sender: two payments. The two with nothing open: none. Receiver: three, then one dispute closed.
+	payments, closes := 0, []string{}
+	for _, c := range f.calls {
+		if c == "POST /v1/payment_intents" {
+			payments++
+		}
+		if strings.HasSuffix(c, "/close") {
+			closes = append(closes, c)
+		}
+	}
+	if payments != 5 || f.seeds != 4 || len(closes) != 1 || f.calls[len(f.calls)-1] != closes[0] {
+		t.Errorf("%d payments over %d seeds, closed %v, last %s", payments, f.seeds, closes, f.calls[len(f.calls)-1])
+	}
+
+	// Refused before anything runs: a hand-off case without tafs' definitions.
+	m.asked, f.calls = nil, nil
+	err := run(context.Background(), []string{"-run", "-model", "m", "-price", "1,1", "-jobs", defs, "handoff-receiver"}, io.Discard, io.Discard, env(vars))
+	if err == nil || !strings.Contains(err.Error(), "give -definitions") || len(m.asked) != 0 || len(f.calls) != 0 {
+		t.Errorf("without -definitions: %v, %d turns, %d Stripe requests", err, len(m.asked), len(f.calls))
+	}
+	// Definitions from a tafs commit that writes no hand-off: the case fails, saying what is missing.
+	for name, tt := range map[string]struct{ file, c, want string }{
+		"no task":         {"handoff-task.json", "handoff-receiver", "tafs' task for a hand-off"},
+		"no sender":       {"chargebacks-handoff.json", "handoff-sender", "the job's definition"},
+		"a task unmarked": {"", "handoff-receiver", "has no @@HANDOFF@@"},
+	} {
+		if tt.file == "" {
+			_ = os.WriteFile(filepath.Join(defs, "handoff-task.json"), []byte(`{"task": "@@FROM@@ handed you this.\n@@FENCE@@"}`), 0o644)
+		} else {
+			_ = os.Remove(filepath.Join(defs, tt.file))
+		}
+		m.asked = nil
+		err := run(context.Background(), args(tt.c), io.Discard, io.Discard, env(vars))
+		if err == nil || !strings.Contains(err.Error(), tt.want) || len(m.asked) != 0 {
+			t.Errorf("%s: %v, %d turns", name, err, len(m.asked))
+		}
+		_ = os.WriteFile(filepath.Join(defs, "handoff-task.json"), []byte(task), 0o644)
 	}
 }

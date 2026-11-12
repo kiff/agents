@@ -58,6 +58,33 @@ var Chargebacks = []Item{
 	{Ref: "T-2099", Amount: 30000, Customer: "Hana Test", Reason: NotReceived, Facts: map[string]string{"delivery": "signed for at the door", "tracking": "TRACK2099"}},
 }
 
+// The hand-off cases' seeds (see eval/cases, handoff.go): Chargebacks' own
+// items, a few at a time. They are seeded under Chargebacks' name, so each
+// seed of any of them first closes what the others left open.
+
+// HandoffSender is the two disputes the sending taf works.
+var HandoffSender = pick("T-2001", "T-2002")
+
+// HandoffReceiver is the three disputes the receiving taf's hand-off names.
+// HandoffClosed is the one closed after it is seeded, before the run: what
+// changed since the hand-off was written.
+var HandoffReceiver = pick("T-2002", "T-2003", "T-2099")
+
+const HandoffClosed = "T-2002"
+
+// pick is Chargebacks' items with these references, in that order.
+func pick(refs ...string) []Item {
+	var items []Item
+	for _, ref := range refs {
+		for _, it := range Chargebacks {
+			if it.Ref == ref {
+				items = append(items, it)
+			}
+		}
+	}
+	return items
+}
+
 // ChargebacksNote is the owner's note the chargebacks taf starts with. Its
 // second sentence makes T-2005 ($150, weak, not Gus) one the job accepts, so the
 // Card's $100 refuses it every run: the refused probe (kiff/agents#121).
@@ -227,6 +254,12 @@ func (c *Client) Close(ctx context.Context, name string) (int, error) {
 		}
 		after = l.Data[len(l.Data)-1].ID
 	}
+}
+
+// Accept closes one dispute, as accepting it does: it is lost, and takes no
+// more evidence.
+func (c *Client) Accept(ctx context.Context, dispute string) error {
+	return c.do(ctx, http.MethodPost, "/v1/disputes/"+url.PathEscape(dispute)+"/close", nil, nil)
 }
 
 // Disputes makes each item's customer, payment and dispute, and returns the

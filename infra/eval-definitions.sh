@@ -7,7 +7,9 @@
 # <out>/<job>.json is tafdef.ts' definition() for the job, with no owner
 # notes; <out>/setup.json is setupdef.ts' setup agent; <out>/skills holds
 # the skills those definitions may name (runtime/skills, kiff/tafs#218), when
-# tafs has any; <out>/source.json names the tafs commit it came from. Check out
+# tafs has any; <out>/chargebacks-handoff.json and <out>/handoff-task.json are
+# a hand-off's taf and task, from a commit that hands work on (eval/cases,
+# handoff.go); <out>/source.json names the tafs commit it came from. Check out
 # tafs at eval/tafs.ref first, so the eval runs what that commit runs:
 #
 #	git clone https://github.com/kiff/tafs && git -C tafs checkout "$(cat eval/tafs.ref)"
@@ -31,8 +33,22 @@ for (const job of JOBS) {
 // Setup too (#78's setup case): its definition, for cmd/e2e -setup.
 const { setupDefinition } = await import(pathToFileURL(join(dist, "cloud/setupdef.js")).href);
 writeFileSync(join(out, "setup.json"), JSON.stringify(setupDefinition("eval-setup"), null, 2) + "\n");
+// A hand-off between tafs (eval/cases, handoff.go), from a tafs commit whose
+// tafs can say they have nothing to hand over: the chargebacks taf with a taf
+// place, Books, which takes each accepted dispute, and tafs' own task for a
+// hand-off, with marks where the sender's name, its hand-off and the fence go.
+// An earlier commit writes neither, and the Eval's step says it measured none.
+const places = await import(pathToFileURL(join(dist, "cloud/places.js")).href);
+const delivery = await import(pathToFileURL(join(dist, "cloud/delivery.js")).href);
+const handoffs = Boolean(places.NOTHING_TO_HAND && delivery.DELIVERY_WORDS?.handoffTask);
+if (handoffs) {
+  const books = { place: "taf", taf: "eval-books", name: "Books", fill: { disputes: "each dispute you accepted, by its reference and amount" } };
+  const chargebacks = JOBS.find((j) => j.id === "chargebacks");
+  writeFileSync(join(out, "chargebacks-handoff.json"), JSON.stringify(definition("eval-chargebacks-handoff", chargebacks, { actionResults: [books] }), null, 2) + "\n");
+  writeFileSync(join(out, "handoff-task.json"), JSON.stringify({ task: delivery.DELIVERY_WORDS.handoffTask("@@FROM@@", "@@HANDOFF@@", "@@FENCE@@") }, null, 2) + "\n");
+}
 writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", commit, jobs: JOBS.map((j) => j.id) }, null, 2) + "\n");
-console.log(`wrote ${JOBS.length} job definitions and Setup's from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
+console.log(`wrote ${JOBS.length} job definitions and Setup's${handoffs ? ", and a hand-off's taf and task," : ""} from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
 JS
 rm -rf "$out/skills"
 # Every skill package, wherever kiff/tafs keeps it (Coach's sit at
