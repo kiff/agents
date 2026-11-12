@@ -25,7 +25,7 @@ on:
         type: boolean
         default: true
       recipe:
-        description: "A recipe from kiff/tafs at eval/tafs.ref, by id (e.g. acknowledge-every-ticket): the owner says its words alone, on the fake desk"
+        description: "A recipe from kiff/tafs at eval/tafs.ref, by id (e.g. acknowledge-every-ticket): the owner says its words alone, on the fake desk. The run is then the desk's step alone"
         type: string
         default: ""
       recipe_ref:
@@ -96,7 +96,7 @@ jobs:
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
       - name: The simulated owner
-        if: steps.unchanged.outputs.skip != 'true'
+        if: (steps.unchanged.outputs.skip != 'true') && inputs.recipe == ''
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -158,7 +158,7 @@ jobs:
         # kiff/tafs#771: Setup connects the fake vendor's billing by its REST
         # API and a key the phone gives, and the grant is checked: create_invoice
         # pinned to status draft, and no send_invoice.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: (steps.unchanged.outputs.skip != 'true' && (always())) && inputs.recipe == ''
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -188,7 +188,7 @@ jobs:
       # Support (cmd/e2e/people.go). Nightly, and by hand unless turned off;
       # skipped while the people's sessions aren't set (infra/e2e-people-signin.sh).
       - name: Step 9's people
-        if: steps.unchanged.outputs.skip != 'true' && (always() && (github.event_name == 'schedule' || inputs.people) && env.HAS_PEOPLE == 'true')
+        if: (steps.unchanged.outputs.skip != 'true' && (always() && (github.event_name == 'schedule' || inputs.people) && env.HAS_PEOPLE == 'true')) && inputs.recipe == ''
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
