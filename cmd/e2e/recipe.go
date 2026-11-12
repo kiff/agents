@@ -235,3 +235,16 @@ func gradeRecipe(ctx context.Context, j *eval.Judge, r recipe, record string) (e
 func recipeOpening(r recipe, desk string) (msg string, facts []string) {
 	return r.Body, recipeFacts(desk)
 }
+
+// withRecipe is the setup's checks with the recipe's own gate, "keeps the
+// recipe's card", when the run has a recipe: the check the run exists for.
+func withRecipe(checks []eval.CheckResult, r *recipe, grade func(recipe) (eval.CheckResult, error)) ([]eval.CheckResult, error) {
+	if r == nil {
+		return checks, nil
+	}
+	c, err := grade(*r)
+	if err != nil {
+		return nil, fmt.Errorf("grading the taf's Card against the recipe: %w", err)
+	}
+	return append(checks, c), nil
+}

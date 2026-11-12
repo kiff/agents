@@ -1429,12 +1429,11 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}
-	if t.cfg.recipe != nil {
-		c, err := gradeRecipe(ctx, t.cfg.judge, *t.cfg.recipe, t.recipeRecord)
-		if err != nil {
-			return fmt.Errorf("grading the taf's Card against the recipe: %w", err)
-		}
-		checks = append(checks, c)
+	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
+		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
+	})
+	if err != nil {
+		return err
 	}
 	return t.reportSetup(checks)
 }

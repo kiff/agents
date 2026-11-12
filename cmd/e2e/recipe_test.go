@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -171,9 +172,51 @@ func TestARecipeRunsOnTheDesk(t *testing.T) {
 			t.Errorf("%v: %v, want an error saying %q", c.args, err, c.want)
 		}
 	}
+	// A recipe runs against the fake vendor's desk, never a Stripe account.
+	stripe := func(k string) string {
+		if k == "E2E_STRIPE_KEY" {
+			return "sk_test_0123456789"
+		}
+		return ""
+	}
+	if err := run(context.Background(), []string{"-recipe", file, "-desk"}, &redacting{w: &bytes.Buffer{}}, stripe); err == nil || !strings.Contains(err.Error(), "E2E_STRIPE_KEY") {
+		t.Errorf("a recipe with a Stripe key: %v, want an error naming E2E_STRIPE_KEY", err)
+	}
 	// A recipe that reads goes on to what the run needs next.
 	err := run(context.Background(), []string{"-recipe", file, "-desk"}, &redacting{w: &bytes.Buffer{}}, none)
 	if err == nil || !strings.Contains(err.Error(), "is required") {
 		t.Errorf("a recipe on the desk: %v, want the run to ask for its environment", err)
+	}
+}
+
+// The recipe's gate is in the grade whenever the run has a recipe, and only then:
+// it's the check a recipe run exists for.
+func TestARecipeRunIsGradedOnItsCard(t *testing.T) {
+	r, err := loadRecipe("testdata/recipe-tickets.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := []eval.CheckResult{{Name: "asks for no id", Grade: eval.Grade{Pass: true}}}
+	graded := 0
+	grade := func(got recipe) (eval.CheckResult, error) {
+		graded++
+		if got.ID != r.ID {
+			t.Errorf("graded recipe %q, want %q", got.ID, r.ID)
+		}
+		return eval.CheckResult{Name: keepsTheRecipe}, nil
+	}
+	checks, err := withRecipe(setup, &r, grade)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graded != 1 || len(checks) != 2 || checks[1].Name != keepsTheRecipe {
+		t.Fatalf("with a recipe: %+v (graded %d times), want the setup's checks and %q", checks, graded, keepsTheRecipe)
+	}
+	checks, err = withRecipe(setup, nil, grade)
+	if err != nil || graded != 1 || len(checks) != 1 {
+		t.Fatalf("without a recipe: %+v, %v (graded %d times), want the setup's checks alone", checks, err, graded)
+	}
+	if _, err := withRecipe(setup, &r, func(recipe) (eval.CheckResult, error) { return eval.CheckResult{}, errors.New("judge down") }); err == nil {
+		t.Fatal("a judge that fails passed the run")
 	}
 }

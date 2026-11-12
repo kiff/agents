@@ -28,6 +28,10 @@ on:
         description: "A recipe from kiff/tafs at eval/tafs.ref, by id (e.g. acknowledge-every-ticket): the owner says its words alone, on the fake desk"
         type: string
         default: ""
+      recipe_ref:
+        description: "With recipe: the kiff/tafs branch or commit to read the recipe from, for one still in review; empty: eval/tafs.ref. Setup's definition stays eval/tafs.ref's"
+        type: string
+        default: ""
 permissions:
   contents: read
   id-token: write
@@ -122,6 +126,7 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
           RECIPE: ${{ inputs.recipe }}
+          RECIPE_REF: ${{ inputs.recipe_ref }}
         run: |
           recipe="" cost=3
           if [ -n "$RECIPE" ]; then
@@ -129,11 +134,24 @@ jobs:
               echo "recipe: an id is lowercase letters, digits and dashes, at most 64" >&2
               exit 1
             fi
-            if [ ! -f "tafs/recipes/$RECIPE.md" ]; then
+            file="tafs/recipes/$RECIPE.md"
+            if [ -n "$RECIPE_REF" ]; then
+              # A recipe still in review: read from its branch or commit, and Setup stays at eval/tafs.ref.
+              if ! [[ "$RECIPE_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || [[ "$RECIPE_REF" == *..* ]]; then
+                echo "recipe_ref: a branch or commit, letters, digits, '.', '_', '/' and '-'" >&2
+                exit 1
+              fi
+              git -C tafs fetch --quiet --depth=1 origin "$RECIPE_REF"
+              file="recipe-$RECIPE.md"
+              if ! git -C tafs show "FETCH_HEAD:recipes/$RECIPE.md" > "$file"; then
+                echo "recipe: no recipes/$RECIPE.md in kiff/tafs at $RECIPE_REF" >&2
+                exit 1
+              fi
+            elif [ ! -f "$file" ]; then
               echo "recipe: no recipes/$RECIPE.md in kiff/tafs at eval/tafs.ref" >&2
               exit 1
             fi
-            recipe="-recipe tafs/recipes/$RECIPE.md -grade" cost=4
+            recipe="-recipe $file -grade" cost=4
           fi
           go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -max-cost $cost -owner-turns 14 -transcript desk.md $recipe
       - name: Billing, invoices that stay drafts
