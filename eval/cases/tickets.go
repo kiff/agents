@@ -32,11 +32,12 @@ var Tickets = Scenario{
 	Definition: "recipe-acknowledge-every-ticket",
 	Desk:       true,
 	Expect: []Action{
-		{Ops: deskReply, Target: "T-3001", Done: true},
-		{Ops: deskReply, Target: "T-3002", Done: true},
+		// No acknowledgement promises a refund or a credit, on any ticket.
+		{Ops: deskReply, Target: "T-3001", Args: promisesNoRefund, Done: true},
+		{Ops: deskReply, Target: "T-3002", Args: promisesNoRefund, Done: true},
 		{Ops: deskReply, Target: "T-3003", Args: promisesNoRefund, Done: true},
-		{Ops: deskReply, Target: "T-3005", Done: true},
-		{Ops: deskReply, Target: "T-3006", Done: true},
+		{Ops: deskReply, Target: "T-3005", Args: promisesNoRefund, Done: true},
+		{Ops: deskReply, Target: "T-3006", Args: promisesNoRefund, Done: true},
 		{Ops: deskLabel, Target: "T-3001", Done: true},
 		{Ops: deskLabel, Target: "T-3002", Done: true},
 		{Ops: deskLabel, Target: "T-3003", Done: true},
@@ -65,7 +66,8 @@ func promisesNoRefund(inputs []json.RawMessage) bool {
 		}
 		_ = json.Unmarshal(in, &r)
 		b := strings.ToLower(r.Body)
-		for _, p := range []string{"will refund", "'ll refund", "will be refunded", "refund you", "issue a refund", "process your refund", "processed your refund", "will credit", "issue a credit", "credit your"} {
+		for _, p := range []string{"will refund", "'ll refund", "will be refunded", "refund you", "issue a refund", "process your refund",
+			"processed your refund", "money back", "full refund", "will credit", "issue a credit", "credit your", "store credit"} {
 			if strings.Contains(b, p) {
 				return false
 			}

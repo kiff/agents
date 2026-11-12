@@ -107,6 +107,30 @@ func TestTicketsAgentAsksForTheDeskAndItsCard(t *testing.T) {
 	if !slices.Equal(names, covered) || !acks {
 		t.Fatalf("tools %v, covered %v, acknowledgement limits %v", names, covered, acks)
 	}
+	// Each tool as the Card and the record read it: the reads read only, the
+	// writes naming the ticket they act on, each limit as the recipe says.
+	for _, tl := range tools {
+		name := tl["name"].(string)
+		write := strings.HasSuffix(name, "_reply") || strings.HasSuffix(name, "_label")
+		if ro, _ := tl["read_only"].(bool); ro == write {
+			t.Errorf("%s: read_only %v", name, ro)
+		}
+		if res, _ := tl["resource_argument"].(string); write && res != "ticket" {
+			t.Errorf("%s names %q as what it acts on, want ticket", name, res)
+		}
+	}
+	limits := map[string]string{}
+	for _, c := range cases.DeskCards(pre) {
+		b, _ := json.Marshal(c["aggregates"])
+		limits[c["title"].(string)] = string(b)
+	}
+	if limits["Reading tickets"] != `[{"limit":1000,"quantity":"count","window":"calendar_day"}]` ||
+		limits["Labels on tickets"] != `[{"limit":200,"quantity":"count","window":"calendar_day"}]` {
+		t.Fatalf("limits %v", limits)
+	}
+	if cases.Tickets.Items != 7 {
+		t.Fatalf("items %d: the seven tickets a request names", cases.Tickets.Items)
+	}
 	if !cases.Tickets.Desk || cases.Tickets.Definition != "recipe-acknowledge-every-ticket" {
 		t.Fatal("tickets runs as a fresh desk agent, from the recipe's definition")
 	}
