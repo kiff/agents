@@ -1464,6 +1464,7 @@ func (s *Server) toBackground(ctx context.Context, rn run.Run) error {
 	}
 	expires, eerr := s.endedExpires(ctx, rn)
 	if _, cerr := run.Change(ctx, s.Runs, rn, s.now(), func(n *run.Run) error {
+		// Worded by tafs cloud by its exact text, as runner's Failed* are.
 		n.Status, n.Error, n.Expires = run.Error, "it could not be started in the background", expires
 		return nil
 	}); cerr != nil || eerr != nil {
