@@ -569,7 +569,8 @@ const MaxResumes = 3
 var ResumeWaits = [MaxResumes]time.Duration{5 * time.Minute, 20 * time.Minute, time.Hour}
 
 // NeedsYou is the error of a run the sweep carried on MaxResumes times: its
-// note says needs_you, with it as the reason.
+// note says needs_you, with it as the reason. tafs cloud words it by its exact
+// text, as runner's Failed* are.
 const NeedsYou = "It stopped 3 times while it worked, and was restarted each time from its last safe step. It needs you to look at it."
 
 // Restarted is the reason a crashed run's note gives while it waits for its
@@ -581,7 +582,8 @@ const Restarted = "It stopped while it worked. It carries on from its last safe 
 const Stopped = "It stopped while it worked. It carries on from its last safe step shortly, and nothing it did is done twice."
 
 // NeverStarted is the error of a run no invocation claimed after its
-// dispatch was tried MaxResumes times: it needs the owner.
+// dispatch was tried MaxResumes times: it needs the owner. tafs cloud words it
+// by its exact text, as runner's Failed* are.
 const NeverStarted = "It couldn't start: no invocation picked it up after 3 tries. It needs you to look at it."
 
 // Sweep looks at every run whose Due has passed: at most limit RUNNING and
@@ -690,6 +692,7 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		case r.Cancel:
 			n.Status = Cancelled
 		case paused:
+			// Worded by tafs cloud by its exact text, as runner's Failed* are.
 			n.Status, n.Error = Error, "it could not continue once KIFF resolved its held calls"
 		case r.Status == Running && r.Resumes >= MaxResumes:
 			n.Status, n.Error = Error, NeedsYou
