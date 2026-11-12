@@ -164,7 +164,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
         run: go run ./cmd/e2e -sweep
       # The role assumes only from main (infra/aws.sh).
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: steps.unchanged.outputs.skip != 'true' && (always() && github.ref == 'refs/heads/main')
         with:
           role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
