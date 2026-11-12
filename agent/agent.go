@@ -68,6 +68,11 @@ type Agent struct {
 	// empty paused turn) then records it no second time. The runner sets it
 	// from the session's events.
 	Restarted bool
+	// RecordTotals turns on record totals (agent.RecordTallyLine): a read KIFF
+	// refused is counted, and the model is told to give no totals, since the
+	// caller shows the run's count beside its words. The runner sets it from
+	// its setting (AGENTS_TOTALS=record).
+	RecordTotals bool
 	// MaxCost is the most a run may cost, in millionths of a US dollar. A run
 	// that reaches it stops before its next model turn.
 	MaxCost int64
@@ -550,7 +555,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		count.add(h.Tool, oc)
 	}
 	if counted {
-		results = append(results, model.Block{Kind: model.Text, Text: TallyLine(count)})
+		results = append(results, model.Block{Kind: model.Text, Text: a.tallyLine(count)})
 	}
 	// What the run did, from its record, after the results: a continued run
 	// says what was done from it, not from the chat (the R-3005 test).
@@ -656,6 +661,21 @@ func (a Agent) restart(ctx context.Context, rec *session.Recording, history []mo
 	}
 	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns}, emit)
 }
+
+// tallyLine is the count as this agent's model reads it: RecordTallyLine
+// with record totals on, TallyLine otherwise.
+func (a Agent) tallyLine(t map[string]run.Tally) string {
+	if a.RecordTotals {
+		return RecordTallyLine(t)
+	}
+	return TallyLine(t)
+}
+
+// Count is the run's count of its calls, by tool, from their record: those
+// that act and those KIFF refused, the calls a paused run waits for left out
+// until they end. The runner keeps it on the run (run.Run.Tally). Nil when
+// this part of the run counted nothing from the run's start (a restart).
+func (o Outcome) Count() map[string]run.Tally { return o.tally }
 
 // outcomesIn is how the run's calls in msgs, its own turns after history,
 // ended, by tool, the latest call last: what a continued run starts from, so
@@ -953,7 +973,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		waiting, counted := tally{}, false
 		out.tally = out.tally.with(nil)
 		for i, r := range results {
-			if acts(byName[r.Tool], calls[i].Input) && r.Trial == nil && TallyOf(outcome(r, "")) != "" {
+			if counts(byName[r.Tool], calls[i].Input, outcome(r, ""), a.RecordTotals) && r.Trial == nil && TallyOf(outcome(r, "")) != "" {
 				counted = true
 				if r.Waits() {
 					waiting.add(r.Tool, outcome(r, ""))
@@ -964,7 +984,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		count := ""
 		if counted {
-			count = TallyLine(out.tally.with(waiting))
+			count = a.tallyLine(out.tally.with(waiting))
 		}
 		for i, r := range results {
 			blocks[i] = resultBlock(r)

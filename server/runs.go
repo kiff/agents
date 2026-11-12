@@ -143,8 +143,11 @@ type runView struct {
 	// vendor: those in Done, and those whose outcome isn't known (KIFF sent
 	// one and lost the answer). Always written, so a caller tells 0, nothing
 	// the run did can have changed anything, from a server that predates it.
-	Sent            int  `json:"sent"`
-	CancelRequested bool `json:"cancel_requested,omitempty"`
+	Sent int `json:"sent"`
+	// Tally is the run's count of its calls, by tool, from their record
+	// (run.Run.Tally): what a caller shows beside the run's words.
+	Tally           map[string]run.Tally `json:"tally,omitempty"`
+	CancelRequested bool                 `json:"cancel_requested,omitempty"`
 	// Steering is what the owner wrote to the run while it went, each marked
 	// once the run took it. One not taken when the run has ended is the
 	// caller's to send as the next message.
@@ -170,7 +173,7 @@ func (s *Server) viewRun(r run.Run) runView { return viewRunAt(r, s.now()) }
 func viewRunAt(r run.Run, now time.Time) runView {
 	w := r.WorkAt(now)
 	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
-		Output: r.Output, Error: r.Error, Code: run.ErrorCode(r.Error), Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done, Sent: r.Sent,
+		Output: r.Output, Error: r.Error, Code: run.ErrorCode(r.Error), Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done, Sent: r.Sent, Tally: r.Tally,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
 }

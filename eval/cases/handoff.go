@@ -85,7 +85,11 @@ func NothingToHandOver(handoff string) (why string, ok bool) {
 func (s Scenario) handoffChecks() []eval.Check {
 	var checks []eval.Check
 	if len(s.HandsOn) > 0 || s.NothingToHand {
-		checks = append(checks, eval.Check{Name: "ends its result with the hand-off", Grade: s.graded(s.handsOn)})
+		checks = append(checks,
+			// The gate reads what tafs cloud hands the next taf, which comes from the
+			// run's record as well as its words. What the taf itself wrote is advice.
+			eval.Check{Name: "ends its result with the hand-off", Grade: s.graded(s.handsOn)},
+			eval.Check{Name: "writes the hand-off itself", Advisory: true, Grade: s.graded(s.writesHandoff)})
 	}
 	if s.Handed != "" {
 		checks = append(checks,
@@ -97,10 +101,56 @@ func (s Scenario) handoffChecks() []eval.Check {
 	return checks
 }
 
-// handsOn checks the sender's result: it carries a hand-off that names each
-// item the other taf acts on, or, when the run left it nothing, one that says
-// so in tafs' words and gives a reason.
+// handsOn checks what the sender's run hands the next taf, as tafs cloud
+// makes it (handed): the taf's own hand-off, or, when the taf said it had
+// nothing and its record shows writes that went through, the record's lines
+// for them. It names each item the next taf acts on; or, for a run that left
+// nothing, nothing is handed and the taf said so with a reason. A run with a
+// record (eval.Run.Done) is read from it; one without is read from its words
+// alone.
 func (s Scenario) handsOn(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, error) {
+	text, any, wrote := handed(f.report, f.done)
+	if !wrote {
+		return eval.Grade{Why: fmt.Sprintf("the result has no %q section with anything under it, so nothing is handed", HandoffHeading)}, nil
+	}
+	if s.NothingToHand {
+		if any {
+			if len(f.done) > 0 {
+				return eval.Grade{Why: "the run's record shows writes that went through, with nothing to do"}, nil
+			}
+			return eval.Grade{Why: fmt.Sprintf("the hand-off doesn't begin with %q, with nothing to hand over", NothingToHand)}, nil
+		}
+		if why, _ := NothingToHandOver(mustHandoff(f.report)); why == "" {
+			return eval.Grade{Why: fmt.Sprintf("the hand-off says %q and not why", NothingToHand)}, nil
+		}
+		return eval.Grade{Pass: true}, nil
+	}
+	if !any {
+		return eval.Grade{Why: fmt.Sprintf("nothing is handed: the hand-off says %q and the record shows no write that went through, with %s to hand over", NothingToHand, strings.Join(s.HandsOn, ", "))}, nil
+	}
+	var missing []string
+	for _, item := range s.HandsOn {
+		if !s.names(text, item) {
+			missing = append(missing, item)
+		}
+	}
+	if len(missing) > 0 {
+		return eval.Grade{Why: "what is handed doesn't name " + strings.Join(missing, ", ")}, nil
+	}
+	return eval.Grade{Pass: true}, nil
+}
+
+// mustHandoff is the result's hand-off, "" when it has none.
+func mustHandoff(report string) string {
+	text, _ := HandoffOf(report)
+	return text
+}
+
+// writesHandoff checks the taf's own words, apart from its record: its
+// hand-off names each item the next taf acts on, or, with nothing to hand,
+// begins "Nothing to hand over" and says why. Advice: what is handed is the
+// gate's (handsOn), and it holds even when the taf's sentence is wrong.
+func (s Scenario) writesHandoff(_ context.Context, f facts, _ *eval.Judge) (eval.Grade, error) {
 	text, ok := HandoffOf(f.report)
 	if !ok {
 		return eval.Grade{Why: fmt.Sprintf("the result has no %q section with anything under it", HandoffHeading)}, nil

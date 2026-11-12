@@ -25,6 +25,17 @@ func TestCloneSharesNothingAChangeCouldEdit(t *testing.T) {
 	}
 }
 
+// clone keeps everything, field by field: a field a copy drops, as a paused
+// turn's Tally once was, is caught here, not in a continued run whose count
+// started again from nothing.
+func TestCloneKeepsEverything(t *testing.T) {
+	var r Run
+	fill(reflect.ValueOf(&r).Elem())
+	if c := r.clone(); !reflect.DeepEqual(c, r) {
+		t.Errorf("the clone lost something:\n got %+v\nwant %+v", c, r)
+	}
+}
+
 // fill sets every exported field reachable from v, through structs, pointers,
 // slices and maps, to a value that isn't its zero: one element per slice and
 // map, so there is something to share.

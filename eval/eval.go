@@ -27,6 +27,13 @@ type Run struct {
 	// turn_cap, ...); empty where the source doesn't say.
 	Stop   string
 	Events []session.Event
+	// Done and Tally are the run's own record, where its source keeps one
+	// (run.Run): the calls that acted and went through, and its count of its
+	// calls by tool. What a caller hands on and shows comes from these, not
+	// from the agent's words, so the checks of both read them. Nil from a
+	// source that keeps neither.
+	Done  []run.Done
+	Tally map[string]run.Tally
 }
 
 // Grade is one check's verdict on a run. A skipped check isn't counted in the

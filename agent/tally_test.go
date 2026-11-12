@@ -52,7 +52,7 @@ func uses(pairs ...string) model.Reply {
 func counts(req model.Request) string {
 	last := req.Messages[len(req.Messages)-1]
 	for _, b := range last.Blocks {
-		if b.Kind == model.Text && strings.HasPrefix(b.Text, agent.TallyNote) {
+		if b.Kind == model.Text && (strings.HasPrefix(b.Text, agent.TallyNote) || strings.HasPrefix(b.Text, agent.RecordTallyNote)) {
 			return b.Text
 		}
 	}
@@ -391,5 +391,55 @@ func TestACrashedTurnsCallsAreCountedWhenTheRunIsCarriedOn(t *testing.T) {
 	}
 	if got, want := counts(m.reqs[len(m.reqs)-1]), agent.TallyLine(map[string]run.Tally{"stripe_refund": {Sent: 2}}); got != want {
 		t.Fatalf("carried on, the run read\n%q\nwant\n%q", got, want)
+	}
+}
+
+// With record totals on, a read KIFF refuses is counted as refused (Eval
+// 43243736555: two reads refused, a count of none, and a report that none were
+// refused), a read that went through isn't counted, the model is told to give
+// no totals, and the run's count comes back on its outcome (Outcome.Count).
+// Off, as live agents run until callers show the count, the model reads the
+// count and the rule it always did, and a refused read isn't counted.
+func TestRecordTotalsCountARefusedReadAndAskForNoTotals(t *testing.T) {
+	for _, record := range []bool{true, false} {
+		get := &seqTool{name: "shop_get_order", access: tool.Read, results: []tool.Result{refused, {Text: `{"order":"o1"}`}}}
+		refund := &seqTool{name: "stripe_refund", access: tool.Write, results: []tool.Result{sent}}
+		m := &script{replies: []model.Reply{
+			uses("c1", "shop_get_order"),
+			uses("c2", "shop_get_order"),
+			uses("c3", "stripe_refund"),
+			say("Done."),
+		}}
+		_, r := start(t, session.KindRun)
+		a := newAgent(m, get, refund)
+		a.RecordTotals = record
+		out, _, err := agent.Run(context.Background(), a, r, nil, "Work the queue.", nil)
+		if err != nil || out.Stop != agent.Answered {
+			t.Fatalf("record %v: outcome %+v, %v", record, out, err)
+		}
+		want := map[string]run.Tally{"stripe_refund": {Sent: 1}}
+		line, after := agent.TallyLine, ""
+		if record {
+			want["shop_get_order"] = run.Tally{Refused: 1}
+			line, after = agent.RecordTallyLine, agent.RecordTallyLine(map[string]run.Tally{"shop_get_order": {Refused: 1}})
+		}
+		if got := counts(m.reqs[1]); got != after {
+			t.Errorf("record %v: after the refused read, the model read\n%q\nwant\n%q", record, got, after)
+		}
+		if got := counts(m.reqs[2]); got != "" {
+			t.Errorf("record %v: after a read that went through, the model read a count: %q", record, got)
+		}
+		if got, w := counts(m.reqs[3]), line(want); got != w {
+			t.Errorf("record %v: after the refund, the model read\n%q\nwant\n%q", record, got, w)
+		}
+		if got := out.Count(); len(got) != len(want) || got["shop_get_order"] != want["shop_get_order"] || got["stripe_refund"] != want["stripe_refund"] {
+			t.Fatalf("record %v: the run's count %+v, want %+v", record, got, want)
+		}
+	}
+	if !strings.Contains(agent.RecordTallyRule, "never write a number of what was sent") || !strings.Contains(agent.RecordTallyRule, "the items they acted on") {
+		t.Fatalf("the record rule still asks the model to give a number: %q", agent.RecordTallyRule)
+	}
+	if !strings.HasSuffix(agent.RecordTallyLine(map[string]run.Tally{"a": {Sent: 1}}), agent.RecordTallyRule) || !strings.HasPrefix(agent.RecordTallyLine(map[string]run.Tally{"a": {Sent: 1}}), agent.RecordTallyNote) {
+		t.Fatal("the record line isn't the record note and rule")
 	}
 }

@@ -413,11 +413,12 @@ func TestChargebacks(t *testing.T) {
 	}
 }
 
-// Every case has eight gate checks, results from the record and the two
+// Every case has nine gate checks, results from the record and the two
 // judged ones that could mislead about them, and two advisory: how the AI
 // disclosure is phrased, and the narrower record question, whether it says
-// only what it checked (the owner, 6 Nov 2026).
-func TestAllCasesHaveEightGateChecks(t *testing.T) {
+// only what it checked (the owner, 6 Nov 2026). The ninth is the record's
+// second half: the run's count, and the agent's sentences beside it.
+func TestAllCasesHaveNineGateChecks(t *testing.T) {
 	for _, c := range cases.All() {
 		gate, advisory := 0, []string{}
 		for _, ch := range c.Checks {
@@ -427,7 +428,7 @@ func TestAllCasesHaveEightGateChecks(t *testing.T) {
 				gate++
 			}
 		}
-		if gate != 8 || !slices.Equal(advisory, []string{"phrases the disclosure as the job asks", "says only what it checked"}) || c.Items == 0 || c.Input == "" || !c.Smoke {
+		if gate != 9 || !slices.Equal(advisory, []string{"phrases the disclosure as the job asks", "says only what it checked"}) || c.Items == 0 || c.Input == "" || !c.Smoke {
 			t.Errorf("%s: %d gate checks, advisory %v, %d items", c.Name, gate, advisory, c.Items)
 		}
 	}

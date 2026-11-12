@@ -228,7 +228,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	if err != nil {
 		return nil, err
 	}
-	rn := &runner.Runner{Runs: runs, Sessions: store, Builder: &registry.Builder{
+	// Record totals (runner.Runner.RecordTotals) only with AGENTS_TOTALS=record: off until the
+	// callers show a run's count beside its words, so live agents change only then.
+	rn := &runner.Runner{Runs: runs, Sessions: store, RecordTotals: strings.TrimSpace(os.Getenv("AGENTS_TOTALS")) == "record", Builder: &registry.Builder{
 		Agents: agents, Secrets: keys, Skills: skills,
 		Model: sourced(llm, sc, cfg, use, func(msg string, err error) { log.Warn(msg, "err", err) }), Gateways: gateways,
 		// A chat's next message reuses its agent's gateway session for up to two

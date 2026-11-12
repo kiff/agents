@@ -897,6 +897,7 @@ func TestARunKeepsWhatItDidAcrossAPause(t *testing.T) {
 // (Sent), across its pause and when it fails: a write KIFF sent whose answer
 // was lost counts, though it isn't one that went through (Done). A run that
 // only read, then failed, keeps zero: what it was handed can go to another.
+// It keeps its count by tool too (Tally), across the pause.
 func TestARunKeepsHowManyActsMayHaveBeenSent(t *testing.T) {
 	lost := tool.Result{Text: "Sent to the tool, but its response was lost.", IsError: true, State: "unknown"}
 	// The lost write, then no more replies: the next turn fails.
@@ -913,6 +914,9 @@ func TestARunKeepsHowManyActsMayHaveBeenSent(t *testing.T) {
 	r = f.start(server.Start{Input: "cancel 41, refund 42"})
 	if paused := f.pause(r); paused.Status != run.Paused || paused.Sent != 1 {
 		t.Fatalf("paused with sent %d", paused.Sent)
+	} else if want := map[string]run.Tally{"stripe_cancel": {Sent: 1}}; !reflect.DeepEqual(paused.Tally, want) {
+		// The held refund isn't counted until it ends.
+		t.Fatalf("paused with the count %+v, want %+v", paused.Tally, want)
 	}
 	f.answer(r)
 	f.r.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
@@ -922,6 +926,10 @@ func TestARunKeepsHowManyActsMayHaveBeenSent(t *testing.T) {
 	got, err = f.r.Execute(ctx, "t1", r.ID, nil)
 	if err == nil || got.Status != run.Error || got.Sent != 2 || len(got.Done) != 1 {
 		t.Fatalf("after the approved refund: %s, sent %d, done %+v (%v)", got.Status, got.Sent, got.Done, err)
+	}
+	// The run keeps its count from the record, over the pause, for the caller to show (run.Run.Tally).
+	if want := map[string]run.Tally{"stripe_cancel": {Sent: 1}, "stripe_refund": {Unknown: 1}}; !reflect.DeepEqual(got.Tally, want) {
+		t.Fatalf("the run's count %+v, want %+v", got.Tally, want)
 	}
 	// Reads only, then a failed turn: nothing sent.
 	f = newFixture(t, use("r1", "lookup", `{"q":"41"}`))

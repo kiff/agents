@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -320,6 +321,7 @@ func (r Run) clone() Run {
 		c.Done = append(c.Done, d)
 	}
 	c.Steering = slices.Clone(r.Steering)
+	c.Tally = maps.Clone(r.Tally)
 	c.Requirements = nil
 	for _, q := range r.Requirements {
 		q.Input, q.Result = bytes.Clone(q.Input), bytes.Clone(q.Result)
@@ -341,7 +343,9 @@ func (t *Turn) clone() *Turn {
 	if t == nil {
 		return nil
 	}
-	c := Turn{Reply: model.Message{Role: t.Reply.Role, Blocks: cloneBlocks(t.Reply.Blocks)}, Results: cloneBlocks(t.Results), Preface: cloneBlocks(t.Preface)}
+	// Its count too: a copy without it started a continued run's count from
+	// nothing, so after a pause the model read only what came after it.
+	c := Turn{Reply: model.Message{Role: t.Reply.Role, Blocks: cloneBlocks(t.Reply.Blocks)}, Results: cloneBlocks(t.Results), Preface: cloneBlocks(t.Preface), Tally: maps.Clone(t.Tally)}
 	for _, m := range t.Before {
 		c.Before = append(c.Before, model.Message{Role: m.Role, Blocks: cloneBlocks(m.Blocks)})
 	}

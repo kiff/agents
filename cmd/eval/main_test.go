@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -279,6 +280,24 @@ func TestARuntimeRunKeepsWhatTheChecksRead(t *testing.T) {
 	list, _ := rt.runs.List(context.Background(), evalTenant, "refunds", 1)
 	if len(list) != 1 || list[0].Trigger != runs.ByEval {
 		t.Fatalf("runs %+v", list)
+	}
+	// The run's own record comes with it: its count and the write that went through. The
+	// gate's record check reads the count, in code, with no judge, and this runner's
+	// count is the one the check makes from what the runner recorded of each call.
+	if want := map[string]runs.Tally{"create_refund": {Sent: 1}}; !reflect.DeepEqual(r.Tally, want) {
+		t.Fatalf("the run's count %+v, want %+v", r.Tally, want)
+	}
+	if len(r.Done) != 1 || r.Done[0].Tool != "create_refund" {
+		t.Fatalf("the run's writes that went through: %+v", r.Done)
+	}
+	res, err := cases.Refunds.Case().Grade(context.Background(), r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range res.Checks {
+		if c.Name == "says what was done as the record has it" && (!c.Pass || c.Skipped) {
+			t.Fatalf("the runner's own count against its record: %+v", c)
+		}
 	}
 }
 
