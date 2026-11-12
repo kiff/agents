@@ -1059,3 +1059,38 @@ func TestAHandoffsCasesRunAsTafsWritesThem(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(defs, "handoff-task.json"), []byte(task), 0o644)
 	}
 }
+
+// A desk case runs as its own agent, made for each run on the test account:
+// it needs the test account's secrets, never the standing agent's key, and
+// kiff/tafs' definitions for the recipe's taf.
+func TestADeskCaseNeedsTheTestAccount(t *testing.T) {
+	withAgent(t, &script{})
+	defs := t.TempDir()
+	for name, c := range map[string]struct {
+		args []string
+		env  map[string]string
+		want string
+	}{
+		"no definitions": {[]string{"-run", "tickets"}, map[string]string{"ANTHROPIC_API_KEY": "k"}, "-definitions"},
+		"no test account": {[]string{"-run", "-definitions", defs, "tickets"}, map[string]string{"ANTHROPIC_API_KEY": "k"},
+			"a desk case needs E2E_KIFF_SESSION, E2E_SETUP_KEY, E2E_PHONE_KEY, E2E_VENDOR, E2E_DESK_KEY"},
+		"a standing case still needs its key": {[]string{"-run", "-definitions", defs, "tickets", "refunds"}, map[string]string{"ANTHROPIC_API_KEY": "k"}, "KIFF_AGENT_KEY"},
+	} {
+		err := run(context.Background(), c.args, io.Discard, io.Discard, env(c.env))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err %v, want it to mention %q", name, err, c.want)
+		}
+	}
+}
+
+// A desk run's agent writes the AI line into each reply's body, under the
+// run's own prefix; any other case keeps its definition's.
+func TestADeskRunDisclosesInItsReplies(t *testing.T) {
+	d := deskDisclosure("t1a2b3c4d")
+	if err := d.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.In) != 1 || d.In[0].Tool != "t1a2b3c4d_reply" || d.In[0].Fields[0] != "body" {
+		t.Fatalf("%+v", d)
+	}
+}

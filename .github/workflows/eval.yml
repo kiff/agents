@@ -168,6 +168,30 @@ jobs:
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-handoff.json -report report-handoff.md handoff-sender handoff-nothing handoff-nothing-fr handoff-receiver
+      - name: Tickets, a recipe's taf on the fake desk
+        # The recipe "Acknowledge every ticket" as its taf (eval/cases,
+        # tickets.go): a fresh agent each run, made on the test account with
+        # Setup's key and the phone (cmd/eval -desk, desk.go), so its Cards
+        # start at zero; its id goes to E2E_MADE for the sweep below. One run,
+        # gated. A tafs commit without the recipe writes no definition for it:
+        # the step says so and measures nothing.
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+        run: |
+          if [ ! -f defs/recipe-acknowledge-every-ticket.json ]; then
+            echo "Tickets: **not measured**. kiff/tafs at eval/tafs.ref has no recipe acknowledge-every-ticket." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Tickets: not measured: kiff/tafs at eval/tafs.ref has no recipe acknowledge-every-ticket"
+            exit 0
+          fi
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -gate \
+            -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
+            -out results-tickets.json -report report-tickets.md tickets
       - name: Setup with the taf, in English, graded
         # The setup agent as kiff/tafs defines it (setup.json), against prod
         # KIFF, planque and the fake vendor, with the test phone's signed
@@ -264,12 +288,12 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
-          for f in report.md report-handoff.md setup.md desk.md invoices.md; do
+          for f in report.md report-handoff.md report-tickets.md setup.md desk.md invoices.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json setup.md desk.md invoices.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup.md desk.md invoices.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"

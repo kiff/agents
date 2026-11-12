@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// Both workflows on the test account sweep after every run, whatever the
+// Every workflow that makes tafs on the test account sweeps after every run, whatever the
 // runs did, and a failed sweep never fails the run: the verdict is the
 // steps before it.
 func TestTheSweepNeverDecidesTheRun(t *testing.T) {
-	for _, wf := range []string{"eval.yml", "e2e.yml"} {
+	for _, wf := range []string{"eval.yml", "e2e.yml", "eval-recipe.yml"} {
 		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", wf))
 		if err != nil {
 			t.Fatal(err)
