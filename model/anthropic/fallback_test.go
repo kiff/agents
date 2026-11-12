@@ -62,3 +62,40 @@ func TestOnlyTheCreditRefusalAndAnOutageFallBack(t *testing.T) {
 		t.Error("an error that isn't the API's fell back")
 	}
 }
+
+// A request the API refuses for one of its tools (a name or an argument it
+// won't take) is ErrToolsRefused, with the API's words kept for the logs, and
+// never falls back: the backup would refuse the same tools. Any other bad
+// request isn't, even one whose words say "tools".
+func TestARequestRefusedForItsToolsSaysSo(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"a tool's argument name", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"tools.3.custom.input_schema.properties: Property keys should match pattern '^[a-zA-Z0-9_.-]{1,64}$'"}}`, true},
+		{"a tool's name", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"tools.0.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}$'"}}`, true},
+		{"another bad request about tools", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"tool_use ids were found without tool_result blocks immediately after"}}`, false},
+		{"tools words with another status", 500, `{"type":"error","error":{"type":"api_error","message":"tools.0.custom.name: internal"}}`, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(c.status)
+			_, _ = w.Write([]byte(c.body))
+		}))
+		m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("test"), option.WithMaxRetries(0))
+		_, err := m.Turn(context.Background(), model.Request{Model: "claude-sonnet-5-5", MaxTokens: 64,
+			Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Hi."}}}}}, nil)
+		srv.Close()
+		if err == nil {
+			t.Fatalf("%s: no error", c.name)
+		}
+		if got := errors.Is(err, model.ErrToolsRefused); got != c.want {
+			t.Errorf("%s: ErrToolsRefused = %v, want %v (%v)", c.name, got, c.want, err)
+		}
+		if c.want && (anthropic.FallsBack(err) || !strings.Contains(err.Error(), "tools.")) {
+			t.Errorf("%s: fell back, or lost the API's words: %v", c.name, err)
+		}
+	}
+}
