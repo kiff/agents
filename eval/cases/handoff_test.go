@@ -224,7 +224,8 @@ func TestTheHandoffCasesAndTheirChecks(t *testing.T) {
 		if !slices.Equal(gate, want[s.Name]) {
 			t.Errorf("%s gates on %v", s.Name, gate)
 		}
-		if s.Name == "handoff-nothing-fr" && len(advice) != len(want["handoff-nothing"])+1 {
+		// In French every check is advice: the six that gate in English, and the three that are advice there too.
+		if s.Name == "handoff-nothing-fr" && len(advice) != len(want["handoff-nothing"])+3 {
 			t.Errorf("in French: advice %v", advice)
 		}
 	}

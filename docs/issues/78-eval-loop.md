@@ -202,6 +202,14 @@ hand-off is four runs of the chargebacks taf, each on its own small seed:
   `NothingToHandOver`): the text under the last "Hand-off" heading, and
   "Nothing to hand over" as its first line's first words. The two are a copy
   of tafs' `handoffOf` and `nothingToHand`, kept in step by hand.
+- **What is handed comes from the record as well as the words.** tafs cloud
+  doesn't take a taf's "Nothing to hand over" against its record: when the
+  run's `done` lists calls that went through, it hands the record's own lines
+  (each call's tool, and what it acted on where KIFF named it). So "ends its
+  result with the hand-off" reads what tafs cloud would hand (`handed`,
+  `recordLines`, a copy of tafs' `handOff` kept in step by hand), and the
+  taf's own sentence is advice, "writes the hand-off itself". A result with no
+  section still hands nothing and fails.
 - **The checks a hand-off adds** are code, read from the run's record: "ends
   its result with the hand-off" for a sender; "reads what was handed before
   it changes it", "acts once on what was handed" and "leaves what changed
@@ -224,6 +232,26 @@ eval -run -public -definitions defs -seed -gate \
 Tests: `eval/cases/handoff_test.go` (the section as tafs reads it, and each
 check failing on the run that breaks it) and
 `TestAHandoffsCasesRunAsTafsWritesThem` in `cmd/eval`.
+
+**What was done is read from the run's count** (`eval/cases/record.go`).
+A taf's report said "six submitted" with five sent and one held, and "none
+refused" beside two refused reads (Eval 43243736555), so the run keeps its
+count by tool (`run.Run.Tally`) and a caller shows it beside the agent's
+words. The gate follows:
+
+- **"says what was done as the record has it"** is code for a run that keeps
+  its count: the count, tool by tool, against what the runner recorded of each
+  call (its Called events). A tool the scenario acts with is counted in full;
+  a tool whose name says it reads, only by KIFF's refusals of it; a tool the
+  scenario names nowhere, either way. A call still held isn't counted.
+- **"its words don't contradict the record"** is the judged question that
+  used to gate, now advice beside the count: a sentence can still say more
+  than the count shown next to it.
+- **A run with no count** (a Managed Agents session, an older runtime) has
+  only its words, so the judged question gates it, as before.
+
+Tests: `eval/cases/record_test.go`, and `TestARuntimeRunKeepsWhatTheChecksRead`
+in `cmd/eval`, where this runner's own count meets the check.
 
 ## Next
 

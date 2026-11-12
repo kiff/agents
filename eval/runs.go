@@ -39,5 +39,5 @@ func Load(ctx context.Context, sessions session.Store, runs run.Runs, tenant, id
 			own = append(own, e)
 		}
 	}
-	return Run{Session: s, Status: r.Status, Stop: r.Stop, Events: own}, nil
+	return Run{Session: s, Status: r.Status, Stop: r.Stop, Events: own, Done: r.Done, Tally: r.Tally}, nil
 }
