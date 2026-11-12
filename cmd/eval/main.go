@@ -24,6 +24,12 @@
 // runs the model, price, effort and instructions tafs runs. The eval keeps
 // its own tenant, gateway, key, cost cap and keep rules.
 //
+// A hand-off between tafs is four more cases (handoff-sender, handoff-nothing,
+// handoff-nothing-fr, handoff-receiver: eval/cases, handoff.go), for -run with
+// -definitions only: their taf and their task are kiff/tafs' own words, which
+// infra/eval-definitions.sh writes beside the jobs' definitions. -seed seeds
+// each with a few of Chargebacks' items.
+//
 // With -baseline, a case that scores lower than it did there fails the
 // command. -ids is the seed's Stripe ids by item reference.
 //
@@ -43,6 +49,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -50,6 +57,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"os/signal"
@@ -294,7 +302,7 @@ func (rt *runtime) note(ctx context.Context, name string) error {
 func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 	d := rt.base
 	if rt.defs != "" {
-		b, err := os.ReadFile(filepath.Join(rt.defs, s.Job+".json"))
+		b, err := os.ReadFile(filepath.Join(rt.defs, definitionOf(s)+".json"))
 		if err != nil {
 			return d, fmt.Errorf("%s: the job's definition: %w", s.Name, err)
 		}
@@ -349,6 +357,49 @@ func (rt *runtime) loadSkills(ctx context.Context, dir string) error {
 	return nil
 }
 
+// definitionOf is the file a scenario's agent is defined in: its job's, or
+// its own (the job's taf with a place its result is handed to).
+func definitionOf(s cases.Scenario) string {
+	if s.Definition != "" {
+		return s.Definition
+	}
+	return s.Job
+}
+
+// The marks infra/eval-definitions.sh leaves in tafs' task for a hand-off,
+// where the sending taf's name, its hand-off and the fence around it go.
+const (
+	markFrom    = "@@FROM@@"
+	markHandoff = "@@HANDOFF@@"
+	markFence   = "@@FENCE@@"
+)
+
+// input is the run's task: the scenario's instruction, or, for a hand-off,
+// tafs' own task around the hand-off's text (<definitions>/handoff-task.json),
+// with a fence no hand-off can guess, as tafs cloud makes one for each.
+func (rt *runtime) input(s cases.Scenario) (string, error) {
+	if s.Handed == "" {
+		return s.Input, nil
+	}
+	var t struct {
+		Task string `json:"task"`
+	}
+	if err := readJSON(filepath.Join(rt.defs, cases.HandoffTask+".json"), &t); err != nil {
+		return "", fmt.Errorf("%s: tafs' task for a hand-off: %w", s.Name, err)
+	}
+	for _, mark := range []string{markFrom, markHandoff, markFence} {
+		if !strings.Contains(t.Task, mark) {
+			return "", fmt.Errorf("%s: tafs' task for a hand-off has no %s", s.Name, mark)
+		}
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	fence := fmt.Sprintf("----- hand-off %x -----", b)
+	return strings.NewReplacer(markFrom, s.HandedBy, markHandoff, s.Handed, markFence, fence).Replace(t.Task), nil
+}
+
 // cancel asks a run to stop, re-reading it if it changed meanwhile.
 func (rt *runtime) cancel(tenant, id string) {
 	ctx := context.Background()
@@ -376,14 +427,18 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err := rt.agents.Put(ctx, d); err != nil {
 		return eval.Run{}, err
 	}
-	defer func() { rt.config(s.Job, d) }() // after the run connected, so the tools are known
+	defer func() { rt.config(definitionOf(s), d) }() // after the run connected, so the tools are known
+	input, err := rt.input(s)
+	if err != nil {
+		return eval.Run{}, err
+	}
 	if err := rt.note(ctx, s.Name); err != nil {
 		return eval.Run{}, err
 	}
 	// What an earlier run left open at KIFF would be this run's to find:
 	// each run starts from the same fixture, with none.
 	rt.clearPending(s.Name, "before the run")
-	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: s.Input})
+	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: input})
 	if err != nil {
 		return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
 	}
@@ -571,6 +626,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	}
 
 	scenarios := map[string]cases.Scenario{"refunds": cases.Refunds, "chargebacks": cases.Chargebacks}
+	for _, s := range cases.Handoffs() {
+		scenarios[s.Name] = s
+	}
+	known := strings.Join(slices.Sorted(maps.Keys(scenarios)), ", ")
 	var ids map[string][]string
 	if *idsPath != "" {
 		if err := readJSON(*idsPath, &ids); err != nil {
@@ -605,11 +664,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			return errors.New("set STRIPE_API_KEY to a test-mode key for -seed")
 		}
 		for _, arg := range fs.Args() { // before anything runs
-			switch _, known := scenarios[arg]; {
-			case !known:
-				return fmt.Errorf("%q: want a case, refunds or chargebacks", arg)
-			case *seedEach && arg != "chargebacks":
+			s, ok := scenarios[arg]
+			switch {
+			case !ok:
+				return fmt.Errorf("%q: want a case: %s", arg, known)
+			case *seedEach && seeders[arg] == nil:
 				return fmt.Errorf("-seed: %s has no seeder yet: give -ids", arg)
+			case (s.Definition != "" || s.Handed != "") && *defsDir == "":
+				return fmt.Errorf("%s: a hand-off's taf and task are kiff/tafs' own: give -definitions", arg)
 			}
 		}
 		base := registry.Definition{Tenant: evalTenant, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY", MaxCost: int64(*maxCost * 1_000_000)}
@@ -691,7 +753,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 				}
 				s := s.WithIDs(ids)
 				if *seedEach {
-					seeded, _, err := seedChargebacks(ctx, env("STRIPE_API_KEY"), env("EVAL_STRIPE_ACCOUNT"))
+					seeded, _, err := seeders[arg](ctx, env("STRIPE_API_KEY"), env("EVAL_STRIPE_ACCOUNT"))
 					if err != nil {
 						return fmt.Errorf("%s: seed: %w", s.Name, err)
 					}
@@ -711,9 +773,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 			continue
 		}
 		name, id, ok := strings.Cut(arg, "=")
-		s, known := scenarios[name]
-		if !ok || !known || id == "" {
-			return fmt.Errorf("%q: want case=session, with a case of refunds or chargebacks", arg)
+		s, found := scenarios[name]
+		if !ok || !found || id == "" {
+			return fmt.Errorf("%q: want case=session, with a case of: %s", arg, known)
 		}
 		r, err := src.Read(ctx, id)
 		if err != nil {
@@ -858,10 +920,39 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env f
 	return nil
 }
 
+// seeders seed a case in Stripe test mode before a run, by the case's name.
+// Each closes what an earlier seed of any of them left open, and returns the
+// Stripe ids of its items by reference and how many it closed. The hand-off
+// cases seed a few of Chargebacks' items under its name; one with nothing
+// open only closes.
+var seeders = map[string]func(ctx context.Context, key, account string) (map[string][]string, int, error){
+	"chargebacks": seedChargebacks,
+	cases.HandoffSender.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
+		return seedDisputes(ctx, key, account, seed.HandoffSender, "")
+	},
+	cases.HandoffNothing.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
+		return seedDisputes(ctx, key, account, nil, "")
+	},
+	cases.HandoffNothingFR.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
+		return seedDisputes(ctx, key, account, nil, "")
+	},
+	cases.HandoffReceiver.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
+		return seedDisputes(ctx, key, account, seed.HandoffReceiver, seed.HandoffClosed)
+	},
+}
+
 // seedChargebacks closes what an earlier seed left open, seeds the
 // Chargebacks case again, and returns its Stripe ids by reference and how
 // many it closed.
 func seedChargebacks(ctx context.Context, key, account string) (map[string][]string, int, error) {
+	return seedDisputes(ctx, key, account, seed.Chargebacks, "")
+}
+
+// seedDisputes closes what an earlier seed left open and seeds items, under
+// Chargebacks' name. It then accepts the dispute of the item accepted, when
+// one is named: closed before the run, behind the back of whoever still
+// reads it as open.
+func seedDisputes(ctx context.Context, key, account string, items []seed.Item, accepted string) (map[string][]string, int, error) {
 	c, err := seed.New(stripeURL, key, nil)
 	if err != nil {
 		return nil, 0, err
@@ -873,8 +964,15 @@ func seedChargebacks(ctx context.Context, key, account string) (map[string][]str
 	if err != nil {
 		return nil, closed, err
 	}
-	ids, err := c.Disputes(ctx, "chargebacks", seed.Chargebacks)
-	return ids, closed, err
+	ids, err := c.Disputes(ctx, "chargebacks", items)
+	if err != nil || accepted == "" {
+		return ids, closed, err
+	}
+	of := ids[accepted]
+	if len(of) == 0 {
+		return ids, closed, fmt.Errorf("seed: %s isn't one of the seed's items", accepted)
+	}
+	return ids, closed, c.Accept(ctx, of[len(of)-1]) // the dispute is the last of an item's ids
 }
 
 func readJSON(path string, v any) error {

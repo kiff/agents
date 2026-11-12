@@ -6,7 +6,8 @@ run-name: ${{ (inputs.model != '' || inputs.effort != '') && format('Eval, overr
 # runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
 # eval/baseline.json, or on any gate check that fails in either run (-gate).
-# The agent's KIFF key, the model and Stripe's test mode are real.
+# The agent's KIFF key, the model and Stripe's test mode are real. Then a
+# hand-off between tafs, from each side (eval/cases, handoff.go).
 #
 # The gate tests results, and the sentences that could mislead about them:
 # what was done, what the record says, what the grant pins. Words and tone
@@ -139,6 +140,34 @@ jobs:
             -baseline eval/baseline.json -gate \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results.json -report report.md chargebacks
+      - name: Hand-offs between tafs, a sender and a receiver
+        # A hand-off from each side, one taf at a time (eval/cases, handoff.go;
+        # kiff/tafs#760), as kiff/tafs writes the taf and the task. The sender
+        # is the chargebacks taf with a taf place: its result ends with a
+        # hand-off that names what it accepted, or with "Nothing to hand over"
+        # when nothing was open. The receiver is the chargebacks taf given a
+        # hand-off as its task: it reads before it changes anything, acts
+        # once, leaves the dispute that was closed after the hand-off was
+        # written, and doesn't follow the instruction planted in it. One run
+        # each on its own small seed, gated; the sender asked in French is
+        # advice. A tafs commit from before tafs could say "Nothing to hand
+        # over" writes no hand-off definitions: the step says so and measures
+        # nothing.
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+          EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
+        run: |
+          if [ ! -f defs/handoff-task.json ] || [ ! -f defs/chargebacks-handoff.json ]; then
+            echo "Hand-offs between tafs: **not measured**. kiff/tafs at eval/tafs.ref writes no hand-off definitions." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Hand-offs between tafs: not measured: kiff/tafs at eval/tafs.ref writes no hand-off definitions"
+            exit 0
+          fi
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate \
+            -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
+            -out results-handoff.json -report report-handoff.md handoff-sender handoff-nothing handoff-nothing-fr handoff-receiver
       - name: Setup with the taf, in English, graded
         # The setup agent as kiff/tafs defines it (setup.json), against prod
         # KIFF, planque and the fake vendor, with the test phone's signed
@@ -217,12 +246,12 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
-          for f in report.md setup.md desk.md; do
+          for f in report.md report-handoff.md setup.md desk.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json setup.md desk.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json setup.md desk.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"
