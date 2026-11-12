@@ -543,6 +543,53 @@ func TestTheDeskChecks(t *testing.T) {
 	}
 }
 
+// What Setup asks for billing (kiff/tafs#771): an API-key grant whose
+// create_invoice is pinned to a draft, since left out its status makes the
+// invoice final, and no send_invoice, since the owner sends.
+func TestTheInvoiceChecks(t *testing.T) {
+	if got := billingOf("https://fake.example/mcp/"); got != "https://fake.example/billing" {
+		t.Fatalf("billingOf = %s", got)
+	}
+	good := func() grant {
+		var g grant
+		g.Request.Kind = "api_key"
+		g.Request.Tools = []grantTool{
+			{Tool: "list_orders", ReadOnly: true},
+			{Tool: "create_invoice", ResourceArg: "order", Fixed: map[string]any{"status": "draft"}},
+		}
+		return g
+	}
+	if err := invoiceChecks(good()); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		spoil func(*grant)
+		says  []string // what the failure must name
+	}{
+		"an MCP grant":          {func(g *grant) { g.Request.Kind = "" }, []string{"API-key"}},
+		"status the taf sets":   {func(g *grant) { g.Request.Tools[1].Fixed = nil }, []string{"create_invoice", "status", "draft"}},
+		"another argument only": {func(g *grant) { g.Request.Tools[1].Fixed = map[string]any{"currency": "eur"} }, []string{"create_invoice", "status"}},
+		"status finalized":      {func(g *grant) { g.Request.Tools[1].Fixed = map[string]any{"status": "finalized"} }, []string{"create_invoice", "finalized"}},
+		"a send": {func(g *grant) {
+			g.Request.Tools = append(g.Request.Tools, grantTool{Tool: "send_invoice", ResourceArg: "invoice"})
+		}, []string{"send_invoice"}},
+		"no invoice at all": {func(g *grant) { g.Request.Tools = g.Request.Tools[:1] }, []string{"create_invoice"}},
+	} {
+		g := good()
+		c.spoil(&g)
+		err := invoiceChecks(g)
+		if err == nil {
+			t.Errorf("%s passed", name)
+			continue
+		}
+		for _, w := range c.says {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: %q doesn't name %s", name, err, w)
+			}
+		}
+	}
+}
+
 // The nightly log is public: neither the setup grade's line nor the speed
 // line says what the run cost. The judges' cost is in the private transcript.
 func TestThePublicLogSaysNoCost(t *testing.T) {

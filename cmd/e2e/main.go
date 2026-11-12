@@ -23,7 +23,7 @@
 //	E2E_SETUP_KEY       the setup agent's KIFF key (from -signin): an agent with no tools
 //	E2E_VENDOR          the vendor's MCP server (the fake vendor's /mcp)
 //	E2E_VENDOR_TOKEN    the fake vendor's /fake/calls token (the refund checks need it)
-//	E2E_DESK_KEY        the fake support desk's API key: the phone gives it when it
+//	E2E_DESK_KEY        the fake vendor's API key, which its desk and its billing (-invoices) take: the phone gives it when it
 //	                    approves an API-key grant, as an owner does (never Setup)
 //	E2E_PLANQUE         planque, https://planque.kiff.dev by default
 //	E2E_STRIPE_KEY      on demand: a Stripe test-mode key. The vendor is then
@@ -111,6 +111,7 @@ type config struct {
 	made                                            string // -made: the file each taf this run makes is added to, for -sweep
 	improve                                         bool   // the improve case, after the taf
 	desk                                            bool   // the second vendor: a desk by its key, Setup's connection only
+	invoices                                        bool   // billing by its key, for drafts only: Setup's connection only
 	people                                          bool   // step 9's people on a shared taf, instead of the taf's own checks
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
@@ -174,6 +175,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"and Maria and Luis (E2E_MARIA_*, E2E_LUIS_*) each see only their own use of it")
 	fs.BoolVar(&cfg.desk, "desk", false, "the second vendor (kiff/agents#293): Setup connects the fake vendor's support desk, a REST API by its key "+
 		"(E2E_DESK_KEY), not MCP; checked once the desk's tools are connected, with no taf after")
+	fs.BoolVar(&cfg.invoices, "invoices", false, "billing (kiff/tafs#771): Setup connects the fake vendor's billing, a REST API by its key "+
+		"(E2E_DESK_KEY), for draft invoices the owner approves and sends; checked once its tools are connected (status pinned to draft, "+
+		"no send), with no taf after")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
@@ -268,6 +272,16 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	} else if u, err := url.Parse(cfg.vendor); err == nil && u.Host != "" {
 		stdout.hide(strings.TrimRight(cfg.vendor, "/"), "<the vendor>/mcp")
 		stdout.hide(u.Host, "<the vendor>")
+	}
+	if cfg.invoices {
+		switch {
+		case cfg.desk:
+			return errors.New("-desk and -invoices are two cases: run one at a time")
+		case cfg.stripeKey != "":
+			return errors.New("-invoices runs against the fake vendor's billing; unset E2E_STRIPE_KEY")
+		case cfg.deskKey == "":
+			return errors.New("-invoices needs E2E_DESK_KEY: the fake vendor's key, which its billing takes")
+		}
 	}
 	cfg.planque = env("E2E_PLANQUE")
 	if cfg.planque == "" {
@@ -449,8 +463,12 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if err != nil {
 		return err
 	}
-	if t.cfg.desk {
-		t.logf("the desk is connected by its key, scoped to its workspace, with no money argument on its writes")
+	if t.cfg.desk || t.cfg.invoices {
+		if t.cfg.desk {
+			t.logf("the desk is connected by its key, scoped to its workspace, with no money argument on its writes")
+		} else {
+			t.logf("billing is connected by its key, its invoices pinned to draft, with no send")
+		}
 		fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
 		if t.cfg.judge != nil {
 			return t.grade(ctx, tafID)
@@ -910,6 +928,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	if t.cfg.desk {
 		msg, facts = o.deskAsk(deskOf(t.cfg.vendor)), o.deskFacts
 	}
+	if t.cfg.invoices {
+		msg, facts = o.invoiceAsk(billingOf(t.cfg.vendor)), o.invoiceFacts
+	}
 	answered := map[string]string{}
 	toldFacts, factsMarked := false, false
 	approvedGrant := ""
@@ -1002,10 +1023,13 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				if c.Draft != "" {
 					draftID = c.Draft
 				}
-				if t.cfg.desk && approvedGrant != "" {
-					// The desk's case ends once its tools are connected: what Setup
-					// asked for is what's checked.
+				if (t.cfg.desk || t.cfg.invoices) && approvedGrant != "" {
+					// The desk's case and billing's end once its tools are
+					// connected: what Setup asked for is what's checked.
 					if g, err := t.phone.grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
+						if t.cfg.invoices {
+							return g.Request.Agent, "", invoiceChecks(g)
+						}
 						return g.Request.Agent, "", deskChecks(g)
 					}
 				}
@@ -1333,6 +1357,11 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		o.taf = "Desk"        // the name the desk's owner gives (deskAsk)
 		o.facts = o.deskFacts // the limits the desk's owner gives, graded as theirs
 		m.none = true         // the desk has no test or live
+	}
+	if t.cfg.invoices {
+		o.taf = "Invoices"       // the name billing's owner gives (invoiceAsk)
+		o.facts = o.invoiceFacts // the limits billing's owner gives, graded as theirs
+		m.none = true            // billing has no test or live
 	}
 	if t.said.factsMarked && t.setupSession != "" {
 		_, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession)
@@ -2404,6 +2433,45 @@ func deskChecks(g grant) error {
 	}
 	if writes == 0 {
 		return errors.New("the desk's grant has no write: a taf could only read")
+	}
+	return nil
+}
+
+// billingOf is the fake vendor's billing, from its MCP server's address (…/mcp).
+func billingOf(vendor string) string {
+	return strings.TrimSuffix(strings.TrimRight(vendor, "/"), "/mcp") + "/billing"
+}
+
+// invoiceChecks is what Setup must have asked for billing (kiff/tafs#771):
+// an API-key grant whose create_invoice is pinned to a draft. Billing's
+// create_invoice makes a finalized invoice, numbered and final, when its
+// status is left out, so a grant that lets the taf set status, or leaves it
+// to the vendor, lets the taf issue what the owner wanted to approve first.
+// The owner sends the invoices themselves, so send_invoice isn't asked.
+// create_invoice is billing's only way to make an invoice: a grant without
+// it can't do the job.
+func invoiceChecks(g grant) error {
+	if g.Request.Kind != "api_key" {
+		return fmt.Errorf("billing's grant is %q, not an API-key grant", g.Request.Kind)
+	}
+	var create *grantTool
+	for i, tl := range g.Request.Tools {
+		switch tl.Tool {
+		case "create_invoice":
+			create = &g.Request.Tools[i]
+		case "send_invoice":
+			return errors.New("send_invoice is asked, but the owner sends the invoices themselves: a draft-only job sends nothing")
+		}
+	}
+	if create == nil {
+		return errors.New("the grant has no create_invoice: a taf couldn't make the drafts")
+	}
+	switch status, pinned := create.Fixed["status"]; {
+	case !pinned:
+		return errors.New("create_invoice's status isn't pinned: left out, billing finalizes the invoice, " +
+			"so the taf could issue one the owner wanted to approve first. Pin status to draft (fixed_arguments)")
+	case status != "draft":
+		return fmt.Errorf("create_invoice's status is pinned to %v, not draft: every invoice would be final", status)
 	}
 	return nil
 }

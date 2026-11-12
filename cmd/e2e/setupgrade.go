@@ -85,6 +85,10 @@ type owner struct {
 	// support desk with a REST API and no MCP server, reached by its key.
 	deskAsk   func(desk string) string
 	deskFacts []string
+	// invoiceAsk and invoiceFacts are billing's (-invoices): draft invoices
+	// the owner approves and sends, by a REST API and its key.
+	invoiceAsk   func(billing string) string
+	invoiceFacts []string
 }
 
 var owners = map[string]owner{
@@ -109,6 +113,16 @@ var owners = map[string]owner{
 			"Up to 20 replies a day and 50 labels a day, nothing over that. It never touches another workspace, and never closes or deletes tickets. " +
 				"Yes, you can connect to it.",
 			"Yes, that's right. Go ahead.",
+		},
+		invoiceAsk: func(billing string) string {
+			return fmt.Sprintf("We invoice our customers in our billing system once their orders are fulfilled. I want a taf that makes "+
+				"an invoice for each fulfilled order, as a draft for me to check and approve: I finalize and send them myself. Billing has no MCP "+
+				"server: its API is described at %s/openapi.json, its operations start at %s/v1, and its key goes in the X-Billing-Key header. "+
+				"Call the taf Invoices.", billing, billing)
+		},
+		invoiceFacts: []string{
+			"Up to 10 drafts a day, nothing over that. It never sends anything to customers. Yes, you can connect to it.",
+			"Yes, that's right. Go ahead.",
 		}},
 	"es": {lang: "es", language: "Spanish", taf: "Reembolsos",
 		ask: func(vendor string) string {
@@ -127,6 +141,16 @@ var owners = map[string]owner{
 		},
 		deskFacts: []string{
 			"Como mucho 20 respuestas y 50 etiquetas al día. Nunca toca otro espacio, ni cierra ni borra tickets. Sí, puedes conectarte.",
+			"Sí, así es. Adelante.",
+		},
+		invoiceAsk: func(billing string) string {
+			return fmt.Sprintf("Facturamos a nuestros clientes en nuestro sistema de facturación cuando sus pedidos están completados. Quiero una taf "+
+				"que haga una factura por cada pedido completado, como borrador para que yo la revise y la apruebe: yo las emito y las envío. "+
+				"La facturación no tiene servidor MCP: su API está descrita en %s/openapi.json, sus operaciones empiezan en %s/v1 y su clave va "+
+				"en la cabecera X-Billing-Key. Llama a la taf Invoices.", billing, billing)
+		},
+		invoiceFacts: []string{
+			"Como mucho 10 borradores al día. Nunca envía nada a los clientes. Sí, puedes conectarte.",
 			"Sí, así es. Adelante.",
 		}},
 }

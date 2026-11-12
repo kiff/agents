@@ -115,6 +115,20 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -max-cost 3 -owner-turns 14 -transcript desk.md
+      - name: Billing, invoices that stay drafts
+        # kiff/tafs#771: Setup connects the fake vendor's billing by its REST
+        # API and a key the phone gives, and the grant is checked: create_invoice
+        # pinned to status draft, and no send_invoice.
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -invoices -max-cost 3 -owner-turns 14 -transcript invoices.md
       - name: Setup in Spanish, graded, as advice
         # The Eval's graded setup chat (eval.yml), with an owner who writes in
         # Spanish and the taf as kiff/tafs defines it, nightly only, without
@@ -176,6 +190,7 @@ jobs:
           [ -f setup.md ] && aws s3 cp --only-show-errors setup.md "s3://$REPORTS/$key/setup.md"
           [ -f people.md ] && aws s3 cp --only-show-errors people.md "s3://$REPORTS/$key/people.md"
           [ -f desk.md ] && aws s3 cp --only-show-errors desk.md "s3://$REPORTS/$key/desk.md"
+          [ -f invoices.md ] && aws s3 cp --only-show-errors invoices.md "s3://$REPORTS/$key/invoices.md"
           [ -f setup-es.md ] && aws s3 cp --only-show-errors setup-es.md "s3://$REPORTS/$key/setup-es.md"
           echo "transcript: s3://$REPORTS/$key/"
 
