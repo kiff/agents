@@ -427,7 +427,7 @@ func TestARefusedReadIsCountedAndTheCountComesBack(t *testing.T) {
 	if got := out.Count(); len(got) != len(want) || got["shop_get_order"] != want["shop_get_order"] || got["stripe_refund"] != want["stripe_refund"] {
 		t.Fatalf("the run's count %+v, want %+v", got, want)
 	}
-	if !strings.Contains(agent.TallyRule, "never write a number of calls") {
+	if !strings.Contains(agent.TallyRule, "never write a number of what was sent") || !strings.Contains(agent.TallyRule, "the items they acted on") {
 		t.Fatalf("the rule still asks the model to give a number: %q", agent.TallyRule)
 	}
 }

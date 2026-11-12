@@ -29,7 +29,7 @@ import (
 // that acted, and TallyRule closes it.
 const (
 	TallyNote = "Count so far of this run's calls that act, and of those KIFF refused, from its record: "
-	TallyRule = " This count is shown beside your words from the record, so never write a number of calls sent, held, refused or failed, nor that none were: say what was done and what waits, in words."
+	TallyRule = " This count is shown beside your words from the record, so never write a number of what was sent, held, refused or failed, whether calls or the items they acted on (\"six disputes\"), nor that none were: say what was done and what waits, in words."
 )
 
 // counts is whether a call goes in the count: one that acts, and one KIFF

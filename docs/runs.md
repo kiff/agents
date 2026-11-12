@@ -272,9 +272,10 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   model reads the count so far (`agent.TallyLine`): "Count so far of this
   run's calls that act, and of those KIFF refused, from its record:
   stripe_refund: 3 sent, 0 held, 1 refused, 0 failed. This count is shown
-  beside your words from the record, so never write a number of calls sent,
-  held, refused or failed, nor that none were: say what was done and what
-  waits, in words." Asked to copy the count, a model still wrote its own ("six
+  beside your words from the record, so never write a number of what was
+  sent, held, refused or failed, whether calls or the items they acted on
+  ("six disputes"), nor that none were: say what was done and what waits, in
+  words." Asked to copy the count, a model still wrote its own ("six
   submitted" with five sent and one held), so it now gives none, and the run
   keeps the count (`tally`) for its caller to show. A read KIFF refused is
   counted as refused; a read that went through isn't counted, nor a call
