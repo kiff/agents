@@ -270,17 +270,24 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   owner, or its hold expired: not sent), failed, and sent with no word on
   whether it took effect. After the results of every turn that acted, the
   model reads the count so far (`agent.TallyLine`): "Count so far of this
-  run's calls that act, and of those KIFF refused, from its record:
-  stripe_refund: 3 sent, 0 held, 1 refused, 0 failed. This count is shown
-  beside your words from the record, so never write a number of what was
-  sent, held, refused or failed, whether calls or the items they acted on
-  ("six disputes"), nor that none were: say what was done and what waits, in
-  words." Asked to copy the count, a model still wrote its own ("six
-  submitted" with five sent and one held), so it now gives none, and the run
-  keeps the count (`tally`) for its caller to show. A read KIFF refused is
-  counted as refused; a read that went through isn't counted, nor a call
-  refused back unmade (beside a read). It's a line after the results, never
-  inside one, so clearing a read result or cutting a kept one can't lose
+  run's calls that act, from its record: stripe_refund: 3 sent, 0 held,
+  1 refused, 0 failed. Any number you give of calls sent, held, refused or
+  failed is one of these, never your own total." Reads aren't counted, nor a
+  call refused back unmade (beside a read).
+  - **Record totals** (`AGENTS_TOTALS=record`, `runner.Runner.RecordTotals`;
+    off unless set, and on in the Eval unless `AGENTS_TOTALS=off`). Asked to
+    copy the count, a model still wrote its own ("six submitted" with five sent
+    and one held), so with record totals on it gives none: a read KIFF refused
+    is counted as refused, and the line becomes `agent.RecordTallyLine`:
+    "Count so far of this run's calls that act, and of those KIFF refused, from
+    its record: … This count is shown beside your words from the record, so
+    never write a number of what was sent, held, refused or failed, whether
+    calls or the items they acted on ("six disputes"), nor that none were: say
+    what was done and what waits, in words." Its caller shows the run's count
+    (`tally`) beside its words; that's why it's a setting, turned on once the
+    callers show it. The run's `tally` is kept either way.
+
+  The count is a line after the results, never inside one, so clearing a read result or cutting a kept one can't lose
   it. Across a pause the count is kept with the paused turn
   (`run.Turn.Tally`), without the calls the run waits for: the turn that
   says what it waits for reads them as held (a call whose outcome comes

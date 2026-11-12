@@ -26,21 +26,27 @@ import (
 // model to copy a number: it asks it to give none.
 
 // TallyNote opens the count the model reads after the results of a turn
-// that acted, and TallyRule closes it.
+// that acted, and TallyRule closes it. With record totals on
+// (Agent.RecordTotals), RecordTallyNote and RecordTallyRule do instead: the
+// caller then shows the run's count beside its words (run.Run.Tally), so the
+// model gives none. It's a setting so that live agents change only once that
+// count shows (AGENTS_TOTALS=record).
 const (
-	TallyNote = "Count so far of this run's calls that act, and of those KIFF refused, from its record: "
-	TallyRule = " This count is shown beside your words from the record, so never write a number of what was sent, held, refused or failed, whether calls or the items they acted on (\"six disputes\"), nor that none were: say what was done and what waits, in words."
+	TallyNote       = "Count so far of this run's calls that act, from its record: "
+	TallyRule       = " Any number you give of calls sent, held, refused or failed is one of these, never your own total."
+	RecordTallyNote = "Count so far of this run's calls that act, and of those KIFF refused, from its record: "
+	RecordTallyRule = " This count is shown beside your words from the record, so never write a number of what was sent, held, refused or failed, whether calls or the items they acted on (\"six disputes\"), nor that none were: say what was done and what waits, in words."
 )
 
-// counts is whether a call goes in the count: one that acts, and one KIFF
-// refused, a read included. A refused read changed nothing, but it is a call
-// that didn't go through, and a report saying "none were refused" would be
-// wrong without it.
-func counts(t tool.Tool, input json.RawMessage, outcome string) bool {
+// counts is whether a call goes in the count: one that acts, and, with record
+// totals on, one KIFF refused, a read included. A refused read changed
+// nothing, but it is a call that didn't go through, and a report saying "none
+// were refused" would be wrong without it.
+func counts(t tool.Tool, input json.RawMessage, outcome string, record bool) bool {
 	if acts(t, input) {
 		return true
 	}
-	return TallyOf(outcome) == "refused" && (t == nil || t.Access() != tool.Own)
+	return record && TallyOf(outcome) == "refused" && (t == nil || t.Access() != tool.Own)
 }
 
 // TallyOf is the count a call's outcome, as its Called event has it, adds
@@ -107,8 +113,15 @@ func (t tally) with(more tally) tally {
 
 // TallyLine is the count as the model reads it: each tool by name, in
 // order, with its four counts, and the calls whose outcome isn't known only
-// when there are some. "" when nothing was counted.
-func TallyLine(t map[string]run.Tally) string {
+// when there are some. "" when nothing was counted. With record totals on,
+// RecordTallyLine.
+func TallyLine(t map[string]run.Tally) string { return tallyLine(t, false) }
+
+// RecordTallyLine is TallyLine with record totals on: the model is told the
+// count is shown beside its words, and to give none.
+func RecordTallyLine(t map[string]run.Tally) string { return tallyLine(t, true) }
+
+func tallyLine(t map[string]run.Tally, record bool) string {
 	if len(t) == 0 {
 		return ""
 	}
@@ -120,6 +133,9 @@ func TallyLine(t map[string]run.Tally) string {
 			part += fmt.Sprintf(", %d sent with no word on whether it took effect", n.Unknown)
 		}
 		parts = append(parts, part)
+	}
+	if record {
+		return RecordTallyNote + strings.Join(parts, "; ") + "." + RecordTallyRule
 	}
 	return TallyNote + strings.Join(parts, "; ") + "." + TallyRule
 }

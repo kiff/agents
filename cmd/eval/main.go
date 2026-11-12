@@ -230,7 +230,9 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill,
 		kiffKey: kiffKey, kiffAPI: kiff.APIURL, log: log}
 	rt.skills = memory.NewSkills()
-	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
+	// The Eval measures record totals unless AGENTS_TOTALS=off: what production runs once it
+	// sets AGENTS_TOTALS=record (runner.Runner.RecordTotals).
+	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, RecordTotals: strings.TrimSpace(os.Getenv("AGENTS_TOTALS")) != "off", Builder: &registry.Builder{
 		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect, Skills: rt.skills,
 		Own: func(tenant, agent string, version int) []tool.Tool {
 			return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent, version)}

@@ -79,6 +79,11 @@ type Runner struct {
 	Sessions session.Store
 	// Builder builds a run's agent for its tenant, each time it executes.
 	Builder *registry.Builder
+	// RecordTotals turns on record totals for every run (agent.Agent.RecordTotals):
+	// a read KIFF refused is counted, and the model gives no totals, since the
+	// caller shows the run's count (run.Run.Tally). Off, the model reads the
+	// count and the rule it always did. AGENTS_TOTALS=record turns it on.
+	RecordTotals bool
 	// Heartbeat is how often a going run renews its lease (run.Renew):
 	// zero, DefaultHeartbeat. A test sets it short.
 	Heartbeat time.Duration
@@ -531,6 +536,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	sp.add("build", a.StartSpans)
 	a.Tools = x.watchSkillReads(a.Tools)
+	a.RecordTotals = rn.RecordTotals
 	a.Cancel = x.cancelled
 	a.Steer = x.steered
 	a.Checkpoint = x.checkpoint
