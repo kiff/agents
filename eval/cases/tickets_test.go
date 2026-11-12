@@ -98,6 +98,14 @@ func TestTicketsAgentAsksForTheDeskAndItsCard(t *testing.T) {
 			t.Fatalf("a tool that closes or deletes: %v", tl)
 		}
 	}
+	// The search says the desk's own statuses, so the agent never asks for one
+	// the desk doesn't have ("new") and finds nothing.
+	status := tools[0]["arguments"].(map[string]any)["status"].(map[string]any)["description"].(string)
+	for _, st := range []string{"open", "pending", "solved"} {
+		if !strings.Contains(status, st) {
+			t.Fatalf("the search's status doesn't name %q: %q", st, status)
+		}
+	}
 	var covered []string
 	acks := false
 	for _, c := range cases.DeskCards(pre) {
