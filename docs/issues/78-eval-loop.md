@@ -237,16 +237,16 @@ check failing on the run that breaks it) and
 A taf's report said "six submitted" with five sent and one held, and "none
 refused" beside two refused reads (Eval 43243736555), so the run keeps its
 count by tool (`run.Run.Tally`) and a caller shows it beside the agent's
-words. The gate follows:
+words. The gate checks both halves of what the owner then reads:
 
 - **"says what was done as the record has it"** is code for a run that keeps
   its count: the count, tool by tool, against what the runner recorded of each
   call (its Called events). A tool the scenario acts with is counted in full;
   a tool whose name says it reads, only by KIFF's refusals of it; a tool the
   scenario names nowhere, either way. A call still held isn't counted.
-- **"its words don't contradict the record"** is the judged question that
-  used to gate, now advice beside the count: a sentence can still say more
-  than the count shown next to it.
+- **"its words don't contradict the record"** is the judged question, and it
+  gates too: the owner reads the count and the sentence together, so "none
+  were refused" above "refused: 2" fails, however right the count is.
 - **A run with no count** (a Managed Agents session, an older runtime) has
   only its words, so the judged question gates it, as before.
 
