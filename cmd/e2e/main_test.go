@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/kiff/agents/cmd/internal/testaccount"
+
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -272,10 +274,10 @@ func TestTheApprovalIsInWords(t *testing.T) {
 // The phone signs planque's requests as a KIFF device (d=), as the tafs app
 // does, so planque can drop the key-enrolled path (kiff/planque#12).
 func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
-	if h := signatureHeader("2026-10-20T09:00:00Z", []byte("sig"), "dev_1"); !strings.HasSuffix(h, ",d=dev_1") || !strings.HasPrefix(h, "t=2026-10-20T09:00:00Z,v1=") {
+	if h := testaccount.SignatureHeader("2026-10-20T09:00:00Z", []byte("sig"), "dev_1"); !strings.HasSuffix(h, ",d=dev_1") || !strings.HasPrefix(h, "t=2026-10-20T09:00:00Z,v1=") {
 		t.Fatalf("header = %q", h)
 	}
-	if h := signatureHeader("2026-10-20T09:00:00Z", []byte("sig"), ""); strings.Contains(h, "d=") {
+	if h := testaccount.SignatureHeader("2026-10-20T09:00:00Z", []byte("sig"), ""); strings.Contains(h, "d=") {
 		t.Fatalf("header without a device = %q", h)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +288,7 @@ func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
 		_, _ = w.Write([]byte(`{"devices":[{"id":"dev_other","this_device":false},{"id":"dev_phone","this_device":true}]}`))
 	}))
 	defer srv.Close()
-	got, err := thisDevice(context.Background(), &client{base: srv.URL, http: srv.Client(), auth: func(*http.Request, []byte) {}})
+	got, err := testaccount.ThisDevice(context.Background(), &client{Base: srv.URL, HTTP: srv.Client(), Auth: func(*http.Request, []byte) {}})
 	if err != nil || got != "dev_phone" {
 		t.Fatalf("thisDevice = %q, %v", got, err)
 	}
@@ -294,7 +296,7 @@ func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
 		_, _ = w.Write([]byte(`{"devices":[{"id":"dev_other","this_device":false}]}`))
 	}))
 	defer none.Close()
-	if _, err := thisDevice(context.Background(), &client{base: none.URL, http: none.Client(), auth: func(*http.Request, []byte) {}}); err == nil {
+	if _, err := testaccount.ThisDevice(context.Background(), &client{Base: none.URL, HTTP: none.Client(), Auth: func(*http.Request, []byte) {}}); err == nil {
 		t.Fatal("a session with no device of its own passed")
 	}
 }
@@ -353,7 +355,7 @@ func TestArchivingATafIsSigned(t *testing.T) {
 		{http.MethodDelete, "/v1/agents/taf-x7k3/grants", true},
 		{http.MethodGet, "/v1/agents/taf-x7k3/grants", false},
 	} {
-		if got := signedPath(c.method, c.path); got != c.signed {
+		if got := testaccount.SignedPath(c.method, c.path); got != c.signed {
 			t.Errorf("%s %s: signed %v, want %v", c.method, c.path, got, c.signed)
 		}
 	}
@@ -371,15 +373,15 @@ func TestPhoneReadsALongGrantsList(t *testing.T) {
 	body := list
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
 	defer srv.Close()
-	p := &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1"}
+	p := &phone{Planque: &client{Base: srv.URL, HTTP: srv.Client()}, Tenant: "t1"}
 	if len(list) < 1<<20 {
 		t.Fatalf("the list is only %d bytes", len(list))
 	}
-	if g, err := p.grant(context.Background(), "grt_2999"); err != nil || g.ID != "grt_2999" {
+	if g, err := p.Grant(context.Background(), "grt_2999"); err != nil || g.ID != "grt_2999" {
 		t.Fatalf("the last grant of a long list: %+v %v", g, err)
 	}
 	body = list[:len(list)/2]
-	if _, err := p.grants(context.Background()); err == nil {
+	if _, err := p.Grants(context.Background()); err == nil {
 		t.Fatal("a list cut short read as a list")
 	}
 }
@@ -422,8 +424,8 @@ func TestARunLeavesWhatItDidntMake(t *testing.T) {
 	srv, changed := fakeShared(t)
 	var log bytes.Buffer
 	tt := &test{cfg: config{planque: srv.URL, setupKey: "setup-key", log: &log}, out: &redacting{w: &log}, hc: srv.Client(),
-		phone: &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1"},
-		kiff:  &client{base: srv.URL, http: srv.Client()}}
+		phone: &phone{Planque: &client{Base: srv.URL, HTTP: srv.Client()}, Tenant: "t1"},
+		kiff:  &client{Base: srv.URL, HTTP: srv.Client()}}
 	if err := tt.clearEarlierRuns(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -482,10 +484,10 @@ func TestThePhoneGivesAnAPIKeyOutsideTheSignedBody(t *testing.T) {
 		w.Write([]byte(`{"status":"listed"}`))
 	}))
 	defer srv.Close()
-	p := &phone{planque: &client{base: srv.URL, http: srv.Client()}, tenant: "t1", vendorKey: "dk_secret"}
+	p := &phone{Planque: &client{Base: srv.URL, HTTP: srv.Client()}, Tenant: "t1", VendorKey: "dk_secret"}
 	var g grant
 	g.ID, g.Digest, g.Request.Kind = "grt_1", "abc", "api_key"
-	status, err := p.approveAndSignIn(context.Background(), g)
+	status, err := p.ApproveAndSignIn(context.Background(), g)
 	if err != nil || !strings.Contains(status, "listed") {
 		t.Fatalf("%q, %v", status, err)
 	}
@@ -493,14 +495,14 @@ func TestThePhoneGivesAnAPIKeyOutsideTheSignedBody(t *testing.T) {
 	if header != "dk_secret" || body != `{"digest":"abc","key_sha256":"`+hex.EncodeToString(sum[:])+`"}` || strings.Contains(body, "dk_secret") {
 		t.Fatalf("header %q, body %s", header, body)
 	}
-	p.vendorKey = ""
-	if _, err := p.approveAndSignIn(context.Background(), g); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY") {
+	p.VendorKey = ""
+	if _, err := p.ApproveAndSignIn(context.Background(), g); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY") {
 		t.Fatalf("no key: %v", err)
 	}
 	// Tools added to a grant that holds the key: an approval alone, no key again.
 	g.SignedIn = true
 	body, header = "", ""
-	p.approveAndSignIn(context.Background(), g)
+	p.ApproveAndSignIn(context.Background(), g)
 	if header != "" || strings.Contains(body, "key_sha256") {
 		t.Fatalf("the key was sent again: header %q, body %s", header, body)
 	}

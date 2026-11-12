@@ -118,6 +118,9 @@ type Scenario struct {
 	Stale string
 	// Advisory: every check of the case is advice, never failing the gate.
 	Advisory bool
+	// Desk: the case runs as a fresh agent connected to the fake desk for
+	// each run (cmd/eval -desk, tickets.go), never as the standing agent.
+	Desk bool
 }
 
 // WithIDs is the scenario with the ids a seed made for its items.

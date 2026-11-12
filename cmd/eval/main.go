@@ -24,6 +24,14 @@
 // runs the model, price, effort and instructions tafs runs. The eval keeps
 // its own tenant, gateway, key, cost cap and keep rules.
 //
+// The tickets case (eval/cases, tickets.go) is a recipe's taf on the test
+// account's fake desk, for -run with -definitions only: its agent is
+// <definitions>/recipe-acknowledge-every-ticket.json, and it runs as a fresh
+// agent made for each run (desk.go) with the E2E job's secrets
+// (E2E_KIFF_SESSION, E2E_SETUP_KEY, E2E_PHONE_KEY, E2E_VENDOR, E2E_DESK_KEY),
+// never with KIFF_AGENT_KEY; the agent is taken back after the run, and its
+// id is in E2E_MADE for the sweep.
+//
 // A hand-off between tafs is four more cases (handoff-sender, handoff-nothing,
 // handoff-nothing-fr, handoff-receiver: eval/cases, handoff.go), for -run with
 // -definitions only: their taf and their task are kiff/tafs' own words, which
@@ -70,6 +78,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
 	"github.com/kiff/agents/eval/managed"
@@ -217,14 +226,12 @@ type runtime struct {
 	notesFor map[string]string // the owner's note for a case, when no -notes file gives one
 	kiffKey  string            // the agent's KIFF key
 	kiffAPI  string            // KIFF's API, where held calls are withdrawn
+	// disclose, during a desk run, is where its agent puts the AI line
+	// (desk.go); nil otherwise, as the job's definition says.
+	disclose *agent.Disclosure
 	log      io.Writer
 	public   bool // the log is public (-public): no ids, no run's details
 }
-
-// envKey is the agent's KIFF key, from the environment.
-type envKey string
-
-func (k envKey) Key(context.Context, string, string) (string, error) { return string(k), nil }
 
 func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, skill string, log io.Writer) *runtime {
 	rt := &runtime{agents: memory.NewAgents(), sessions: memory.New(), runs: memory.NewRuns(), base: base, jobs: jobs, skill: skill,
@@ -233,7 +240,7 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 	// The Eval measures record totals unless AGENTS_TOTALS=off: what production runs once it
 	// sets AGENTS_TOTALS=record (runner.Runner.RecordTotals).
 	rt.rn = &runner.Runner{Runs: rt.runs, Sessions: rt.sessions, Collect: kiff.Collect, RecordTotals: strings.TrimSpace(os.Getenv("AGENTS_TOTALS")) != "off", Builder: &registry.Builder{
-		Agents: rt.agents, Secrets: envKey(kiffKey), Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect, Skills: rt.skills,
+		Agents: rt.agents, Secrets: runtimeKey{rt}, Model: m, Gateways: []string{base.Gateway}, Connect: rt.connect, Skills: rt.skills,
 		Own: func(tenant, agent string, version int) []tool.Tool {
 			return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent, version)}
 		},
@@ -333,6 +340,9 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 	}
 	d.ID = s.Name
 	d.Keep = eval.Policy(evalKeep)
+	if s.Desk && rt.disclose != nil {
+		d.Disclose = rt.disclose
+	}
 	return d, nil
 }
 
@@ -627,7 +637,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		return errors.New("name at least one case=session")
 	}
 
-	scenarios := map[string]cases.Scenario{"refunds": cases.Refunds, "chargebacks": cases.Chargebacks}
+	scenarios := map[string]cases.Scenario{"refunds": cases.Refunds, "chargebacks": cases.Chargebacks, "tickets": cases.Tickets}
 	for _, s := range cases.Handoffs() {
 		scenarios[s.Name] = s
 	}
@@ -655,8 +665,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	var rt *runtime
 	if *runHere {
 		kiffKey := env("KIFF_AGENT_KEY")
+		allDesk := true
+		for _, arg := range fs.Args() {
+			allDesk = allDesk && scenarios[arg].Desk
+		}
 		switch {
-		case kiffKey == "":
+		case kiffKey == "" && !allDesk: // a desk case runs as its own agent, with its own key
 			return errors.New("set KIFF_AGENT_KEY to the agent's KIFF key for -run")
 		case *repeat < 1:
 			return errors.New("-repeat is at least 1")
@@ -737,6 +751,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 
 	var results []eval.Result
 	var skipped []string // cases an interrupt kept from starting
+	var account *desk    // the test account, for a desk case: signed in at its first run
 	for i, arg := range fs.Args() {
 		if rt != nil && ctx.Err() != nil {
 			skipped = fs.Args()[i:]
@@ -745,8 +760,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 		if rt != nil {
 			s := scenarios[arg] // checked above
 			// Before the first seed: a night the Cards can't fund isn't worth one.
-			if err := rt.checkRoom(ctx, s, *repeat); err != nil {
-				return err
+			// A desk case's agent is new each run, its Cards untouched.
+			if !s.Desk {
+				if err := rt.checkRoom(ctx, s, *repeat); err != nil {
+					return err
+				}
+			} else if account == nil {
+				if account, err = newDesk(ctx, env, rt.kiffAPI, stderr); err != nil {
+					return fmt.Errorf("%s: %w", s.Name, err)
+				}
 			}
 			for rep := range *repeat {
 				if rep > 0 && ctx.Err() != nil {
@@ -761,7 +783,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 					}
 					s = s.WithIDs(seeded)
 				}
-				r, err := rt.Run(ctx, s)
+				var r eval.Run
+				if s.Desk {
+					r, s, err = rt.runDesk(ctx, account, s)
+				} else {
+					r, err = rt.Run(ctx, s)
+				}
 				if err != nil {
 					return err
 				}

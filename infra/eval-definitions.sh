@@ -9,7 +9,9 @@
 # the skills those definitions may name (runtime/skills, kiff/tafs#218), when
 # tafs has any; <out>/chargebacks-handoff.json and <out>/handoff-task.json are
 # a hand-off's taf and task, from a commit that hands work on (eval/cases,
-# handoff.go); <out>/source.json names the tafs commit it came from. Check out
+# handoff.go); <out>/recipe-<id>.json is each recipe's taf as Coach would draft
+# it from the recipe's words (eval/cases, tickets.go); <out>/source.json names
+# the tafs commit it came from. Check out
 # tafs at eval/tafs.ref first, so the eval runs what that commit runs:
 #
 #	git clone https://github.com/kiff/tafs && git -C tafs checkout "$(cat eval/tafs.ref)"
@@ -47,8 +49,23 @@ if (handoffs) {
   writeFileSync(join(out, "chargebacks-handoff.json"), JSON.stringify(definition("eval-chargebacks-handoff", chargebacks, { actionResults: [books] }), null, 2) + "\n");
   writeFileSync(join(out, "handoff-task.json"), JSON.stringify({ task: delivery.DELIVERY_WORDS.handoffTask("@@FROM@@", "@@HANDOFF@@", "@@FENCE@@") }, null, 2) + "\n");
 }
-writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", commit, jobs: JOBS.map((j) => j.id) }, null, 2) + "\n");
-console.log(`wrote ${JOBS.length} job definitions and Setup's${handoffs ? ", and a hand-off's taf and task," : ""} from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
+// Each recipe's taf (eval/cases, tickets.go), as Coach drafts a job of its own
+// from the owner's words alone: its name, its line, and the recipe's words as
+// how it works. A commit with no recipes writes none.
+let recipes = [];
+try {
+  const { RECIPES } = await import(pathToFileURL(join(dist, "recipes.js")).href);
+  const { ownJob } = await import(pathToFileURL(join(dist, "jobs.js")).href);
+  for (const r of RECIPES ?? []) {
+    const job = ownJob({ name: r.title, summary: r.line, kickoff: "Do the job now, as set out.", instructions: r.say });
+    writeFileSync(join(out, `recipe-${r.id}.json`), JSON.stringify(definition(`eval-recipe-${r.id}`, job), null, 2) + "\n");
+    recipes.push(r.id);
+  }
+} catch (e) {
+  if (e?.code !== "ERR_MODULE_NOT_FOUND") throw e;
+}
+writeFileSync(join(out, "source.json"), JSON.stringify({ repo: "kiff/tafs", commit, jobs: JOBS.map((j) => j.id), recipes }, null, 2) + "\n");
+console.log(`wrote ${JOBS.length} job definitions, ${recipes.length} recipes' and Setup's${handoffs ? ", and a hand-off's taf and task," : ""} from kiff/tafs@${commit.slice(0, 12)} to ${out}`);
 JS
 rm -rf "$out/skills"
 # Every skill package, wherever kiff/tafs keeps it (Coach's sit at

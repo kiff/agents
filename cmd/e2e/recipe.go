@@ -198,7 +198,7 @@ func (t *test) recipeTaf(ctx context.Context, tafID string) error {
 	}
 	var grants []grant
 	for _, id := range t.grants {
-		if g, err := t.phone.grant(ctx, id); err == nil && g.Status == "connected" {
+		if g, err := t.phone.Grant(ctx, id); err == nil && g.Status == "connected" {
 			grants = append(grants, g)
 		}
 	}

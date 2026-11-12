@@ -1,0 +1,117 @@
+name: Eval recipe
+# One recipe's Eval case, before the recipe is at eval/tafs.ref: its taf as
+# kiff/tafs defines a recipe's (infra/eval-definitions.sh), with the recipe's
+# words from a kiff/tafs branch or commit still in review (recipe_ref) and all
+# code, every other definition and the skills at eval/tafs.ref. Today the one case is tickets (eval/cases,
+# tickets.go), a fresh agent each run on the test account's fake desk.
+#
+# By hand only, one case a run: it spends money and depends on live
+# services. It never counts for kiff/tafs' Upgrade gate, which reads the
+# Eval workflow alone. The log is public (-public); the full report goes to
+# the private bucket.
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "The case (a recipe's Eval case)"
+        type: choice
+        options: ["tickets"]
+        default: "tickets"
+      recipe_ref:
+        description: "The kiff/tafs branch or commit with the recipe; empty: eval/tafs.ref"
+        type: string
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+# The same group as E2E and the Eval: they share the test's account.
+concurrency:
+  group: test-account
+  cancel-in-progress: false
+jobs:
+  recipe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      REPORTS: kiff-agents-eval-reports
+      E2E_MADE: e2e-made.txt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: tafs' definitions at eval/tafs.ref, with the recipe's words from recipe_ref
+        # Only the recipe's words come from recipe_ref, as data: its file in
+        # English and in each of the other seven languages, read with git show
+        # and never checked out. Every line of code that runs, the recipes'
+        # build included, is kiff/tafs at eval/tafs.ref. A branch still in
+        # review never runs beside the test account's secrets.
+        env:
+          CASE: ${{ inputs.case }}
+          RECIPE_REF: ${{ inputs.recipe_ref }}
+        run: |
+          case "$CASE" in
+            tickets) recipe=acknowledge-every-ticket ;;
+            *) echo "case: no recipe for $CASE" >&2; exit 1 ;;
+          esac
+          git clone --quiet https://github.com/kiff/tafs tafs
+          git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
+          if [ -n "$RECIPE_REF" ]; then
+            if ! [[ "$RECIPE_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || [[ "$RECIPE_REF" == *..* ]]; then
+              echo "recipe_ref: a branch or commit, letters, digits, '.', '_', '/' and '-'" >&2
+              exit 1
+            fi
+            git -C tafs fetch --quiet --depth=1 origin "$RECIPE_REF"
+            for path in "recipes/$recipe.md" $(for l in de fr es it pt nl pl; do echo "recipes/$l/$recipe.md"; done); do
+              mkdir -p "tafs/$(dirname "$path")"
+              git -C tafs show "FETCH_HEAD:$path" > "tafs/$path"
+            done
+            (cd tafs/runtime && node scripts/recipes.mjs)
+          fi
+          infra/eval-definitions.sh tafs defs
+          if [ ! -f "defs/recipe-$recipe.json" ]; then
+            echo "recipe: kiff/tafs has no recipe $recipe at ${RECIPE_REF:-eval/tafs.ref}" >&2
+            exit 1
+          fi
+      - name: The case
+        env:
+          CASE: ${{ inputs.case }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+        run: |
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -gate \
+            -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
+            -out results-recipe.json -report report-recipe.md "$CASE"
+      - name: The sweep, the test account's leftover tafs
+        # As the Eval's: the agent a run made is archived, whatever happened.
+        if: (always())
+        continue-on-error: true
+        env:
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+        run: go run ./cmd/e2e -sweep
+      # The role assumes only from main (infra/aws.sh).
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: always() && github.ref == 'refs/heads/main'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
+      - name: The full report, to the private bucket
+        if: always() && github.ref == 'refs/heads/main'
+        run: |
+          key="reports/eval-recipe-$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}"
+          for f in report-recipe.md results-recipe.json; do
+            [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
+          done
+          echo "report: s3://$REPORTS/$key/"

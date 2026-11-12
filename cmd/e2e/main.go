@@ -42,6 +42,8 @@
 package main
 
 import (
+	"github.com/kiff/agents/cmd/internal/testaccount"
+
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
@@ -422,24 +424,24 @@ func (t *test) logf(format string, args ...any) {
 
 func (t *test) scenario(ctx context.Context, m model.Model) error {
 	fmt.Fprintln(t.cfg.log, "== setup")
-	pk, err := parsePhone(t.cfg.phone)
+	pk, err := testaccount.ParsePhone(t.cfg.phone)
 	if err != nil {
 		return err
 	}
 	t.pk = pk
 	t.secrets = append(t.secrets, t.cfg.session, t.cfg.setupKey)
-	probe := kiffSession(kiff.APIURL, t.cfg.session, "", pk, t.hc)
-	me, err := probe.do(ctx, http.MethodGet, "/v1/me", nil)
-	if err != nil || me.err() != nil {
-		return fmt.Errorf("KIFF didn't take the phone's session (it lasts 90 days; renew it with -signin): %v %v", err, me.err())
+	probe := testaccount.KIFFSession(kiff.APIURL, t.cfg.session, "", pk, t.hc)
+	me, err := probe.Do(ctx, http.MethodGet, "/v1/me", nil)
+	if err != nil || me.Err() != nil {
+		return fmt.Errorf("KIFF didn't take the phone's session (it lasts 90 days; renew it with -signin): %v %v", err, me.Err())
 	}
 	t.tenant, _ = me.Body["tenant_id"].(string)
 	t.out.hide(t.tenant, "<the account>")
-	t.kiff = kiffSession(kiff.APIURL, t.cfg.session, t.tenant, pk, t.hc)
-	t.phone = newPhone(pk, t.cfg.planque, t.tenant, t.hc)
-	t.phone.vendorKey = t.cfg.deskKey
+	t.kiff = testaccount.KIFFSession(kiff.APIURL, t.cfg.session, t.tenant, pk, t.hc)
+	t.phone = testaccount.NewPhone(pk, t.cfg.planque, t.tenant, t.hc)
+	t.phone.VendorKey = t.cfg.deskKey
 	// planque asks KIFF whether this device signed (d=), as for the app.
-	if t.phone.device, err = thisDevice(ctx, t.kiff); err != nil {
+	if t.phone.Device, err = testaccount.ThisDevice(ctx, t.kiff); err != nil {
 		return fmt.Errorf("the phone's device in KIFF: %w", err)
 	}
 	if t.cfg.stripeKey != "" {
@@ -451,7 +453,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		}
 		t.out.hide(t.account, "<the Stripe account>")
 		t.out.hide(t.intent, "<the payment>")
-		t.phone.signIn = waitForSignIn(t.cfg.signInFile, func(f string, a ...any) { fmt.Fprintf(t.cfg.log, "  "+f+"\n", a...) })
+		t.phone.SignIn = waitForSignIn(t.cfg.signInFile, func(f string, a ...any) { fmt.Fprintf(t.cfg.log, "  "+f+"\n", a...) })
 		t.logf("Stripe, test mode: a payment of 20.00 EUR to refund")
 	}
 	if err := t.enrol(ctx); err != nil {
@@ -572,7 +574,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 // phone mints planque's connector key in KIFF (a signed setup call, as tafs
 // does) and enrols with it. Afterwards it is enrolled already.
 func (t *test) enrol(ctx context.Context) error {
-	a, err := t.phone.planque.do(ctx, http.MethodGet, t.phone.accountPath()+"/grants", nil)
+	a, err := t.phone.Planque.Do(ctx, http.MethodGet, t.phone.AccountPath()+"/grants", nil)
 	if err != nil {
 		return err
 	}
@@ -581,18 +583,18 @@ func (t *test) enrol(ctx context.Context) error {
 		t.logf("the phone is enrolled with planque")
 		return nil
 	case a.Status != http.StatusForbidden:
-		return fmt.Errorf("planque doesn't take the test phone (another phone is enrolled for this account?): %w", a.err())
+		return fmt.Errorf("planque doesn't take the test phone (another phone is enrolled for this account?): %w", a.Err())
 	}
-	k, err := t.kiff.do(ctx, http.MethodPost, "/v1/keys", map[string]any{"label": "planque (e2e)", "roles": []string{"connector"}})
-	if err != nil || k.err() != nil {
-		return fmt.Errorf("minting planque's connector key: %v %v", err, k.err())
+	k, err := t.kiff.Do(ctx, http.MethodPost, "/v1/keys", map[string]any{"label": "planque (e2e)", "roles": []string{"connector"}})
+	if err != nil || k.Err() != nil {
+		return fmt.Errorf("minting planque's connector key: %v %v", err, k.Err())
 	}
 	connector, _ := k.Body["plaintext"].(string)
 	t.secrets = append(t.secrets, connector)
-	a, err = t.phone.planque.do(ctx, http.MethodPost, t.phone.accountPath()+"/enrolment",
+	a, err = t.phone.Planque.Do(ctx, http.MethodPost, t.phone.AccountPath()+"/enrolment",
 		map[string]string{"connector_key": connector})
-	if err != nil || a.err() != nil {
-		return fmt.Errorf("enrolling the phone with planque: %v %v", err, a.err())
+	if err != nil || a.Err() != nil {
+		return fmt.Errorf("enrolling the phone with planque: %v %v", err, a.Err())
 	}
 	t.logf("the phone enrolled with planque, with a connector key it minted")
 	return nil
@@ -660,7 +662,7 @@ func (t *test) clearEarlierRuns(ctx context.Context) error {
 	for _, g := range gs {
 		t.out.hide(g.ID, "<a grant>")
 		if g.Status == "connected" || g.Status == "signed_in" {
-			if err := t.phone.disconnect(ctx, g.ID); err != nil {
+			if err := t.phone.Disconnect(ctx, g.ID); err != nil {
 				return fmt.Errorf("disconnecting an earlier run's grant %s: %w", g.ID, err)
 			}
 			t.logf("disconnected an earlier run's grant %s", g.ID)
@@ -677,14 +679,14 @@ type askedGrant struct {
 
 // askedGrants is every grant the test's setup agent asked for, on any taf.
 func (t *test) askedGrants(ctx context.Context) ([]askedGrant, error) {
-	c := &client{base: strings.TrimRight(t.cfg.planque, "/"), http: t.hc, auth: func(req *http.Request, _ []byte) {
+	c := &client{Base: strings.TrimRight(t.cfg.planque, "/"), HTTP: t.hc, Auth: func(req *http.Request, _ []byte) {
 		req.Header.Set("Authorization", "Bearer "+t.cfg.setupKey)
 	}}
-	a, err := c.do(ctx, http.MethodGet, t.phone.accountPath()+"/asked-grants", nil)
+	a, err := c.Do(ctx, http.MethodGet, t.phone.AccountPath()+"/asked-grants", nil)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.err(); err != nil {
+	if err := a.Err(); err != nil {
 		return nil, fmt.Errorf("planque asked-grants: %w", err)
 	}
 	var out struct {
@@ -1021,7 +1023,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			if c.Grant != "" {
 				// The same approval shown again for a grant that changed (its tools
 				// set after connecting first) is a new approval.
-				if g, err := t.phone.grant(ctx, c.Grant); err == nil {
+				if g, err := t.phone.Grant(ctx, c.Grant); err == nil {
 					key += "/" + g.Status + "/" + g.Digest
 				}
 			}
@@ -1062,7 +1064,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 					// The desk's case and billing's end once its tools are
 					// connected: what Setup asked for is what's checked. A
 					// recipe's case checks the desk there and goes on.
-					if g, err := t.phone.grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
+					if g, err := t.phone.Grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
 						switch {
 						case fromRecipe:
 							// The recipe's case goes on to the taf: the desk is checked once, as connected.
@@ -1120,7 +1122,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 	}
 	t.out.hide(c.Grant, "<a grant>")
 	t.out.hide(c.Draft, "<a draft>")
-	g, err := t.phone.grant(ctx, c.Grant)
+	g, err := t.phone.Grant(ctx, c.Grant)
 	if err != nil {
 		return err
 	}
@@ -1134,7 +1136,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 		// Connected to look, with no tools yet: there is nothing to approve.
 		t.logf("grant %s is listed: no tools to approve yet", g.ID)
 	default:
-		status, err := t.phone.approveAndSignIn(ctx, g)
+		status, err := t.phone.ApproveAndSignIn(ctx, g)
 		if err != nil {
 			return fmt.Errorf("the grant %s: %w", g.ID, err)
 		}
@@ -1147,19 +1149,19 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 	if c.Draft == "" {
 		return nil
 	}
-	d, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+c.Draft, nil)
-	if err != nil || d.err() != nil {
-		return fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.err())
+	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+c.Draft, nil)
+	if err != nil || d.Err() != nil {
+		return fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.Err())
 	}
 	version, _ := d.Body["version"].(string)
-	d, err = t.kiff.do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": version})
-	if err != nil || d.err() != nil {
-		return fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.err())
+	d, err = t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": version})
+	if err != nil || d.Err() != nil {
+		return fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.Err())
 	}
 	t.draftIDs = append(t.draftIDs, c.Draft)
 	if a, ok := d.Body["agent_id"].(string); ok && a != "" && !slices.Contains(t.tafAgents, a) {
 		t.tafAgents = append(t.tafAgents, a)
-		if err := recordMade(t.cfg.made, a); err != nil {
+		if err := testaccount.RecordMade(t.cfg.made, a); err != nil {
 			t.logf("recording the taf for the sweep: %v", err)
 		}
 	}
@@ -1376,7 +1378,7 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	var m modes
 	acting, pinnedTest := 0, 0 // the tools that act, and those pinned to test, over every grant
 	for _, id := range t.grants {
-		g, err := t.phone.grant(ctx, id)
+		g, err := t.phone.Grant(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -1530,7 +1532,7 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 	}
 	var grants []grant
 	for _, id := range t.grants {
-		if g, err := t.phone.grant(ctx, id); err == nil && g.Status == "connected" {
+		if g, err := t.phone.Grant(ctx, id); err == nil && g.Status == "connected" {
 			grants = append(grants, g)
 		}
 	}
@@ -1655,9 +1657,9 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		return fmt.Errorf("the vendor received %v; want exactly the refund of %s for 300, then of %s for 800", got, in, approved)
 	}
 	// KIFF's own record: the taf read the charge, allowed, before its refund.
-	a, err := t.kiff.do(ctx, http.MethodGet, "/v1/me/activity?limit=100", nil)
-	if err != nil || a.err() != nil {
-		return fmt.Errorf("reading KIFF's activity: %v %v", err, a.err())
+	a, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/activity?limit=100", nil)
+	if err != nil || a.Err() != nil {
+		return fmt.Errorf("reading KIFF's activity: %v %v", err, a.Err())
 	}
 	var act activity
 	if err := json.Unmarshal([]byte(a.Raw), &act); err != nil {
@@ -1853,11 +1855,11 @@ func (t *test) vendorCalls(ctx context.Context) ([]string, error) {
 	if t.cfg.vendorToken == "" {
 		return nil, errors.New("E2E_VENDOR_TOKEN is needed to check what the vendor received")
 	}
-	c := &client{base: strings.TrimSuffix(strings.TrimRight(t.cfg.vendor, "/"), "/mcp"), http: t.hc,
-		auth: func(req *http.Request, _ []byte) { req.Header.Set("Authorization", "Bearer "+t.cfg.vendorToken) }}
-	a, err := c.do(ctx, http.MethodGet, "/fake/calls", nil)
-	if err != nil || a.err() != nil {
-		return nil, fmt.Errorf("reading the vendor's calls: %v %v", err, a.err())
+	c := &client{Base: strings.TrimSuffix(strings.TrimRight(t.cfg.vendor, "/"), "/mcp"), HTTP: t.hc,
+		Auth: func(req *http.Request, _ []byte) { req.Header.Set("Authorization", "Bearer "+t.cfg.vendorToken) }}
+	a, err := c.Do(ctx, http.MethodGet, "/fake/calls", nil)
+	if err != nil || a.Err() != nil {
+		return nil, fmt.Errorf("reading the vendor's calls: %v %v", err, a.Err())
 	}
 	var out struct {
 		Calls []struct {
@@ -1914,11 +1916,11 @@ func (t *test) checkRecords(ctx context.Context) error {
 // unshare removes a taf's share with a group. KIFF reads which grant from
 // the query (?group=), as the app sends it, not from a body.
 func unshare(ctx context.Context, k *client, agent, group string) error {
-	a, err := k.do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(agent)+"/grants?group="+url.QueryEscape(group), nil)
+	a, err := k.Do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(agent)+"/grants?group="+url.QueryEscape(group), nil)
 	if err != nil {
 		return err
 	}
-	return a.err()
+	return a.Err()
 }
 
 // cleanup disconnects the grant, revokes the taf's Cards and archives the
@@ -1937,25 +1939,25 @@ func (t *test) cleanup() {
 			t.logf("cleanup: unsharing the taf: %v", err)
 		}
 	}
-	cloud := &client{base: strings.TrimRight(t.cfg.cloud, "/"), http: t.hc, auth: bearerAuth(t.cfg.session)}
+	cloud := &client{Base: strings.TrimRight(t.cfg.cloud, "/"), HTTP: t.hc, Auth: bearerAuth(t.cfg.session)}
 	for _, id := range t.cloudTafs {
-		if a, err := cloud.do(ctx, http.MethodDelete, "/v1/tafs/"+url.PathEscape(id), nil); err != nil || a.err() != nil {
-			t.logf("cleanup: removing the shared taf from tafs cloud: %v %v", err, a.err())
+		if a, err := cloud.Do(ctx, http.MethodDelete, "/v1/tafs/"+url.PathEscape(id), nil); err != nil || a.Err() != nil {
+			t.logf("cleanup: removing the shared taf from tafs cloud: %v %v", err, a.Err())
 		}
 	}
 	for _, g := range t.grants {
-		if err := t.phone.disconnect(ctx, g); err != nil {
+		if err := t.phone.Disconnect(ctx, g); err != nil {
 			t.logf("cleanup: disconnecting %s: %v", g, err)
 		}
 	}
 	for _, id := range t.cardIDs {
-		if a, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/mandates/"+id+"/revoke", map[string]string{}); err != nil || a.err() != nil {
-			t.logf("cleanup: revoking Card %s: %v %v", id, err, a.err())
+		if a, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/mandates/"+id+"/revoke", map[string]string{}); err != nil || a.Err() != nil {
+			t.logf("cleanup: revoking Card %s: %v %v", id, err, a.Err())
 		}
 	}
 	for _, id := range t.tafAgents {
-		if a, err := t.kiff.do(ctx, http.MethodPost, "/v1/me/agents/"+url.PathEscape(id)+"/archive", map[string]string{}); err != nil || a.err() != nil {
-			t.logf("cleanup: archiving the taf %s: %v %v", id, err, a.err())
+		if a, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/agents/"+url.PathEscape(id)+"/archive", map[string]string{}); err != nil || a.Err() != nil {
+			t.logf("cleanup: archiving the taf %s: %v %v", id, err, a.Err())
 		}
 	}
 }
