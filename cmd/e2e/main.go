@@ -14,6 +14,9 @@
 // shows up in anything the runs recorded, or if the vendor receives
 // anything but the one refund inside the Card.
 //
+// With -desk -recipe <kiff/tafs' recipes/<id>.md>, the owner says the recipe's
+// words alone, and the taf Setup makes is graded against its card (recipe.go).
+//
 // Environment:
 //
 //	ANTHROPIC_API_KEY   the model's key
@@ -115,6 +118,7 @@ type config struct {
 	people                                          bool   // step 9's people on a shared taf, instead of the taf's own checks
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
+	recipe                                          *recipe   // -recipe: the owner says a recipe's words alone, on the desk, and the taf is graded against its card
 }
 
 // redacting writes what the test says with what it learns (the account,
@@ -174,10 +178,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.BoolVar(&cfg.people, "people", false, "step 9 (kiff/tafs#294) instead of the taf's own checks: tafs cloud starts Setup's taf, it is shared with Support, "+
 		"and Maria and Luis (E2E_MARIA_*, E2E_LUIS_*) each see only their own use of it")
 	fs.BoolVar(&cfg.desk, "desk", false, "the second vendor (kiff/agents#293): Setup connects the fake vendor's support desk, a REST API by its key "+
-		"(E2E_DESK_KEY), not MCP; checked once the desk's tools are connected, with no taf after")
+		"(E2E_DESK_KEY), not MCP; checked once the desk's tools are connected, with no taf after (with -recipe, the taf after)")
 	fs.BoolVar(&cfg.invoices, "invoices", false, "billing (kiff/tafs#771): Setup connects the fake vendor's billing, a REST API by its key "+
 		"(E2E_DESK_KEY), for draft invoices the owner approves and sends; checked once its tools are connected (status pinned to draft, "+
 		"no send), with no taf after")
+	recipeFile := fs.String("recipe", "", "a recipe from kiff/tafs (recipes/<id>.md), with -desk: the owner says its words alone, unchanged, "+
+		"then only where the desk is and that Setup may connect; the run goes on to the taf, whose Card -grade checks against the recipe's card")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
@@ -283,6 +289,23 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 			return errors.New("-invoices needs E2E_DESK_KEY: the fake vendor's key, which its billing takes")
 		}
 	}
+	if *recipeFile != "" {
+		switch {
+		case !cfg.desk:
+			return errors.New("-recipe runs on the fake vendor's desk, for now: add -desk")
+		case cfg.owner != "en":
+			return errors.New("-recipe's owner speaks the recipe's language: -owner en")
+		case cfg.people || cfg.improve:
+			return errors.New("-recipe ends at the taf: -people and -improve are the refunds taf's")
+		case cfg.stripeKey != "":
+			return errors.New("-recipe runs against the fake vendor's desk; unset E2E_STRIPE_KEY")
+		}
+		r, err := loadRecipe(*recipeFile)
+		if err != nil {
+			return err
+		}
+		cfg.recipe = &r
+	}
 	cfg.planque = env("E2E_PLANQUE")
 	if cfg.planque == "" {
 		cfg.planque = "https://planque.kiff.dev"
@@ -381,6 +404,8 @@ type test struct {
 	// skillMisses are the skills cases that failed so far: the test fails on them at its end,
 	// after every case ran.
 	skillMisses []string
+	// recipeRecord is the taf's Cards and tools, as the recipe's check reads them (-recipe).
+	recipeRecord string
 }
 
 // logf is a detail of a step: in the log for a run by hand only (see
@@ -462,6 +487,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	t.setupTimings(ctx) // also after a failed chat: a slow one is worth reading
 	if err != nil {
 		return err
+	}
+	if t.cfg.recipe != nil {
+		return t.recipeTaf(ctx, tafID)
 	}
 	if t.cfg.desk || t.cfg.invoices {
 		if t.cfg.desk {
@@ -931,6 +959,13 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	if t.cfg.invoices {
 		msg, facts = o.invoiceAsk(billingOf(t.cfg.vendor)), o.invoiceFacts
 	}
+	// A recipe's owner says its words alone; where their app is comes only
+	// when Coach asks, so it's typed at the first card too, before connecting.
+	fromRecipe := t.cfg.recipe != nil
+	if fromRecipe {
+		msg, facts = recipeOpening(*t.cfg.recipe, deskOf(t.cfg.vendor))
+	}
+	deskChecked := false
 	answered := map[string]string{}
 	toldFacts, factsMarked := false, false
 	approvedGrant := ""
@@ -998,7 +1033,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				if test, ok := modeChoice(c); ok {
 					// Test or live: the owner chooses test (kiff/tafs#89), the fact the pin is graded against.
 					msg, t.said.chose = fmt.Sprintf("[confirm %s] %s", c.ID, test), "test"
-				} else if approvedGrant != "" && !toldFacts {
+				} else if (approvedGrant != "" || fromRecipe) && !toldFacts {
 					// Once Setup can look, the owner's first answer is their facts,
 					// typed (a confirm takes words too): tapping Setup's suggested
 					// limits would set a Card the taf's steps don't expect.
@@ -1009,7 +1044,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			case "questions":
 				// Once Setup can look, the owner's facts are typed, as for a confirm.
 				own := ""
-				if approvedGrant != "" && !toldFacts {
+				if (approvedGrant != "" || fromRecipe) && !toldFacts {
 					own, toldFacts = facts[0], true
 				}
 				msg = answerQuestions(c, own)
@@ -1025,12 +1060,23 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 				if (t.cfg.desk || t.cfg.invoices) && approvedGrant != "" {
 					// The desk's case and billing's end once its tools are
-					// connected: what Setup asked for is what's checked.
+					// connected: what Setup asked for is what's checked. A
+					// recipe's case checks the desk there and goes on.
 					if g, err := t.phone.grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
-						if t.cfg.invoices {
+						switch {
+						case fromRecipe:
+							// The recipe's case goes on to the taf: the desk is checked once, as connected.
+							if !deskChecked {
+								if err := deskChecks(g); err != nil {
+									return "", "", err
+								}
+								deskChecked = true
+							}
+						case t.cfg.invoices:
 							return g.Request.Agent, "", invoiceChecks(g)
+						default:
+							return g.Request.Agent, "", deskChecks(g)
 						}
-						return g.Request.Agent, "", deskChecks(g)
 					}
 				}
 				msg = fmt.Sprintf("[%s %s] approved, signed in", c.Type, c.ID)
@@ -1363,6 +1409,12 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		o.facts = o.invoiceFacts // the limits billing's owner gives, graded as theirs
 		m.none = true            // billing has no test or live
 	}
+	if r := t.cfg.recipe; r != nil {
+		o.taf = "" // the recipe names no taf: Coach does
+		// The limits are the recipe's words, said once at the start; the facts add where the desk is.
+		facts := recipeFacts(deskOf(t.cfg.vendor))
+		o.facts = []string{r.Body + " " + facts[0], facts[1]}
+	}
 	if t.said.factsMarked && t.setupSession != "" {
 		_, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession)
 		if err != nil {
@@ -1376,6 +1428,13 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
+	}
+	if t.cfg.recipe != nil {
+		c, err := gradeRecipe(ctx, t.cfg.judge, *t.cfg.recipe, t.recipeRecord)
+		if err != nil {
+			return fmt.Errorf("grading the taf's Card against the recipe: %w", err)
+		}
+		checks = append(checks, c)
 	}
 	return t.reportSetup(checks)
 }

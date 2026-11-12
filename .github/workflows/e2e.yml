@@ -24,6 +24,10 @@ on:
         description: Also step 9 (kiff/tafs#294) - a taf shared with Support, used by Maria and Luis, each seeing only their own use of it
         type: boolean
         default: true
+      recipe:
+        description: "A recipe from kiff/tafs at eval/tafs.ref, by id (e.g. acknowledge-every-ticket): the owner says its words alone, on the fake desk"
+        type: string
+        default: ""
 permissions:
   contents: read
   id-token: write
@@ -104,7 +108,10 @@ jobs:
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -max-cost 4 -owner-turns 14 -transcript setup.md $IMPROVE
       - name: The second vendor, a desk by its key
         # kiff/agents#293: Setup connects the fake vendor's support desk by its
-        # REST API and a key the phone gives, and the grant is checked.
+        # REST API and a key the phone gives, and the grant is checked. With a
+        # recipe (by hand, inputs.recipe), the owner says the recipe's words
+        # alone instead, the run goes on to the taf, and the chat is graded,
+        # the taf's Card against the recipe's card (cmd/e2e -recipe).
         if: steps.unchanged.outputs.skip != 'true' && (always())
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -114,7 +121,21 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -max-cost 3 -owner-turns 14 -transcript desk.md
+          RECIPE: ${{ inputs.recipe }}
+        run: |
+          recipe="" cost=3
+          if [ -n "$RECIPE" ]; then
+            if ! [[ "$RECIPE" =~ ^[a-z0-9-]{1,64}$ ]]; then
+              echo "recipe: an id is lowercase letters, digits and dashes, at most 64" >&2
+              exit 1
+            fi
+            if [ ! -f "tafs/recipes/$RECIPE.md" ]; then
+              echo "recipe: no recipes/$RECIPE.md in kiff/tafs at eval/tafs.ref" >&2
+              exit 1
+            fi
+            recipe="-recipe tafs/recipes/$RECIPE.md -grade" cost=4
+          fi
+          go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -max-cost $cost -owner-turns 14 -transcript desk.md $recipe
       - name: Billing, invoices that stay drafts
         # kiff/tafs#771: Setup connects the fake vendor's billing by its REST
         # API and a key the phone gives, and the grant is checked: create_invoice

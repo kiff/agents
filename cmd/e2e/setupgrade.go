@@ -496,10 +496,13 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	}
 	advice("asks for no id", g)
 
-	// 4. It names the taf's agent from the taf's name (kiff/tafs#50).
-	if want := slug(o.taf); strings.Contains(tafAgent, want) {
+	// 4. It names the taf's agent from the taf's name (kiff/tafs#50), when the
+	// owner gave one: a recipe's owner (-recipe) gives none, and Coach names it.
+	switch want := slug(o.taf); {
+	case o.taf == "":
+	case strings.Contains(tafAgent, want):
 		gate("names the agent from the taf's name", eval.Grade{Pass: true})
-	} else {
+	default:
 		gate("names the agent from the taf's name", eval.Grade{Why: fmt.Sprintf("the agent's id doesn't carry %q", want)})
 	}
 
