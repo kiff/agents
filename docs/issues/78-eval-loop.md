@@ -205,7 +205,8 @@ hand-off is four runs of the chargebacks taf, each on its own small seed:
 - **What is handed comes from the record as well as the words.** tafs cloud
   doesn't take a taf's "Nothing to hand over" against its record: when the
   run's `done` lists calls that went through, it hands the record's own lines
-  (each call's tool, and what it acted on where KIFF named it). So "ends its
+  (each call's tool, and what it acted on: KIFF's resource, else the call's
+  own id-like arguments). So "ends its
   result with the hand-off" reads what tafs cloud would hand (`handed`,
   `recordLines`, a copy of tafs' `handOff` kept in step by hand), and the
   taf's own sentence is advice, "writes the hand-off itself". A result with no
