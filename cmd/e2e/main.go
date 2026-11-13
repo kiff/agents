@@ -1431,6 +1431,18 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	if err != nil {
 		return fmt.Errorf("grading the setup chat: %w", err)
 	}
+	// The Card KIFF holds is the rules the owner agreed, line for line.
+	// A Card that can't be read is nothing to compare: skipped, and says why.
+	held, err := t.heldCards(ctx, tafAgent)
+	if err != nil {
+		t.logf("the taf's Cards couldn't be read to compare with the rules: %v", err)
+		held = nil
+	}
+	agreed, err := gradeAgreed(ctx, t.cfg.judge, t.said, held)
+	if err != nil {
+		return fmt.Errorf("grading the Card against the agreed rules: %w", err)
+	}
+	checks = append(checks, agreed)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})

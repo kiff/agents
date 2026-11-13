@@ -683,3 +683,51 @@ func TestAdviceNeverFailsTheSetup(t *testing.T) {
 		t.Fatalf("a failed gate check: %v", err)
 	}
 }
+
+// The Card KIFF holds is graded against the rules the owner agreed: the
+// notices Setup showed, in order, and nothing when it showed none or KIFF holds
+// no Card. A judge that fails it fails the gate (a from-zero test on a phone:
+// agreed "1,000 reads a day each", signed "4,000 a day" for all).
+func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
+	s := said{cards: map[string]component{
+		"r1":   {Type: "notice", Title: "The rules", Text: "Reads only, up to 1,000 a day each."},
+		"ask":  {Type: "confirm", Title: "Agree to these rules?"},
+		"r2":   {Type: "notice", Title: "The rules, changed", Text: "Reads only: up to 1,000 a day for each of the 4 reads."},
+		"ask2": {Type: "confirm", Title: "Agree to these rules?"},
+		"done": {Type: "notice", Title: "Connected", Text: "Qonto is connected, read only."},
+		"plan": {Type: "steps"},
+	}, order: []string{"r1", "ask", "r2", "ask2", "done", "plan"}}
+	// Only what the owner was asked to agree to: a notice with a confirm after it. "Connected" states no rule.
+	if got := agreedRules(s); len(got) != 2 || !strings.Contains(got[0], "1,000 a day each") || !strings.HasPrefix(got[1], "The rules, changed") {
+		t.Fatalf("the rules shown: %q", got)
+	}
+	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "list_invoices"}}}}
+	v := &verdicts{}
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards)
+	if err != nil || r.Name != signsWhatWasAgreed || !r.Grade.Pass || r.Advisory {
+		t.Fatalf("a Card that keeps the rules: %+v %v", r, err)
+	}
+	// Words only the notices and the Cards have, never the rule's own: the judge is shown both, and nothing else counts as a rule.
+	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "for each of the 4 reads") || !strings.Contains(asked, "list_invoices") || strings.Contains(asked, "Qonto is connected") {
+		t.Fatal("the judge wasn't shown the rules and the Cards, or was shown a notice that states no rule")
+	}
+	// An amount's max is in the call's units: the judge is told so, so 150 EUR in the rules reads as 15000 on the Card.
+	if !strings.Contains(agreedRule, "15000") || !strings.Contains(agreedRule, "150.00 EUR") {
+		t.Fatal("the rule doesn't say how an amount's max reads")
+	}
+	// A judge that finds a merged limit fails the gate.
+	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"merged with another"}}, ModelID: "judge"}, s, cards)
+	if r.Grade.Pass || r.Grade.Skipped || r.Advisory {
+		t.Fatalf("a merged limit passed: %+v", r)
+	}
+	// Nothing to compare: skipped, never passed.
+	for _, c := range []struct {
+		s     said
+		cards []map[string]any
+	}{{said{}, cards}, {s, nil}} {
+		r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, c.s, c.cards)
+		if !r.Grade.Skipped || r.Grade.Pass {
+			t.Fatalf("with nothing to compare: %+v", r)
+		}
+	}
+}
