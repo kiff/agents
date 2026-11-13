@@ -16,7 +16,9 @@ import (
 // from what the run did, never voted on.
 //
 //  1. One approval per app, plus its Card: the owner approves an app once, and
-//     its Card once (or both in one approval).
+//     its Card once (or both in one approval). The taf's dial (its schedule)
+//     rides in the Card's approval: a switch to a dial version apart from it
+//     (a knob card, or version_install held for the owner) is one more.
 //  2. No raw error reaches the person: nothing Setup says or shows carries a
 //     connection server's, KIFF's or a vendor's own words. Read from the run
 //     itself: six words in a row from any error the run got, so the gate
@@ -25,6 +27,8 @@ import (
 //  3. No loop: a refused request or tools call is never sent again as it
 //     was (its pins included), and a card already approved is never shown
 //     again. Distinct asks for one app are gate 1's to count, not a loop.
+//     And the taf is set up as its first version: a version drafted during
+//     setup (a repair, or the dial apart) is a loop.
 const (
 	oneApprovalPerApp  = "one approval per app"
 	noRawErrorShown    = "no raw error reaches the person"
@@ -77,6 +81,9 @@ type barRun struct {
 	approvals       []approvalSeen
 	statements      []string
 	errors          []string
+	// dials are the taf's dial cards, held installs and drafted versions
+	// during setup (dialsOf).
+	dials []dialSeen
 }
 
 // gradeConnectBar grades the bar's three gates over the run. Each is skipped,
@@ -103,7 +110,9 @@ func gradeConnectBar(r barRun) []eval.CheckResult {
 	// 1. One approval per app, plus its Card. An approval that carries a
 	// draft is the Card's (alone, or with the app's): one of those per app,
 	// and one without.
-	if len(approvals) == 0 {
+	// A dial version switched to apart from the Card is an approval of its own.
+	apart := dialApprovals(r.dials)
+	if len(approvals) == 0 && len(apart) == 0 {
 		gate(oneApprovalPerApp, eval.Grade{Skipped: true, Why: "no approval was asked for"})
 	} else {
 		type count struct{ app, card int }
@@ -136,6 +145,7 @@ func gradeConnectBar(r barRun) []eval.CheckResult {
 				over = append(over, fmt.Sprintf("%s: %d approval(s) for the app and %d for its Card", app, c.app, c.card))
 			}
 		}
+		over = append(over, apart...)
 		if len(over) > 0 {
 			gate(oneApprovalPerApp, eval.Grade{Why: strings.Join(over, "; ")})
 		} else {
@@ -189,8 +199,11 @@ func gradeConnectBar(r barRun) []eval.CheckResult {
 			loops = append(loops, fmt.Sprintf("approval for %s shown again once it was approved", ap.Grant))
 		}
 	}
+	// A version of the taf drafted while setting it up: a repair, or the
+	// dial set apart from the Card.
+	loops = append(loops, dialLoops(r.dials)...)
 	switch {
-	case len(asks) == 0 && len(r.toolsAsks) == 0 && len(approvals) == 0:
+	case len(asks) == 0 && len(r.toolsAsks) == 0 && len(approvals) == 0 && len(r.dials) == 0:
 		gate(noLoopAfterRefusal, eval.Grade{Skipped: true, Why: "no connection was asked for or approved"})
 	case len(loops) > 0:
 		gate(noLoopAfterRefusal, eval.Grade{Why: strings.Join(loops, "; ")})
