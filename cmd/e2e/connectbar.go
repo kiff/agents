@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/kiff/agents/eval"
 )
@@ -17,9 +18,13 @@ import (
 //  1. One approval per app, plus its Card: the owner approves an app once, and
 //     its Card once (or both in one approval).
 //  2. No raw error reaches the person: nothing Setup says or shows carries a
-//     connection server's, KIFF's or a vendor's own words.
-//  3. No loop: a refused request is never sent again as it was, and nothing
-//     already approved is asked for again.
+//     connection server's, KIFF's or a vendor's own words. Read from the run
+//     itself: six words in a row from any error the run got, so the gate
+//     follows each source's wording as it changes. A short list of wrappers
+//     and codes is the backstop for what never comes as an error.
+//  3. No loop: a refused request or tools call is never sent again as it
+//     was (its pins included), and nothing already approved is asked for
+//     again.
 const (
 	oneApprovalPerApp  = "one approval per app"
 	noRawErrorShown    = "no raw error reaches the person"
@@ -48,10 +53,20 @@ func hostOf(raw string) string {
 	return raw
 }
 
-// gradeConnectBar grades the bar's three gates over the run's planque
-// requests, the approvals the owner answered and what Setup stated. Each is
-// skipped, with why, when the run didn't do what it grades.
-func gradeConnectBar(asks []connectAsk, approvals []approvalSeen, statements []string) []eval.CheckResult {
+// barRun is what the bar is counted from: Setup's planque requests and tools
+// calls, the approvals the owner answered, what Setup stated, and the text of
+// every error the run got.
+type barRun struct {
+	asks, toolsAsks []connectAsk
+	approvals       []approvalSeen
+	statements      []string
+	errors          []string
+}
+
+// gradeConnectBar grades the bar's three gates over the run. Each is skipped,
+// with why, when the run didn't do what it grades.
+func gradeConnectBar(r barRun) []eval.CheckResult {
+	asks, approvals := r.asks, r.approvals
 	var out []eval.CheckResult
 	gate := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
 
@@ -114,8 +129,11 @@ func gradeConnectBar(asks []connectAsk, approvals []approvalSeen, statements []s
 
 	// 2. No raw error reaches the person.
 	var shown []string
-	for _, s := range statements {
-		if hit := rawError(s); hit != "" {
+	quoted := sixWordsOf(r.errors)
+	for _, s := range r.statements {
+		if hit := quotedError(s, quoted); hit != "" {
+			shown = append(shown, fmt.Sprintf("an error's words %q in %q", hit, oneLineOf(s)))
+		} else if hit := rawError(s); hit != "" {
 			shown = append(shown, fmt.Sprintf("%q in %q", hit, oneLineOf(s)))
 		}
 	}
@@ -133,6 +151,15 @@ func gradeConnectBar(asks []connectAsk, approvals []approvalSeen, statements []s
 		k := askShape(a)
 		if why, ok := refused[k]; ok {
 			loops = append(loops, fmt.Sprintf("%s asked again as it was after %q", appOrReuse(a), why))
+		}
+		if a.Refused != "" {
+			refused[k] = a.Refused
+		}
+	}
+	for _, a := range r.toolsAsks {
+		k := "tools|" + a.Grant + "|" + a.Tools
+		if why, ok := refused[k]; ok {
+			loops = append(loops, fmt.Sprintf("tools for %s sent again as they were after %q", a.Grant, why))
 		}
 		if a.Refused != "" {
 			refused[k] = a.Refused
@@ -158,7 +185,7 @@ func gradeConnectBar(asks []connectAsk, approvals []approvalSeen, statements []s
 	sort.Strings(again)
 	loops = append(loops, again...)
 	switch {
-	case len(asks) == 0 && len(approvals) == 0:
+	case len(asks) == 0 && len(r.toolsAsks) == 0 && len(approvals) == 0:
 		gate(noLoopAfterRefusal, eval.Grade{Skipped: true, Why: "no connection was asked for or approved"})
 	case len(loops) > 0:
 		gate(noLoopAfterRefusal, eval.Grade{Why: strings.Join(loops, "; ")})
@@ -168,12 +195,13 @@ func gradeConnectBar(asks []connectAsk, approvals []approvalSeen, statements []s
 	return out
 }
 
-// askShape is a request as sent: its app (or the grant it reuses), its tools
-// and whether it's by key. The same shape twice is the same request.
+// askShape is a request as sent: its app (or the grant it reuses), its uses,
+// its tools with their pins and arguments, and whether it's by key. The same
+// shape twice is the same request; a pin fixed after a refusal is another.
 func askShape(a connectAsk) string {
 	uses := slices.Clone(a.Uses)
 	sort.Strings(uses)
-	return fmt.Sprintf("%s|%s|%s|%t", appOf(a), a.Reuse, strings.Join(uses, ","), a.API)
+	return fmt.Sprintf("%s|%s|%s|%s|%t", appOf(a), a.Reuse, strings.Join(uses, ","), a.Tools, a.API)
 }
 
 func appOrReuse(a connectAsk) string {
@@ -183,19 +211,58 @@ func appOrReuse(a connectAsk) string {
 	return "reuse of " + a.Reuse
 }
 
-// rawErrors are the words of a connection server, of KIFF or of a vendor that
-// must never reach the person: tafs cloud's own wrapper lines, planque's
-// refusals of a request's shape or of Coach's step order, and a vendor's status
-// or scope answer quoted as it came. Each is a regular expression; the first
-// match is reported.
+// quotedWords is how many words in a row from an error make a quote of it.
+const quotedWords = 6
+
+// wordsOf is s in lower case, as words: letters and digits, an apostrophe
+// kept inside one, everything else a break.
+func wordsOf(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\'' && r != '’'
+	})
+}
+
+// quotedValue is what an error quotes back of the request: a tool's title, a
+// name, a value Setup itself wrote. Setup may say those again.
+var quotedValue = regexp.MustCompile(`"[^"\n]*"|“[^”\n]*”`)
+
+// sixWordsOf is every run of quotedWords words in the errors, each once, never
+// across or inside what an error quotes back.
+func sixWordsOf(errors []string) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range errors {
+		for _, part := range quotedValue.Split(e, -1) {
+			w := wordsOf(part)
+			for i := 0; i+quotedWords <= len(w); i++ {
+				out[strings.Join(w[i:i+quotedWords], " ")] = true
+			}
+		}
+	}
+	return out
+}
+
+// quotedError is the first run of quotedWords words of s that an error of the
+// run holds, or "".
+func quotedError(s string, quoted map[string]bool) string {
+	if len(quoted) == 0 {
+		return ""
+	}
+	w := wordsOf(s)
+	for i := 0; i+quotedWords <= len(w); i++ {
+		if k := strings.Join(w[i:i+quotedWords], " "); quoted[k] {
+			return k
+		}
+	}
+	return ""
+}
+
+// rawErrors are the backstop for what never comes as an error result: tafs
+// cloud's and the runtime's wrapper lines around what Setup reads, error
+// codes, and a vendor's status or scope answer as it's usually quoted. Each
+// is a regular expression; the first match is reported. The errors the run
+// got are read from the run itself (quotedError), never copied here.
 var rawErrors = []*regexp.Regexp{
-	regexp.MustCompile(`\[tafs [a-z ]+\]`),
-	regexp.MustCompile(`(?i)\[connection refused\]`),
-	regexp.MustCompile(`(?i)\bfixed argument\b`),
-	regexp.MustCompile(`(?i)\bdotted path\b`),
-	regexp.MustCompile(`(?i)\bJSON value\b`),
-	regexp.MustCompile(`(?i)\b(?:read|list) the app's tool catalog\b`),
-	regexp.MustCompile(`(?i)\bbefore selecting this action\b`),
+	regexp.MustCompile(`(?i)\[(?:tafs|taf|result|approval|improve taf|did this happen|door knock|connection refused)\b[^\]\n]*\]`),
 	regexp.MustCompile(`(?i)\bit answered \d{3}\b`),
 	regexp.MustCompile(`(?i)\b(?:HTTP|status(?: code)?)\s*[45]\d\d\b`),
 	regexp.MustCompile(`(?i)\b[45]\d\d (?:Forbidden|Unauthorized|Not Found|Bad Request|Internal Server Error)\b`),

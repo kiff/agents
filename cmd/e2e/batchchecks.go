@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/kiff/agents/agent"
@@ -18,15 +19,19 @@ import (
 
 // connectAsk is one of Setup's planque requests and what planque answered.
 type connectAsk struct {
-	Call    string // the tool call's id
-	Entry   string
-	Server  string // an MCP server's URL, when the request names one
-	APIURL  string // a key request's description URL
-	Reuse   string
-	Uses    []string
-	API     bool
+	Call   string // the tool call's id
+	Entry  string
+	Server string // an MCP server's URL, when the request names one
+	APIURL string // a key request's description URL
+	Reuse  string
+	Uses   []string
+	API    bool
+	// Tools is the request's tools as sent, each by its name with its pins
+	// and arguments, in a stable form: a request that changes a pin isn't
+	// the one before it.
+	Tools   string
 	Refused string // planque's refusal, its first line; "" when it went through
-	Grant   string // the grant planque made, when it went through
+	Grant   string // the grant planque made, when it went through; for a tools call, the grant it adds to
 	// Declared: planque declared the key grant's tools to KIFF at once, so
 	// its Card can be drafted before the key and signed with it.
 	Declared bool
@@ -41,7 +46,14 @@ type approvalSeen struct {
 
 // connectAsksOf are the planque requests in a session's events, each paired
 // with its result, in the order Setup made them.
-func connectAsksOf(events []session.Event) []connectAsk {
+func connectAsksOf(events []session.Event) []connectAsk { return planqueAsksOf(events, "request") }
+
+// toolsAsksOf are Setup's calls that add tools to a connected grant (planque's
+// tools action), each with its result: a refused one sent again as it was is
+// a loop too.
+func toolsAsksOf(events []session.Event) []connectAsk { return planqueAsksOf(events, "tools") }
+
+func planqueAsksOf(events []session.Event, action string) []connectAsk {
 	calls := map[string]connectAsk{}
 	var order []string
 	for _, e := range events {
@@ -56,17 +68,24 @@ func connectAsksOf(events []session.Event) []connectAsk {
 				Entry  string          `json:"entry"`
 				Server string          `json:"server"`
 				Reuse  string          `json:"reuse"`
+				Grant  string          `json:"grant"`
 				Uses   []string        `json:"uses"`
 				API    json.RawMessage `json:"api"`
+				Tools  json.RawMessage `json:"tools"`
 			}
-			if json.Unmarshal(c.Input, &in) != nil || in.Action != "request" {
+			if json.Unmarshal(c.Input, &in) != nil || in.Action != action {
 				continue
 			}
 			var api struct {
 				URL string `json:"url"`
 			}
 			_ = json.Unmarshal(in.API, &api)
-			calls[c.CallID] = connectAsk{Call: c.CallID, Entry: in.Entry, Server: in.Server, APIURL: api.URL, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
+			a := connectAsk{Call: c.CallID, Entry: in.Entry, Server: in.Server, APIURL: api.URL, Reuse: in.Reuse, Uses: in.Uses,
+				API: len(in.API) > 0 && string(in.API) != "null", Tools: toolsShape(in.Tools)}
+			if action == "tools" {
+				a.Grant = in.Grant
+			}
+			calls[c.CallID] = a
 			order = append(order, c.CallID)
 		case session.ToolResult:
 			var r agent.ToolResultBody
@@ -79,7 +98,7 @@ func connectAsksOf(events []session.Event) []connectAsk {
 			}
 			if r.IsError {
 				a.Refused, _, _ = strings.Cut(strings.TrimSpace(r.Text), "\n")
-			} else {
+			} else if action == "request" {
 				var g struct {
 					ID       string `json:"id"`
 					Declared bool   `json:"declared"`
@@ -93,6 +112,40 @@ func connectAsksOf(events []session.Event) []connectAsk {
 	out := make([]connectAsk, 0, len(order))
 	for _, id := range order {
 		out = append(out, calls[id])
+	}
+	return out
+}
+
+// toolsShape is a request's tools in a stable form: each tool's name, pins
+// and arguments, sorted by name, keys in order (encoding/json sorts a map's).
+// What else a tool carries (its title) doesn't make it another request.
+func toolsShape(raw json.RawMessage) string {
+	var tools []struct {
+		Tool  string `json:"tool"`
+		Fixed any    `json:"fixed_arguments,omitempty"`
+		Args  any    `json:"arguments,omitempty"`
+	}
+	if json.Unmarshal(raw, &tools) != nil || len(tools) == 0 {
+		return ""
+	}
+	sort.SliceStable(tools, func(i, j int) bool { return tools[i].Tool < tools[j].Tool })
+	b, _ := json.Marshal(tools)
+	return string(b)
+}
+
+// errorsOf are the texts of every tool result the run got as an error, from
+// planque, KIFF, tafs cloud or a vendor, in full: the words that are theirs,
+// not the person's to read.
+func errorsOf(events []session.Event) []string {
+	var out []string
+	for _, e := range events {
+		if e.Kind != session.ToolResult {
+			continue
+		}
+		var r agent.ToolResultBody
+		if json.Unmarshal(e.Body, &r) == nil && r.IsError && strings.TrimSpace(r.Text) != "" {
+			out = append(out, r.Text)
+		}
 	}
 	return out
 }

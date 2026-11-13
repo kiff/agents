@@ -380,6 +380,11 @@ type test struct {
 	// asks are Setup's planque requests, read run by run as they happen: a
 	// chat keeps a tool call only while its run goes on (session.UntilEnd).
 	asks []connectAsk
+	// toolsAsks are Setup's calls adding tools to a connected grant, and
+	// errors the text of every error a run got, each once: what the bar's
+	// no-loop and no-raw-error gates read (connectbar.go).
+	toolsAsks []connectAsk
+	errors    []string
 	// people are step 9's people (-people); cloudTafs the tafs this run started on
 	// tafs cloud, and shared each taf agent and the group it was shared with.
 	people    []*someone
@@ -1232,20 +1237,29 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 		}
 	}
 	t.keepAsks(connectAsksOf(ran))
+	t.toolsAsks = keptAsks(t.toolsAsks, toolsAsksOf(ran))
+	for _, e := range errorsOf(ran) {
+		if !slices.Contains(t.errors, e) {
+			t.errors = append(t.errors, e)
+		}
+	}
 	return shown, text, nil
 }
 
 // keepAsks adds a run's planque requests to those already read, each once
 // by its call: a request read again, its answer since come, is updated.
-func (t *test) keepAsks(asks []connectAsk) {
+func (t *test) keepAsks(asks []connectAsk) { t.asks = keptAsks(t.asks, asks) }
+
+func keptAsks(kept, asks []connectAsk) []connectAsk {
 	for _, a := range asks {
-		i := slices.IndexFunc(t.asks, func(o connectAsk) bool { return o.Call == a.Call })
+		i := slices.IndexFunc(kept, func(o connectAsk) bool { return o.Call == a.Call })
 		if i < 0 {
-			t.asks = append(t.asks, a)
+			kept = append(kept, a)
 		} else if a.Refused != "" || a.Grant != "" {
-			t.asks[i] = a
+			kept[i] = a
 		}
 	}
+	return kept
 }
 
 // messagesOf is what the agent wrote in one run, in order, as -grade reads
@@ -1491,7 +1505,8 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	checks = append(checks, gradeBatch(asks, t.approvals, ours)...)
 	// The bar for connecting an app (13 Nov): one approval per app plus its
 	// Card, no raw error shown, no loop, counted from the run.
-	checks = append(checks, gradeConnectBar(asks, t.approvals, t.said.statements())...)
+	checks = append(checks, gradeConnectBar(barRun{asks: asks, toolsAsks: t.toolsAsks, approvals: t.approvals,
+		statements: t.said.statements(), errors: t.errors})...)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})
