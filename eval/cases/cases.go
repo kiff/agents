@@ -123,9 +123,27 @@ type Scenario struct {
 	Stale string
 	// Advisory: every check of the case is advice, never failing the gate.
 	Advisory bool
-	// Desk: the case runs as a fresh agent connected to the fake desk for
-	// each run (cmd/eval -desk, tickets.go), never as the standing agent.
+	// Desk: the case runs as a fresh agent connected to the fake vendor for
+	// each run (cmd/eval, desk.go), never as the standing agent: to its desk
+	// (tickets.go), or to the APIs the case names (APIs).
 	Desk bool
+	// APIs are the fake vendor's APIs a fresh agent connects, one grant
+	// each, and Cards its Cards, both for a run whose tools carry prefix.
+	APIs  []API
+	Cards func(prefix string) []map[string]any
+	// DiscloseIn are the fields a fresh agent's AI line goes in, by the
+	// tool's name after the run's prefix ("reply": body): the writes that
+	// reach someone outside the company. None: it sends nothing by itself.
+	DiscloseIn map[string][]string
+}
+
+// API is one of the fake vendor's APIs: where it is under the vendor
+// ("/desk"), the header its key goes in, and the tools a run's agent asks of
+// it, each named with the run's prefix.
+type API struct {
+	Path   string
+	Header string
+	Tools  func(prefix string) []map[string]any
 }
 
 // WithIDs is the scenario with the ids a seed made for its items.

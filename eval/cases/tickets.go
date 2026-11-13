@@ -33,6 +33,9 @@ var Tickets = Scenario{
 	Services:   []string{"kiff"},
 	Definition: "recipe-acknowledge-every-ticket",
 	Desk:       true,
+	APIs:       []API{{Path: "/desk", Header: "X-Desk-Key", Tools: DeskTools}},
+	Cards:      DeskCards,
+	DiscloseIn: map[string][]string{"reply": {"body"}},
 	Expect: []Action{
 		// No acknowledgement promises a refund or a credit, on any ticket.
 		// No acknowledgement promises a refund or a credit, or carries anything

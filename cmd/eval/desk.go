@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,7 +34,7 @@ var deskEnv = []string{"E2E_KIFF_SESSION", "E2E_SETUP_KEY", "E2E_PHONE_KEY", "E2
 // desk is the test account for desk cases.
 type desk struct {
 	account testaccount.Account
-	vendor  string // the fake vendor's desk, its API and description beside it
+	vendor  string // the fake vendor: each of its APIs is under it, its description beside it
 	made    string // the sweep's list of the agents a run made (E2E_MADE)
 	log     io.Writer
 }
@@ -72,7 +74,7 @@ func newDesk(ctx context.Context, env func(string) string, kiffAPI string, log i
 	phone.VendorKey = env("E2E_DESK_KEY")
 	return &desk{
 		account: testaccount.Account{Phone: phone, KIFF: kiffc, Setup: testaccount.SetupClient(planque, env("E2E_SETUP_KEY"), hc)},
-		vendor:  strings.TrimSuffix(strings.TrimRight(env("E2E_VENDOR"), "/"), "/mcp") + "/desk",
+		vendor:  strings.TrimSuffix(strings.TrimRight(env("E2E_VENDOR"), "/"), "/mcp"),
 		made:    env("E2E_MADE"),
 		log:     log,
 	}, nil
@@ -86,13 +88,22 @@ func (d *desk) agentFor(ctx context.Context, s cases.Scenario) (testaccount.Agen
 		return testaccount.Agent{}, "", err
 	}
 	prefix := "t" + run
+	if len(s.APIs) == 0 || s.Cards == nil {
+		return testaccount.Agent{}, "", fmt.Errorf("%s: a fresh agent's case names the APIs it connects and its Cards", s.Name)
+	}
+	// One grant per API, each with the vendor's key in that API's own header.
+	asks := make([]testaccount.Ask, len(s.APIs))
+	for i, api := range s.APIs {
+		asks[i] = testaccount.Ask{Tools: api.Tools(prefix), API: map[string]any{"url": d.vendor + api.Path + "/openapi.json",
+			"base": d.vendor + api.Path + "/v1", "auth": map[string]any{"in": "header", "name": api.Header}}}
+	}
 	spec := testaccount.AgentSpec{
 		ID:    "eval-" + s.Name + "-" + run,
 		Label: "Eval: " + s.Name,
-		Tools: cases.DeskTools(prefix),
-		API: map[string]any{"url": d.vendor + "/openapi.json", "base": d.vendor + "/v1",
-			"auth": map[string]any{"in": "header", "name": "X-Desk-Key"}},
-		Cards: cases.DeskCards(prefix),
+		Tools: asks[0].Tools,
+		API:   asks[0].API,
+		Also:  asks[1:],
+		Cards: s.Cards(prefix),
 	}
 	ag, err := d.account.NewAgent(ctx, spec, func(agent string) error { return testaccount.RecordMade(d.made, agent) })
 	if err != nil {
@@ -112,10 +123,18 @@ func (d *desk) remove(ag testaccount.Agent, name string) {
 }
 
 // deskDisclosure is where the run's agent puts the line saying an AI agent
-// wrote it: each reply's body, as Coach names the desk's reply for a taf that
-// answers customers.
-func deskDisclosure(prefix string) *agent.Disclosure {
-	return &agent.Disclosure{Line: "Written by an AI agent for the company.", In: []agent.DisclosureIn{{Tool: prefix + "_reply", Fields: []string{"body"}}}}
+// wrote it: the fields the case names (the desk's reply body, as Coach names
+// it for a taf that answers customers), in the tools' order. Nil for a case
+// whose agent sends nothing by itself.
+func deskDisclosure(prefix string, in map[string][]string) *agent.Disclosure {
+	if len(in) == 0 {
+		return nil
+	}
+	d := &agent.Disclosure{Line: "Written by an AI agent for the company."}
+	for _, tool := range slices.Sorted(maps.Keys(in)) {
+		d.In = append(d.In, agent.DisclosureIn{Tool: prefix + "_" + tool, Fields: in[tool]})
+	}
+	return d
 }
 
 // runDesk runs one run of a desk case: the agent made, its key used for this
@@ -131,7 +150,7 @@ func (rt *runtime) runDesk(ctx context.Context, d *desk, s cases.Scenario) (eval
 	}
 	defer d.remove(ag, s.Name)
 	standing := rt.kiffKey
-	rt.kiffKey, rt.disclose = ag.Key, deskDisclosure(prefix)
+	rt.kiffKey, rt.disclose = ag.Key, deskDisclosure(prefix, s.DiscloseIn)
 	defer func() { rt.kiffKey, rt.disclose = standing, nil }()
 	s = s.ForRun(prefix)
 	r, err := rt.Run(ctx, s)

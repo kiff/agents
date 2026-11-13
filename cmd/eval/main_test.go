@@ -1086,11 +1086,15 @@ func TestADeskCaseNeedsTheTestAccount(t *testing.T) {
 // A desk run's agent writes the AI line into each reply's body, under the
 // run's own prefix; any other case keeps its definition's.
 func TestADeskRunDisclosesInItsReplies(t *testing.T) {
-	d := deskDisclosure("t1a2b3c4d")
+	d := deskDisclosure("t1a2b3c4d", cases.Tickets.DiscloseIn)
 	if err := d.Check(); err != nil {
 		t.Fatal(err)
 	}
 	if len(d.In) != 1 || d.In[0].Tool != "t1a2b3c4d_reply" || d.In[0].Fields[0] != "body" {
 		t.Fatalf("%+v", d)
+	}
+	// A case whose agent sends nothing by itself has no line to place.
+	if d := deskDisclosure("t1a2b3c4d", nil); d != nil {
+		t.Fatalf("a case with no outbound field discloses %+v", d)
 	}
 }

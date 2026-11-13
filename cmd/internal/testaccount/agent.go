@@ -35,9 +35,18 @@ type AgentSpec struct {
 	// Tools and API are the grant's ask, as planque takes it (kind api_key).
 	Tools []map[string]any
 	API   map[string]any
+	// Also are the agent's other grants, one per API beyond the first: a job
+	// that reads a list in one app and writes in another asks for each.
+	Also []Ask
 	// Cards are the draft's Cards, each without its subject: the agent's id
 	// is filled in.
 	Cards []map[string]any
+}
+
+// Ask is one grant's ask: its tools and the API they are on.
+type Ask struct {
+	Tools []map[string]any
+	API   map[string]any
 }
 
 // Agent is a fresh agent as made.
@@ -45,6 +54,8 @@ type Agent struct {
 	ID    string
 	Key   string
 	Grant string
+	// Also are its other grants (AgentSpec.Also), in the order asked.
+	Also []string
 }
 
 // Account is the test account as Setup and the owner's phone reach it.
@@ -78,23 +89,18 @@ func (a Account) NewAgent(ctx context.Context, spec AgentSpec, made func(agent s
 		}
 	}()
 
-	ask := map[string]any{"kind": "api_key", "agent": ag.ID, "agent_name": spec.Label, "tools": spec.Tools, "api": spec.API}
-	g, err := a.Setup.Do(ctx, http.MethodPost, a.Phone.AccountPath()+"/grants", ask)
-	if err != nil {
-		return ag, fmt.Errorf("asking for the grant: %w", err)
-	}
-	if err := g.Err(); err != nil {
-		return ag, fmt.Errorf("asking for the grant: %w", err)
-	}
-	ag.Grant, _ = g.Body["id"].(string)
-	digest, _ := g.Body["digest"].(string)
-	if ag.Grant == "" || digest == "" {
-		return ag, errors.New("planque's answer to the grant names no id or digest")
-	}
-	if status, err := a.Phone.GiveKey(ctx, Grant{ID: ag.Grant, Digest: digest}); err != nil {
-		return ag, err
-	} else if !strings.Contains(status, "connected") {
-		return ag, fmt.Errorf("the grant isn't connected after the key: %s", status)
+	// Each grant is asked for and connected before the next: one that fails
+	// leaves the ones before it in ag, for Remove.
+	for i, ask := range append([]Ask{{Tools: spec.Tools, API: spec.API}}, spec.Also...) {
+		id, err := a.connect(ctx, ag.ID, spec.Label, ask)
+		if i == 0 {
+			ag.Grant = id
+		} else if id != "" {
+			ag.Also = append(ag.Also, id)
+		}
+		if err != nil {
+			return ag, err
+		}
 	}
 
 	cards := make([]any, len(spec.Cards))
@@ -141,13 +147,41 @@ func (a Account) NewAgent(ctx context.Context, spec AgentSpec, made func(agent s
 	return ag, nil
 }
 
+// connect asks for one grant for agent and gives the vendor's key on the
+// phone. The grant's id comes back as soon as planque names it, also with an
+// error, so a grant asked for and not connected is still taken back.
+func (a Account) connect(ctx context.Context, agent, label string, ask Ask) (string, error) {
+	g, err := a.Setup.Do(ctx, http.MethodPost, a.Phone.AccountPath()+"/grants",
+		map[string]any{"kind": "api_key", "agent": agent, "agent_name": label, "tools": ask.Tools, "api": ask.API})
+	if err != nil {
+		return "", fmt.Errorf("asking for the grant: %w", err)
+	}
+	if err := g.Err(); err != nil {
+		return "", fmt.Errorf("asking for the grant: %w", err)
+	}
+	id, _ := g.Body["id"].(string)
+	digest, _ := g.Body["digest"].(string)
+	if id == "" || digest == "" {
+		return id, errors.New("planque's answer to the grant names no id or digest")
+	}
+	if status, err := a.Phone.GiveKey(ctx, Grant{ID: id, Digest: digest}); err != nil {
+		return id, err
+	} else if !strings.Contains(status, "connected") {
+		return id, fmt.Errorf("the grant isn't connected after the key: %s", status)
+	}
+	return id, nil
+}
+
 // Remove takes a fresh agent back: its grant disconnected on the phone, and
 // the agent archived, which takes its keys with it. Each step runs whatever
 // the other did; an agent or grant already gone is fine.
 func (a Account) Remove(ctx context.Context, ag Agent) error {
 	var errs []error
-	if ag.Grant != "" {
-		if err := a.Phone.Disconnect(ctx, ag.Grant); err != nil && !strings.HasPrefix(err.Error(), "404") {
+	for _, grant := range append([]string{ag.Grant}, ag.Also...) {
+		if grant == "" {
+			continue
+		}
+		if err := a.Phone.Disconnect(ctx, grant); err != nil && !strings.HasPrefix(err.Error(), "404") {
 			errs = append(errs, fmt.Errorf("disconnecting the grant: %w", err))
 		}
 	}
