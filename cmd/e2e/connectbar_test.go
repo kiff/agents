@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -164,5 +165,47 @@ func TestTheConnectBar(t *testing.T) {
 	none := byName(gradeConnectBar(barRun{statements: clean}))
 	if !none[oneApprovalPerApp].Skipped || !none[noLoopAfterRefusal].Skipped || !none[noRawErrorShown].Pass {
 		t.Errorf("nothing connected: %+v", none)
+	}
+}
+
+// A card is answered and counted once, by its id: read again as its grant
+// moves (listed, tools set, connected), it counts 1, not 4, and its draft is
+// confirmed once (the first connect Eval counted one card 8 times, and the
+// replay stopped on KIFF's 409 for a draft confirmed twice).
+func TestACardReadAgainCountsOnce(t *testing.T) {
+	tt := &test{}
+	card := component{Type: "approval", ID: "c1", Grant: "grt_1"}
+	for i, status := range []string{"pending", "listed", "pending", "connected"} {
+		seen, _, reread := tt.readCard(card, grant{ID: "grt_1", Status: status, Digest: fmt.Sprintf("d%d", i)})
+		if reread != (i > 0) {
+			t.Fatalf("read %d (%s): reread %t", i, status, reread)
+		}
+		if !reread {
+			tt.approvals = append(tt.approvals, seen)
+		}
+	}
+	if len(tt.approvals) != 1 {
+		t.Fatalf("one card read four times counted %d", len(tt.approvals))
+	}
+	if r := byName(gradeConnectBar(barRun{asks: []connectAsk{{Entry: "stripe", Grant: "grt_1"}}, approvals: tt.approvals}))[oneApprovalPerApp]; !r.Pass {
+		t.Errorf("one card: %+v", r)
+	}
+
+	// The Card's card: its draft is new once. Another app's card carrying the
+	// same draft, once it's confirmed, doesn't confirm it again.
+	_, newDraft, _ := tt.readCard(component{Type: "approval", ID: "c2", Grant: "grt_1", Draft: "drf_1"}, grant{ID: "grt_1", Status: "connected"})
+	if !newDraft {
+		t.Fatal("the Card's first card carries a new draft")
+	}
+	tt.draftIDs = append(tt.draftIDs, "drf_1")
+	seen, newDraft, reread := tt.readCard(component{Type: "approval", ID: "c3", Grant: "grt_2", Draft: "drf_1"}, grant{ID: "grt_2", Status: "pending"})
+	if newDraft || reread || seen.Grant != "grt_2" {
+		t.Fatalf("another app's card with the confirmed draft: %+v new %t reread %t", seen, newDraft, reread)
+	}
+
+	// A new card for a grant already approved, with nothing left to do: shown again.
+	seen, _, _ = tt.readCard(component{Type: "approval", ID: "c4", Grant: "grt_1"}, grant{ID: "grt_1", Status: "connected"})
+	if !seen.Again {
+		t.Fatalf("a new card for an approved grant: %+v", seen)
 	}
 }
