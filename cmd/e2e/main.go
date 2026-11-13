@@ -1243,6 +1243,24 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 	return false, nil
 }
 
+// connectedGrants are the pins and tools of every grant this run approved
+// that is connected now, in the order approved. One that can't be read is
+// left out, and said.
+func (t *test) connectedGrants(ctx context.Context) (pinned []string, connected []grantTool) {
+	for _, id := range t.grants {
+		g, err := t.phone.Grant(ctx, id)
+		if err != nil {
+			t.logf("grant %s couldn't be read for the judge: %v", id, err)
+			continue
+		}
+		if g.Status == "connected" {
+			pinned = append(pinned, pinsOf(g)...)
+			connected = append(connected, g.Request.Tools...)
+		}
+	}
+	return pinned, connected
+}
+
 // readCard is what an approval card asks of the owner, before anything is
 // sent. A card is answered once, by its id: read again as its run goes on,
 // whatever its grant has become since (listed, tools set, connected), it's
@@ -1542,6 +1560,12 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	}
 	if t.words != nil {
 		t.said.lines = append(t.said.lines, t.words.setupNotes()...) // a line that came as a note, graded the same
+	}
+	// What every connection this run approved fixes, and its tools, once
+	// connected: a rule kept there is kept, whatever the case (the refunds
+	// setup showed the judge none, and its EUR rule read as held nowhere).
+	if pinned, connected := t.connectedGrants(ctx); len(connected) > 0 {
+		t.said.pinned, t.said.connected = pinned, connected
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {

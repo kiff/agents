@@ -823,6 +823,8 @@ const agreedRule = "The rules below are what the owner agreed in the chat, in th
 	"\"waits until you raise the limit\" match on_exceed \"owner\" on that aggregate; only rules saying it is refused need \"refuse\". " +
 	"A max or limit on a sum of an amount is in the amount's units as the call sends it, often its smallest unit: a max of 15000 can be " +
 	"150.00 EUR at two decimals. A number that differs from the rules only by that scale (a factor of 100) is the same limit. " +
+	"A Card's money limit is in one currency, its unit: KIFF refuses a call in another currency before anything is counted or sent, so " +
+	"a rule that only that currency is allowed, or that a call in another is refused, is held by a money limit in that unit. " +
 	"Some rules no Card holds are kept elsewhere, and pass when kept there: an argument the connection fixes to one value (listed below " +
 	"as kept on the connection), such as only one workspace; the line KIFF starts messages with (\"Written by an AI agent on behalf of …\"), " +
 	"never on a Card, kept only on the tools listed below as disclosed, so a rule that every reply starts with it fails when the tool " +
