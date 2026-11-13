@@ -152,7 +152,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
-			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), or in a connected grant's catalog (catalog)"},` +
+			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), in a connected grant's catalog (catalog), or in a key vendor's API before requesting it (describe): a big API answers its count until you give words from the job"},` +
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
@@ -342,7 +342,12 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if len(in.API) == 0 || string(in.API) == "null" {
 			return tool.Result{Text: "describe needs api {url, auth}: the vendor's published OpenAPI description and where the key goes", IsError: true}, nil
 		}
-		body, _ := json.Marshal(map[string]json.RawMessage{"api": in.API})
+		ask := map[string]any{"api": in.API}
+		if q := strings.TrimSpace(in.Q); q != "" {
+			// A big API (hundreds of operations) is described by words from the job: at most 50, best first.
+			ask["q"] = q
+		}
+		body, _ := json.Marshal(ask)
 		raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/api/operations", body)
 		if err != nil || refused != nil {
 			return deref(refused), err

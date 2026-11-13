@@ -387,6 +387,10 @@ func TestDescribeReadsAKeyVendorsOperations(t *testing.T) {
 	if isErr || !strings.Contains(text, `"name":"searchTickets"`) || len(seen) != 1 || seen[0] != `POST /v1/accounts/tnt_1/api/operations {"api":`+api+`}` {
 		t.Fatalf("describe: %s %v, sent %v", text, isErr, seen)
 	}
+	// A big API, by words from the job.
+	if _, isErr := call(t, tl, `{"action":"describe","api":`+api+`,"q":" refund charge "}`); isErr || len(seen) != 2 || seen[1] != `POST /v1/accounts/tnt_1/api/operations {"api":`+api+`,"q":"refund charge"}` {
+		t.Fatalf("describe with words: sent %v", seen)
+	}
 }
 
 // Only planque's lookups are reads: what a chat may keep of them.
