@@ -274,6 +274,23 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -invoices -grade -max-cost 3 -owner-turns 14 -transcript invoices.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - name: Replay, introductions from a list
+        # A setup that failed an owner, run again (cmd/e2e -replay, replay.go):
+        # a list of companies in the fake vendor's spreadsheet and drafts in
+        # its mailbox, two apps by one key each, with the owner's words and
+        # answers as they were. Graded with the bar for connecting an app
+        # (one approval per app plus its Card, no raw error, no loop) and the
+        # rest, through to the result. Red until the bar holds.
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -replay intros -grade -max-cost 3 -owner-turns 14 -transcript replay-intros.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off
@@ -307,12 +324,12 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
-          for f in report.md report-handoff.md report-tickets.md setup.md desk.md invoices.md; do
+          for f in report.md report-handoff.md report-tickets.md setup.md desk.md invoices.md replay-intros.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup.md desk.md invoices.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup.md desk.md invoices.md replay-intros.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"

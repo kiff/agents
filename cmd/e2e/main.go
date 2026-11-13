@@ -113,11 +113,12 @@ type config struct {
 	maxTurns                                        int
 	maxCost                                         int64
 	keep                                            bool
-	made                                            string // -made: the file each taf this run makes is added to, for -sweep
-	improve                                         bool   // the improve case, after the taf
-	desk                                            bool   // the second vendor: a desk by its key, Setup's connection only
-	invoices                                        bool   // billing by its key, for drafts only: Setup's connection only
-	people                                          bool   // step 9's people on a shared taf, instead of the taf's own checks
+	made                                            string  // -made: the file each taf this run makes is added to, for -sweep
+	improve                                         bool    // the improve case, after the taf
+	desk                                            bool    // the second vendor: a desk by its key, Setup's connection only
+	invoices                                        bool    // billing by its key, for drafts only: Setup's connection only
+	people                                          bool    // step 9's people on a shared taf, instead of the taf's own checks
+	replay                                          *replay // -replay: a setup that failed an owner, run again (replay.go)
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
 	recipe                                          *recipe   // -recipe: the owner says a recipe's words alone, on the desk, and the taf is graded against its card
@@ -184,6 +185,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.BoolVar(&cfg.invoices, "invoices", false, "billing (kiff/tafs#771): Setup connects the fake vendor's billing, a REST API by its key "+
 		"(E2E_DESK_KEY), for draft invoices the owner approves and sends; checked once its tools are connected (status pinned to draft, "+
 		"no send), with no taf after")
+	replayName := fs.String("replay", "", "a setup that failed an owner, run again on the fake vendor with their words (replay.go): intros. "+
+		"Needs E2E_DESK_KEY; graded with the bar for connecting an app, through to the result, with no taf after")
 	recipeFile := fs.String("recipe", "", "a recipe from kiff/tafs (recipes/<id>.md), with -desk: the owner says its words alone, unchanged, "+
 		"then only where the desk is and that Setup may connect; the run goes on to the taf, whose Card -grade checks against the recipe's card")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
@@ -291,6 +294,24 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 			return errors.New("-invoices needs E2E_DESK_KEY: the fake vendor's key, which its billing takes")
 		}
 	}
+	if *replayName != "" {
+		r, ok := replays[*replayName]
+		switch {
+		case !ok:
+			return fmt.Errorf("-replay %q: no such replay", *replayName)
+		case cfg.desk || cfg.invoices || *recipeFile != "" || cfg.people || cfg.improve:
+			return errors.New("-replay is a case of its own: no -desk, -invoices, -recipe, -people or -improve")
+		case cfg.owner != "en":
+			return errors.New("-replay's owner speaks as they did: -owner en")
+		case cfg.stripeKey != "":
+			return errors.New("-replay runs against the fake vendor; unset E2E_STRIPE_KEY")
+		case cfg.deskKey == "":
+			return errors.New("-replay needs E2E_DESK_KEY: the fake vendor's key, which its apps take")
+		case !*grade:
+			return errors.New("-replay is what the bar grades: add -grade")
+		}
+		cfg.replay = &r
+	}
 	if *recipeFile != "" {
 		switch {
 		case !cfg.desk:
@@ -380,6 +401,11 @@ type test struct {
 	// asks are Setup's planque requests, read run by run as they happen: a
 	// chat keeps a tool call only while its run goes on (session.UntilEnd).
 	asks []connectAsk
+	// toolsAsks are Setup's calls adding tools to a connected grant, and
+	// errors the text of every error a run got, each once: what the bar's
+	// no-loop and no-raw-error gates read (connectbar.go).
+	toolsAsks []connectAsk
+	errors    []string
 	// people are step 9's people (-people); cloudTafs the tafs this run started on
 	// tafs cloud, and shared each taf agent and the group it was shared with.
 	people    []*someone
@@ -531,6 +557,10 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	}
 	if err := t.setupReadsRecorded(ctx); err != nil {
 		return err
+	}
+	if t.cfg.replay != nil {
+		// A replay ends at the result: connecting the apps and the Card is what it replays.
+		return nil
 	}
 
 	if t.cfg.people {
@@ -979,6 +1009,9 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 	if fromRecipe {
 		msg, facts = recipeOpening(*t.cfg.recipe, deskOf(t.cfg.vendor))
 	}
+	if r := t.cfg.replay; r != nil {
+		msg, facts = r.ask(vendorRoot(t.cfg.vendor)), r.facts
+	}
 	deskChecked := false
 	answered := map[string]string{}
 	toldFacts, factsMarked := false, false
@@ -1232,20 +1265,29 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 		}
 	}
 	t.keepAsks(connectAsksOf(ran))
+	t.toolsAsks = keptAsks(t.toolsAsks, toolsAsksOf(ran))
+	for _, e := range errorsOf(ran) {
+		if !slices.Contains(t.errors, e) {
+			t.errors = append(t.errors, e)
+		}
+	}
 	return shown, text, nil
 }
 
 // keepAsks adds a run's planque requests to those already read, each once
 // by its call: a request read again, its answer since come, is updated.
-func (t *test) keepAsks(asks []connectAsk) {
+func (t *test) keepAsks(asks []connectAsk) { t.asks = keptAsks(t.asks, asks) }
+
+func keptAsks(kept, asks []connectAsk) []connectAsk {
 	for _, a := range asks {
-		i := slices.IndexFunc(t.asks, func(o connectAsk) bool { return o.Call == a.Call })
+		i := slices.IndexFunc(kept, func(o connectAsk) bool { return o.Call == a.Call })
 		if i < 0 {
-			t.asks = append(t.asks, a)
+			kept = append(kept, a)
 		} else if a.Refused != "" || a.Grant != "" {
-			t.asks[i] = a
+			kept[i] = a
 		}
 	}
+	return kept
 }
 
 // messagesOf is what the agent wrote in one run, in order, as -grade reads
@@ -1441,6 +1483,10 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		o.facts = o.invoiceFacts // the limits billing's owner gives, graded as theirs
 		m.none = true            // billing has no test or live
 	}
+	if r := t.cfg.replay; r != nil {
+		o.taf, o.facts = r.taf, r.facts // the replayed owner's name and answers, graded as theirs
+		m.none = r.none
+	}
 	if r := t.cfg.recipe; r != nil {
 		o.taf = "" // the recipe names no taf: Coach does
 		// The limits are the recipe's words, said once at the start; the facts add where the desk is.
@@ -1489,6 +1535,10 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		}
 	}
 	checks = append(checks, gradeBatch(asks, t.approvals, ours)...)
+	// The bar for connecting an app (13 Nov): one approval per app plus its
+	// Card, no raw error shown, no loop, counted from the run.
+	checks = append(checks, gradeConnectBar(barRun{asks: asks, toolsAsks: t.toolsAsks, approvals: t.approvals,
+		statements: t.said.statements(), errors: t.errors})...)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})
