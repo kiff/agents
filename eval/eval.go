@@ -231,6 +231,10 @@ type ToolCallBody struct {
 	Tool   string          `json:"tool"`
 	Server string          `json:"server,omitempty"`
 	Input  json.RawMessage `json:"input"`
+	// Acts is whether the call changes something, as the runtime recorded
+	// it from the tool's read-only flag; nil when it didn't (an agent's own
+	// tool, Managed Agents, a record from before).
+	Acts *bool `json:"acts,omitempty"`
 }
 
 // ToolResultBody is the body of a ToolResult event.

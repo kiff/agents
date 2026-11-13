@@ -1276,6 +1276,47 @@ func TestAToolCallRecordsWhereItWent(t *testing.T) {
 	}
 }
 
+// Each call is recorded with whether it changes something, as the runtime
+// decides it from the tool's own read-only flag: an eval grades a vendor's
+// read named shop_get_order as a read, never by its name.
+func TestAToolCallRecordsWhetherItActs(t *testing.T) {
+	refund := &fakeTool{name: "stripe_refund", access: tool.Write, gateway: true, result: tool.Result{Text: "refunded re_1"}}
+	lookup := &fakeTool{name: "shop_get_order", access: tool.Read, gateway: true, result: tool.Result{Text: "order 1"}}
+	notes := &fakeTool{name: "memory", access: tool.Own, result: tool.Result{Text: "no notes"}}
+	reads := model.Reply{Blocks: []model.Block{
+		{Kind: model.ToolUse, CallID: "c1", Tool: "memory", Input: json.RawMessage(`{"action":"list"}`)},
+		{Kind: model.ToolUse, CallID: "c2", Tool: "shop_get_order", Input: json.RawMessage(`{"order":"o_1"}`)},
+	}, Stop: model.CallTools}
+	m := &script{replies: []model.Reply{reads, use("c3", "stripe_refund", `{"charge":"ch_1"}`), say("Done.")}}
+	store, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, refund, lookup, notes), r, nil, "Go.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acts := map[string]string{}
+	for _, e := range events {
+		if e.Kind == session.ToolCall {
+			var b agent.ToolCallBody
+			if err := json.Unmarshal(e.Body, &b); err != nil {
+				t.Fatal(err)
+			}
+			acts[b.Tool] = "unset"
+			if b.Acts != nil {
+				acts[b.Tool] = fmt.Sprint(*b.Acts)
+			}
+		}
+	}
+	if acts["stripe_refund"] != "true" || acts["shop_get_order"] != "false" || acts["memory"] != "unset" {
+		t.Fatalf("recorded acts %v", acts)
+	}
+}
+
 // thinking is an opaque thinking block, as a provider returns one.
 var thinking = model.Block{Kind: model.Thinking, Text: "The refund is under the Card.", Signature: "sig-abc"}
 

@@ -280,6 +280,12 @@ func (s Scenario) write(c eval.ToolCallBody) bool {
 	if c.Server != s.Gateway {
 		return false
 	}
+	// The runtime knows: the tool's own read-only flag, as it recorded it.
+	// The name is a guess, for records without it: a tool of a service the
+	// scenario doesn't name (shop_get_order) would read as a write.
+	if c.Acts != nil {
+		return *c.Acts
+	}
 	op := s.op(c.Tool)
 	if slices.Contains(s.ReadOps, op) {
 		return false
