@@ -805,15 +805,19 @@ const agreedRule = "The rules below are what the owner agreed in the chat, in th
 	"Fail if a limit was merged with another (two limits of 1,000 a day each held as one of 2,000 a day), if a number, a period or the tools " +
 	"a limit covers differ, or if the Cards allow something the rules hold or refuse; name the rule it breaks. A read the rules call generous " +
 	"with no number passes with any daily count. How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
-	"an aggregate's limit over its window bounds the calls together; on_exceed \"owner\" (or none) holds past a limit, \"refuse\" refuses."
+	"an aggregate's limit over its window bounds the calls together; on_exceed \"owner\" (or none) holds past a limit, \"refuse\" refuses. " +
+	"A max or limit on a sum of an amount is in the amount's units as the call sends it, often its smallest unit: a max of 15000 can be " +
+	"150.00 EUR at two decimals. A number that differs from the rules only by that scale (a factor of 100) is the same limit."
 
-// agreedRules are the rules notices Setup showed, in order, each as its title
-// and text: what the owner agreed by confirming.
+// agreedRules are the rules Setup put to the owner, in order, each as its
+// title and text: a notice the owner was asked to agree to, the next card
+// shown being a confirm. A notice with nothing to agree to after it
+// ("Connected", a warning) states no rule, and isn't one.
 func agreedRules(s said) []string {
 	var out []string
-	for _, id := range s.order {
+	for i, id := range s.order {
 		c, ok := s.cards[id]
-		if !ok || c.Type != "notice" {
+		if !ok || c.Type != "notice" || i+1 >= len(s.order) || s.cards[s.order[i+1]].Type != "confirm" {
 			continue
 		}
 		if t := strings.TrimSpace(strings.TrimSpace(c.Title) + "\n" + strings.TrimSpace(c.Text)); t != "" {
