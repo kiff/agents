@@ -11,7 +11,7 @@ import (
 	"github.com/kiff/agents/session"
 )
 
-// The Coach batch's gates (#1558, 13 Nov 2026): Setup connects an app on the
+// The Coach batch's gates (13 Nov 2026): Setup connects an app on the
 // first try, offers only connections it made in this conversation, asks for
 // a key and its Card in one approval when the connection declared the key's
 // tools, and narrows a managed app's sign-in to the tools the taf uses.
@@ -86,9 +86,11 @@ func connectAsksOf(events []session.Event) []connectAsk {
 }
 
 // gradeBatch grades the batch's gates over what the run asked of planque and
-// the approvals the owner answered. Each is skipped, with why, when the run
-// didn't do what it grades.
-func gradeBatch(asks []connectAsk, approvals []approvalSeen) []eval.CheckResult {
+// the approvals the owner answered. ours are the grants of the tafs this run
+// made, from another conversation (an improvement's), which Setup may reuse
+// as the product does for a second taf. Each gate is skipped, with why, when
+// the run didn't do what it grades.
+func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]bool) []eval.CheckResult {
 	var out []eval.CheckResult
 	gate := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
 	skip := func(name, why string) { gate(name, eval.Grade{Skipped: true, Why: why}) }
@@ -112,8 +114,14 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen) []eval.CheckResult 
 	}
 
 	// Offers only its own connections: a reused sign-in, and every approval,
-	// names a grant this conversation made, never another taf's or a test's.
+	// names a grant this conversation made or one of this run's tafs holds.
+	// The Eval's account has no taf of its own: the sweep archives each
+	// run's agents and leaves their grants at planque, so any other grant is
+	// an earlier test's, which Setup never offers or reuses.
 	made := map[string]bool{}
+	for g := range ours {
+		made[g] = true
+	}
 	for _, a := range asks {
 		if a.Grant != "" {
 			made[a.Grant] = true

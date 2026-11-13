@@ -1457,7 +1457,18 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		}
 		asks = connectAsksOf(events)
 	}
-	checks = append(checks, gradeBatch(asks, t.approvals)...)
+	// A reused grant of a taf this run made is the account's own: the
+	// product reuses a sign-in for a second taf.
+	ours := map[string]bool{}
+	for _, a := range asks {
+		if a.Reuse == "" {
+			continue
+		}
+		if g, err := t.phone.Grant(ctx, a.Reuse); err == nil && slices.Contains(t.tafAgents, g.Request.Agent) {
+			ours[a.Reuse] = true
+		}
+	}
+	checks = append(checks, gradeBatch(asks, t.approvals, ours)...)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})

@@ -60,7 +60,7 @@ func TestSetupsConnectionRequestsAreReadWithTheirAnswers(t *testing.T) {
 func TestTheCoachBatchsGates(t *testing.T) {
 	ok := []connectAsk{{Entry: "qonto-key@2", Uses: []string{"list_client_invoices"}, Grant: "grt_2"},
 		{Entry: "connector:composio:gmail", Uses: []string{"GMAIL_SEND_EMAIL"}, Grant: "grt_3"}}
-	g := byName(gradeBatch(ok, []approvalSeen{{Grant: "grt_2", Draft: "drf_1", Key: true}, {Grant: "grt_3"}}))
+	g := byName(gradeBatch(ok, []approvalSeen{{Grant: "grt_2", Draft: "drf_1", Key: true}, {Grant: "grt_3"}}, nil))
 	for _, name := range []string{"connects on the first try", "offers only its own connections", "one approval for the key and the Card", "narrows a managed sign-in"} {
 		if !g[name].Pass {
 			t.Errorf("%s: %+v", name, g[name])
@@ -69,35 +69,43 @@ func TestTheCoachBatchsGates(t *testing.T) {
 
 	// A refused request fails the first try, naming planque's words.
 	refused := append([]connectAsk{{Entry: "qonto-key@2", Refused: "unknown field \"uses\""}}, ok...)
-	if r := byName(gradeBatch(refused, nil))["connects on the first try"]; r.Pass || !strings.Contains(r.Why, "unknown field") {
+	if r := byName(gradeBatch(refused, nil, nil))["connects on the first try"]; r.Pass || !strings.Contains(r.Why, "unknown field") {
 		t.Errorf("a refused request: %+v", r)
 	}
 	// Another taf's or a test's grant, reused or put to the owner.
-	if r := byName(gradeBatch(append(ok, connectAsk{Reuse: "grt_old", Grant: "grt_4"}), nil))["offers only its own connections"]; r.Pass || !strings.Contains(r.Why, "grt_old") {
+	if r := byName(gradeBatch(append(ok, connectAsk{Reuse: "grt_old", Grant: "grt_4"}), nil, nil))["offers only its own connections"]; r.Pass || !strings.Contains(r.Why, "grt_old") {
 		t.Errorf("a reused grant this run didn't make: %+v", r)
 	}
-	if r := byName(gradeBatch(ok, []approvalSeen{{Grant: "grt_other"}}))["offers only its own connections"]; r.Pass {
+	// A sign-in of a taf this run made, reused for the next: the account's own.
+	if r := byName(gradeBatch(append(ok, connectAsk{Reuse: "grt_ours", Grant: "grt_6"}), nil, map[string]bool{"grt_ours": true}))["offers only its own connections"]; !r.Pass {
+		t.Errorf("a reused grant of this run's taf: %+v", r)
+	}
+	if r := byName(gradeBatch(ok, []approvalSeen{{Grant: "grt_other"}}, nil))["offers only its own connections"]; r.Pass {
 		t.Errorf("an approval for another grant: %+v", r)
+	}
+	// An approval put to the owner with no request at all: failed, not skipped.
+	if r := byName(gradeBatch(nil, []approvalSeen{{Grant: "grt_other"}}, nil))["offers only its own connections"]; r.Pass || r.Skipped {
+		t.Errorf("an approval for a grant the run never asked for: %+v", r)
 	}
 	// A key asked for before its Card: two approvals where one would do.
 	two := []approvalSeen{{Grant: "grt_2", Key: true}, {Grant: "grt_2", Draft: "drf_1", Key: true}}
-	if r := byName(gradeBatch(ok, two))["one approval for the key and the Card"]; r.Pass || !strings.Contains(r.Why, "grt_2") {
+	if r := byName(gradeBatch(ok, two, nil))["one approval for the key and the Card"]; r.Pass || !strings.Contains(r.Why, "grt_2") {
 		t.Errorf("the key before its Card: %+v", r)
 	}
 	// A managed app asked with no uses.
 	wide := []connectAsk{{Entry: "connector:composio:gmail", Grant: "grt_3"}}
-	if r := byName(gradeBatch(wide, nil))["narrows a managed sign-in"]; r.Pass || r.Skipped {
+	if r := byName(gradeBatch(wide, nil, nil))["narrows a managed sign-in"]; r.Pass || r.Skipped {
 		t.Errorf("a managed app with no uses: %+v", r)
 	}
 
 	// Nothing of it in the run: each skipped, never passed.
-	for name, r := range byName(gradeBatch(nil, nil)) {
+	for name, r := range byName(gradeBatch(nil, nil, nil)) {
 		if !r.Skipped || r.Pass {
 			t.Errorf("%s with nothing to grade: %+v", name, r)
 		}
 	}
 	// No key grant, no managed app: those two skipped, the others graded.
-	g = byName(gradeBatch([]connectAsk{{Entry: "stripe", Grant: "grt_5"}}, []approvalSeen{{Grant: "grt_5"}}))
+	g = byName(gradeBatch([]connectAsk{{Entry: "stripe", Grant: "grt_5"}}, []approvalSeen{{Grant: "grt_5"}}, nil))
 	if !g["one approval for the key and the Card"].Skipped || !g["narrows a managed sign-in"].Skipped || !g["connects on the first try"].Pass {
 		t.Errorf("a sign-in alone: %+v", g)
 	}
