@@ -323,6 +323,14 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			}
 			made.Grant.Agent = agent
 			b, _ := json.Marshal(made.Grant)
+			// The app's guide comes with its connection, as data, so it's read before the tools are picked.
+			if g := t.guide(ctx, in.Entry); g != nil {
+				var out map[string]any
+				if json.Unmarshal(b, &out) == nil {
+					out["guide"] = g
+					b, _ = json.Marshal(out)
+				}
+			}
 			return tool.Result{Text: string(b)}, nil
 		}
 		if len(in.Uses) > 0 {
@@ -418,7 +426,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if err != nil || refused != nil {
 			return deref(refused), err
 		}
-		return tool.Result{Text: string(raw)}, nil
+		return tool.Result{Text: string(t.withSearchGuides(ctx, raw))}, nil
 	case "events":
 		// An app's events, before connecting (by its catalog entry) or once
 		// connected (by the grant), so an event is picked as an action is.
