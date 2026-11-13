@@ -17,6 +17,10 @@ import (
 //   - A read that failed, and hasn't been read again since, means the run
 //     doesn't know what's there: nothing is created or changed in that run
 //     (AfterRefusedRead). A later read of the same tool that answers lifts it.
+//     A read KIFF refused outside the Card isn't one: that's the owner's
+//     limit, not a sign of what the app holds, so the run's other work goes
+//     on (13 Nov: a chargebacks taf whose Card leaves out the shop's order
+//     lookup stopped settling its disputes).
 //   - A tool gets one more try once it failed, to find out why: failing
 //     twice in a run, it isn't called again in that run (AfterTwoFailures).
 //
@@ -81,6 +85,8 @@ func (s *stop) see(t tool.Tool, name string, input json.RawMessage, r tool.Resul
 	}
 	if !acts(t, input) {
 		switch {
+		case failed && r.State == tool.StateRefused:
+			// Outside the Card: it says nothing of what's there, and lifts nothing either.
 		case failed:
 			s.refused[name] = true
 		case r.State != tool.StateHeld && r.State != tool.StateAwaiting && r.State != tool.StateWaiting:
@@ -105,7 +111,8 @@ func (s *stop) check(t tool.Tool, name string, input json.RawMessage) string {
 
 // stopIn is what this run's own messages say of its failures, for a run
 // resumed from them: its tool calls since the run's history, and their
-// results. A result whose record didn't keep its state counts by its error.
+// results. A result keeps its state only when KIFF refused it outside the
+// Card (model.Block.State); any other counts by its error.
 func (a Agent) stopIn(msgs []model.Message, byName map[string]tool.Tool) *stop {
 	s := newStop()
 	if a.history > len(msgs) {
@@ -124,7 +131,11 @@ func (a Agent) stopIn(msgs []model.Message, byName map[string]tool.Tool) *stop {
 				}
 				notMade := b.IsError && (b.Result == OneAtATime || stoppedText(b.Result))
 				r := tool.Result{Text: b.Result, IsError: b.IsError}
-				if oc, ok := a.resolved[b.CallID]; ok && !strings.HasPrefix(oc, "failed") && oc != OutcomeRefused {
+				oc, held := a.resolved[b.CallID]
+				if !held {
+					// Refused on the Card, not failed: the state kept with the message says so.
+					r.State = b.State
+				} else if !strings.HasPrefix(oc, "failed") && oc != OutcomeRefused {
 					// Held, then answered: what came of it is the outcome, not an error.
 					r.IsError = false
 				}

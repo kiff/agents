@@ -68,6 +68,11 @@ type Block struct {
 	Input   json.RawMessage `json:"input,omitempty"`
 	Result  string          `json:"result,omitempty"`
 	IsError bool            `json:"is_error,omitempty"`
+	// State belongs to a ToolResult block: "refused" when KIFF's gateway
+	// refused the call outside the Card, else empty. It's kept with the
+	// run's messages, so a continued run tells a refusal from a failure, and
+	// it's never sent to a provider.
+	State string `json:"state,omitempty"`
 	// Signature and Data belong to a Thinking or RedactedThinking block;
 	// Data to a Server block too.
 	Signature string `json:"signature,omitempty"`

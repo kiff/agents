@@ -61,9 +61,12 @@ COMPLETED, ERROR and CANCELLED are final.
   go together. The agent's own tools (its notes, the chat's components) don't count.
 - **Stop after a refused call.** For every call to an app through KIFF's
   gateway, whatever the taf's instructions say (`agent/stopped.go`): while a
-  read of the run is refused (failed, or KIFF refused it, and not read again
-  since with an answer), nothing is created or changed in that run
-  (`agent.AfterRefusedRead`); and a tool that failed twice in a run isn't
+  read of the run failed (an error from the vendor or KIFF, and not read
+  again since with an answer), nothing is created or changed in that run
+  (`agent.AfterRefusedRead`). A read KIFF refused outside the Card isn't one:
+  that's the owner's limit, not a sign of what the app holds, so the run's
+  other work goes on; the result's state (`model.Block.State`) keeps that
+  across a pause. And a tool that failed twice in a run isn't
   called again in it (`agent.AfterTwoFailures`), so a failure gets one more
   try, to find out why. Each such call is refused back unmade, recorded
   `not made: the run stopped after a refused call` and counted nowhere, with
