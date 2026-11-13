@@ -1,7 +1,7 @@
 name: Eval
-# A run with a model or effort override says so in its name, so it reads apart
-# from the shipped definitions' runs in the list.
-run-name: ${{ (inputs.model != '' || inputs.effort != '') && format('Eval, override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || 'Eval' }}
+# A run with a model or effort override, or of the setup chats only, says so in
+# its name, so it reads apart from the shipped definitions' full runs in the list.
+run-name: ${{ inputs.cases == 'setup' && 'Eval, setup only' || (inputs.model != '' || inputs.effort != '') && format('Eval, override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || 'Eval' }}
 # The eval loop (#78): each night, the Chargebacks case runs on this commit's
 # runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
@@ -26,6 +26,15 @@ on:
     - cron: "7 4 * * *"
   workflow_dispatch:
     inputs:
+      # Only Coach's three setup chats (refunds, the desk by its key, billing),
+      # in about 10 minutes instead of 25: chargebacks, the hand-offs and the
+      # tickets recipe are skipped. Such a run never counts for the Upgrade
+      # gate or the nightly's skip: it ends red, whatever its checks said.
+      cases:
+        description: "Which cases run: all, or setup (Coach's three setup chats only; never counts for the Upgrade)"
+        type: choice
+        options: ["all", "setup"]
+        default: "all"
       repeat:
         description: "How many times chargebacks runs (the nightly runs it twice)"
         type: string
@@ -127,7 +136,7 @@ jobs:
           infra/eval-override.sh defs "$MODEL" "$EFFORT"
           echo "Override **$label**: Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own}. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: Chargebacks, two seeded runs
-        if: steps.unchanged.outputs.skip != 'true'
+        if: steps.unchanged.outputs.skip != 'true' && inputs.cases != 'setup'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -153,7 +162,7 @@ jobs:
         # advice. A tafs commit from before tafs could say "Nothing to hand
         # over" writes no hand-off definitions: the step says so and measures
         # nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && inputs.cases != 'setup'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -175,7 +184,7 @@ jobs:
         # start at zero; its id goes to E2E_MADE for the sweep below. One run,
         # gated. A tafs commit without the recipe writes no definition for it:
         # the step says so and measures nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && inputs.cases != 'setup'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -305,4 +314,15 @@ jobs:
         if: always() && (inputs.model != '' || inputs.effort != '')
         run: |
           echo "::error::Override $LABEL: Coach and the tafs ran on ${MODEL:-their own model}, effort ${EFFORT:-their own}. Its checks are in the report; this run doesn't count for the Upgrade gate."
+          exit 1
+      - name: A setup-only run doesn't count for the Upgrade gate
+        # As an override: the Upgrade gate and the nightly's skip take the
+        # latest completed run on main, when it succeeded, as a full pass of
+        # the shipped definitions. Three cases of seven aren't one, so the run
+        # ends red, whatever its checks said: the setup steps above say which
+        # passed, and the report has each check.
+        if: always() && inputs.cases == 'setup'
+        run: |
+          echo "Setup only: Coach's three setup chats ran; chargebacks, the hand-offs and tickets didn't. The setup steps above give each verdict. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Setup only: the setup chats' verdicts are their steps above and the report; this run doesn't count for the Upgrade gate."
           exit 1
