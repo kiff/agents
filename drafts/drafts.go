@@ -226,6 +226,18 @@ func (s *Service) Claim(ctx context.Context, tenant, draft, keyRef string) (stri
 	return rec.AgentID, nil
 }
 
+// Agent answers the agent a draft submitted here names, and whether its key
+// is claimed, from the same record Claim reads: what tafs cloud checks a
+// setup's word against before showing a taf as being set up. ErrNotFound when
+// no draft by that id was submitted for tenant.
+func (s *Service) Agent(ctx context.Context, tenant, draft string) (string, bool, error) {
+	rec, err := s.Store.Get(ctx, tenant, draft)
+	if err != nil {
+		return "", false, err
+	}
+	return rec.AgentID, rec.Claimed, nil
+}
+
 // isDraftsAgent reports whether KIFF says key speaks for the draft's agent
 // on tenant. An error means KIFF couldn't be asked, not that it said no.
 func (s *Service) isDraftsAgent(ctx context.Context, tenant string, rec Record, key string) (bool, error) {
