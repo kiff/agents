@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -253,22 +252,6 @@ func (p past) history() (msgs []model.Message, preface []model.Block) {
 		msgs = append([]model.Message{{Role: model.User, Blocks: lead}}, msgs...)
 	}
 	return msgs, nil
-}
-
-// age is how long ago, in the coarsest unit that says it.
-func age(d time.Duration) string {
-	switch m := int(d.Minutes()); {
-	case m < 1:
-		return "less than a minute"
-	case m == 1:
-		return "1 minute"
-	case m < 60:
-		return fmt.Sprintf("%d minutes", m)
-	case m < 120:
-		return "1 hour"
-	default:
-		return fmt.Sprintf("%d hours", m/60)
-	}
 }
 
 // state is what the agent's Staters say of the session's components now. A
