@@ -729,6 +729,67 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 	if !strings.Contains(agreedRule, "15000") || !strings.Contains(agreedRule, "150.00 EUR") {
 		t.Fatal("the rule doesn't say how an amount's max reads")
 	}
+	// A rule kept on the connection, not on a Card, is shown as kept there (the desk's "only workspace ws_demo",
+	// Eval 43462527838): the judge reads what the connection fixes beside the Cards.
+	pinnedS := s
+	var desk grant
+	desk.Request.Tools = []grantTool{
+		{Tool: "reply_ticket", Name: "reply_ticket_k3f9", Fixed: map[string]any{"workspace": "ws_demo"}},
+		{Tool: "list_tickets", Fixed: map[string]any{"workspace": "ws_demo", "status": "open"}},
+	}
+	pinnedS.pinned = pinsOf(desk)
+	if want := []string{"reply_ticket_k3f9: workspace = ws_demo", "list_tickets: status = open", "list_tickets: workspace = ws_demo"}; !slices.Equal(pinnedS.pinned, want) {
+		t.Fatalf("the connection's pins: %q", pinnedS.pinned)
+	}
+	v = &verdicts{}
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, pinnedS, cards); err != nil {
+		t.Fatal(err)
+	}
+	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "Kept on the connection") || !strings.Contains(asked, "reply_ticket_k3f9: workspace = ws_demo") {
+		t.Fatal("the judge wasn't shown what the connection keeps")
+	}
+	// A run that ends before the taf is made (the desk's) has no disclosure set yet: the judge is told it isn't graded.
+	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "isn't graded here") {
+		t.Fatal("the judge wasn't told the disclosure isn't set before the taf is made")
+	}
+	// Once the taf is made, the disclosure is read from it, never voted on (qa-kiff on agents#452).
+	withTaf := func(disclose ...string) said {
+		m := pinnedS
+		m.connected = desk.Request.Tools
+		m.cards = map[string]component{}
+		for k, c := range s.cards {
+			m.cards[k] = c
+		}
+		entries := make([]map[string]any, 0, len(disclose))
+		for _, tool := range disclose {
+			entries = append(entries, map[string]any{"tool": tool, "fields": []string{"body"}})
+		}
+		raw, _ := json.Marshal(map[string]any{"type": "result", "id": "res", "taf": map[string]any{"agent": "desk", "disclose": entries}})
+		var c component
+		if err := json.Unmarshal(raw, &c); err != nil {
+			t.Fatal(err)
+		}
+		m.cards["res"] = c
+		m.order = append(slices.Clone(s.order), "res")
+		return m
+	}
+	// A taf whose reply tool isn't in its disclose fails, whatever the judges say.
+	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, withTaf(), cards)
+	if r.Grade.Pass || r.Grade.Skipped || !strings.Contains(r.Grade.Why, "reply_ticket_k3f9") {
+		t.Fatalf("a reply tool left out of disclose passed: %+v", r)
+	}
+	// Listed with a text field: the judge reads it as disclosed. A read (list_tickets) is never asked for.
+	v = &verdicts{}
+	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, withTaf("reply_ticket_k3f9"), cards)
+	if !r.Grade.Pass || !strings.Contains(strings.Join(v.asked, "\n"), "reply_ticket_k3f9 (body)") {
+		t.Fatalf("a disclosed reply tool: %+v", r)
+	}
+	// The rule tells the judge where else a rule is kept: the connection, KIFF's own disclosure line, the taf's instructions.
+	for _, want := range []string{"kept on the connection", "Written by an AI agent on behalf of", "kept in the taf's instructions", "never a limit on an amount, a count KIFF counts, or which tools it uses", "Any other rule the Cards don't hold fails"} {
+		if !strings.Contains(agreedRule, want) {
+			t.Fatalf("the rule doesn't say %q", want)
+		}
+	}
 	// A judge that finds a merged limit fails the gate.
 	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"merged with another"}}, ModelID: "judge"}, s, cards)
 	if r.Grade.Pass || r.Grade.Skipped || r.Advisory {
