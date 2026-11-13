@@ -374,6 +374,9 @@ type test struct {
 	// end so a run leaves no taf behind.
 	tafAgents []string
 	draftIDs  []string
+	// approvals are the approval cards the owner answered, in order, each
+	// with its grant, its draft and whether the grant takes a key.
+	approvals []approvalSeen
 	// people are step 9's people (-people); cloudTafs the tafs this run started on
 	// tafs cloud, and shared each taf agent and the group it was shared with.
 	people    []*someone
@@ -1127,6 +1130,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 		return err
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
+	t.approvals = append(t.approvals, approvalSeen{Grant: c.Grant, Draft: c.Draft, Key: g.Request.Kind == "api_key"})
 	if raw := rawWords(g); raw != "" && len(g.Request.Tools) > 0 {
 		return fmt.Errorf("the approval shows the owner %s, not words", raw)
 	}
@@ -1443,6 +1447,28 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		return fmt.Errorf("grading the Card against the agreed rules: %w", err)
 	}
 	checks = append(checks, agreed)
+	// The Coach batch's gates: first-try connects, only its own connections,
+	// one approval for a key and its Card, a managed sign-in narrowed.
+	var asks []connectAsk
+	if t.setupSession != "" {
+		_, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession)
+		if err != nil {
+			return err
+		}
+		asks = connectAsksOf(events)
+	}
+	// A reused grant of a taf this run made is the account's own: the
+	// product reuses a sign-in for a second taf.
+	ours := map[string]bool{}
+	for _, a := range asks {
+		if a.Reuse == "" {
+			continue
+		}
+		if g, err := t.phone.Grant(ctx, a.Reuse); err == nil && slices.Contains(t.tafAgents, g.Request.Agent) {
+			ours[a.Reuse] = true
+		}
+	}
+	checks = append(checks, gradeBatch(asks, t.approvals, ours)...)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})
