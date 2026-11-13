@@ -827,6 +827,12 @@ type component struct {
 		// A new taf's job of its own (kiff/tafs#476): what each run is asked, and how it works.
 		Kickoff      string `json:"kickoff"`
 		Instructions string `json:"instructions"`
+		// Disclose is what KIFF starts with the disclosure line: the tools that
+		// write to people outside, and their text fields (signsWhatWasAgreed).
+		Disclose []struct {
+			Tool   string   `json:"tool"`
+			Fields []string `json:"fields"`
+		} `json:"disclose"`
 	} `json:"taf"`
 	Title string `json:"title"`
 	Text  string `json:"text"`
@@ -1071,7 +1077,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 					// connected: what Setup asked for is what's checked. A
 					// recipe's case checks the desk there and goes on.
 					if g, err := t.phone.Grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
-						t.said.pinned = pinsOf(g)
+						t.said.pinned, t.said.connected = pinsOf(g), g.Request.Tools
 						switch {
 						case fromRecipe:
 							// The recipe's case goes on to the taf: the desk is checked once, as connected.
