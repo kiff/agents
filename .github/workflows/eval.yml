@@ -1,7 +1,7 @@
 name: Eval
-# A run with a model or effort override says so in its name, so it reads apart
-# from the shipped definitions' runs in the list.
-run-name: ${{ (inputs.model != '' || inputs.effort != '') && format('Eval, override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || 'Eval' }}
+# A run with a model or effort override, or of some suites only, says so in its
+# name, so it reads apart from the shipped definitions' full runs in the list.
+run-name: ${{ inputs.suites != '' && inputs.suites != 'all' && format('Eval, suites {0}', inputs.suites) || (inputs.model != '' || inputs.effort != '') && format('Eval, override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || 'Eval' }}
 # The eval loop (#78): each night, the Chargebacks case runs on this commit's
 # runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
@@ -26,6 +26,14 @@ on:
     - cron: "7 4 * * *"
   workflow_dispatch:
     inputs:
+      # Some of the Eval's suites (eval/suites.json), as a change touches them
+      # (cmd/evalsuites): "connect, setup", or all. A run of some suites never
+      # counts for the Upgrade gate or the nightly's skip: it ends red,
+      # whatever its checks said, and its steps give each suite's verdict.
+      suites:
+        description: "The suites to run: all, or some of connect, setup, cards, handoffs, recipe-tickets (eval/suites.json); some never count for the Upgrade"
+        type: string
+        default: "all"
       repeat:
         description: "How many times chargebacks runs (the nightly runs it twice)"
         type: string
@@ -108,6 +116,17 @@ jobs:
         if: steps.unchanged.outputs.skip != 'true'
         with:
           node-version: 22
+      - name: The suites to run
+        # Checked against eval/suites.json; each suite's steps below test this
+        # list. A scheduled night has no inputs, so it runs them all.
+        id: suites
+        if: steps.unchanged.outputs.skip != 'true'
+        env:
+          ASKED: ${{ inputs.suites }}
+        run: |
+          list=$(go run ./cmd/evalsuites -check -asked "$ASKED")
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          [ "$list" = ",all," ] || echo "Suites **${list:1:-1}** only: it doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: tafs' definitions, at eval/tafs.ref
         if: steps.unchanged.outputs.skip != 'true'
         run: |
@@ -127,7 +146,7 @@ jobs:
           infra/eval-override.sh defs "$MODEL" "$EFFORT"
           echo "Override **$label**: Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own}. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: Chargebacks, two seeded runs
-        if: steps.unchanged.outputs.skip != 'true'
+        if: steps.unchanged.outputs.skip != 'true' && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',cards,'))
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -153,7 +172,7 @@ jobs:
         # advice. A tafs commit from before tafs could say "Nothing to hand
         # over" writes no hand-off definitions: the step says so and measures
         # nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',handoffs,'))
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -175,7 +194,7 @@ jobs:
         # start at zero; its id goes to E2E_MADE for the sweep below. One run,
         # gated. A tafs commit without the recipe writes no definition for it:
         # the step says so and measures nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',recipe-tickets,'))
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -210,7 +229,7 @@ jobs:
         # runs. Coach runs at the standard output, as kiff/tafs defines it;
         # the judge is Sonnet, as for chargebacks, and its judged checks take
         # a majority of three.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',setup,'))
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -227,7 +246,7 @@ jobs:
         # tool pinned to the workspace, writes that name what they act on and
         # carry no amount, reads marked read-only. A Setup rule passes on both
         # vendors or fails the night.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -245,7 +264,7 @@ jobs:
         # themselves. Graded like the desk, and checked once billing's tools
         # are connected: create_invoice pinned to status draft
         # (fixed_arguments), and no send_invoice.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -305,4 +324,16 @@ jobs:
         if: always() && (inputs.model != '' || inputs.effort != '')
         run: |
           echo "::error::Override $LABEL: Coach and the tafs ran on ${MODEL:-their own model}, effort ${EFFORT:-their own}. Its checks are in the report; this run doesn't count for the Upgrade gate."
+          exit 1
+      - name: A run of some suites doesn't count for the Upgrade gate
+        # As an override: the Upgrade gate and the nightly's skip take the
+        # latest completed run on main, when it succeeded, as a full pass of
+        # the shipped definitions. Some suites aren't one, so the run ends red
+        # whatever its checks said: each suite's steps above give its verdict,
+        # and the report has each check.
+        if: always() && steps.suites.outputs.list != '' && steps.suites.outputs.list != ',all,'
+        env:
+          LIST: ${{ steps.suites.outputs.list }}
+        run: |
+          echo "::error::Suites ${LIST:1:-1} only: their verdicts are their steps above and the report; this run doesn't count for the Upgrade gate."
           exit 1
