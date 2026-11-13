@@ -146,9 +146,14 @@ func TestTheConnectBar(t *testing.T) {
 	if r := byName(gradeConnectBar(barRun{toolsAsks: tools, statements: clean}))[noLoopAfterRefusal]; r.Pass || !strings.Contains(r.Why, "tools for grt_li") {
 		t.Errorf("a refused tools call sent again: %+v", r)
 	}
-	// The same approval shown twice is a loop.
-	if r := byName(gradeConnectBar(barRun{asks: []connectAsk{sheets}, approvals: []approvalSeen{{Grant: "grt_s"}, {Grant: "grt_s"}}, statements: clean}))[noLoopAfterRefusal]; r.Pass || !strings.Contains(r.Why, "grt_s shown 2 times") {
-		t.Errorf("an approval shown again: %+v", r)
+	// One grant asked of the owner twice (other tools each time): one approval
+	// per app fails, and it isn't a loop as well.
+	twice := byName(gradeConnectBar(barRun{asks: []connectAsk{sheets}, approvals: []approvalSeen{{Grant: "grt_s"}, {Grant: "grt_s"}}, statements: clean}))
+	if r := twice[oneApprovalPerApp]; r.Pass || !strings.Contains(r.Why, "2 approval(s) for the app") {
+		t.Errorf("one grant asked twice: %+v", r)
+	}
+	if r := twice[noLoopAfterRefusal]; !r.Pass {
+		t.Errorf("distinct asks for one grant counted as a loop too: %+v", r)
 	}
 
 	// A new card for a grant already approved, with nothing left to approve:

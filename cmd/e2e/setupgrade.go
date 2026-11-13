@@ -421,8 +421,11 @@ func labels(c component) []string {
 // quote the chat (the slug wanted, a plan's counts), so a public log prints them.
 var counted = map[string]bool{"names the agent from the taf's name": true,
 	"names no planque": true, "keeps its plan": true,
-	// The bar's counts name apps and grants, never the chat (grants are hidden in the log).
-	oneApprovalPerApp: true, noLoopAfterRefusal: true}
+	// The bar's counts and the batch's name apps, grants and planque's words, never
+	// the chat (grants are hidden in the log).
+	oneApprovalPerApp: true, noLoopAfterRefusal: true,
+	"connects on the first try": true, "offers only its own connections": true,
+	"one approval for the key and the Card": true, "narrows a managed sign-in": true}
 
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.

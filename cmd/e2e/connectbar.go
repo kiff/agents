@@ -23,8 +23,8 @@ import (
 //     follows each source's wording as it changes. A short list of wrappers
 //     and codes is the backstop for what never comes as an error.
 //  3. No loop: a refused request or tools call is never sent again as it
-//     was (its pins included), and nothing already approved is asked for
-//     again.
+//     was (its pins included), and a card already approved is never shown
+//     again. Distinct asks for one app are gate 1's to count, not a loop.
 const (
 	oneApprovalPerApp  = "one approval per app"
 	noRawErrorShown    = "no raw error reaches the person"
@@ -181,29 +181,14 @@ func gradeConnectBar(r barRun) []eval.CheckResult {
 			refused[k] = a.Refused
 		}
 	}
-	approved := map[string]int{}
+	// A card shown again once its grant was approved, with nothing left to
+	// approve. Distinct asks for one grant (other tools each time) aren't a
+	// loop: one approval per app counts them.
 	for _, ap := range approvals {
-		if ap.Grant == "" {
-			continue
-		}
-		if ap.Again {
+		if ap.Grant != "" && ap.Again {
 			loops = append(loops, fmt.Sprintf("approval for %s shown again once it was approved", ap.Grant))
-			continue
-		}
-		k := ap.Grant
-		if ap.Draft != "" {
-			k += " with its Card"
-		}
-		approved[k]++
-	}
-	var again []string
-	for k, n := range approved {
-		if n > 1 {
-			again = append(again, fmt.Sprintf("approval for %s shown %d times", k, n))
 		}
 	}
-	sort.Strings(again)
-	loops = append(loops, again...)
 	switch {
 	case len(asks) == 0 && len(r.toolsAsks) == 0 && len(approvals) == 0:
 		gate(noLoopAfterRefusal, eval.Grade{Skipped: true, Why: "no connection was asked for or approved"})
