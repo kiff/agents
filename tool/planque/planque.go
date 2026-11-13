@@ -148,7 +148,17 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"taf_name":{"type":"string","description":"the taf's name as the owner will read it, on one line (request): the approval names the taf by it"},` +
 			`"reuse":{"type":"string","description":"a connected grant's id, from grants: a new taf's grant uses its sign-in or key, so the owner approves the tools alone (request, instead of server, api or entry)"},` +
-			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools). For a key request (api), the job's operations by the names describe gives, never none, so the key and the Card are one approval; none only to connect a sign-in first","items":{"type":"object","properties":{"tool":{"type":"string"},"title":{"type":"string","minLength":1}},"required":["tool","title"]}},` +
+			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools). For a key request (api), the job's operations by the names describe gives, never none, so the key and the Card are one approval; none only to connect a sign-in first. Each with its full spec, as on a connected grant; before a key, from describe's arguments","items":{"type":"object","properties":{` +
+			`"tool":{"type":"string"},"title":{"type":"string","minLength":1},"name":{"type":"string","description":"its own name, one per operation"},` +
+			`"read_only":{"type":"boolean"},"setup_reads":{"type":"boolean"},` +
+			`"fixed_arguments":{"type":"object","description":"pins: path → value, never changed by the taf (the account, the mode, the operation); a tool with pins names in arguments what the taf sets"},` +
+			`"arguments":{"type":"object","description":"what the taf sets: name → {path, type, required}, each one of the operation's arguments; none leaves them all open, and isn't allowed with pins"},` +
+			`"resource_argument":{"type":"string","description":"what a write acts on: one of its string arguments, required"},"resource_path":{"type":"string"},` +
+			`"amount_argument":{"type":"string","description":"the argument that moves money: one of its integer arguments (string for a decimal amount)"},` +
+			`"amount_path":{"type":"string"},"amount_format":{"type":"string"},"amount_unit":{"type":"string"},"amount_scale":{"type":"integer"},` +
+			`"unit_lookup":{"type":"object","description":"the read that says a call's unit","properties":{"tool":{"type":"string"},"argument":{"type":"string"},"path":{"type":"string"}}},` +
+			`"amount_lookup":{"type":"object","description":"the read that says a call's amount from its resource","properties":{"tool":{"type":"string"},"argument":{"type":"string"},"path":{"type":"string"}}}},` +
+			`"required":["tool","title"]}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +

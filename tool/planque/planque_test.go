@@ -968,3 +968,39 @@ func TestARequestByKeyCanNameTheKeysPrefix(t *testing.T) {
 		t.Fatalf("url: %q", api.URL.Description)
 	}
 }
+
+// A key request's tools carry their full spec, pins and what a write acts on
+// included, as a connected grant's do: the schema lists each, and planque
+// gets them as written. Names alone lost a pin and let a non-text argument
+// stand for what a write acts on (the Eval of 13 Nov).
+func TestAKeyRequestsToolsCarryTheirFullSpec(t *testing.T) {
+	srv, seen := fake(t, true)
+	tl := planque.New(srv.URL+"/", "tnt_1", "k_setup", nil)
+	var schema struct {
+		Properties struct {
+			Tools struct {
+				Items struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"items"`
+			} `json:"tools"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(tl.Spec().InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"tool", "title", "name", "read_only", "setup_reads", "fixed_arguments", "arguments", "resource_argument",
+		"amount_argument", "amount_unit", "amount_scale", "unit_lookup", "amount_lookup"} {
+		if _, ok := schema.Properties.Tools.Items.Properties[f]; !ok {
+			t.Errorf("a tool item has no %s", f)
+		}
+	}
+	api := `{"url":"https://desk.example/openapi.json","base":"https://desk.example/v1","auth":{"in":"header","name":"X-Desk-Key"}}`
+	tools := `[{"tool":"replyToTicket","title":"Reply to a ticket","name":"reply_ticket","fixed_arguments":{"workspace":"ws_1"},"resource_argument":"ticket_id"},` +
+		`{"tool":"getTicket","title":"Read a ticket","read_only":true,"fixed_arguments":{"workspace":"ws_1"}}]`
+	if text, isErr := call(t, tl, `{"action":"request","api":`+api+`,"agent":"support-k7q3x9xz","tools":`+tools+`}`); isErr {
+		t.Fatalf("request: %s", text)
+	}
+	if want := `"tools":` + tools + `}`; len(*seen) != 1 || !strings.HasSuffix((*seen)[0], want) {
+		t.Fatalf("sent %v\nwant it to end %s", *seen, want)
+	}
+}
