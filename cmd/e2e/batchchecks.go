@@ -20,6 +20,8 @@ import (
 type connectAsk struct {
 	Call    string // the tool call's id
 	Entry   string
+	Server  string // an MCP server's URL, when the request names one
+	APIURL  string // a key request's description URL
 	Reuse   string
 	Uses    []string
 	API     bool
@@ -52,6 +54,7 @@ func connectAsksOf(events []session.Event) []connectAsk {
 			var in struct {
 				Action string          `json:"action"`
 				Entry  string          `json:"entry"`
+				Server string          `json:"server"`
 				Reuse  string          `json:"reuse"`
 				Uses   []string        `json:"uses"`
 				API    json.RawMessage `json:"api"`
@@ -59,7 +62,11 @@ func connectAsksOf(events []session.Event) []connectAsk {
 			if json.Unmarshal(c.Input, &in) != nil || in.Action != "request" {
 				continue
 			}
-			calls[c.CallID] = connectAsk{Call: c.CallID, Entry: in.Entry, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
+			var api struct {
+				URL string `json:"url"`
+			}
+			_ = json.Unmarshal(in.API, &api)
+			calls[c.CallID] = connectAsk{Call: c.CallID, Entry: in.Entry, Server: in.Server, APIURL: api.URL, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
 			order = append(order, c.CallID)
 		case session.ToolResult:
 			var r agent.ToolResultBody

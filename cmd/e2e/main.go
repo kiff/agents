@@ -1489,6 +1489,9 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		}
 	}
 	checks = append(checks, gradeBatch(asks, t.approvals, ours)...)
+	// The bar for connecting an app (13 Nov): one approval per app plus its
+	// Card, no raw error shown, no loop, counted from the run.
+	checks = append(checks, gradeConnectBar(asks, t.approvals, t.said.statements())...)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})
