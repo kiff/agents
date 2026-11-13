@@ -50,7 +50,7 @@ func TestSetupsConnectionRequestsAreReadWithTheirAnswers(t *testing.T) {
 	if asks[0].Refused == "" || strings.Contains(asks[0].Refused, "more") || len(asks[0].Uses) != 1 {
 		t.Fatalf("the refused one: %+v", asks[0])
 	}
-	if asks[1].Refused != "" || asks[1].Grant != "grt_2" {
+	if asks[1].Refused != "" || asks[1].Grant != "grt_2" || !asks[1].Declared {
 		t.Fatalf("the one that went through: %+v", asks[1])
 	}
 }
@@ -58,7 +58,7 @@ func TestSetupsConnectionRequestsAreReadWithTheirAnswers(t *testing.T) {
 // The batch's four gates, each failing for what it grades and skipped when
 // the run didn't do it.
 func TestTheCoachBatchsGates(t *testing.T) {
-	ok := []connectAsk{{Entry: "qonto-key@2", Uses: []string{"list_client_invoices"}, Grant: "grt_2"},
+	ok := []connectAsk{{Entry: "qonto-key@2", Uses: []string{"list_client_invoices"}, Grant: "grt_2", Declared: true},
 		{Entry: "connector:composio:gmail", Uses: []string{"GMAIL_SEND_EMAIL"}, Grant: "grt_3"}}
 	g := byName(gradeBatch(ok, []approvalSeen{{Grant: "grt_2", Draft: "drf_1", Key: true}, {Grant: "grt_3"}}, nil))
 	for _, name := range []string{"connects on the first try", "offers only its own connections", "one approval for the key and the Card", "narrows a managed sign-in"} {
@@ -98,11 +98,20 @@ func TestTheCoachBatchsGates(t *testing.T) {
 		t.Errorf("a managed app with no uses: %+v", r)
 	}
 
-	// A key connected in a case that ends at "connected" (desk, billing): no
-	// Card approved anywhere, so there's nothing to sign with the key.
-	connectOnly := byName(gradeBatch([]connectAsk{{Entry: "", API: true, Grant: "grt_7"}}, []approvalSeen{{Grant: "grt_7", Key: true}, {Grant: "grt_7", Key: true}}, nil))
-	if r := connectOnly["one approval for the key and the Card"]; !r.Skipped || r.Pass {
-		t.Errorf("a key with no Card in the case: %+v", r)
+	// The key grant decides, not how the case ended (qa-kiff on #434). A key
+	// grant planque declared, asked for with the key alone: failed, even in a
+	// case that ends at "connected" (desk, billing), since that's the very
+	// flow the gate exists for.
+	declaredKey := []connectAsk{{API: true, Grant: "grt_7", Declared: true}}
+	if r := byName(gradeBatch(declaredKey, []approvalSeen{{Grant: "grt_7", Key: true}}, nil))["one approval for the key and the Card"]; r.Pass || r.Skipped {
+		t.Errorf("a declared key asked for alone: %+v", r)
+	}
+	if r := byName(gradeBatch(declaredKey, []approvalSeen{{Grant: "grt_7", Draft: "drf_7", Key: true}}, nil))["one approval for the key and the Card"]; !r.Pass {
+		t.Errorf("a declared key with its draft: %+v", r)
+	}
+	// Not declared (connected first, its tools picked after): the key first is the documented flow.
+	if r := byName(gradeBatch([]connectAsk{{API: true, Grant: "grt_8"}}, []approvalSeen{{Grant: "grt_8", Key: true}}, nil))["one approval for the key and the Card"]; !r.Skipped || r.Pass {
+		t.Errorf("a key grant not declared: %+v", r)
 	}
 
 	// Nothing of it in the run: each skipped, never passed.
