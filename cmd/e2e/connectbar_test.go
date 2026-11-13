@@ -29,6 +29,21 @@ func TestTheConnectBar(t *testing.T) {
 		t.Errorf("an app and its Card: %+v", r)
 	}
 
+	// Two APIs of one vendor, described apart (a spreadsheet and a mailbox on
+	// the fake vendor), are two apps, each approved once; one asked twice isn't.
+	sheet := connectAsk{API: true, APIURL: "https://vendor.example/sheets/openapi.json", Grant: "grt_sh", Declared: true}
+	mail := connectAsk{API: true, APIURL: "https://vendor.example/mail/openapi.json", Grant: "grt_mb", Declared: true}
+	if r := byName(gradeConnectBar(barRun{asks: []connectAsk{sheet, mail}, approvals: []approvalSeen{{Grant: "grt_sh", Draft: "drf_1", Key: true},
+		{Grant: "grt_mb", Draft: "drf_1", Key: true}}, statements: clean}))[oneApprovalPerApp]; !r.Pass {
+		t.Errorf("two APIs of one vendor: %+v", r)
+	}
+	sheet2 := sheet
+	sheet2.Grant = "grt_sh2"
+	if r := byName(gradeConnectBar(barRun{asks: []connectAsk{sheet, sheet2}, approvals: []approvalSeen{{Grant: "grt_sh", Key: true},
+		{Grant: "grt_sh2", Key: true}}, statements: clean}))[oneApprovalPerApp]; r.Pass || !strings.Contains(r.Why, "api vendor.example/sheets") {
+		t.Errorf("the spreadsheet asked twice: %+v", r)
+	}
+
 	// Job 3: LinkedIn approved five times, across new grants for the same app.
 	li := func(grant string) connectAsk {
 		return connectAsk{Entry: "connector:managed:linkedin", Uses: []string{"LINKEDIN_CREATE_POST"}, Grant: grant}

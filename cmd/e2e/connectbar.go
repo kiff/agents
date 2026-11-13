@@ -33,7 +33,9 @@ const (
 
 // appOf names the app a request is for, so requests and approvals for the
 // same app count together whatever the grant: its catalog entry, else its MCP
-// server's host, else its description's host. A reuse names no app of its own.
+// server's host, else where its description is kept (its host and folder: two
+// APIs of one vendor, described apart, are two apps). A reuse names no app of
+// its own.
 func appOf(a connectAsk) string {
 	switch {
 	case a.Entry != "":
@@ -41,9 +43,23 @@ func appOf(a connectAsk) string {
 	case a.Server != "":
 		return "server " + hostOf(a.Server)
 	case a.APIURL != "":
-		return "api " + hostOf(a.APIURL)
+		return "api " + folderOf(a.APIURL)
 	}
 	return ""
+}
+
+// folderOf is a URL's host and the folder its file is in, in lower case:
+// https://v.example/mail/openapi.json is v.example/mail.
+func folderOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	dir := u.Path
+	if i := strings.LastIndex(dir, "/"); i >= 0 {
+		dir = dir[:i]
+	}
+	return strings.ToLower(u.Host + dir)
 }
 
 func hostOf(raw string) string {

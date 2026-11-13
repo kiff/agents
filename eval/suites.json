@@ -1,8 +1,8 @@
 {
   "suites": {
     "connect": {
-      "about": "Coach connects an app by its key, with its tools and Card in one approval: the desk and billing setup chats.",
-      "steps": ["Setup on the second vendor, a desk by its key", "Setup on billing, invoices that stay drafts"]
+      "about": "Coach connects an app by its key, with its tools and Card in one approval: the desk and billing setup chats, and the replays of setups that failed an owner.",
+      "steps": ["Setup on the second vendor, a desk by its key", "Setup on billing, invoices that stay drafts", "Replay, introductions from a list"]
     },
     "setup": {
       "about": "Coach sets up a taf from the owner's words, graded: the refunds setup chat.",
