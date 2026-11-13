@@ -419,15 +419,22 @@ func (t *test) heldCards(ctx context.Context, agentID string) ([]map[string]any,
 	if err != nil || m.Err() != nil {
 		return nil, fmt.Errorf("reading the taf's Cards: %v %v", err, m.Err())
 	}
+	return cardsHeldBy(m.Body["mandates"], agentID), nil
+}
+
+// cardsHeldBy is heldCards over KIFF's list of Cards: each a draft body's
+// terms, a total's per and the Card's start and end among them, so "one
+// invoice per order, ever" never reads as one in the taf's whole life.
+func cardsHeldBy(mandates any, agentID string) []map[string]any {
 	var out []map[string]any
-	for _, c := range asList(m.Body["mandates"]) {
+	for _, c := range asList(mandates) {
 		holders, _ := c["subjects"].([]any)
 		if c["subject"] != agentID || len(holders) > 1 || c["active"] == false {
 			continue
 		}
 		// As a draft takes it (kiff/tafs improve.ts heldCards): a draft body's keys only,
 		// never what KIFF's view adds, with its holder named.
-		card := only(c, "id", "domain", "environment", "on_exceed")
+		card := only(c, "id", "domain", "environment", "on_exceed", "valid_from", "valid_until", "location")
 		card["subject"] = agentID
 		var grants []map[string]any
 		for _, g := range asList(c["grants"]) {
@@ -446,12 +453,12 @@ func (t *test) heldCards(ctx context.Context, agentID string) ([]map[string]any,
 		}
 		aggs := []map[string]any{}
 		for _, a := range asList(c["aggregates"]) {
-			aggs = append(aggs, only(a, "quantity", "limit", "window", "measure"))
+			aggs = append(aggs, only(a, "quantity", "limit", "window", "per", "measure"))
 		}
 		card["grants"], card["aggregates"] = grants, aggs
 		out = append(out, card)
 	}
-	return out, nil
+	return out
 }
 
 // trialDecisions are KIFF's decisions on a trial's calls, in order.
