@@ -29,8 +29,13 @@ import { pathToFileURL } from "node:url";
 const [dist, out, commit] = process.argv.slice(2);
 const { definition } = await import(pathToFileURL(join(dist, "cloud/tafdef.js")).href);
 const { JOBS } = await import(pathToFileURL(join(dist, "jobs.js")).href);
+// A taf that writes to people outside names who it writes for: tafs cloud
+// takes the account's company name, and Coach asks for it. The Eval's
+// account is a test shop, so each such job writes for one, and its
+// disclosure reads as a real taf's ("on behalf of …"), not the bare line.
+const owned = (job) => (job.disclose?.length && !job.writesFor ? { ...job, writesFor: "Acme Store" } : job);
 for (const job of JOBS) {
-  writeFileSync(join(out, `${job.id}.json`), JSON.stringify(definition(`eval-${job.id}`, job), null, 2) + "\n");
+  writeFileSync(join(out, `${job.id}.json`), JSON.stringify(definition(`eval-${job.id}`, owned(job)), null, 2) + "\n");
 }
 // Setup too (#78's setup case): its definition, for cmd/e2e -setup.
 const { setupDefinition } = await import(pathToFileURL(join(dist, "cloud/setupdef.js")).href);
@@ -45,7 +50,7 @@ const delivery = await import(pathToFileURL(join(dist, "cloud/delivery.js")).hre
 const handoffs = Boolean(places.NOTHING_TO_HAND && delivery.DELIVERY_WORDS?.handoffTask);
 if (handoffs) {
   const books = { place: "taf", taf: "eval-books", name: "Books", fill: { disputes: "each dispute you accepted, by its reference and amount" } };
-  const chargebacks = JOBS.find((j) => j.id === "chargebacks");
+  const chargebacks = owned(JOBS.find((j) => j.id === "chargebacks"));
   writeFileSync(join(out, "chargebacks-handoff.json"), JSON.stringify(definition("eval-chargebacks-handoff", chargebacks, { actionResults: [books] }), null, 2) + "\n");
   writeFileSync(join(out, "handoff-task.json"), JSON.stringify({ task: delivery.DELIVERY_WORDS.handoffTask("@@FROM@@", "@@HANDOFF@@", "@@FENCE@@") }, null, 2) + "\n");
 }
