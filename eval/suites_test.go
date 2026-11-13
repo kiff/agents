@@ -23,8 +23,10 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		{"kiff/tafs", []string{"android/app/src/Main.kt", "docs/coach.md"}, nil},
 		{"kiff/tafs", []string{"runtime/skills/kiff/SKILL.md", "ios/Tafs/App.swift"}, []string{"cards", "handoffs", "recipe-tickets"}},
 		{"kiff/tafs", []string{"runtime/src/cloud/tafdef.ts"}, []string{All}},
-		{"kiff/planque", []string{"internal/planque/apikey.go"}, []string{"connect", "setup"}},
-		{"kiff/kiff-cloud", []string{"apps/api/main.go"}, []string{All}},
+		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "setup"}},
+		// The tickets recipe's taf calls through the connection server at run time, not only at setup.
+		{"kiff/planque", []string{"internal/gateway/proxy.go"}, []string{"connect", "recipe-tickets", "setup"}},
+		{"kiff/elsewhere", []string{"main.go"}, []string{All}},
 	} {
 		if got := s.For(c.repo, c.paths); !slices.Equal(got, c.want) {
 			t.Errorf("%s %v: %v, want %v", c.repo, c.paths, got, c.want)

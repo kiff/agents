@@ -27,6 +27,7 @@
       {"prefix": "runtime/skills/coach/name-the-tools/", "suites": ["connect", "setup"]},
       {"prefix": "runtime/skills/coach/draft-the-card/", "suites": ["connect", "setup"]},
       {"prefix": "runtime/skills/coach/set-up-a-taf/", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/lock.json", "suites": ["connect", "setup"]},
       {"prefix": "runtime/skills/coach/", "suites": ["setup"]},
       {"prefix": "runtime/skills/kiff/", "suites": ["cards", "handoffs", "recipe-tickets"]},
       {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "setup"]},
@@ -44,7 +45,7 @@
       {"prefix": "docs/", "suites": []}
     ],
     "kiff/planque": [
-      {"prefix": "", "suites": ["connect", "setup"]}
+      {"prefix": "", "suites": ["connect", "recipe-tickets", "setup"]}
     ]
   }
 }
