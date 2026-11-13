@@ -241,6 +241,11 @@ type ToolCallBody struct {
 	// for one of the agent's own tools: what evals grade where it went.
 	Server string          `json:"server,omitempty"`
 	Input  json.RawMessage `json:"input"`
+	// Acts says whether the call changes something, as the runtime decides
+	// it from the tool's own read-only flag and its input (acts): what an
+	// eval grades as a write, rather than guessing from the tool's name.
+	// Absent for the agent's own tools and in records made before it.
+	Acts *bool `json:"acts,omitempty"`
 }
 
 // GatewayServer is the server a call through KIFF's gateway is recorded
@@ -1548,10 +1553,16 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 	}
 	for _, c := range calls {
 		server := ""
-		if t, ok := byName[c.Tool]; ok && t.Gateway() {
+		t, ok := byName[c.Tool]
+		if ok && t.Gateway() {
 			server = GatewayServer
 		}
-		if err := rec.Record(session.ToolCall, ToolCallBody{CallID: c.CallID, Tool: c.Tool, Server: server, Input: c.Input}); err != nil {
+		body := ToolCallBody{CallID: c.CallID, Tool: c.Tool, Server: server, Input: c.Input}
+		if ok && t.Access() != tool.Own {
+			a := acts(t, c.Input)
+			body.Acts = &a
+		}
+		if err := rec.Record(session.ToolCall, body); err != nil {
 			return nil, err
 		}
 		emit(Event{Kind: CallStart, CallID: c.CallID, Tool: c.Tool, Input: c.Input})
