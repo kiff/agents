@@ -118,6 +118,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"pins the workspace and makes the ticket and the reply required, so no reply leaves them out or goes elsewhere. " +
 			"Each answer is the grant's id, status and the text the owner will read (each tool by its title; its exact terms are under Details). Asking grants nothing: show an approval with the grant id. " +
 			"setup_reads: true, on a read-only tool, lets you read it yourself once the owner approved it: read {grant, tool, arguments}, with the name the grant lists. " +
+			"An app connected first by its entry (Stripe's, Qonto's) takes your setup reads in its first request: request {entry, setup_reads: [the vendor's tool names]}, approved with the sign-in and connected once signed in, so no second approval; a server takes them with its tools. " +
+			"Tools set while they wait for the owner come back declared: true, in KIFF but unusable until approved: draft the taf's Card over them then, and one approval signs both. Declined, withdraw {grant} takes them back out of KIFF. " +
 			"Use it for a vendor's tool that lists an operation's fields, so you name each argument's path from the vendor, never by guess. " +
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
 			"failed (with a reason) or disconnected. Only connected means the taf can use the tools; the owner's word in the chat is not enough. " +
@@ -138,7 +140,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"A grant with on_demand: true is an app whose sign-in was set up on the owner's pick, not reviewed by an operator: draft every tool of it that changes data or moves money to ask the owner each time (0 a day, held), reads open, and say so in the rules. " +
 			"custody says who holds the sign-in (provider, or planque): say it in the owner's words, never the service's name.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants","search","events","describe"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools","read","withdraw","grants","search","events","describe"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"api":{"type":"object","description":"a REST vendor reached by its key: describe it first (describe), then request it, instead of server, with the job's operations as tools","properties":{` +
 			`"url":{"type":"string","description":"the vendor's OpenAPI description, JSON or YAML"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
@@ -166,10 +168,25 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
+			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with request {entry} for an app connected first (Stripe's, Qonto's): your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
 			`"profile":{"type":"object","description":"a managed app's drafted profile, kiff.profile.v1, sent with its tools (tools)"}},` +
 			`"required":["action"]}`),
 	}
+}
+
+// checkSetupReads says what's wrong with setup_reads, or "": each a tool's
+// name, once, at most ten (planque's own bound).
+func checkSetupReads(reads []string) string {
+	if len(reads) > 10 {
+		return "setup_reads names at most 10 of the vendor's read-only tools"
+	}
+	for i, r := range reads {
+		if strings.TrimSpace(r) != r || r == "" || len(r) > 128 || slices.Contains(reads[:i], r) {
+			return "setup_reads are the vendor's read-only tools, by the names it lists, each once"
+		}
+	}
+	return ""
 }
 
 // MaxUses is the most tools a connection is asked for with (planque's own bound).
@@ -216,6 +233,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		// (their slugs), with request {entry}: the sign-in asks for only what
 		// they need (gap 5 of kiff/tafs#476).
 		Uses []string `json:"uses"`
+		// SetupReads are Setup's own reads, by the vendor's tool names, on an
+		// entry's first request: approved with the sign-in (kiff/planque#175).
+		SetupReads []string `json:"setup_reads"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`
 	}
@@ -280,6 +300,12 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 				}
 				ask["tools"] = in.Uses
 			}
+			if len(in.SetupReads) > 0 {
+				if msg := checkSetupReads(in.SetupReads); msg != "" {
+					return tool.Result{Text: msg, IsError: true}, nil
+				}
+				ask["setup_reads"] = in.SetupReads
+			}
 			body, _ := json.Marshal(ask)
 			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
 			if err != nil || refused != nil {
@@ -301,6 +327,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		}
 		if len(in.Uses) > 0 {
 			return tool.Result{Text: "uses goes with request {entry}: the app's tools the taf will use, as search named them", IsError: true}, nil
+		}
+		if len(in.SetupReads) > 0 {
+			return tool.Result{Text: "setup_reads goes with request {entry}, for an app connected first: a server takes its reads with its tools (tools: [{…, setup_reads: true}])", IsError: true}, nil
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" || string(tools) == "[]" {
@@ -417,7 +446,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			return deref(refused), err
 		}
 		return tool.Result{Text: string(raw)}, nil
-	case "status", "catalog", "tools", "read":
+	case "status", "catalog", "tools", "read", "withdraw":
 		if !pathSafe(in.Grant) {
 			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
 		}
@@ -425,6 +454,10 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		switch in.Action {
 		case "catalog":
 			return t.catalog(ctx, at+"/catalog", in.Tool, in.Q, in.Cursor)
+		case "withdraw":
+			// Tools the owner declined, declared while they waited: out of
+			// KIFF now, not after their day (kiff/planque#175).
+			return t.grant(ctx, http.MethodDelete, at+"/tools", nil)
 		case "read":
 			// A tool the owner approved for Setup to read (setup_reads), by
 			// the name the grant lists (kiff/tafs#174). It goes through KIFF's
@@ -464,7 +497,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
-	return tool.Result{Text: "action is request, status, catalog, tools, read, grants, search, events or describe", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog, tools, read, withdraw, grants, search, events or describe", IsError: true}, nil
 }
 
 // NoKeyTools refuses a key request with no tools: it would never be
