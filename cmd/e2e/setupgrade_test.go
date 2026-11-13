@@ -729,6 +729,31 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 	if !strings.Contains(agreedRule, "15000") || !strings.Contains(agreedRule, "150.00 EUR") {
 		t.Fatal("the rule doesn't say how an amount's max reads")
 	}
+	// A rule kept on the connection, not on a Card, is shown as kept there (the desk's "only workspace ws_demo",
+	// Eval 43462527838): the judge reads what the connection fixes beside the Cards.
+	pinnedS := s
+	var desk grant
+	desk.Request.Tools = []grantTool{
+		{Tool: "reply_ticket", Name: "reply_ticket_k3f9", Fixed: map[string]any{"workspace": "ws_demo"}},
+		{Tool: "list_tickets", Fixed: map[string]any{"workspace": "ws_demo", "status": "open"}},
+	}
+	pinnedS.pinned = pinsOf(desk)
+	if want := []string{"reply_ticket_k3f9: workspace = ws_demo", "list_tickets: status = open", "list_tickets: workspace = ws_demo"}; !slices.Equal(pinnedS.pinned, want) {
+		t.Fatalf("the connection's pins: %q", pinnedS.pinned)
+	}
+	v = &verdicts{}
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, pinnedS, cards); err != nil {
+		t.Fatal(err)
+	}
+	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "Kept on the connection") || !strings.Contains(asked, "reply_ticket_k3f9: workspace = ws_demo") {
+		t.Fatal("the judge wasn't shown what the connection keeps")
+	}
+	// The rule tells the judge where else a rule is kept: the connection, KIFF's own disclosure line, the taf's instructions.
+	for _, want := range []string{"kept on the connection", "Written by an AI agent on behalf of", "kept in the taf's instructions", "Any other rule the Cards don't hold fails"} {
+		if !strings.Contains(agreedRule, want) {
+			t.Fatalf("the rule doesn't say %q", want)
+		}
+	}
 	// A judge that finds a merged limit fails the gate.
 	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"merged with another"}}, ModelID: "judge"}, s, cards)
 	if r.Grade.Pass || r.Grade.Skipped || r.Advisory {

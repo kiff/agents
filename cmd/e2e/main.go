@@ -1071,6 +1071,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 					// connected: what Setup asked for is what's checked. A
 					// recipe's case checks the desk there and goes on.
 					if g, err := t.phone.Grant(ctx, approvedGrant); err == nil && g.Status == "connected" && len(g.Request.Tools) > 0 {
+						t.said.pinned = pinsOf(g)
 						switch {
 						case fromRecipe:
 							// The recipe's case goes on to the taf: the desk is checked once, as connected.
