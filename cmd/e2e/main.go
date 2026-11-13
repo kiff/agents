@@ -406,6 +406,9 @@ type test struct {
 	// no-loop and no-raw-error gates read (connectbar.go).
 	toolsAsks []connectAsk
 	errors    []string
+	// dials are the taf's dial cards, held installs and drafted versions
+	// during setup (dialsOf), for the bar.
+	dials []dialSeen
 	// cardsRead are the approval cards already answered, by id: one read
 	// again is never asked again (readCard).
 	cardsRead map[string]bool
@@ -1324,6 +1327,7 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 	}
 	t.keepAsks(connectAsksOf(ran))
 	t.toolsAsks = keptAsks(t.toolsAsks, toolsAsksOf(ran))
+	t.dials = keptDials(t.dials, dialsOf(ran))
 	for _, e := range errorsOf(ran) {
 		if !slices.Contains(t.errors, e) {
 			t.errors = append(t.errors, e)
@@ -1602,7 +1606,7 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	// The bar for connecting an app (13 Nov): one approval per app plus its
 	// Card, no raw error shown, no loop, counted from the run.
 	checks = append(checks, gradeConnectBar(barRun{asks: asks, toolsAsks: t.toolsAsks, approvals: t.approvals,
-		statements: t.said.statements(), errors: t.errors})...)
+		statements: t.said.statements(), errors: t.errors, dials: t.dials})...)
 	checks, err = withRecipe(checks, t.cfg.recipe, func(r recipe) (eval.CheckResult, error) {
 		return gradeRecipe(ctx, t.cfg.judge, r, t.recipeRecord)
 	})

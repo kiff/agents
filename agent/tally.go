@@ -51,7 +51,7 @@ func counts(t tool.Tool, input json.RawMessage, outcome string, record bool) boo
 
 // TallyOf is the count a call's outcome, as its Called event has it, adds
 // to: one of sent, held, refused, failed or unknown, and "" for a call that
-// was never made (OutcomeNotMade).
+// was never made (OutcomeNotMade, OutcomeStopped).
 func TallyOf(outcome string) string {
 	switch {
 	case outcome == OutcomeDone, outcome == OutcomeApproved, outcome == OutcomeChanged, outcome == OutcomeCame:
@@ -62,7 +62,7 @@ func TallyOf(outcome string) string {
 		return "refused"
 	case outcome == OutcomeFailed:
 		return "failed"
-	case outcome == OutcomeNotMade:
+	case outcome == OutcomeNotMade, outcome == OutcomeStopped:
 		return ""
 	}
 	// Sent with no word on what came of it (the vendor's event didn't come

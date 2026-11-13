@@ -855,6 +855,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		return ""
 	})
+	// What the run's calls to apps failed, so far: after a refused call, it
+	// stops working around it (stopped.go).
+	stops := a.stopIn(msgs, byName)
 	nudged := false  // CloseInText's one more turn, at most once a run
 	var listed pages // reads of the same list in a row: LoopPages of them ask the owner
 	for first := true; ; first = false {
@@ -934,7 +937,7 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		}
 		// The tools see what the run has done so far: stored before this went, and since.
 		done := append(slices.Clip(run.DoneFrom(ctx)), out.Done...)
-		results, err := a.callTools(run.WithDone(ctx, done), rec, byName, calls, emit)
+		results, err := a.callTools(run.WithDone(ctx, done), rec, byName, calls, stops, emit)
 		if err != nil {
 			// Their results never came back: each call that acts may have gone out.
 			for _, c := range calls {
@@ -966,8 +969,9 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 				stopReading = true
 			}
 		}
-		for _, r := range results {
+		for i, r := range results {
 			latest[r.Tool] = outcome(r, "")
+			stops.see(byName[r.Tool], r.Tool, calls[i].Input, r.Result, r.NotMade)
 		}
 		blocks := make([]model.Block, len(results))
 		var held bool
@@ -1544,7 +1548,7 @@ func (a Agent) say(rec *session.Recording, text string, last bool) error {
 
 // callTools records the calls in order, runs them in parallel, and records
 // their results in the order of the calls.
-func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map[string]tool.Tool, calls []model.Block, emit func(Event)) ([]ToolResultBody, error) {
+func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map[string]tool.Tool, calls []model.Block, stops *stop, emit func(Event)) ([]ToolResultBody, error) {
 	// The disclosure goes in before anything sees the call: its record, KIFF, a
 	// hold's stored input, and so a retry, all carry the same input.
 	calls = slices.Clone(calls)
@@ -1586,6 +1590,12 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			began := time.Now()
 			if reads && acts(byName[c.Tool], c.Input) {
 				results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: tool.Result{Text: OneAtATime, IsError: true}, NotMade: true}
+				results[i].batch = len(calls)
+				return
+			}
+			// After a refused call, the run doesn't work around it: unmade, with words to stop on.
+			if why := stops.check(byName[c.Tool], c.Tool, c.Input); why != "" {
+				results[i] = ToolResultBody{CallID: c.CallID, Tool: c.Tool, Result: tool.Result{Text: why, IsError: true}, NotMade: true}
 				results[i].batch = len(calls)
 				return
 			}

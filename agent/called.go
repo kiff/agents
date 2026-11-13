@@ -83,6 +83,8 @@ const RecordNote = "What this run did, from its record, call by call, in order. 
 // only says why a call that didn't go through didn't.
 func outcome(r ToolResultBody, answer string) string {
 	switch {
+	case r.NotMade && stoppedText(r.Text):
+		return OutcomeStopped
 	case r.NotMade:
 		return OutcomeNotMade
 	case r.Held():
@@ -282,7 +284,7 @@ func (a Agent) recordNote(r run.Run, held []ToolResultBody) string {
 				continue
 			}
 			if _, ok := byCall[b.CallID]; !ok {
-				byCall[b.CallID] = ToolResultBody{CallID: b.CallID, Result: tool.Result{Text: b.Result, IsError: b.IsError}, NotMade: b.IsError && b.Result == OneAtATime}
+				byCall[b.CallID] = ToolResultBody{CallID: b.CallID, Result: tool.Result{Text: b.Result, IsError: b.IsError}, NotMade: b.IsError && (b.Result == OneAtATime || stoppedText(b.Result))}
 			}
 		}
 	}
