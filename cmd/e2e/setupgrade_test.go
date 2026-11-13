@@ -684,6 +684,20 @@ func TestAdviceNeverFailsTheSetup(t *testing.T) {
 	}
 }
 
+// A check the case didn't do is skipped, and a skip never fails the setup
+// (run 43351837182: every skip read as a FAIL).
+func TestASkipNeverFailsTheSetup(t *testing.T) {
+	var log strings.Builder
+	tt := &test{cfg: config{log: &log, judge: &eval.Judge{}}, out: &redacting{w: &log}}
+	err := tt.reportSetup([]eval.CheckResult{
+		{Name: "narrows a managed sign-in", Grade: eval.Grade{Skipped: true, Why: "no managed app was connected"}},
+		{Name: "pins the mode the owner chose", Grade: eval.Grade{Pass: true}},
+	})
+	if err != nil || !strings.Contains(log.String(), "  skip  narrows a managed sign-in") || !strings.Contains(log.String(), "setup  1/1 gate") {
+		t.Fatalf("err %v, log %q", err, log.String())
+	}
+}
+
 // The Card KIFF holds is graded against the rules the owner agreed: the
 // notices Setup showed, in order, and nothing when it showed none or KIFF holds
 // no Card. A judge that fails it fails the gate (a from-zero test on a phone:

@@ -98,6 +98,13 @@ func TestTheCoachBatchsGates(t *testing.T) {
 		t.Errorf("a managed app with no uses: %+v", r)
 	}
 
+	// A key connected in a case that ends at "connected" (desk, billing): no
+	// Card approved anywhere, so there's nothing to sign with the key.
+	connectOnly := byName(gradeBatch([]connectAsk{{Entry: "", API: true, Grant: "grt_7"}}, []approvalSeen{{Grant: "grt_7", Key: true}, {Grant: "grt_7", Key: true}}, nil))
+	if r := connectOnly["one approval for the key and the Card"]; !r.Skipped || r.Pass {
+		t.Errorf("a key with no Card in the case: %+v", r)
+	}
+
 	// Nothing of it in the run: each skipped, never passed.
 	for name, r := range byName(gradeBatch(nil, nil, nil)) {
 		if !r.Skipped || r.Pass {
@@ -108,5 +115,33 @@ func TestTheCoachBatchsGates(t *testing.T) {
 	g = byName(gradeBatch([]connectAsk{{Entry: "stripe", Grant: "grt_5"}}, []approvalSeen{{Grant: "grt_5"}}, nil))
 	if !g["one approval for the key and the Card"].Skipped || !g["narrows a managed sign-in"].Skipped || !g["connects on the first try"].Pass {
 		t.Errorf("a sign-in alone: %+v", g)
+	}
+}
+
+// Setup's requests are kept as each run is read: a chat drops a run's tool
+// calls once it ends (session.UntilEnd), so the session read after the chat
+// has none (run 43351837182: "no connection was asked for").
+func TestRequestsAreKeptRunByRun(t *testing.T) {
+	tt := &test{}
+	// Run 1: the request, its answer not read yet.
+	tt.keepAsks(connectAsksOf([]session.Event{callEvent(t, "c1", map[string]any{"action": "request", "server": "https://pay.example/mcp", "name": "refunds"})}))
+	// Read again with its answer.
+	tt.keepAsks(connectAsksOf([]session.Event{
+		callEvent(t, "c1", map[string]any{"action": "request", "server": "https://pay.example/mcp", "name": "refunds"}),
+		resultEvent(t, "c1", `{"id":"grt_1","status":"pending"}`, false),
+	}))
+	// Run 2: its calls are gone; a request of its own.
+	tt.keepAsks(connectAsksOf([]session.Event{
+		callEvent(t, "c2", map[string]any{"action": "request", "reuse": "grt_1", "name": "refunds"}),
+		resultEvent(t, "c2", "planque answered 409: taken", true),
+	}))
+	// A later read with nothing in it changes nothing.
+	tt.keepAsks(connectAsksOf(nil))
+	if len(tt.asks) != 2 || tt.asks[0].Grant != "grt_1" || tt.asks[1].Refused == "" {
+		t.Fatalf("%+v", tt.asks)
+	}
+	g := byName(gradeBatch(tt.asks, []approvalSeen{{Grant: "grt_1"}}, nil))
+	if !g["offers only its own connections"].Pass {
+		t.Errorf("the grant this chat made, its request read in an earlier run: %+v", g["offers only its own connections"])
 	}
 }

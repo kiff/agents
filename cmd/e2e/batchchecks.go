@@ -18,6 +18,7 @@ import (
 
 // connectAsk is one of Setup's planque requests and what planque answered.
 type connectAsk struct {
+	Call    string // the tool call's id
 	Entry   string
 	Reuse   string
 	Uses    []string
@@ -55,7 +56,7 @@ func connectAsksOf(events []session.Event) []connectAsk {
 			if json.Unmarshal(c.Input, &in) != nil || in.Action != "request" {
 				continue
 			}
-			calls[c.CallID] = connectAsk{Entry: in.Entry, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
+			calls[c.CallID] = connectAsk{Call: c.CallID, Entry: in.Entry, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
 			order = append(order, c.CallID)
 		case session.ToolResult:
 			var r agent.ToolResultBody
@@ -148,7 +149,9 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]boo
 	}
 
 	// One approval for a key and its Card: a key grant's first approval
-	// carries the Card's draft, so one fingerprint signs both.
+	// carries the Card's draft, so one fingerprint signs both. A case that
+	// ends once the app is connected approves no Card: nothing to grade.
+	carded := slices.ContainsFunc(approvals, func(ap approvalSeen) bool { return ap.Draft != "" })
 	first := map[string]approvalSeen{}
 	var keys []string
 	for _, ap := range approvals {
@@ -160,9 +163,12 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]boo
 			keys = append(keys, ap.Grant)
 		}
 	}
-	if len(keys) == 0 {
+	switch {
+	case len(keys) == 0:
 		skip("one approval for the key and the Card", "no app was connected by key")
-	} else {
+	case !carded:
+		skip("one approval for the key and the Card", "no Card was approved in this case")
+	default:
 		var alone []string
 		for _, g := range keys {
 			if first[g].Draft == "" {
