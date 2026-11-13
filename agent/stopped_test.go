@@ -211,3 +211,82 @@ func TestAContinuedRunRemembersItsFailures(t *testing.T) {
 		t.Fatalf("the third post came back %q", got)
 	}
 }
+
+// The chargebacks taf (13 Nov): its Card leaves out the shop's order lookup,
+// so KIFF refuses it, and the taf still settles the disputes its Card
+// covers. A read refused outside the Card is the owner's limit, not a sign
+// of what the app holds: it stops no write. A read that failed still does.
+// Category: authority
+// Attack: none; the regression was a run that stopped doing its job
+// Refused: the order lookups, by KIFF; the dispute writes are made
+func TestAReadRefusedOnTheCardStopsNoWrite(t *testing.T) {
+	order := &seqTool{name: "shop_get_order", access: tool.Read, results: []tool.Result{
+		{Text: "refused: no Card of this agent allows shop_get_order", IsError: true, State: tool.StateRefused},
+	}}
+	evidence := &seqTool{name: "update_dispute", access: tool.Write, results: []tool.Result{{Text: `{"id":"du_1","status":"under_review"}`, State: tool.StateForwarded}}}
+	accept := &seqTool{name: "close_dispute", access: tool.Write, results: []tool.Result{{Text: `{"id":"du_2","status":"lost"}`, State: tool.StateForwarded}}}
+	m := &script{replies: []model.Reply{
+		use("c1", "shop_get_order", `{"order":"T-2001"}`),
+		use("c2", "update_dispute", `{"dispute":"du_1"}`),
+		use("c3", "close_dispute", `{"dispute":"du_2"}`),
+		say("Evidence went on T-2001; T-2002 is accepted."),
+	}}
+	_, r := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m, order, evidence, accept), r, nil, "Work the open disputes.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.n != 1 || accept.n != 1 {
+		t.Fatalf("after a read refused on the Card: update_dispute made %d, close_dispute %d; want 1 each", evidence.n, accept.n)
+	}
+	// Refused twice on the Card, the lookup isn't tried a third time: that rule holds for every refusal.
+	order2 := &seqTool{name: "shop_get_order", access: tool.Read, results: []tool.Result{
+		{Text: "refused", IsError: true, State: tool.StateRefused}, {Text: "refused", IsError: true, State: tool.StateRefused},
+	}}
+	m2 := &script{replies: []model.Reply{
+		use("c1", "shop_get_order", `{"order":"T-2001"}`),
+		use("c2", "shop_get_order", `{"order":"T-2002"}`),
+		use("c3", "shop_get_order", `{"order":"T-2003"}`),
+		say("The shop's orders are outside the Card."),
+	}}
+	_, r2 := start(t, session.KindRun)
+	if _, _, err := agent.Run(context.Background(), newAgent(m2, order2), r2, nil, "Work the open disputes.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := resultOf(m2.reqs, "c3"); got != agent.AfterTwoFailures || order2.n != 2 {
+		t.Fatalf("the third lookup came back %q after %d calls", got, order2.n)
+	}
+}
+
+// A run continued after a hold still knows a read was refused on the Card,
+// not failed: the state is kept with the run's messages, so the run's other
+// work goes on after the pause too. (A read that failed before a pause can't
+// be followed by the act that would pause it: that act comes back unmade.)
+func TestAContinuedRunStillKnowsACardRefusal(t *testing.T) {
+	store := memory.New()
+	rec, err := session.NewRecorder(store, session.DefaultPolicy(30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := &seqTool{name: "shop_get_order", access: tool.Read, results: []tool.Result{{Text: "refused: outside the Card", IsError: true, State: tool.StateRefused}}}
+	accept := &seqTool{name: "close_dispute", access: tool.Write, results: []tool.Result{{Text: `{"id":"du_2","status":"lost"}`, State: tool.StateForwarded}}}
+	m := &script{replies: []model.Reply{
+		use("c1", "shop_get_order", `{"order":"T-2002"}`),
+		use("c2", "stripe_refund", `{"charge":"ch_1"}`), // held: the run pauses
+		say("Waiting for you."),
+		use("c3", "close_dispute", `{"dispute":"du_2"}`),
+		say("Done."),
+	}}
+	a := newAgent(m, order, accept, heldRefund())
+	stored, s := paused(t, store, rec, a)
+	ctx := context.Background()
+	r, err := rec.Resume(ctx, s, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.Continue(ctx, a, r, nil, stored, approved(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if accept.n != 1 {
+		t.Fatalf("close_dispute reached the app %d time(s) after the pause, want 1", accept.n)
+	}
+}

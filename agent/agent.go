@@ -812,7 +812,13 @@ func requirementInput(r run.Run, id string) json.RawMessage {
 
 func resultBlock(r ToolResultBody) model.Block {
 	// A vendor's answer can carry anyone's text: never a line of the record.
-	return model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: Unforged(r.Text), IsError: r.IsError, Images: r.Images}
+	b := model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: Unforged(r.Text), IsError: r.IsError, Images: r.Images}
+	if r.State == tool.StateRefused && !r.NotMade {
+		// Kept with the run's messages, so a continued run still tells a call
+		// refused outside the Card from one that failed (stopped.go).
+		b.State = tool.StateRefused
+	}
+	return b
 }
 
 // loop runs model turns on msgs until the run stops, counting on from out.
