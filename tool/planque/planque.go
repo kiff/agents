@@ -141,8 +141,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants","search","events"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"api":{"type":"object","description":"a REST vendor reached by its key, instead of server (request)","properties":{` +
-			`"url":{"type":"string","description":"the vendor's OpenAPI description (JSON)"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
-			`"auth":{"type":"object","properties":{"in":{"type":"string","enum":["header","query"]},"name":{"type":"string"}},"required":["in","name"]}},"required":["url","base","auth"]},` +
+			`"url":{"type":"string","description":"the vendor's OpenAPI description, JSON or YAML"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
+			`"auth":{"type":"object","properties":{"in":{"type":"string","enum":["header","query"]},"name":{"type":"string"},` +
+			`"prefix":{"type":"string","description":"what goes before the key in the header, with its space, as the vendor's description names it (\"Bearer \", \"ShippoToken \"); none when the key goes alone"}},"required":["in","name"]}},"required":["url","base","auth"]},` +
 			`"name":{"type":"string","description":"a short name for a new taf's KIFF agent, from the taf's name (request); the answer's agent is its id"},` +
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"taf_name":{"type":"string","description":"the taf's name as the owner will read it, on one line (request): the approval names the taf by it"},` +

@@ -50,7 +50,7 @@ func TestSetupsConnectionRequestsAreReadWithTheirAnswers(t *testing.T) {
 	if asks[0].Refused == "" || strings.Contains(asks[0].Refused, "more") || len(asks[0].Uses) != 1 {
 		t.Fatalf("the refused one: %+v", asks[0])
 	}
-	if asks[1].Refused != "" || asks[1].Grant != "grt_2" {
+	if asks[1].Refused != "" || asks[1].Grant != "grt_2" || !asks[1].Declared {
 		t.Fatalf("the one that went through: %+v", asks[1])
 	}
 }
@@ -58,7 +58,7 @@ func TestSetupsConnectionRequestsAreReadWithTheirAnswers(t *testing.T) {
 // The batch's four gates, each failing for what it grades and skipped when
 // the run didn't do it.
 func TestTheCoachBatchsGates(t *testing.T) {
-	ok := []connectAsk{{Entry: "qonto-key@2", Uses: []string{"list_client_invoices"}, Grant: "grt_2"},
+	ok := []connectAsk{{Entry: "qonto-key@2", Uses: []string{"list_client_invoices"}, Grant: "grt_2", Declared: true},
 		{Entry: "connector:composio:gmail", Uses: []string{"GMAIL_SEND_EMAIL"}, Grant: "grt_3"}}
 	g := byName(gradeBatch(ok, []approvalSeen{{Grant: "grt_2", Draft: "drf_1", Key: true}, {Grant: "grt_3"}}, nil))
 	for _, name := range []string{"connects on the first try", "offers only its own connections", "one approval for the key and the Card", "narrows a managed sign-in"} {
@@ -98,6 +98,22 @@ func TestTheCoachBatchsGates(t *testing.T) {
 		t.Errorf("a managed app with no uses: %+v", r)
 	}
 
+	// The key grant decides, not how the case ended (qa-kiff on #434). A key
+	// grant planque declared, asked for with the key alone: failed, even in a
+	// case that ends at "connected" (desk, billing), since that's the very
+	// flow the gate exists for.
+	declaredKey := []connectAsk{{API: true, Grant: "grt_7", Declared: true}}
+	if r := byName(gradeBatch(declaredKey, []approvalSeen{{Grant: "grt_7", Key: true}}, nil))["one approval for the key and the Card"]; r.Pass || r.Skipped {
+		t.Errorf("a declared key asked for alone: %+v", r)
+	}
+	if r := byName(gradeBatch(declaredKey, []approvalSeen{{Grant: "grt_7", Draft: "drf_7", Key: true}}, nil))["one approval for the key and the Card"]; !r.Pass {
+		t.Errorf("a declared key with its draft: %+v", r)
+	}
+	// Not declared (connected first, its tools picked after): the key first is the documented flow.
+	if r := byName(gradeBatch([]connectAsk{{API: true, Grant: "grt_8"}}, []approvalSeen{{Grant: "grt_8", Key: true}}, nil))["one approval for the key and the Card"]; !r.Skipped || r.Pass {
+		t.Errorf("a key grant not declared: %+v", r)
+	}
+
 	// Nothing of it in the run: each skipped, never passed.
 	for name, r := range byName(gradeBatch(nil, nil, nil)) {
 		if !r.Skipped || r.Pass {
@@ -108,5 +124,33 @@ func TestTheCoachBatchsGates(t *testing.T) {
 	g = byName(gradeBatch([]connectAsk{{Entry: "stripe", Grant: "grt_5"}}, []approvalSeen{{Grant: "grt_5"}}, nil))
 	if !g["one approval for the key and the Card"].Skipped || !g["narrows a managed sign-in"].Skipped || !g["connects on the first try"].Pass {
 		t.Errorf("a sign-in alone: %+v", g)
+	}
+}
+
+// Setup's requests are kept as each run is read: a chat drops a run's tool
+// calls once it ends (session.UntilEnd), so the session read after the chat
+// has none (run 43351837182: "no connection was asked for").
+func TestRequestsAreKeptRunByRun(t *testing.T) {
+	tt := &test{}
+	// Run 1: the request, its answer not read yet.
+	tt.keepAsks(connectAsksOf([]session.Event{callEvent(t, "c1", map[string]any{"action": "request", "server": "https://pay.example/mcp", "name": "refunds"})}))
+	// Read again with its answer.
+	tt.keepAsks(connectAsksOf([]session.Event{
+		callEvent(t, "c1", map[string]any{"action": "request", "server": "https://pay.example/mcp", "name": "refunds"}),
+		resultEvent(t, "c1", `{"id":"grt_1","status":"pending"}`, false),
+	}))
+	// Run 2: its calls are gone; a request of its own.
+	tt.keepAsks(connectAsksOf([]session.Event{
+		callEvent(t, "c2", map[string]any{"action": "request", "reuse": "grt_1", "name": "refunds"}),
+		resultEvent(t, "c2", "planque answered 409: taken", true),
+	}))
+	// A later read with nothing in it changes nothing.
+	tt.keepAsks(connectAsksOf(nil))
+	if len(tt.asks) != 2 || tt.asks[0].Grant != "grt_1" || tt.asks[1].Refused == "" {
+		t.Fatalf("%+v", tt.asks)
+	}
+	g := byName(gradeBatch(tt.asks, []approvalSeen{{Grant: "grt_1"}}, nil))
+	if !g["offers only its own connections"].Pass {
+		t.Errorf("the grant this chat made, its request read in an earlier run: %+v", g["offers only its own connections"])
 	}
 }

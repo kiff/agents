@@ -18,12 +18,16 @@ import (
 
 // connectAsk is one of Setup's planque requests and what planque answered.
 type connectAsk struct {
+	Call    string // the tool call's id
 	Entry   string
 	Reuse   string
 	Uses    []string
 	API     bool
 	Refused string // planque's refusal, its first line; "" when it went through
 	Grant   string // the grant planque made, when it went through
+	// Declared: planque declared the key grant's tools to KIFF at once, so
+	// its Card can be drafted before the key and signed with it.
+	Declared bool
 }
 
 // approvalSeen is an approval card the owner answered: its grant, the draft
@@ -55,7 +59,7 @@ func connectAsksOf(events []session.Event) []connectAsk {
 			if json.Unmarshal(c.Input, &in) != nil || in.Action != "request" {
 				continue
 			}
-			calls[c.CallID] = connectAsk{Entry: in.Entry, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
+			calls[c.CallID] = connectAsk{Call: c.CallID, Entry: in.Entry, Reuse: in.Reuse, Uses: in.Uses, API: len(in.API) > 0 && string(in.API) != "null"}
 			order = append(order, c.CallID)
 		case session.ToolResult:
 			var r agent.ToolResultBody
@@ -70,10 +74,11 @@ func connectAsksOf(events []session.Event) []connectAsk {
 				a.Refused, _, _ = strings.Cut(strings.TrimSpace(r.Text), "\n")
 			} else {
 				var g struct {
-					ID string `json:"id"`
+					ID       string `json:"id"`
+					Declared bool   `json:"declared"`
 				}
 				_ = json.Unmarshal([]byte(r.Text), &g)
-				a.Grant = g.ID
+				a.Grant, a.Declared = g.ID, g.Declared
 			}
 			calls[r.CallID] = a
 		}
@@ -147,22 +152,35 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]boo
 		gate("offers only its own connections", eval.Grade{Pass: true})
 	}
 
-	// One approval for a key and its Card: a key grant's first approval
-	// carries the Card's draft, so one fingerprint signs both.
+	// One approval for a key and its Card: a key grant planque declared at
+	// once has its Card drafted before the key, so its first approval
+	// carries the draft and one fingerprint signs both. A key grant that
+	// wasn't declared takes the key first, as documented: nothing to grade.
+	declared := map[string]bool{}
+	for _, a := range asks {
+		if a.Declared && a.Grant != "" {
+			declared[a.Grant] = true
+		}
+	}
 	first := map[string]approvalSeen{}
 	var keys []string
+	connectedByKey := false
 	for _, ap := range approvals {
 		if !ap.Key {
 			continue
 		}
-		if _, seen := first[ap.Grant]; !seen {
+		connectedByKey = true
+		if _, seen := first[ap.Grant]; !seen && declared[ap.Grant] {
 			first[ap.Grant] = ap
 			keys = append(keys, ap.Grant)
 		}
 	}
-	if len(keys) == 0 {
+	switch {
+	case !connectedByKey:
 		skip("one approval for the key and the Card", "no app was connected by key")
-	} else {
+	case len(keys) == 0:
+		skip("one approval for the key and the Card", "no key grant was declared, so its key comes before its Card")
+	default:
 		var alone []string
 		for _, g := range keys {
 			if first[g].Draft == "" {

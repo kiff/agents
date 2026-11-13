@@ -377,6 +377,9 @@ type test struct {
 	// approvals are the approval cards the owner answered, in order, each
 	// with its grant, its draft and whether the grant takes a key.
 	approvals []approvalSeen
+	// asks are Setup's planque requests, read run by run as they happen: a
+	// chat keeps a tool call only while its run goes on (session.UntilEnd).
+	asks []connectAsk
 	// people are step 9's people (-people); cloudTafs the tafs this run started on
 	// tafs cloud, and shared each taf agent and the group it was shared with.
 	people    []*someone
@@ -1190,10 +1193,12 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 	}
 	var shown []component
 	text := ""
+	var ran []session.Event
 	for _, e := range events {
 		if e.Run != runID {
 			continue
 		}
+		ran = append(ran, e)
 		switch e.Kind {
 		case session.Component:
 			var c component
@@ -1219,7 +1224,21 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 			}
 		}
 	}
+	t.keepAsks(connectAsksOf(ran))
 	return shown, text, nil
+}
+
+// keepAsks adds a run's planque requests to those already read, each once
+// by its call: a request read again, its answer since come, is updated.
+func (t *test) keepAsks(asks []connectAsk) {
+	for _, a := range asks {
+		i := slices.IndexFunc(t.asks, func(o connectAsk) bool { return o.Call == a.Call })
+		if i < 0 {
+			t.asks = append(t.asks, a)
+		} else if a.Refused != "" || a.Grant != "" {
+			t.asks[i] = a
+		}
+	}
 }
 
 // messagesOf is what the agent wrote in one run, in order, as -grade reads
@@ -1449,14 +1468,8 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	checks = append(checks, agreed)
 	// The Coach batch's gates: first-try connects, only its own connections,
 	// one approval for a key and its Card, a managed sign-in narrowed.
-	var asks []connectAsk
-	if t.setupSession != "" {
-		_, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession)
-		if err != nil {
-			return err
-		}
-		asks = connectAsksOf(events)
-	}
+	// Read as the chat went: by now its runs' tool calls are gone.
+	asks := t.asks
 	// A reused grant of a taf this run made is the account's own: the
 	// product reuses a sign-in for a second taf.
 	ours := map[string]bool{}
@@ -1486,6 +1499,9 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 	for _, c := range checks {
 		mark := "pass"
 		switch {
+		case c.Skipped:
+			// Not done in this case, so nothing to grade: reported, never failing the run.
+			mark = "skip"
 		case !c.Pass && c.Advisory:
 			// Words or tone: reported, never failing the run (the owner, 6 Nov 2026).
 			mark = "advice"
@@ -1524,6 +1540,7 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 	gates, advised := 0, 0
 	for _, c := range checks {
 		switch {
+		case c.Skipped:
 		case !c.Advisory:
 			gates++
 		case !c.Pass:
