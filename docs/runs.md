@@ -273,7 +273,8 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   run's calls that act, from its record: stripe_refund: 3 sent, 0 held,
   1 refused, 0 failed. Any number you give of calls sent, held, refused or
   failed is one of these, never your own total." Reads aren't counted, nor a
-  call refused back unmade (beside a read).
+  call refused back unmade (beside a read, or after a refused call:
+  ARCHITECTURE.md › Stop after a refused call).
   - **Record totals** (`AGENTS_TOTALS=record`, `runner.Runner.RecordTotals`;
     off unless set, and on in the Eval unless `AGENTS_TOTALS=off`). Asked to
     copy the count, a model still wrote its own ("six submitted" with five sent

@@ -59,6 +59,18 @@ COMPLETED, ERROR and CANCELLED are final.
   it's refused back to the model unmade (`agent.OneAtATime`, recorded and
   streamed `not_made`), and the reads in that turn still run. Acts side by side
   go together. The agent's own tools (its notes, the chat's components) don't count.
+- **Stop after a refused call.** For every call to an app through KIFF's
+  gateway, whatever the taf's instructions say (`agent/stopped.go`): while a
+  read of the run is refused (failed, or KIFF refused it, and not read again
+  since with an answer), nothing is created or changed in that run
+  (`agent.AfterRefusedRead`); and a tool that failed twice in a run isn't
+  called again in it (`agent.AfterTwoFailures`), so a failure gets one more
+  try, to find out why. Each such call is refused back unmade, recorded
+  `not made: the run stopped after a refused call` and counted nowhere, with
+  words asking the model to stop and tell the person in plain words what was
+  refused and what they can do. A hold isn't a refusal, and the agent's own
+  tools (its notes, its cards, planque's requests) don't count. A run
+  continued after a hold remembers its failures from its own turns.
 - **Completed** means the agent answered, or a cap stopped it (cost, turns,
   output length); the stop reason says which. **Error** means it failed.
 - **Paused** means KIFF holds at least one of its calls. The run records one

@@ -120,9 +120,10 @@ func TestTallyLine(t *testing.T) {
 // of each, and the count follows the results of every turn that acted: the
 // model reports a number it read. A turn that only read gets none, a call
 // refused back unmade (beside a read) isn't counted, and the last count is
-// what the record's Called events add up to.
+// what the record's Called events add up to. (Its refund fails once before
+// it's refused: twice would stop the tool, stopped.go.)
 func TestARunsActsAreCountedAfterTheirResults(t *testing.T) {
-	refund := &seqTool{name: "stripe_refund", access: tool.Write, results: []tool.Result{sent, failed, refused, sent}}
+	refund := &seqTool{name: "stripe_refund", access: tool.Write, results: []tool.Result{sent, failed, sent, refused}}
 	mail := &seqTool{name: "gmail_send", access: tool.Write, results: []tool.Result{sent}}
 	get := &seqTool{name: "stripe_get", access: tool.Read, results: []tool.Result{{Text: `{"amount":700}`}}}
 	m := &script{replies: []model.Reply{
@@ -145,7 +146,7 @@ func TestARunsActsAreCountedAfterTheirResults(t *testing.T) {
 		"", // a read
 		line(map[string]run.Tally{"stripe_refund": {Sent: 1, Failed: 1}}),
 		"", // a read, and an act that wasn't made
-		line(map[string]run.Tally{"stripe_refund": {Sent: 1, Failed: 1, Refused: 1}, "gmail_send": {Sent: 1}}),
+		line(map[string]run.Tally{"stripe_refund": {Sent: 2, Failed: 1}, "gmail_send": {Sent: 1}}),
 		line(map[string]run.Tally{"stripe_refund": {Sent: 2, Failed: 1, Refused: 1}, "gmail_send": {Sent: 1}}),
 	} {
 		if got := counts(m.reqs[i]); got != want {
