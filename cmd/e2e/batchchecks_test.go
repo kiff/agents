@@ -109,6 +109,16 @@ func TestTheCoachBatchsGates(t *testing.T) {
 	if r := byName(gradeBatch(declaredKey, []approvalSeen{{Grant: "grt_7", Draft: "drf_7", Key: true}}, nil))["one approval for the key and the Card"]; !r.Pass {
 		t.Errorf("a declared key with its draft: %+v", r)
 	}
+	// Two key apps and one Card: one app's key alone, the other's with the
+	// Card. Two approvals, one per app: passes. The Card apart from both keys fails.
+	twoKeys := []connectAsk{{API: true, Grant: "grt_sh", Declared: true}, {API: true, Grant: "grt_mb", Declared: true}}
+	if r := byName(gradeBatch(twoKeys, []approvalSeen{{Grant: "grt_sh", Key: true}, {Grant: "grt_mb", Draft: "drf_9", Key: true}}, nil))["one approval for the key and the Card"]; !r.Pass {
+		t.Errorf("two key apps, the Card with the second: %+v", r)
+	}
+	if r := byName(gradeBatch(twoKeys, []approvalSeen{{Grant: "grt_sh", Key: true}, {Grant: "grt_mb", Key: true}, {Grant: "grt_mb", Draft: "drf_9", Key: true}}, nil))["one approval for the key and the Card"]; r.Pass || !strings.Contains(r.Why, "grt_mb") {
+		t.Errorf("two key apps, the Card apart: %+v", r)
+	}
+
 	// Not declared (connected first, its tools picked after): the key first is the documented flow.
 	if r := byName(gradeBatch([]connectAsk{{API: true, Grant: "grt_8"}}, []approvalSeen{{Grant: "grt_8", Key: true}}, nil))["one approval for the key and the Card"]; !r.Skipped || r.Pass {
 		t.Errorf("a key grant not declared: %+v", r)
