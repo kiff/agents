@@ -406,6 +406,9 @@ type test struct {
 	// no-loop and no-raw-error gates read (connectbar.go).
 	toolsAsks []connectAsk
 	errors    []string
+	// cardsRead are the approval cards already answered, by id: one read
+	// again is never asked again (readCard).
+	cardsRead map[string]bool
 	// people are step 9's people (-people); cloudTafs the tafs this run started on
 	// tafs cloud, and shared each taf agent and the group it was shared with.
 	people    []*someone
@@ -1099,8 +1102,14 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 					t.said.chose = "test" // answerQuestions picks test for the mode, as on a confirm
 				}
 			case "approval", "sign_in":
-				if err := t.approve(ctx, c, &approvedGrant); err != nil {
+				reread, err := t.approve(ctx, c, &approvedGrant)
+				if err != nil {
 					return "", "", err
+				}
+				if reread {
+					// The card already answered, read again: no new answer for it.
+					answered[key] = "read again"
+					continue
 				}
 				if c.Draft != "" {
 					draftID = c.Draft
@@ -1162,20 +1171,28 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 // approve is the owner's answer to an approval: on the phone, the grant
 // (approve, sign in, confirm) unless it is already connected; in KIFF, the
 // draft.
-func (t *test) approve(ctx context.Context, c component, approved *string) error {
+func (t *test) approve(ctx context.Context, c component, approved *string) (reread bool, err error) {
 	if c.Grant == "" {
-		return fmt.Errorf("an %s with no grant", c.Type)
+		return false, fmt.Errorf("an %s with no grant", c.Type)
 	}
 	t.out.hide(c.Grant, "<a grant>")
 	t.out.hide(c.Draft, "<a draft>")
 	g, err := t.phone.Grant(ctx, c.Grant)
 	if err != nil {
-		return err
+		return false, err
+	}
+	// A card read again as its run goes on (a paused run resumed after the
+	// owner answered it) is the card already answered, whatever its grant has
+	// become since: nothing is asked again, and nothing counted or confirmed.
+	seen, newDraft, reread := t.readCard(c, g)
+	if reread {
+		t.logf("card %s read again, already answered: nothing asked", c.ID)
+		return true, nil
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
-	t.approvals = append(t.approvals, approvalSeen{Grant: c.Grant, Draft: c.Draft, Key: g.Request.Kind == "api_key"})
+	t.approvals = append(t.approvals, seen)
 	if raw := rawWords(g); raw != "" && len(g.Request.Tools) > 0 {
-		return fmt.Errorf("the approval shows the owner %s, not words", raw)
+		return false, fmt.Errorf("the approval shows the owner %s, not words", raw)
 	}
 	switch g.Status {
 	case "connected":
@@ -1185,7 +1202,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 	default:
 		status, err := t.phone.ApproveAndSignIn(ctx, g)
 		if err != nil {
-			return fmt.Errorf("the grant %s: %w", g.ID, err)
+			return false, fmt.Errorf("the grant %s: %w", g.ID, err)
 		}
 		if !slices.Contains(t.grants, g.ID) {
 			t.grants = append(t.grants, g.ID)
@@ -1193,17 +1210,19 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 		*approved = g.ID
 		t.logf("grant %s approved on the phone: %s", g.ID, status)
 	}
-	if c.Draft == "" {
-		return nil
+	if !newDraft {
+		// No draft, or one this run confirmed already (an approval of another
+		// app carrying the same Card): confirmed once, as the app does.
+		return false, nil
 	}
 	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+c.Draft, nil)
 	if err != nil || d.Err() != nil {
-		return fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.Err())
+		return false, fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.Err())
 	}
 	version, _ := d.Body["version"].(string)
 	d, err = t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": version})
 	if err != nil || d.Err() != nil {
-		return fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.Err())
+		return false, fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.Err())
 	}
 	t.draftIDs = append(t.draftIDs, c.Draft)
 	if a, ok := d.Body["agent_id"].(string); ok && a != "" && !slices.Contains(t.tafAgents, a) {
@@ -1221,7 +1240,28 @@ func (t *test) approve(ctx context.Context, c component, approved *string) error
 		}
 	}
 	t.logf("draft %s confirmed in KIFF: Cards %v", c.Draft, t.cardIDs)
-	return nil
+	return false, nil
+}
+
+// readCard is what an approval card asks of the owner, before anything is
+// sent. A card is answered once, by its id: read again as its run goes on,
+// whatever its grant has become since (listed, tools set, connected), it's
+// reread and nothing is asked, counted, confirmed or answered. A new card
+// carries a draft not yet confirmed (newDraft) or not; one for a grant
+// already approved with nothing left to approve or sign is Again: shown to
+// the owner again, never an approval of its own.
+func (t *test) readCard(c component, g grant) (seen approvalSeen, newDraft, reread bool) {
+	if t.cardsRead[c.ID] {
+		return approvalSeen{}, false, true
+	}
+	if t.cardsRead == nil {
+		t.cardsRead = map[string]bool{}
+	}
+	t.cardsRead[c.ID] = true
+	newDraft = c.Draft != "" && !slices.Contains(t.draftIDs, c.Draft)
+	nothingToDo := (g.Status == "connected" || g.Status == "listed") && !newDraft
+	again := nothingToDo && slices.ContainsFunc(t.approvals, func(a approvalSeen) bool { return a.Grant == c.Grant })
+	return approvalSeen{Grant: c.Grant, Draft: c.Draft, Key: g.Request.Kind == "api_key", Again: again}, newDraft, false
 }
 
 // latest is what the run shows and says: its components, the latest of

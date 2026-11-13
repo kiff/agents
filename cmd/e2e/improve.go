@@ -386,8 +386,12 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 					return improvement{}, errors.New("Setup asked the owner to approve the version's draft in the chat: that would change the Cards the taf runs on now")
 				}
 				// A tool the job lacks, connected for the same agent.
-				if err := t.approve(ctx, c, &approvedGrant); err != nil {
+				reread, err := t.approve(ctx, c, &approvedGrant)
+				if err != nil {
 					return improvement{}, err
+				}
+				if reread {
+					continue // the card already answered, read again
 				}
 				msg = fmt.Sprintf("[%s %s] approved, signed in", c.Type, c.ID)
 			case "result":
