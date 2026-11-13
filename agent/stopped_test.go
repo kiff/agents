@@ -211,34 +211,3 @@ func TestAContinuedRunRemembersItsFailures(t *testing.T) {
 		t.Fatalf("the third post came back %q", got)
 	}
 }
-
-// A vendor's plain "not found" is an answer: a "find the customer, else
-// create them" run may create. A 403 on the same lookup still stops it.
-func TestANotFoundReadIsAnAnswer(t *testing.T) {
-	for _, c := range []struct {
-		name   string
-		answer tool.Result
-		made   int
-	}{
-		{"not found", tool.Result{Text: "HubSpot refused it (it answered 404): contact not found", IsError: true}, 1},
-		{"forbidden", tool.Result{Text: "HubSpot refused it (it answered 403): missing scopes", IsError: true}, 0},
-		{"refused by KIFF", tool.Result{Text: "outside the Card (it answered 404)", IsError: true, State: tool.StateRefused}, 0},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			lookup := &seqTool{name: "hubspot__search_contacts", access: tool.Read, results: []tool.Result{c.answer}}
-			create := &seqTool{name: "hubspot__create_contact", access: tool.Write, results: []tool.Result{{Text: `{"id":"501"}`, State: "allowed"}}}
-			m := &script{replies: []model.Reply{
-				uses("c1", "hubspot__search_contacts"),
-				uses("c2", "hubspot__create_contact"),
-				say("Done."),
-			}}
-			_, r := start(t, session.KindRun)
-			if _, _, err := agent.Run(context.Background(), newAgent(m, lookup, create), r, nil, "Add the lead.", nil); err != nil {
-				t.Fatal(err)
-			}
-			if create.n != c.made {
-				t.Fatalf("the create reached the app %d time(s), want %d", create.n, c.made)
-			}
-		})
-	}
-}

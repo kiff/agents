@@ -17,10 +17,6 @@ import (
 //   - A read that failed, and hasn't been read again since, means the run
 //     doesn't know what's there: nothing is created or changed in that run
 //     (AfterRefusedRead). A later read of the same tool that answers lifts it.
-//     A vendor's plain "not found" (404) is an answer, not a refusal: a
-//     "find it, else create it" run may create. Some apps answer 404 for
-//     what the sign-in can't see, too; a kept id, and the app's guide, are
-//     the guard there.
 //   - A tool gets one more try once it failed, to find out why: failing
 //     twice in a run, it isn't called again in that run (AfterTwoFailures).
 //
@@ -83,13 +79,9 @@ func (s *stop) see(t tool.Tool, name string, input json.RawMessage, r tool.Resul
 	if failed {
 		s.failed[name]++
 	}
-	// A vendor's "not found" is an answer: what's there is known, it isn't.
-	// It still counts toward the tool's two failures. planque words every
-	// vendor error as "… refused it (it answered NNN)".
-	notFound := failed && r.State != tool.StateRefused && strings.Contains(r.Text, "(it answered 404)")
 	if !acts(t, input) {
 		switch {
-		case failed && !notFound:
+		case failed:
 			s.refused[name] = true
 		case r.State != tool.StateHeld && r.State != tool.StateAwaiting && r.State != tool.StateWaiting:
 			delete(s.refused, name)
