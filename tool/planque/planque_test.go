@@ -578,6 +578,16 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	if text, isErr := call(t, planque.New(srv2.URL, "tnt_1", "k_setup", nil), `{"action":"status","grant":"grt_2"}`); isErr || !strings.Contains(text, `"on_demand":true`) || !strings.Contains(text, `"custody":"provider"`) || strings.Contains(text, `"digest"`) {
 		t.Fatalf("an on-demand grant: %s", text)
 	}
+	// A key grant whose tools wait for the key says so, so Coach drafts the
+	// Card before the key and the key sheet signs both.
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"grant":{"id":"grt_3","status":"pending","tools":["list_invoices_k3f9"],"declared":true,"request":{}},"needs_key":true}`))
+	}))
+	t.Cleanup(srv3.Close)
+	if text, isErr := call(t, planque.New(srv3.URL, "tnt_1", "k_setup", nil), `{"action":"request","entry":"qonto-key@2","name":"overdue","taf_name":"Overdue"}`); isErr || !strings.Contains(text, `"declared":true`) || !strings.Contains(text, `"list_invoices_k3f9"`) {
+		t.Fatalf("a declared key grant: %s", text)
+	}
 	if spec := tl.Spec(); !strings.Contains(spec.Description, "search {q} finds tools across every app") || !strings.Contains(spec.Description, "events {entry} lists an app's events") || !strings.Contains(spec.Description, "on_demand: true") || !strings.Contains(spec.Description, "request {entry}") || !strings.Contains(string(spec.InputSchema), `"search","events"`) {
 		t.Fatalf("the description doesn't say how to search: %s", spec.Description)
 	}

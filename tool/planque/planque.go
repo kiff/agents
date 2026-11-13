@@ -573,6 +573,10 @@ type grantView struct {
 	// default. Custody says who holds the sign-in: provider or planque.
 	OnDemand bool   `json:"on_demand,omitempty"`
 	Custody  string `json:"custody,omitempty"`
+	// Declared: a key grant's tools are in KIFF while it waits for its key,
+	// usable only once the key is in. Coach drafts the Card over them then,
+	// so the key sheet signs the key and the Card together.
+	Declared bool `json:"declared,omitempty"`
 }
 
 // AgentTools is, for each of agent's connected grants, the KIFF name of each
