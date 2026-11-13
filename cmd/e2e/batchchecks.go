@@ -216,9 +216,13 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]boo
 	}
 
 	// One approval for a key and its Card: a key grant planque declared at
-	// once has its Card drafted before the key, so its first approval
-	// carries the draft and one fingerprint signs both. A key grant that
-	// wasn't declared takes the key first, as documented: nothing to grade.
+	// once has its Card drafted before the key, so an approval carries the
+	// draft and one fingerprint signs both. With two key apps and one Card,
+	// one app's key comes alone and the other's carries the Card: two
+	// approvals, one per app. What fails is a Card asked for apart from the
+	// keys (a key approved, then its Card), or no key approval carrying it.
+	// A key grant that wasn't declared takes the key first, as documented:
+	// nothing to grade.
 	declared := map[string]bool{}
 	for _, a := range asks {
 		if a.Declared && a.Grant != "" {
@@ -226,16 +230,25 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]boo
 		}
 	}
 	first := map[string]approvalSeen{}
-	var keys []string
-	connectedByKey := false
+	var keys, apart []string
+	connectedByKey, withCard := false, false
 	for _, ap := range approvals {
 		if !ap.Key {
 			continue
 		}
 		connectedByKey = true
-		if _, seen := first[ap.Grant]; !seen && declared[ap.Grant] {
+		if !declared[ap.Grant] {
+			continue
+		}
+		f, seen := first[ap.Grant]
+		switch {
+		case !seen:
 			first[ap.Grant] = ap
 			keys = append(keys, ap.Grant)
+			withCard = withCard || ap.Draft != ""
+		case ap.Draft != "" && f.Draft == "":
+			// The key approved first, its Card in an approval of its own.
+			apart = append(apart, ap.Grant)
 		}
 	}
 	switch {
@@ -250,9 +263,12 @@ func gradeBatch(asks []connectAsk, approvals []approvalSeen, ours map[string]boo
 				alone = append(alone, g)
 			}
 		}
-		if len(alone) > 0 {
+		switch {
+		case len(apart) > 0:
+			gate("one approval for the key and the Card", eval.Grade{Why: "the key was asked for before its Card: " + strings.Join(apart, ", ")})
+		case !withCard:
 			gate("one approval for the key and the Card", eval.Grade{Why: "the key was asked for before its Card: " + strings.Join(alone, ", ")})
-		} else {
+		default:
 			gate("one approval for the key and the Card", eval.Grade{Pass: true})
 		}
 	}
