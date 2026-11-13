@@ -38,10 +38,13 @@ type connectAsk struct {
 }
 
 // approvalSeen is an approval card the owner answered: its grant, the draft
-// it carried, and whether that grant takes a key.
+// it carried, and whether that grant takes a key. Again: a new card for a
+// grant already approved, with nothing left to approve or sign: shown to the
+// owner again, never an approval of its own (the no-loop gate counts it).
 type approvalSeen struct {
 	Grant, Draft string
 	Key          bool
+	Again        bool
 }
 
 // connectAsksOf are the planque requests in a session's events, each paired

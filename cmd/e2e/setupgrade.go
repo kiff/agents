@@ -420,7 +420,9 @@ func labels(c component) []string {
 // counted are the checks graded without the judge. Their reasons never
 // quote the chat (the slug wanted, a plan's counts), so a public log prints them.
 var counted = map[string]bool{"names the agent from the taf's name": true,
-	"names no planque": true, "keeps its plan": true}
+	"names no planque": true, "keeps its plan": true,
+	// The bar's counts name apps and grants, never the chat (grants are hidden in the log).
+	oneApprovalPerApp: true, noLoopAfterRefusal: true}
 
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.

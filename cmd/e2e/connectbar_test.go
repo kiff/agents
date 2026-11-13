@@ -150,6 +150,16 @@ func TestTheConnectBar(t *testing.T) {
 		t.Errorf("an approval shown again: %+v", r)
 	}
 
+	// A new card for a grant already approved, with nothing left to approve:
+	// not a second approval, but shown again, so a loop.
+	shownAgain := byName(gradeConnectBar(barRun{asks: []connectAsk{sheets}, approvals: []approvalSeen{{Grant: "grt_s"}, {Grant: "grt_s", Again: true}}, statements: clean}))
+	if !shownAgain[oneApprovalPerApp].Pass {
+		t.Errorf("a card shown again isn't an approval: %+v", shownAgain[oneApprovalPerApp])
+	}
+	if r := shownAgain[noLoopAfterRefusal]; r.Pass || !strings.Contains(r.Why, "grt_s shown again once it was approved") {
+		t.Errorf("a card shown again once approved: %+v", r)
+	}
+
 	// Nothing connected: the counts are skipped, the words still checked.
 	none := byName(gradeConnectBar(barRun{statements: clean}))
 	if !none[oneApprovalPerApp].Skipped || !none[noLoopAfterRefusal].Skipped || !none[noRawErrorShown].Pass {

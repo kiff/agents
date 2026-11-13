@@ -110,7 +110,7 @@ func gradeConnectBar(r barRun) []eval.CheckResult {
 		per := map[string]*count{}
 		var order []string
 		for _, ap := range approvals {
-			if ap.Grant == "" {
+			if ap.Grant == "" || ap.Again {
 				continue
 			}
 			app := appOfGrant[ap.Grant]
@@ -184,6 +184,10 @@ func gradeConnectBar(r barRun) []eval.CheckResult {
 	approved := map[string]int{}
 	for _, ap := range approvals {
 		if ap.Grant == "" {
+			continue
+		}
+		if ap.Again {
+			loops = append(loops, fmt.Sprintf("approval for %s shown again once it was approved", ap.Grant))
 			continue
 		}
 		k := ap.Grant
