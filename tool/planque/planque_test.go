@@ -28,6 +28,10 @@ var seenMu sync.Mutex
 func fake(t *testing.T, enrolled bool) (*httptest.Server, *[]string) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		seenMu.Lock()
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization")+" "+string(body))
@@ -156,6 +160,10 @@ func TestRefusalsAreReadable(t *testing.T) {
 func TestConnectFirstThenCatalogThenTools(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+string(body))
 		w.Header().Set("Content-Type", "application/json")
@@ -211,6 +219,10 @@ func TestALargeCatalogIsBounded(t *testing.T) {
 		tools = append(tools, `{"name":"tool_`+strconv.Itoa(i)+`","description":"`+long+`","input_schema":`+schema+`}`)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.vendor.test","tools":[` + strings.Join(tools, ",") + `]}`))
 	}))
 	t.Cleanup(srv.Close)
@@ -263,6 +275,10 @@ func TestEveryToolKeepsItsName(t *testing.T) {
 		tools = append(tools, `{"name":"vendor_tool_number_`+strconv.Itoa(i)+`","description":"`+desc+`","input_schema":{"type":"object"}}`)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.vendor.test","tools":[` + strings.Join(tools, ",") + `]}`))
 	}))
 	t.Cleanup(srv.Close)
@@ -341,6 +357,10 @@ func (g *gateway) Call(_ context.Context, name string, input json.RawMessage) (t
 func TestReadGoesThroughKIFF(t *testing.T) {
 	var planqueCalls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		planqueCalls++
 		http.Error(w, "gone", http.StatusGone)
 	}))
@@ -372,6 +392,10 @@ func TestReadGoesThroughKIFF(t *testing.T) {
 func TestDescribeReadsAKeyVendorsOperations(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+string(b))
 		w.Header().Set("Content-Type", "application/json")
@@ -456,6 +480,10 @@ func TestStateSaysWhereEachShownGrantStands(t *testing.T) {
 func TestGrantsListsATafsConnections(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		seen = append(seen, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"grants":[{"id":"grt_1","vendor":"Stripe","server":"https://mcp.stripe.com","status":"connected","tools":[{"name":"create_refund_gtqe","tool":"create_refund"}]}]}`))
@@ -492,6 +520,10 @@ func TestGrantsListsATafsConnections(t *testing.T) {
 func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		seen = append(seen, r.Method+" "+r.URL.RequestURI()+" "+r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -578,6 +610,10 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	}
 	// A reviewed entry may answer the grant flat: read as well.
 	flat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"id":"grt_8","status":"pending","text":"Connect Desk for Invoices…","request":{}}`))
@@ -592,6 +628,10 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	}
 	// A grant set up on demand says so to the model, with who holds the sign-in.
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"id":"grt_2","status":"pending","text":"Connect AgentMail for Invoices…","on_demand":true,"custody":"provider","digest":"x","request":{}}`))
 	}))
@@ -602,6 +642,10 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	// A key grant whose tools wait for the key says so, so Coach drafts the
 	// Card before the key and the key sheet signs both.
 	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"grant":{"id":"grt_3","status":"pending","tools":["list_invoices_k3f9"],"declared":true,"request":{}},"needs_key":true}`))
 	}))
@@ -619,6 +663,10 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 // full, and no match says so without claiming the tool is absent.
 func TestCatalogSearchesByWords(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("cursor") == "" {
 			w.Write([]byte(`{"grant":"grt_1","server":"https://mcp.notion.example","account":"acc_1","tools":[` +
@@ -690,6 +738,10 @@ func TestADotSegmentIsNeverSent(t *testing.T) {
 func TestToolsCarryAManagedAppsProfile(t *testing.T) {
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, r.Method+" "+r.URL.Path+" "+string(b))
 		w.Header().Set("Content-Type", "application/json")
@@ -739,6 +791,10 @@ func TestTheDescriptionSaysEachConnectionsKind(t *testing.T) {
 func TestStateReadsTheGrantsAtOnce(t *testing.T) {
 	const delay = 150 * time.Millisecond
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		time.Sleep(delay)
 		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		w.Write([]byte(`{"id":"` + id + `","status":"connected"}`))
@@ -772,6 +828,10 @@ func TestStateReadsTheGrantsAtOnce(t *testing.T) {
 func TestARequestNamesTheTaf(t *testing.T) {
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		var b map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&b)
 		bodies = append(bodies, b)
@@ -818,6 +878,10 @@ func TestARequestNamesTheTaf(t *testing.T) {
 func TestARequestReusesASignIn(t *testing.T) {
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		var b map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&b)
 		bodies = append(bodies, map[string]any{"path": r.URL.Path, "body": b})
@@ -859,6 +923,10 @@ func TestAgentToolsAreTheConnectedGrantsToolsButSetupsReads(t *testing.T) {
 	 {"id":"g2","status":"approval_pending","tools":[{"name":"list_disputes","tool":"list_disputes","setup_reads":false}]}]}`
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		path = r.URL.Path
 		w.Write([]byte(listing))
 	}))
@@ -884,6 +952,10 @@ func TestAgentToolsAreTheConnectedGrantsToolsButSetupsReads(t *testing.T) {
 func TestAToolWithoutATitleIsRefusedAndNothingIsSent(t *testing.T) {
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/guide") { // an app's guide, looked up by the tool: not what these tests count
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"id":"grt_1","status":"pending","text":"Connect…","request":{}}`))

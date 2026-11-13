@@ -35,7 +35,7 @@ func TestSetupReadsWithTheSignInAndAWithdrawal(t *testing.T) {
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
 
 	text, isErr := call(t, tl, `{"action":"request","entry":"stripe@1","agent":"refunds-a1","setup_reads":["stripe_api_details","list_accounts"]}`)
-	if isErr || seen[len(seen)-1] != `POST /v1/accounts/tnt_1/catalog/stripe@1/grants {"agent":"refunds-a1","setup_reads":["stripe_api_details","list_accounts"]}` {
+	if isErr || seen[0] != `POST /v1/accounts/tnt_1/catalog/stripe@1/grants {"agent":"refunds-a1","setup_reads":["stripe_api_details","list_accounts"]}` {
 		t.Fatalf("request with setup reads: %s %v", text, seen)
 	}
 	for _, bad := range []string{
@@ -48,7 +48,8 @@ func TestSetupReadsWithTheSignInAndAWithdrawal(t *testing.T) {
 			t.Errorf("not refused: %s → %s", bad, text)
 		}
 	}
-	if len(seen) != 1 {
+	// The request, then its app's guide looked up: nothing refused reached planque.
+	if len(seen) != 2 || !strings.HasSuffix(seen[1], "/catalog/stripe@1/guide ") {
 		t.Fatalf("a refused ask reached planque: %v", seen)
 	}
 	if text, _ := call(t, tl, `{"action":"request","server":"https://mcp.example","agent":"refunds-a1","setup_reads":["x"]}`); !strings.Contains(text, "setup_reads goes with request {entry}") {
