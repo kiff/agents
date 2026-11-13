@@ -138,9 +138,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"A grant with on_demand: true is an app whose sign-in was set up on the owner's pick, not reviewed by an operator: draft every tool of it that changes data or moves money to ask the owner each time (0 a day, held), reads open, and say so in the rules. " +
 			"custody says who holds the sign-in (provider, or planque): say it in the owner's words, never the service's name.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants","search","events"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools","read","grants","search","events","describe"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
-			`"api":{"type":"object","description":"a REST vendor reached by its key, instead of server (request)","properties":{` +
+			`"api":{"type":"object","description":"a REST vendor reached by its key: describe it first (describe), then request it, instead of server, with the job's operations as tools","properties":{` +
 			`"url":{"type":"string","description":"the vendor's OpenAPI description, JSON or YAML"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
 			`"auth":{"type":"object","properties":{"in":{"type":"string","enum":["header","query"]},"name":{"type":"string"},` +
 			`"prefix":{"type":"string","description":"what goes before the key in the header, with its space, as the vendor's description names it (\"Bearer \", \"ShippoToken \"); none when the key goes alone"}},"required":["in","name"]}},"required":["url","base","auth"]},` +
@@ -148,7 +148,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"agent":{"type":"string","description":"the taf's KIFF agent id, already made (request; grants, where none lists every connection you asked for); not with name"},` +
 			`"taf_name":{"type":"string","description":"the taf's name as the owner will read it, on one line (request): the approval names the taf by it"},` +
 			`"reuse":{"type":"string","description":"a connected grant's id, from grants: a new taf's grant uses its sign-in or key, so the owner approves the tools alone (request, instead of server, api or entry)"},` +
-			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools); none to connect first","items":{"type":"object","properties":{"tool":{"type":"string"},"title":{"type":"string","minLength":1}},"required":["tool","title"]}},` +
+			`"tools":{"type":"array","description":"the vendor tools to grant (request, tools). For a key request (api), the job's operations by the names describe gives, never none, so the key and the Card are one approval; none only to connect a sign-in first","items":{"type":"object","properties":{"tool":{"type":"string"},"title":{"type":"string","minLength":1}},"required":["tool","title"]}},` +
 			`"grant":{"type":"string","description":"the grant's id (status, catalog, tools)"},` +
 			`"tool":{"type":"string","description":"one tool of the catalog, to read it in full (catalog); a setup_reads tool, by the name the grant lists (read)"},` +
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
@@ -293,7 +293,11 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			return tool.Result{Text: "uses goes with request {entry}: the app's tools the taf will use, as search named them", IsError: true}, nil
 		}
 		tools := in.Tools
-		if len(tools) == 0 || string(tools) == "null" {
+		if len(tools) == 0 || string(tools) == "null" || string(tools) == "[]" {
+			if byKey {
+				// A key request with no tools is never declared, so the owner would approve the key, then the Card.
+				return tool.Result{Text: NoKeyTools, IsError: true}, nil
+			}
 			tools = json.RawMessage("[]") // connect first
 		}
 		if msg := untitled(tools); msg != "" {
@@ -332,6 +336,18 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		g.Agent = agent
 		b, _ := json.Marshal(g)
 		return tool.Result{Text: string(b)}, nil
+	case "describe":
+		// A key vendor's operations, as planque names them, before any grant: the request then names the job's
+		// operations by them, so it's declared and the key and the Card are one approval. Nothing is kept.
+		if len(in.API) == 0 || string(in.API) == "null" {
+			return tool.Result{Text: "describe needs api {url, auth}: the vendor's published OpenAPI description and where the key goes", IsError: true}, nil
+		}
+		body, _ := json.Marshal(map[string]json.RawMessage{"api": in.API})
+		raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/api/operations", body)
+		if err != nil || refused != nil {
+			return deref(refused), err
+		}
+		return tool.Result{Text: string(raw)}, nil
 	case "search":
 		// Tools across apps by words, each with its app as it stands, before
 		// any connection (kiff/planque#87): planque's own search, as the agent.
@@ -433,8 +449,12 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
-	return tool.Result{Text: "action is request, status, catalog, tools, read, grants, search or events", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog, tools, read, grants, search, events or describe", IsError: true}, nil
 }
+
+// NoKeyTools refuses a key request with no tools: it would never be
+// declared, and the owner would approve the key, then the Card.
+const NoKeyTools = "a key request (api) names the job's operations as tools, by the names describe {api} gives, never none: only then is it declared, and the owner approves the key and the Card in one approval. Call describe with the same api first"
 
 // NoTafName is the refusal of a new taf's request without taf_name.
 const NoTafName = "request with name (a new taf) also needs taf_name, the taf's name as the owner will read it (e.g. Refunds): the approval names the taf by it, never by its agent id. Nothing was sent: add it and ask again."

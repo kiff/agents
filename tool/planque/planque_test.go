@@ -99,11 +99,18 @@ func TestARESTVendorIsAskedForByKey(t *testing.T) {
 	srv, seen := fake(t, true)
 	tl := planque.New(srv.URL+"/", "tnt_1", "k_setup", nil)
 	api := `{"url":"https://desk.example/openapi.json","base":"https://desk.example/v1","auth":{"in":"header","name":"X-Desk-Key"}}`
-	text, isErr := call(t, tl, `{"action":"request","api":`+api+`,"agent":"support-k7q3x9xz","tools":[]}`)
+	// With no tools it would never be declared: refused, and nothing is sent.
+	for _, tools := range []string{`,"tools":[]`, ``} {
+		if text, isErr := call(t, tl, `{"action":"request","api":`+api+`,"agent":"support-k7q3x9xz"`+tools+`}`); !isErr || text != planque.NoKeyTools || len(*seen) != 0 {
+			t.Fatalf("a key request with no tools: %s %v, sent %v", text, isErr, *seen)
+		}
+	}
+	tools := `[{"tool":"searchTickets","title":"Search tickets"}]`
+	text, isErr := call(t, tl, `{"action":"request","api":`+api+`,"agent":"support-k7q3x9xz","tools":`+tools+`}`)
 	if isErr || !strings.Contains(text, `"id":"grt_1"`) {
 		t.Fatalf("request: %s %v", text, isErr)
 	}
-	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"support-k7q3x9xz","api":` + api + `,"kind":"api_key","tools":[]}`
+	want := `POST /v1/accounts/tnt_1/grants Bearer k_setup {"agent":"support-k7q3x9xz","api":` + api + `,"kind":"api_key","tools":` + tools + `}`
 	if (*seen)[0] != want {
 		t.Fatalf("sent %s\nwant %s", (*seen)[0], want)
 	}
@@ -359,16 +366,26 @@ func TestReadGoesThroughKIFF(t *testing.T) {
 }
 
 // describe is gone (kiff/planque#23): the action is refused before planque.
-func TestThereIsNoDescribe(t *testing.T) {
+// describe reads a key vendor's public description before any grant, as
+// planque names its operations; the old describe of a grant, which read the
+// vendor through its tools before the owner approved them, stays gone.
+func TestDescribeReadsAKeyVendorsOperations(t *testing.T) {
 	var seen []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = append(seen, r.URL.Path) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen = append(seen, r.Method+" "+r.URL.Path+" "+string(b))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"title":"Desk","operations":[{"name":"searchTickets","title":"Search tickets","read_only":true}],"skipped":[]}`))
+	}))
 	t.Cleanup(srv.Close)
 	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
-	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "action is request, status, catalog, tools, read, grants, search or events") {
-		t.Fatalf("describe: %s", text)
+	if text, isErr := call(t, tl, `{"action":"describe","grant":"grt_1","tool":"list_accounts"}`); !isErr || !strings.Contains(text, "describe needs api") || len(seen) != 0 {
+		t.Fatalf("describe of a grant: %s, sent %v", text, seen)
 	}
-	if len(seen) != 0 {
-		t.Fatalf("sent to planque: %v", seen)
+	api := `{"url":"https://desk.example/openapi.yaml","auth":{"in":"header","name":"Authorization","prefix":"ShippoToken "}}`
+	text, isErr := call(t, tl, `{"action":"describe","api":`+api+`}`)
+	if isErr || !strings.Contains(text, `"name":"searchTickets"`) || len(seen) != 1 || seen[0] != `POST /v1/accounts/tnt_1/api/operations {"api":`+api+`}` {
+		t.Fatalf("describe: %s %v, sent %v", text, isErr, seen)
 	}
 }
 
@@ -762,7 +779,7 @@ func TestARequestNamesTheTaf(t *testing.T) {
 	for _, in := range []string{
 		`{"action":"request","server":"https://mcp.stripe.com","name":"reminders","taf_name":" Overdue invoice\nreminders "}`,
 		`{"action":"request","entry":"connector:composio:agentmail","agent":"reminders-5mgnsmce","taf_name":"Overdue invoice reminders"}`,
-		`{"action":"request","api":{"url":"https://x.example/openapi.json","base":"https://x.example","auth":{"in":"header","name":"X-Key"}},"name":"reminders","taf_name":"Overdue invoice reminders"}`,
+		`{"action":"request","api":{"url":"https://x.example/openapi.json","base":"https://x.example","auth":{"in":"header","name":"X-Key"}},"name":"reminders","taf_name":"Overdue invoice reminders","tools":[{"tool":"listInvoices","title":"List invoices"}]}`,
 	} {
 		if text, isErr := call(t, tl, in); isErr {
 			t.Fatalf("%s: %s", in, text)
