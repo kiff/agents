@@ -14,6 +14,27 @@ type Drafts interface {
 	Claim(ctx context.Context, tenant, draft, keyRef string) (agentID string, err error)
 }
 
+// DraftReader answers a submitted draft's agent without claiming it. A
+// Drafts that is one serves GET /drafts/{draft_id}.
+type DraftReader interface {
+	Agent(ctx context.Context, tenant, draft string) (agentID string, claimed bool, err error)
+}
+
+// getDraft is tafs cloud asking which agent a draft submitted on the caller's
+// tenant names, and whether its key is claimed: a setup's result names a
+// draft and an agent, and only this record says they belong together.
+func (s *Server) getDraft(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	read, ok := s.Drafts.(DraftReader)
+	if !ok {
+		return 0, nil, drafts.ErrNotFound
+	}
+	agent, claimed, err := read.Agent(ctx, c.Tenant, r.PathValue("draft_id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, map[string]any{"agent_id": agent, "claimed": claimed}, nil
+}
+
 // claimDraft is tafs cloud asking for a confirmed draft's key to be claimed
 // into keyRef: the key goes from KIFF to the agents' secrets, never through
 // the caller. It answers the draft's agent, the same on a retry.

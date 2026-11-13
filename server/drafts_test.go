@@ -34,6 +34,61 @@ func (c *claims) Claim(_ context.Context, tenant, draft, ref string) (string, er
 	return "", drafts.ErrNotFound
 }
 
+// Agent answers a draft's agent by id, on t1 only, as the drafts Store keeps each tenant's own.
+func (c *claims) Agent(_ context.Context, tenant, draft string) (string, bool, error) {
+	if tenant == "t1" && draft == "drf_ok" {
+		return "agt_refunds", false, nil
+	}
+	if tenant == "t1" && draft == "drf_done" {
+		return "agt_refunds", true, nil
+	}
+	return "", false, drafts.ErrNotFound
+}
+
+// The read route answers a draft's agent on the caller's tenant only, and claims nothing.
+func TestDraftReadRoute(t *testing.T) {
+	c := &claims{}
+	s := &server.Server{Drafts: c, Auth: func(r *http.Request) (server.Caller, error) {
+		if t := r.Header.Get("X-Test-Tenant"); t != "" {
+			return server.Caller{Tenant: t}, nil
+		}
+		return server.Caller{}, errors.New("unverified")
+	}}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	get := func(tenant, draft string) (int, string) {
+		req, _ := http.NewRequest("GET", srv.URL+"/drafts/"+draft, nil)
+		if tenant != "" {
+			req.Header.Set("X-Test-Tenant", tenant)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if st, body := get("t1", "drf_ok"); st != 200 || body != `{"agent_id":"agt_refunds","claimed":false}`+"\n" && body != `{"agent_id":"agt_refunds","claimed":false}` {
+		t.Fatalf("ok: %d %q", st, body)
+	}
+	if st, body := get("t1", "drf_done"); st != 200 || !strings.Contains(body, `"claimed":true`) {
+		t.Fatalf("claimed: %d %s", st, body)
+	}
+	// Another tenant's draft, or none: not found, never another's agent.
+	for _, tc := range [][2]string{{"t2", "drf_ok"}, {"t1", "drf_none"}} {
+		if st, _ := get(tc[0], tc[1]); st != 404 {
+			t.Errorf("%v: %d, want 404", tc, st)
+		}
+	}
+	if st, _ := get("", "drf_ok"); st != 401 {
+		t.Errorf("unverified: %d, want 401", st)
+	}
+	if len(c.asked) != 0 {
+		t.Errorf("a read claimed: %v", c.asked)
+	}
+}
+
 // The claim route takes the tenant from the verified caller, never the
 // body, and answers each state with what to do.
 func TestClaimRoute(t *testing.T) {
