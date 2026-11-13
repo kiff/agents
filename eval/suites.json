@@ -1,0 +1,50 @@
+{
+  "suites": {
+    "connect": {
+      "about": "Coach connects an app by its key, with its tools and Card in one approval: the desk and billing setup chats.",
+      "steps": ["Setup on the second vendor, a desk by its key", "Setup on billing, invoices that stay drafts"]
+    },
+    "setup": {
+      "about": "Coach sets up a taf from the owner's words, graded: the refunds setup chat.",
+      "steps": ["Setup with the taf, in English, graded"]
+    },
+    "cards": {
+      "about": "A taf works within its Cards: chargebacks on a seeded Stripe test account.",
+      "steps": ["Chargebacks, two seeded runs"]
+    },
+    "handoffs": {
+      "about": "One taf hands work to another: the sender and the receiver.",
+      "steps": ["Hand-offs between tafs, a sender and a receiver"]
+    },
+    "recipe-tickets": {
+      "about": "The tickets recipe's taf on the fake desk.",
+      "steps": ["Tickets, a recipe's taf on the fake desk"]
+    }
+  },
+  "paths": {
+    "kiff/tafs": [
+      {"prefix": "runtime/skills/coach/connect-an-app/", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/name-the-tools/", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/draft-the-card/", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/set-up-a-taf/", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/", "suites": ["setup"]},
+      {"prefix": "runtime/skills/kiff/", "suites": ["cards", "handoffs", "recipe-tickets"]},
+      {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/src/recipes.ts", "suites": ["recipe-tickets"]},
+      {"prefix": "android/", "suites": []},
+      {"prefix": "ios/", "suites": []},
+      {"prefix": "docs/", "suites": []},
+      {"prefix": "changes/", "suites": []}
+    ],
+    "kiff/agents": [
+      {"prefix": "tool/planque/", "suites": ["connect", "setup"]},
+      {"prefix": "eval/cases/handoff", "suites": ["handoffs"]},
+      {"prefix": "eval/cases/tickets", "suites": ["recipe-tickets"]},
+      {"prefix": "cmd/e2e/", "suites": ["connect", "setup"]},
+      {"prefix": "docs/", "suites": []}
+    ],
+    "kiff/planque": [
+      {"prefix": "", "suites": ["connect", "setup"]}
+    ]
+  }
+}
