@@ -806,6 +806,9 @@ const agreedRule = "The rules below are what the owner agreed in the chat, in th
 	"a limit covers differ, or if the Cards allow something the rules hold or refuse; name the rule it breaks. A read the rules call generous " +
 	"with no number passes with any daily count. How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
 	"an aggregate's limit over its window bounds the calls together; on_exceed \"owner\" (or none) holds past a limit, \"refuse\" refuses. " +
+	"Past a per_action_max, a call held for the owner can be approved once. Past an aggregate's limit, a call held for the owner can't be " +
+	"approved once: the owner raises the limit or turns it down. So rules saying a call past a total \"waits but can't be approved\" or " +
+	"\"waits until you raise the limit\" match on_exceed \"owner\" on that aggregate; only rules saying it is refused need \"refuse\". " +
 	"A max or limit on a sum of an amount is in the amount's units as the call sends it, often its smallest unit: a max of 15000 can be " +
 	"150.00 EUR at two decimals. A number that differs from the rules only by that scale (a factor of 100) is the same limit."
 

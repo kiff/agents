@@ -918,3 +918,32 @@ func TestTheSchemaRequiresEachToolsTitle(t *testing.T) {
 		t.Fatalf("items.required = %v", got)
 	}
 }
+
+// A key that goes after a word ("ShippoToken <key>", "Bearer <key>") can be
+// asked for: the request's auth takes the prefix planque puts before it.
+func TestARequestByKeyCanNameTheKeysPrefix(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			API struct {
+				Properties struct {
+					URL struct {
+						Description string `json:"description"`
+					} `json:"url"`
+					Auth struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					} `json:"auth"`
+				} `json:"properties"`
+			} `json:"api"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(planque.New("https://x", "t", "k", nil).Spec().InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	api := schema.Properties.API.Properties
+	if api.Auth.Properties["prefix"] == nil || !strings.Contains(string(api.Auth.Properties["prefix"]), "ShippoToken") {
+		t.Fatalf("auth.prefix: %v", api.Auth.Properties)
+	}
+	if !strings.Contains(api.URL.Description, "YAML") {
+		t.Fatalf("url: %q", api.URL.Description)
+	}
+}
