@@ -1324,6 +1324,9 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		switch {
 		case runErr != nil:
 			n.Status, n.Stop, n.Error = run.Error, "", failed(runErr, out.Turns)
+			if errors.Is(runErr, model.ErrContextOverflow) {
+				n.Stop = run.StopContextOverflow // its words stay FailedRun's, as tafs cloud reads them
+			}
 			// Taken, but no turn read them: given back, for the caller to send on.
 			for _, i := range x.unread {
 				if i < len(n.Steering) {

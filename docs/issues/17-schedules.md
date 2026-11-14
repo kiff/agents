@@ -120,6 +120,7 @@ or didn't arrive.
 | A firing reads back exactly | `TestParseEvent` |
 | A firing starts one run of the schedule through `cmd/lambda`, named by its key, and runs it once however often it's delivered | `TestFiringsReachTheSchedule`, `TestARepeatedFiringRunsWhatTheFirstLeftPending` |
 | A schedule fired by hand is a background run tagged with it | `TestTriggerASchedule` |
+| A run that worked and then outgrew the model's context window ends with `stop: context_overflow`, and its firing (`failed_context_overflow`) counts toward `failing`, a plain schedule's too; a check's cursor follows the sent/unsent rule; any other failure is unchanged | `TestARunWhoseContextOverflowsSaysSo`, `TestARequestLongerThanTheContextWindowSaysSo`, `TestAFiringsRunThatOutgrewItsContextFails`, `TestAPlainSchedulesRunThatOutgrewItsContextCountsAsFailing`, `TestACheckRunThatOutgrewItsContextCountsAsFailing` |
 | An event starts one background `event` run per key, tagged with its source; a redelivery starts nothing, and re-hands a PENDING run | `server` `TestAnEventStartsOneRun` |
 | A bad key, source, input or field is 400 and starts nothing; a failed hand-off is 500 with the run left PENDING; no dispatcher is 503 | `TestEventsThatDontStart` |
 

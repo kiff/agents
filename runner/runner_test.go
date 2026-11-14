@@ -1157,6 +1157,35 @@ func TestARunWhoseToolsAreRefusedSaysSo(t *testing.T) {
 	}
 }
 
+// A run whose context grew past the model's window ends ERROR with
+// FailedRun's words, as tafs cloud reads them, and stop context_overflow, so a
+// schedule can count it as failing though it had turns. Any other failure
+// after a turn keeps no stop (the negative half).
+func TestARunWhoseContextOverflowsSaysSo(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail error
+		stop string
+	}{
+		{"overflow", fmt.Errorf("%w: 400 invalid_request_error: prompt is too long", model.ErrContextOverflow), run.StopContextOverflow},
+		{"another failure", errors.New("500 api_error"), ""},
+	} {
+		f := newFixture(t, use("c1", "stripe_refund", `{"charge":"ch_1"}`)) // then the next turn fails
+		f.model.fail = c.fail
+		r := f.start(server.Start{Input: "refund ch_1"})
+		got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+		if err == nil {
+			t.Fatalf("%s: want the model's failure", c.name)
+		}
+		if got.Status != run.Error || got.Error != runner.FailedRun || got.Stop != c.stop || got.Turns == 0 {
+			t.Fatalf("%s: failed to %+v, want stop %q after a turn", c.name, got, c.stop)
+		}
+		if stored := f.get(r.ID); stored.Stop != c.stop {
+			t.Fatalf("%s: stored stop %q", c.name, stored.Stop)
+		}
+	}
+}
+
 // A run that fails after a call went through keeps it on the run (#249), so
 // whoever shows the failure can say what was done.
 func TestAFailedRunKeepsWhatItDid(t *testing.T) {

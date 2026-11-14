@@ -1984,3 +1984,79 @@ func TestACheckThatCouldntBeUsedLogsItsReason(t *testing.T) {
 		}
 	}
 }
+
+// A plain schedule's run that worked and then outgrew the model's context
+// window counts toward failing (FiredContextOverflow), though it had turns,
+// and a repeated delivery counts it once. Before, it was kept as a run and
+// ended the run of failures: the negative half checks that's gone.
+func TestAPlainSchedulesRunThatOutgrewItsContextCountsAsFailing(t *testing.T) {
+	for _, also := range []error{schedule.ErrUnfinished, schedule.ErrNotAgain} {
+		f := newFixture()
+		s := scheduletest.Schedule("t1", "morning")
+		since := time.Date(2026, 11, 3, 8, 45, 0, 0, time.UTC)
+		s.Failing = &schedule.Failing{Since: since, Firings: 1, Last: since}
+		if err := f.store.Put(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+			f.started = append(f.started, fi)
+			return errors.Join(schedule.ErrContextOverflow, also)
+		}
+		paris, _ := time.LoadLocation("Europe/Paris")
+		due := time.Date(2026, 11, 9, 9, 0, 0, 0, paris)
+		for range 2 { // delivered twice: counted once
+			if err := f.sv.Fire(ctx, "t1", "morning", due); err != nil {
+				t.Fatalf("%v: %v", also, err)
+			}
+		}
+		h, _ := f.history.Firings(ctx, "t1", "morning", 10)
+		if len(h) != 1 || h[0].Outcome != schedule.FiredContextOverflow || h[0].Run != f.started[0].Key() {
+			t.Fatalf("%v: history %+v", also, h)
+		}
+		got, _ := f.store.Get(ctx, "t1", "morning")
+		if fl := got.Failing; fl == nil || fl.Firings != 2 || !fl.Since.Equal(since) || fl.Outcome != schedule.FiredContextOverflow {
+			t.Fatalf("%v: failing %+v, want 2 in a row", also, got.Failing)
+		}
+	}
+}
+
+// A check's run that outgrew its context counts toward failing, and its
+// items follow the rule of any run that didn't finish: one that changed
+// nothing hands them again (the cursor stays, tries counts it), one that may
+// have acted never does (the cursor moves). Neither is kept as
+// failed_retrying with failing untouched.
+func TestACheckRunThatOutgrewItsContextCountsAsFailing(t *testing.T) {
+	f, fire, outcome, at := checked(t)
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return errors.Join(schedule.ErrContextOverflow, schedule.ErrUnfinished)
+	}
+	got := fire(at(0))
+	if o := outcome(at(0)); o.Outcome != schedule.FiredContextOverflow || o.Run != f.started[0].Key() {
+		t.Fatalf("its firing: %+v", o)
+	}
+	if c := got.AppCheck; c.Last != "100" || c.Tries != 1 || !c.Due.Equal(at(0)) {
+		t.Fatalf("the cursor moved past items a run that changed nothing didn't finish: %+v", c)
+	}
+	if fl := got.Failing; fl == nil || fl.Firings != 1 || fl.Outcome != schedule.FiredContextOverflow {
+		t.Fatalf("failing %+v", got.Failing)
+	}
+	got = fire(at(0)) // delivered again: counted once, tries too
+	if got.Failing.Firings != 1 || got.AppCheck.Tries != 1 || outcome(at(0)).Outcome != schedule.FiredContextOverflow {
+		t.Fatalf("a repeat: check %+v, failing %+v", got.AppCheck, got.Failing)
+	}
+	got = fire(at(15)) // handed again, counted again
+	if len(f.started) != 3 || !strings.Contains(f.started[2].Input, `"id":"m1"`) || got.Failing.Firings != 2 || got.AppCheck.Tries != 2 {
+		t.Fatalf("the second: started %d, check %+v, failing %+v", len(f.started), got.AppCheck, got.Failing)
+	}
+
+	f, fire, outcome, at = checked(t)
+	f.sv.Start = func(_ context.Context, fi schedule.Firing) error {
+		f.started = append(f.started, fi)
+		return errors.Join(schedule.ErrContextOverflow, schedule.ErrNotAgain)
+	}
+	got = fire(at(0))
+	if c := got.AppCheck; c.Last != "110" || c.Tries != 0 || outcome(at(0)).Outcome != schedule.FiredContextOverflow || got.Failing == nil || got.Failing.Firings != 1 {
+		t.Fatalf("one that may have acted: check %+v, %s, failing %+v", c, outcome(at(0)).Outcome, got.Failing)
+	}
+}

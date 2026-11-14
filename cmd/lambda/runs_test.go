@@ -500,6 +500,33 @@ func TestWhatAFiringsEndedRunMeans(t *testing.T) {
 	}
 }
 
+// A firing's run that worked and then outgrew the model's context window is
+// ErrContextOverflow, a failure the schedule counts, on top of the usual rule
+// for what it was handed. A run that failed for another reason after working
+// is not (the negative half): it stays as it was, so a plain schedule's run
+// that failed that way still counts as a run that started.
+func TestAFiringsRunThatOutgrewItsContextFails(t *testing.T) {
+	over := run.Run{Status: run.Error, Error: runner.FailedRun, Stop: run.StopContextOverflow, Turns: 7}
+	for _, c := range []struct {
+		name           string
+		r              run.Run
+		overflow, also error
+	}{
+		{"outgrew it after reads only", over, schedule.ErrContextOverflow, schedule.ErrUnfinished},
+		{"outgrew it after a write that may have been sent", func() run.Run { r := over; r.Sent = 1; return r }(), schedule.ErrContextOverflow, schedule.ErrNotAgain},
+		{"outgrew it on its first turn: did nothing", run.Run{Status: run.Error, Error: runner.FailedFirstTurn, Stop: run.StopContextOverflow}, nil, schedule.ErrUnworked},
+		{"failed otherwise after reads only", run.Run{Status: run.Error, Error: runner.FailedRun, Turns: 7}, nil, schedule.ErrUnfinished},
+	} {
+		got := ended(c.r)
+		if errors.Is(got, schedule.ErrContextOverflow) != (c.overflow != nil) || !errors.Is(got, c.also) {
+			t.Errorf("%s: %v, want overflow %v and %v", c.name, got, c.overflow != nil, c.also)
+		}
+	}
+	if h := handOver(over); !strings.Contains(h, "outgrew the model's context") {
+		t.Errorf("the next run isn't told why the last one failed: %s", h)
+	}
+}
+
 // A run is unworked only when the runner itself ended it before any turn and
 // the sweep never carried it on. A run the sweep resumed or ended may have
 // acted with its turns not stored yet (its invocation died before it could
