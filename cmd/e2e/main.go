@@ -1325,8 +1325,13 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 			}
 		}
 	}
-	t.keepAsks(connectAsksOf(ran))
-	t.toolsAsks = keptAsks(t.toolsAsks, toolsAsksOf(ran))
+	// planque requests are read from the whole conversation, not only this
+	// run: a request made in a run the harness didn't start (one Coach ran
+	// after an approval) still made its grant here, and "offers only its own
+	// connections" would read that grant as another test's. Each is kept once
+	// by its call.
+	t.keepAsks(connectAsksOf(events))
+	t.toolsAsks = keptAsks(t.toolsAsks, toolsAsksOf(events))
 	t.dials = keptDials(t.dials, dialsOf(ran))
 	for _, e := range errorsOf(ran) {
 		if !slices.Contains(t.errors, e) {
