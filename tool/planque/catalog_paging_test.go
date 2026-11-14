@@ -88,8 +88,30 @@ func TestCatalogFollowsVendorPages(t *testing.T) {
 		t.Fatalf("detail searched %d pages", len(seen))
 	}
 	res, err := tl.Call(context.Background(), json.RawMessage(`{"action":"catalog","grant":"grant-example","tool":"absent"}`))
-	if err != nil || !res.IsError || !strings.Contains(res.Text, "no tool named absent") {
+	if err != nil || !res.IsError || !strings.Contains(res.Text, "no tool named absent") || !strings.Contains(res.Text, "catalog {grant, q}") {
 		t.Fatalf("absent: %+v %v", res, err)
+	}
+}
+
+// A managed app's tool is found by its provider's slug as by its name: the
+// app's guide and a search name the slug, the catalog another name (14 Nov,
+// Gmail: "the catalog has no tool named GMAIL_FETCH_EMAILS").
+func TestCatalogFindsAManagedToolBySlug(t *testing.T) {
+	tl := catalogFixture(t, func(r *http.Request) (int, string) {
+		return 200, pageJSON([]map[string]any{
+			{"name": "connector_aa11", "slug": "MAIL_LIST_THREADS", "input_schema": map[string]any{"type": "object"}},
+			{"name": "connector_bb22", "slug": "MAIL_FETCH_EMAILS", "description": "Lists messages", "read_only": true, "input_schema": map[string]any{"type": "object"}},
+		}, "")
+	})
+	for _, asked := range []string{"MAIL_FETCH_EMAILS", "mail_fetch_emails", "connector_bb22"} {
+		out, isErr := catalogCall(t, tl, map[string]any{"tool": asked})
+		tools, _ := out["tools"].([]any)
+		if isErr || len(tools) != 1 || tools[0].(map[string]any)["name"] != "connector_bb22" || tools[0].(map[string]any)["slug"] != "MAIL_FETCH_EMAILS" {
+			t.Fatalf("by %q: %v", asked, out)
+		}
+	}
+	if res, err := tl.Call(context.Background(), json.RawMessage(`{"action":"catalog","grant":"grant-example","tool":"MAIL_SEND"}`)); err != nil || !res.IsError {
+		t.Fatalf("an absent slug: %+v %v", res, err)
 	}
 }
 

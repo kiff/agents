@@ -771,7 +771,11 @@ const (
 )
 
 type catalogTool struct {
-	Name        string          `json:"name"`
+	Name string `json:"name"`
+	// Slug is a managed app's tool as its provider names it
+	// (GMAIL_FETCH_EMAILS), as its guide and a search give it: catalog
+	// {grant, tool} finds it by either, and tools takes either.
+	Slug        string          `json:"slug,omitempty"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 	ReadOnly    bool            `json:"read_only,omitempty"`
