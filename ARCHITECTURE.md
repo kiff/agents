@@ -50,7 +50,7 @@ server gets it from the verified caller, and every store call is scoped by it.
 | RUNNING | CANCELLED | Cancelled; it stops at its next checkpoint |
 | RUNNING | PAUSED | KIFF holds at least one of its calls |
 | PAUSED | RUNNING | Every requirement resolved; continue claims it with a new lease, same run ID |
-| PAUSED | CANCELLED | Cancelled; its held calls are withdrawn in KIFF first |
+| PAUSED | CANCELLED | Cancelled; its held calls are withdrawn in KIFF first, and a run paused only on cards has none |
 
 COMPLETED, ERROR and CANCELLED are final.
 
@@ -121,7 +121,9 @@ COMPLETED, ERROR and CANCELLED are final.
   A run asked to stop in a turn where KIFF holds one of its calls pauses as
   usual; once KIFF resolves the hold, it continues, records the outcome and
   stops at its first checkpoint, CANCELLED.
-  Cancelling a paused run first withdraws its held calls in KIFF, so an answer that comes later forwards nothing. A
+  Cancelling a paused run first withdraws its held calls in KIFF, so an answer that comes later forwards nothing. A run
+  paused only on cards (a setup chat waiting on its owner) has nothing to withdraw: the cancel is recorded, no card is
+  answered, each card stops waiting then, and the run, resolved, ends CANCELLED at its first checkpoint. A
   hold-answered alert for a cancelled run is still recorded on it, so a call
   KIFF forwards always has a record here. Removing an agent does the same
   before it deletes anything; tafs also revokes the taf's Cards first, which

@@ -732,6 +732,49 @@ func TestCancelAPausedRunWithdrawsItsHeldCalls(t *testing.T) {
 	f.want(200, code, body, "cancel it again")
 }
 
+// A run paused only on cards (a setup chat waiting on its owner) is
+// cancelled with nothing to ask KIFF: no card is answered, each stops
+// waiting now, and the run, resolved, is handed on to end CANCELLED. With a
+// held call beside the card, KIFF is still asked, as before.
+func TestCancelARunPausedOnCardsEndsIt(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	onCards := func(extra ...run.Requirement) run.Run {
+		r := f.stored(run.Paused)
+		r, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error {
+			n.Requirements = append([]run.Requirement{{CallID: "card-1", Tool: "show", Kind: run.KindCard, Expires: now.Add(run.CardWait)}}, extra...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r := onCards()
+	code, body := f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/cancel", nil)
+	f.want(200, code, body, "cancel a run paused on a card, with no Withdraw")
+	if body["cancel_requested"] != true {
+		t.Fatalf("answered %v", body)
+	}
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	q := got.Requirements[0]
+	if !got.Cancel || !q.Answered.IsZero() || len(q.Result) != 0 || !q.Expires.Equal(now) {
+		t.Fatalf("stored %+v", got)
+	}
+	if !slices.Equal(f.background, []string{"t1/" + r.ID}) {
+		t.Fatalf("handed on %v, want the run once", f.background)
+	}
+
+	// A card and a call KIFF holds with no exception: nothing to withdraw it
+	// by, so it's refused as before, and nothing changes.
+	mixed := onCards(run.Requirement{CallID: "c1", Tool: "stripe_refund", Operation: "op1", Expires: now.Add(time.Hour)})
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+mixed.ID+"/cancel", nil)
+	f.want(409, code, body, "a card beside a held call with no exception")
+	if got, _ := f.runs.Get(ctx, "t1", mixed.ID); got.Cancel || !got.Requirements[0].Expires.Equal(now.Add(run.CardWait)) {
+		t.Fatalf("a refused cancel changed the run: %+v", got)
+	}
+}
+
 // A paused run is not cancelled, and nothing is recorded, when KIFF can't be
 // asked: no Withdraw, or a held call with no exception ID. KIFF failing
 // partway is 500 with the cancel recorded; repeating it withdraws the rest.
