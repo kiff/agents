@@ -779,6 +779,10 @@ type catalogTool struct {
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 	ReadOnly    bool            `json:"read_only,omitempty"`
+	// Returns are the paths of the ids, links and lists its answer gives back
+	// (data.messages, data.spreadsheetId), as planque reads them from the
+	// vendor's description: where a check's items are, and what a taf keeps.
+	Returns []string `json:"returns,omitempty"`
 	// Shortened: the description was cut, or the arguments left out to
 	// keep the catalog bounded; catalog {grant, tool} shows it in full.
 	Shortened bool `json:"shortened,omitempty"`
@@ -817,12 +821,13 @@ func bound(tools []catalogTool, room int) ([]catalogTool, int, int) {
 	if base() > room {
 		shorten(0, 200)
 	}
-	// The last tools lose their description, one at a time, before any loses its name.
+	// The last tools lose their description and returns, one at a
+	// time, before any loses its name (or its slug, which finds it too).
 	used := base()
 	for i := len(tools) - 1; i >= 0 && used > room; i-- {
-		if tools[i].Description != "" {
+		if tools[i].Description != "" || tools[i].Returns != nil {
 			before := size(tools[i])
-			tools[i].Description, tools[i].Shortened = "", true
+			tools[i].Description, tools[i].Returns, tools[i].Shortened = "", nil, true
 			used += size(tools[i]) - before
 		}
 	}
