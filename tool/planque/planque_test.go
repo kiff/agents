@@ -329,6 +329,10 @@ func TestAgentIDIsNewEachTime(t *testing.T) {
 		"agt_refunds":           "agt-refunds-",
 		"  ¡Pagos!  ":           "pagos-",
 		"Facturación Ñandú":     "facturacion-nandu-",
+		"Żółte zgłoszenia":      "zolte-zgloszenia-",
+		"Straße-Rechnungen":     "strasse-rechnungen-",
+		"Cœur Æsir":             "coeur-aesir-",
+		"Łódź ść ę ą ń":         "lodz-sc-e-a-n-",
 		"":                      "taf-",
 		strings.Repeat("a", 60): strings.Repeat("a", 31) + "-",
 	} {
@@ -1074,5 +1078,33 @@ func TestAKeyRequestsToolsCarryTheirFullSpec(t *testing.T) {
 	}
 	if want := `"tools":` + tools + `}`; len(*seen) != 1 || !strings.HasSuffix((*seen)[0], want) {
 		t.Fatalf("sent %v\nwant it to end %s", *seen, want)
+	}
+}
+
+// A new taf's agent is named from its taf_name, never from the name the
+// model gave beside it: "intro-drafts-mail-…" for "Introduction drafts"
+// broke the agent-names-its-taf rule.
+func TestANewTafsAgentIsNamedFromItsTafName(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen = append(seen, string(b))
+		w.Write([]byte(`{"id":"grt_1","status":"pending","server":"https://mcp.vendor.test"}`))
+	}))
+	defer srv.Close()
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", srv.Client())
+	for _, req := range []string{
+		`{"action":"request","server":"https://mcp.vendor.test","name":"intro-drafts-mail","taf_name":"Introduction drafts","tools":[{"tool":"list_charges","title":"List charges"}]}`,
+		`{"action":"request","entry":"connector:composio:gmail","name":"intro-drafts-mail","taf_name":"Introduction drafts"}`,
+	} {
+		seen = nil
+		if _, isErr := call(t, tl, req); isErr || len(seen) == 0 {
+			t.Fatalf("%s: %v", req, seen)
+		}
+		var ask struct{ Agent string }
+		_ = json.Unmarshal([]byte(seen[0]), &ask)
+		if !regexp.MustCompile(`^introduction-drafts-[a-z2-7]{8}$`).MatchString(ask.Agent) {
+			t.Errorf("%s: agent %q", req, ask.Agent)
+		}
 	}
 }
