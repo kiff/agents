@@ -905,3 +905,46 @@ func TestEveryAppTheCardCoversIsApproved(t *testing.T) {
 		t.Fatal("its reason names tools and states only: shown in the public log")
 	}
 }
+
+// "Each read tool" is the taf's tools, never all an app offers (Eval
+// 43648657710: the judge wanted Cards for a sheet's get_sheet, which the taf
+// was never given). The judge is shown the taf's own tools, by their names in
+// KIFF, without Setup's own set-up reads, and told a tool that isn't the taf's
+// needs no Card.
+func TestTheAgreedJudgeIsShownTheTafsOwnTools(t *testing.T) {
+	s := said{cards: map[string]component{
+		"r":   {Type: "notice", Title: "The rules", Text: "Reads your sheet: up to 1,000 reads a day for each read tool."},
+		"ask": {Type: "confirm", Title: "Set up Intros with these rules?"},
+	}, order: []string{"r", "ask"}}
+	s.connected = []grantTool{
+		{Tool: "list_rows", Name: "list_rows_zkg9", ReadOnly: true},
+		{Tool: "list_sheets", SetupReads: true, ReadOnly: true},
+		{Tool: "list_rows", Name: "list_rows_zkg9", ReadOnly: true},
+	}
+	if got := tafTools(s); !slices.Equal(got, []string{"list_rows_zkg9"}) {
+		t.Fatalf("the taf's tools: %q", got)
+	}
+	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "list_rows_zkg9"}}}}
+	v := &verdicts{}
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards); err != nil {
+		t.Fatal(err)
+	}
+	asked := strings.Join(v.asked, "\n")
+	if !strings.Contains(asked, "The taf's tools") || !strings.Contains(asked, "list_rows_zkg9") || strings.Contains(asked, "list_sheets") {
+		t.Fatalf("the judge wasn't shown the taf's own tools alone:\n%s", asked)
+	}
+	for _, want := range []string{"isn't the taf's, needs no Card", "is never a reason to fail", "A tool of the taf's that no Card covers, or covers past the rules, fails"} {
+		if !strings.Contains(agreedRule, want) {
+			t.Fatalf("the rule doesn't say %q", want)
+		}
+	}
+	// With no connection read, nothing is listed: the judge isn't told the taf has no tools.
+	v = &verdicts{}
+	s.connected = nil
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(v.asked, "\n"), "The taf's tools") {
+		t.Fatal("an empty list of the taf's tools was shown")
+	}
+}
