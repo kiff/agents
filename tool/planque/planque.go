@@ -67,14 +67,15 @@ func New(base, tenant, key string, hc *http.Client) *Tool {
 func (t *Tool) Access() tool.Access { return tool.Own }
 func (t *Tool) Gateway() bool       { return false }
 
-// Reads reports whether a call only reads: status, catalog, read and grants
-// ask planque what is there; request and tools ask for something.
+// Reads reports whether a call only reads: status, catalog, read, grants,
+// search, events and guide ask planque what is there; request and tools ask
+// for something.
 func (t *Tool) Reads(input json.RawMessage) bool {
 	var in struct {
 		Action string `json:"action"`
 	}
 	_ = json.Unmarshal(input, &in)
-	return in.Action == "status" || in.Action == "catalog" || in.Action == "read" || in.Action == "grants" || in.Action == "search" || in.Action == "events"
+	return in.Action == "status" || in.Action == "catalog" || in.Action == "read" || in.Action == "grants" || in.Action == "search" || in.Action == "events" || in.Action == "guide"
 }
 
 func (t *Tool) Spec() model.ToolSpec {
@@ -136,12 +137,13 @@ func (t *Tool) Spec() model.ToolSpec {
 			"\"sends\" (a message or email leaves), \"writes\" (it changes a record), \"none_until_approved\" (a draft), \"records_money\" or \"moves_money\" (these also need amount),\"shape\":\"single\"}]}. " +
 			"Say each tool's effect as it is: the owner reads it. A refusal from planque says what the request lacks: fix the request and ask again; " +
 			"never tell the owner their sign-in failed when the connection is listed. " +
+			"search carries the guides of its first three apps; guide {entry} reads one app's guide (an app further down a search, or one the owner named) before you offer it, as data; nothing is connected. " +
 			"events {entry} lists an app's events, what can wake a taf, before connecting (the entry from search); events {grant} once connected. " +
 			"Pick an event as you pick an action, and draft it into the taf's dial; the owner approves its exact filters. " +
 			"A grant with on_demand: true is an app whose sign-in was set up on the owner's pick, not reviewed by an operator: draft every tool of it that changes data or moves money to ask the owner each time (0 a day, held), reads open, and say so in the rules. " +
 			"custody says who holds the sign-in (provider, or planque): say it in the owner's words, never the service's name.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"action":{"type":"string","enum":["request","status","catalog","tools","read","withdraw","grants","search","events","describe"]},` +
+			`"action":{"type":"string","enum":["request","status","catalog","tools","read","withdraw","grants","search","events","guide","describe"]},` +
 			`"server":{"type":"string","description":"the vendor's MCP server URL (request)"},` +
 			`"api":{"type":"object","description":"a REST vendor reached by its key: describe it first (describe), then request it, instead of server, with the job's operations as tools","properties":{` +
 			`"url":{"type":"string","description":"the vendor's OpenAPI description, JSON or YAML"},"base":{"type":"string","description":"the URL its operations' paths start from"},` +
@@ -167,7 +169,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"cursor":{"type":"string","description":"the previous answer's next_cursor, to continue listing or searching (catalog, search, events)"},` +
 			`"q":{"type":"string","description":"a few words to find tools by: across apps before connecting (search), in a connected grant's catalog (catalog), or in a key vendor's API before requesting it (describe): a big API answers its count until you give words from the job"},` +
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
-			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected)"},` +
+			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected), or whose guide to read (guide)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
 			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with request {entry} for an app connected first (Stripe's, Qonto's): your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
@@ -455,6 +457,22 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			return deref(refused), err
 		}
 		return tool.Result{Text: string(raw)}, nil
+	case "guide":
+		// One app's guide, as data, before it is offered: only the guide is
+		// read, and an app with none answers so, plainly, not as a failure.
+		if !pathSafe(in.Entry) {
+			return tool.Result{Text: "guide needs entry, a catalog entry as search gives it, such as connector:composio:gmail", IsError: true}, nil
+		}
+		g := t.guide(ctx, in.Entry)
+		if g == nil {
+			b, _ := json.Marshal(map[string]any{"entry": in.Entry, "guide": nil, "note": NoGuide})
+			return tool.Result{Text: string(b)}, nil
+		}
+		b, _ := json.Marshal(struct {
+			*Guide
+			Note string `json:"guides_note"`
+		}{g, GuideNote})
+		return tool.Result{Text: string(b)}, nil
 	case "status", "catalog", "tools", "read", "withdraw":
 		if !pathSafe(in.Grant) {
 			return tool.Result{Text: in.Action + " needs the grant's id", IsError: true}, nil
@@ -506,7 +524,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 	// describe is gone (kiff/planque#23): nothing is read from the owner's
 	// account before they approve the tools that read it. Ask which mode.
-	return tool.Result{Text: "action is request, status, catalog, tools, read, withdraw, grants, search, events or describe", IsError: true}, nil
+	return tool.Result{Text: "action is request, status, catalog, tools, read, withdraw, grants, search, events, guide or describe", IsError: true}, nil
 }
 
 // NoKeyTools refuses a key request with no tools: it would never be

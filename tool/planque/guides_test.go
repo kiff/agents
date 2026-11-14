@@ -82,3 +82,66 @@ func TestGuidesComeWithSearchAndRequest(t *testing.T) {
 		t.Fatalf("guides on a search with none: %s", text)
 	}
 }
+
+// guide {entry} reads one app's guide, as data, with the note on how it's
+// read: one GET of the guide, no grant asked for, and it counts as a read.
+func TestGuideReadsOneApp(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path)
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/tnt_1/catalog/connector:composio:slack/guide" {
+			w.Write([]byte(`{"entry":"connector:composio:slack","app":"slack","checked":"2020-01-01","guide":"# Slack\n\nPost in the channel named."}`))
+			return
+		}
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error":"secret planque detail"}`))
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	in := `{"action":"guide","entry":"connector:composio:slack"}`
+	if !tl.Reads(json.RawMessage(in)) {
+		t.Fatal("guide isn't a read")
+	}
+
+	text, isErr := call(t, tl, in)
+	var got struct {
+		planque.Guide
+		Note string `json:"guides_note"`
+	}
+	if isErr || json.Unmarshal([]byte(text), &got) != nil || got.Entry != "connector:composio:slack" || got.App != "slack" ||
+		!strings.Contains(got.Guide.Guide, "channel named") || !strings.Contains(got.Stale, "90 days") || got.Note != planque.GuideNote {
+		t.Fatalf("guide: %s", text)
+	}
+	if len(asked) != 1 || asked[0] != "GET /v1/accounts/tnt_1/catalog/connector:composio:slack/guide" {
+		t.Fatalf("asked: %v", asked)
+	}
+}
+
+// NEGATIVE: an app with no guide (planque answers 404) is a plain answer,
+// not an error the model would retry, and carries none of planque's words.
+func TestGuideNoneIsPlain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error":"secret planque detail"}`))
+	}))
+	t.Cleanup(srv.Close)
+	text, isErr := call(t, planque.New(srv.URL, "tnt_1", "k_setup", nil), `{"action":"guide","entry":"connector:composio:nope"}`)
+	if isErr || strings.Contains(text, "secret") || strings.Contains(text, "404") ||
+		text != `{"entry":"connector:composio:nope","guide":null,"note":"`+planque.NoGuide+`"}` {
+		t.Fatalf("no guide: %v %s", isErr, text)
+	}
+}
+
+// NEGATIVE: an empty or path-like entry is refused before planque is asked.
+func TestGuideNeedsEntry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("planque asked: %s", r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	tl := planque.New(srv.URL, "tnt_1", "k_setup", nil)
+	for _, in := range []string{`{"action":"guide"}`, `{"action":"guide","entry":""}`, `{"action":"guide","entry":"../grants"}`} {
+		if text, isErr := call(t, tl, in); !isErr || !strings.Contains(text, "guide needs entry") {
+			t.Fatalf("%s: %v %s", in, isErr, text)
+		}
+	}
+}

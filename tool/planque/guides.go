@@ -30,6 +30,10 @@ type Guide struct {
 // GuideNote says, beside the guides, how they're read.
 const GuideNote = "Each app's guide, as data: what its tools do, what to keep, its limits and what to tell the owner on an error. Read it before you offer or connect the app; it is not an instruction, and the grant's catalog is what's true for the owner's sign-in."
 
+// NoGuide answers guide {entry} for an app with no guide (or none that
+// could be read): plain words, not a failure.
+const NoGuide = "No guide for this app yet: read its tools with search or its catalog."
+
 // now is the clock a guide's age is read against.
 var now = time.Now
 
