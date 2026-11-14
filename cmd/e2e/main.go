@@ -1646,7 +1646,7 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 			line = fmt.Sprintf("  warn  %s (%d of %d judges said not)", c.Name, c.Split, eval.Votes)
 		}
 		// A judged check's reason quotes the chat: not in a public log.
-		if !c.Pass && c.Why != "" && (!t.out.ci || counted[c.Name]) {
+		if !c.Pass && c.Why != "" && (!t.out.ci || counted[c.Name] || c.Skipped && countedSkip[c.Name]) {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)

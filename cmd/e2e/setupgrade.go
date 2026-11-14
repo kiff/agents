@@ -427,6 +427,11 @@ var counted = map[string]bool{"names the agent from the taf's name": true,
 	"connects on the first try": true, "offers only its own connections": true,
 	"one approval for the key and the Card": true, "narrows a managed sign-in": true}
 
+// countedSkip are the checks whose reason is shown in a public log when they're
+// skipped only: a skip of signsWhatWasAgreed says how many rules and Cards it
+// found and the cards' kinds in order, never the chat; its judged fail quotes it.
+var countedSkip = map[string]bool{signsWhatWasAgreed: true}
+
 // gradeSetup grades Setup's conversation. Each check is a name, whether it
 // passed, and why when it didn't.
 // modes is what the grants this run connected say about test or live
@@ -858,6 +863,25 @@ func agreedRules(s said) []string {
 	return out
 }
 
+// agreedSkip says why signsWhatWasAgreed has nothing to compare, with the cards
+// Setup showed in order, so a skip in the Eval's log names its cause: no rule
+// before a confirm or the Card's approval, or no Card KIFF holds on the taf.
+func agreedSkip(s said, rules, cards int) string {
+	shown := make([]string, 0, len(s.order))
+	for _, id := range s.order {
+		c := s.cards[id]
+		kind := c.Type
+		if c.Draft != "" {
+			kind += "+draft"
+		}
+		shown = append(shown, kind)
+	}
+	if len(shown) == 0 {
+		shown = append(shown, "none")
+	}
+	return fmt.Sprintf("nothing to compare: %d rules shown, %d Cards held on the taf; cards shown: %s", rules, cards, strings.Join(shown, ", "))
+}
+
 // agreesTo is whether next, the card after a notice, asks the owner to agree
 // to it: a confirm, or the approval that carries the Card.
 func agreesTo(next component) bool {
@@ -883,7 +907,7 @@ func agreedPrompt(rules []string) string {
 func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]any) (eval.CheckResult, error) {
 	rules := agreedRules(s)
 	if len(rules) == 0 || len(cards) == 0 {
-		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Skipped: true, Why: "no rules shown, or no Card held, to compare"}}, nil
+		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Skipped: true, Why: agreedSkip(s, len(rules), len(cards))}}, nil
 	}
 	b, _ := json.MarshalIndent(cards, "", "  ")
 	kept := ""
