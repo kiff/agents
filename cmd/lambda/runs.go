@@ -130,6 +130,12 @@ func unfinished(r run.Run) bool {
 	return false
 }
 
+// overflowed reports whether r did some work, then failed because its
+// context grew past the model's window (run.StopContextOverflow).
+func overflowed(r run.Run) bool {
+	return r.Status == run.Error && r.Stop == run.StopContextOverflow && !unworked(r)
+}
+
 // declined reports whether r stopped because a turn of it was declined (a
 // safety classifier): it didn't finish either, and a new run with the same
 // items would only be declined again.
@@ -156,6 +162,9 @@ func unsent(r run.Run) bool {
 //   - it didn't finish, and may have changed something: never handed again;
 //   - a turn of it was declined: never handed again either, so the owner
 //     hears that its items were dropped;
+//   - it did some work, then outgrew the model's context window: one of the
+//     two above, by the same rule, and a failure the schedule counts, a
+//     plain schedule's too (schedule.ErrContextOverflow);
 //   - anything else is a run that started, as it always was: one that
 //     answered, one its owner stopped, and one still at work or paused for
 //     its owner, which holds what it was handed.
@@ -165,6 +174,10 @@ func ended(r run.Run) error {
 		return schedule.ErrSwitching
 	case unworked(r):
 		return schedule.ErrUnworked
+	case overflowed(r) && unsent(r):
+		return errors.Join(schedule.ErrContextOverflow, schedule.ErrUnfinished)
+	case overflowed(r):
+		return errors.Join(schedule.ErrContextOverflow, schedule.ErrNotAgain)
 	case unfinished(r) && unsent(r):
 		return schedule.ErrUnfinished
 	case unfinished(r), declined(r):
@@ -305,6 +318,8 @@ func (f *function) lastWorked(ctx context.Context, fi schedule.Firing) string {
 func handOver(r run.Run) string {
 	how := "it answered and finished"
 	switch {
+	case r.Status == run.Error && r.Stop == run.StopContextOverflow:
+		how = "it failed after doing some work, when what it had to read outgrew the model's context"
 	case r.Status == run.Error:
 		how = "it failed after doing some work"
 	case r.Status == run.Cancelled:

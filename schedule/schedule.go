@@ -404,6 +404,14 @@ var ErrUnfinished = errors.New("schedule: the firing's run didn't finish, and ch
 // (FiredUnfinished).
 var ErrNotAgain = errors.New("schedule: the firing's run didn't finish, and what it was handed isn't handed again")
 
+// ErrContextOverflow is what Start returns, joined with ErrUnfinished or
+// ErrNotAgain (by the same rule as any run that didn't finish), for a
+// firing whose run did some work and then failed because what it had to read
+// grew past the model's context window (run.StopContextOverflow). A run handed
+// the same work would only outgrow it again, so it counts toward the
+// schedule's failing, for a plain schedule too (FiredContextOverflow).
+var ErrContextOverflow = errors.New("schedule: the firing's run outgrew the model's context window")
+
 // CreditsError is what Start returns for a firing whose run KIFF's balance
 // refused, the account's tafs waiting for credits: Why is KIFF's code. It
 // starts no run. What the firing was handed waits for the next firing that
@@ -483,6 +491,14 @@ const (
 	// past them, and it counts toward the schedule's failing, so the owner
 	// hears.
 	FiredUnfinished = "failed_unfinished"
+	// FiredContextOverflow: its run did some work, then failed because its
+	// context grew past the model's window (ErrContextOverflow). It counts
+	// toward the schedule's failing, a plain schedule's too. A check's
+	// cursor follows the rule of any run that didn't finish: it stays (and
+	// Tries counts the run) when the run changed nothing, and moves past the
+	// items when it may have changed something or MaxCheckTries runs were
+	// handed them.
+	FiredContextOverflow = "failed_context_overflow"
 	// FiredCredits: the account's tafs wait for credits. No run, and what
 	// it was handed waits: a check's cursor stays, and the next firing that
 	// runs hands the same items. The schedule's failing is left as it was,
@@ -1013,9 +1029,10 @@ func (k keptOutcome) Firings(ctx context.Context, tenant, id string, limit int) 
 }
 
 // start runs the firing: for a schedule with a check, only when the read
-// finds something new, with it in the run's input. The check's cursor moves
-// only once the run has started; a repeated delivery of the firing that
-// started it starts that run again (Firing.Key), not another read.
+// finds something new, with it in the run's input. Start runs the run to its
+// stop, and the check's cursor moves only once it has said how that went;
+// a repeated delivery of the firing that started it starts that run again
+// (Firing.Key), not another read.
 func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Time) error {
 	if c := s.AppCheck; c != nil && c.Handed != nil && !c.Due.Equal(f.Due) {
 		settled, err := sv.settleHanded(ctx, s)
@@ -1065,7 +1082,8 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 		f.Input = input
 		unfinished := false
 		var credits *CreditsError
-		if err := sv.Start(ctx, f); err != nil {
+		err = sv.Start(ctx, f)
+		if err != nil {
 			switch {
 			case errors.Is(err, ErrUnworked):
 				// Its run did nothing: the items go back, as the cursor stays.
@@ -1079,6 +1097,15 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			case errors.Is(err, ErrHalted):
 				// No run: the items wait for the halt's end, as the cursor stays.
 				return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
+			case errors.Is(err, ErrContextOverflow) && errors.Is(err, ErrUnfinished) && cur.Tries+1 < MaxCheckTries:
+				// Changed nothing: the items go again, as after any run
+				// that didn't finish, but it counts toward failing.
+				cur.Tries, cur.Due = cur.Tries+1, f.Due
+				s.AppCheck, s.Waited = &cur, nil
+				if err := sv.Store.Put(ctx, s); err != nil {
+					return err
+				}
+				return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredContextOverflow, Run: f.Key()})
 			case errors.Is(err, ErrUnfinished) && cur.Tries+1 < MaxCheckTries:
 				// Its run didn't finish them and changed nothing: they go
 				// again, as the cursor stays. Due names this firing, so its
@@ -1110,7 +1137,7 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			if err := sv.Store.Put(ctx, s); err != nil {
 				return err
 			}
-			return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredUnfinished, Run: f.Key()})
+			return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: unfinishedOutcome(err), Run: f.Key()})
 		}
 		s.Failing, s.Waited = nil, nil
 		if err := sv.Store.Put(ctx, s); err != nil {
@@ -1130,6 +1157,10 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredHalted})
 		case errors.Is(err, ErrSwitching):
 			return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredSwitching})
+		case errors.Is(err, ErrContextOverflow):
+			// Outgrew its context: counted toward failing, a plain
+			// schedule's too, and once however often it's delivered.
+			return sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredContextOverflow, Run: f.Key()})
 		case (errors.Is(err, ErrUnfinished) || errors.Is(err, ErrNotAgain)) && s.AppCheck != nil:
 			// A repeated delivery of a check's firing whose run didn't
 			// finish: kept as the first delivery kept it, and counted once.
@@ -1152,6 +1183,16 @@ func (sv *Service) start(ctx context.Context, s Schedule, f Firing, now time.Tim
 		}
 	}
 	return sv.keep(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredRun, Run: f.Key()})
+}
+
+// unfinishedOutcome is the outcome of a check's firing whose run didn't
+// finish and whose items aren't handed again: FiredContextOverflow when its
+// context outgrew the model's window, else FiredUnfinished.
+func unfinishedOutcome(err error) string {
+	if errors.Is(err, ErrContextOverflow) {
+		return FiredContextOverflow
+	}
+	return FiredUnfinished
 }
 
 // waited keeps a firing whose run KIFF's balance refused: FiredCredits in

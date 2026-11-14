@@ -148,6 +148,7 @@ schedule and due time, so a repeated delivery replaces it.
 | `failed_unworked` | it started `run`, which failed before any turn and did nothing |
 | `failed_retrying` | its check's run did some work, then failed or was cut short, and changed nothing: the cursor stays, and the next firing hands the same items to a new run; `failing` stays as it was |
 | `failed_unfinished` | its check's run didn't finish, and its items aren't handed again (a call of it may have changed something, a turn of it was declined, or three runs were handed them): the cursor moves past them, and it counts toward `failing` |
+| `failed_context_overflow` | its run did some work, then failed because what it had to read outgrew the model's context window (the run's `stop` is `context_overflow`): it counts toward `failing`, a plain schedule's too; a check's cursor follows the rule for a run that didn't finish (below) |
 | `skipped_halted` | its agent, or the whole account, was halted: no run, and the firing isn't tried again; a check reads nothing and its cursor stays, so what came meanwhile goes to the first firing after the halt; `failing` stays as it was |
 | `skipped_switching` | its agent was switching versions: no run, nothing used up, so a check's cursor stays and the next firing hands the same items to the new version; `failing` stays as it was |
 | `failed_check` | its check couldn't read the app: no run, a check's cursor stays, and it counts toward `failing` |
@@ -206,7 +207,8 @@ older firing that comes after a newer one was counted.
 
 Nothing keeps spending on work that can't succeed:
 - **from 3 failures in a row** (`failing.firings`: runs that did nothing, checks
-  that couldn't read, check runs that didn't finish), a firing runs only once at
+  that couldn't read, check runs that didn't finish, runs that outgrew their
+  context), a firing runs only once at
   least twice its step, and at least an hour, has passed since the last failure.
   The others are `skipped_slowed`: no run, nothing handed, and not counted. A
   schedule every 15 minutes runs hourly; a daily one, every other day;
@@ -292,7 +294,19 @@ connection gives it. A run the sweep carried on or ended counts as having
 changed something, whatever it kept: its turns may be behind what it did.
 
 A plain schedule hands its run nothing to give back. Its run that started and
-worked is `run`, however it ended, as before.
+worked is `run`, however it ended, as before, with one exception below.
+
+**A run that outgrew its context counts as failing.** A run that did some work
+and then failed because what it had to read grew past the model's context
+window ends ERROR with the same words as any failed run, and `stop:
+context_overflow`. The same work handed again would only outgrow it again, so
+its firing is `failed_context_overflow`, with its `run`, and counts toward
+`failing`, for a plain schedule too. A check's items follow the rule above: a
+run that changed nothing hands them again (the cursor stays and `tries` counts
+it, three runs at most), one that may have changed something never does (the
+cursor moves). Either way it counts, so a schedule whose work no longer fits
+slows down, then pauses, and the owner hears. One that outgrew it on its first
+turn did nothing, and is `failed_unworked`.
 
 A repeated delivery of a firing whose run didn't finish says what the first
 delivery said, and counts once, in `tries` and in `failing`.

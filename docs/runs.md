@@ -209,7 +209,7 @@ settings turn it on:
 | PENDING | CANCELLED, ERROR | cancelled, or not claimed within 5 min |
 | RUNNING | COMPLETED | answered, a cap stopped it, or the model's turn was refused (`stop` says which; `refusal`, the category) |
 | RUNNING | PAUSED | KIFF holds a call |
-| RUNNING | ERROR, CANCELLED | failed or lease ran out; asked to stop |
+| RUNNING | ERROR, CANCELLED | failed or lease ran out (`stop` is `context_overflow` when what it had to read outgrew the model's context window, else empty); asked to stop |
 | PAUSED | RUNNING | every requirement resolved: claimed again, same ID |
 | PAUSED | CANCELLED | cancelled: KIFF's held calls are withdrawn, then the run continues and stops |
 

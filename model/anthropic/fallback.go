@@ -57,3 +57,16 @@ func ToolsRefused(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
 		string(apiErr.Type()) == "invalid_request_error" && toolsField.MatchString(apiErr.Error())
 }
+
+// ContextOverflow says whether err is the Claude API refusing a request that
+// is longer than the model's context window: matched on its status (400), its
+// error type (invalid_request_error) and its words ("prompt is too long", or
+// the input and max_tokens that "exceed context limit").
+func ContextOverflow(err error) bool {
+	var apiErr *sdk.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || string(apiErr.Type()) != "invalid_request_error" {
+		return false
+	}
+	msg := strings.ToLower(apiErr.Error())
+	return strings.Contains(msg, "prompt is too long") || strings.Contains(msg, "exceed context limit")
+}

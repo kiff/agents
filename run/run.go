@@ -34,6 +34,12 @@ const (
 	Cancelled Status = "CANCELLED" // cancelled; it doesn't undo what a tool already did
 )
 
+// StopContextOverflow is the Stop of an ERROR run that failed because what it
+// had to read grew past the model's context window (model.ErrContextOverflow):
+// told apart from other failures, since a run handed the same work would
+// only outgrow it again.
+const StopContextOverflow = "context_overflow"
+
 // AIUnavailable is the Error of a run that stopped because the AI provider
 // refused us for our own account's balance (model.ErrProviderBalance): words
 // the person reads as they are, in two sentences (tafs cloud shows two). Its
@@ -211,7 +217,8 @@ type Run struct {
 	Attachments []attach.Ref `json:"attachments,omitempty"`
 
 	// Stop is why a COMPLETED run stopped: the agent answered, a cap (cost,
-	// turns, output length) stopped it, or the model's turn was refused.
+	// turns, output length) stopped it, or the model's turn was refused. On
+	// an ERROR run it is empty, or StopContextOverflow.
 	Stop string `json:"stop,omitempty"`
 	// Refusal is the category a refused run's turn was declined for ("cyber",
 	// "bio", …), when the provider named one.
