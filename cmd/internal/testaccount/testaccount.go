@@ -189,16 +189,26 @@ func (p *Phone) PublicKey() string {
 
 func (p *Phone) AccountPath() string { return "/v1/accounts/" + url.PathEscape(p.Tenant) }
 
+// GrantArgument is one argument the taf sets on a narrowed tool: where it
+// goes in the vendor's arguments, and its type.
+type GrantArgument struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}
+
 // grantTool is one tool of a grant, as asked for.
 type GrantTool struct {
-	Tool        string         `json:"tool"`
-	Name        string         `json:"name"`
-	Title       string         `json:"title"`
-	Fixed       map[string]any `json:"fixed_arguments"`
-	ReadOnly    bool           `json:"read_only"`
-	SetupReads  bool           `json:"setup_reads"`
-	AmountArg   string         `json:"amount_argument"`
-	ResourceArg string         `json:"resource_argument"`
+	Tool  string         `json:"tool"`
+	Name  string         `json:"name"`
+	Title string         `json:"title"`
+	Fixed map[string]any `json:"fixed_arguments"`
+	// Arguments are what the taf sets on a narrowed tool, each at the
+	// vendor's path. planque passes on nothing else.
+	Arguments   map[string]GrantArgument `json:"arguments"`
+	ReadOnly    bool                     `json:"read_only"`
+	SetupReads  bool                     `json:"setup_reads"`
+	AmountArg   string                   `json:"amount_argument"`
+	ResourceArg string                   `json:"resource_argument"`
 	UnitLookup  *struct {
 		Tool string `json:"tool"`
 	} `json:"unit_lookup"`

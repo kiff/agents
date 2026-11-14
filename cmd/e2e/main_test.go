@@ -100,7 +100,8 @@ func TestCoversTheJob(t *testing.T) {
 			switch name {
 			case "read":
 				name = "stripe_api_read"
-				out.Request.Tools = append(out.Request.Tools, grantTool{Tool: name, Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}})
+				out.Request.Tools = append(out.Request.Tools, grantTool{Tool: name, Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"},
+					Arguments: map[string]grantArg{"charge": {Path: "parameters.id", Type: "string"}}})
 				continue
 			case "read anything":
 				name = "stripe_api_read"
@@ -121,6 +122,24 @@ func TestCoversTheJob(t *testing.T) {
 	} {
 		if coversTheJob(c) == nil {
 			t.Errorf("%s: passed", name)
+		}
+	}
+	// The read of one charge must let the taf name it, at the path parameter
+	// the operation declares: a narrowed tool passes on nothing else (main's
+	// Eval 43573899065: the taf's every read failed "Missing required path
+	// parameters: id", and it never refunded).
+	for name, args := range map[string]map[string]grantArg{
+		"names nothing":           nil,
+		"at Stripe's other name":  {"charge": {Path: "parameters.charge", Type: "string"}},
+		"outside parameters":      {"id": {Path: "id", Type: "string"}},
+		"as a number":             {"charge": {Path: "parameters.id", Type: "integer"}},
+		"only a field of another": {"expand": {Path: "parameters.expand", Type: "array"}},
+	} {
+		c := g("list_charges", "read", "create_refund")
+		c.Request.Tools[1].Arguments = args
+		err := coversTheJob(c)
+		if err == nil || !strings.Contains(err.Error(), "can't name the charge") || !strings.Contains(err.Error(), "parameters.id") {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }
@@ -182,7 +201,8 @@ func TestAllToolsCoverTheJobAcrossGrants(t *testing.T) {
 	var details, job grant
 	details.Request.Tools = []grantTool{{Tool: "stripe_api_details", ReadOnly: true}}
 	job.Request.Tools = []grantTool{{Tool: "list_charges"},
-		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"}}, {Tool: "create_refund"}}
+		{Tool: "stripe_api_read", Fixed: map[string]any{"stripe_api_operation_id": "GetChargesCharge"},
+			Arguments: map[string]grantArg{"charge": {Path: "parameters.id", Type: "string"}}}, {Tool: "create_refund"}}
 	if coversTheJob(details) == nil {
 		t.Fatal("the field-listing grant alone covered the job")
 	}
