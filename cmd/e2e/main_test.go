@@ -637,3 +637,40 @@ func TestThePublicLogSaysNoCost(t *testing.T) {
 		}
 	}
 }
+
+// The agreed gate's skip says in the public log why it had nothing to compare:
+// the counts and the cards' kinds, never the chat (the intros replay skipped
+// with no cause to read, 14 Nov 2026). Its judged fail stays private.
+func TestTheAgreedGatesSkipSaysWhyAndItsFailStaysPrivate(t *testing.T) {
+	intros := said{cards: map[string]component{
+		"connect": {Type: "approval", Grant: "grt_s", Title: "Connect the sheet"},
+		"rules":   {Type: "notice", Title: "The rules", Text: "Writes drafts only, up to 10 a day."},
+		"mail":    {Type: "approval", Grant: "grt_m", Title: "Connect the mailbox"},
+		"tools":   {Type: "approval", Grant: "grt_m", Draft: "drf_s", Title: "Approve its tools and Card"},
+	}, order: []string{"connect", "rules", "mail", "tools"}}
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, intros, []map[string]any{{"id": "c1"}})
+	if err != nil || !r.Grade.Skipped {
+		t.Fatalf("a notice before a draftless approval was compared: %+v %v", r, err)
+	}
+	want := "nothing to compare: 0 rules shown, 1 Cards held on the taf; cards shown: approval, notice, approval, approval+draft"
+	if r.Grade.Why != want {
+		t.Fatalf("the skip says %q", r.Grade.Why)
+	}
+	if none, _ := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, said{}, nil); none.Grade.Why != "nothing to compare: 0 rules shown, 0 Cards held on the taf; cards shown: none" {
+		t.Fatalf("with no cards: %q", none.Grade.Why)
+	}
+	var log, transcript bytes.Buffer
+	tt := &test{out: &redacting{w: &log, ci: true}, said: said{messages: []string{"Hola."}},
+		cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{}}}
+	if err := tt.reportSetup([]eval.CheckResult{r}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "  skip  signs what was agreed: "+want+"\n") {
+		t.Fatalf("the public log: %q", log.String())
+	}
+	log.Reset()
+	_ = tt.reportSetup([]eval.CheckResult{{Name: signsWhatWasAgreed, Grade: eval.Grade{Why: "the Card allows 50 drafts, the owner said 10"}}})
+	if strings.Contains(log.String(), "the owner said") {
+		t.Fatalf("a judged fail's reason reached the public log: %q", log.String())
+	}
+}

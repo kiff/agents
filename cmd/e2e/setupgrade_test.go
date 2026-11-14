@@ -867,3 +867,41 @@ func TestTheRulesBeforeTheCardsApprovalAreTheAgreedOnes(t *testing.T) {
 		t.Fatal("the rule doesn't say the Card is held to the rules agreed last")
 	}
 }
+
+// A Card over two apps is approved only when each app it covers is connected:
+// Win-back offers, 14 Nov 2026, had Gmail connected and Stripe's tools waiting.
+func TestEveryAppTheCardCoversIsApproved(t *testing.T) {
+	g := func(status string, tools ...string) grant {
+		var out grant
+		out.Status = status
+		for _, name := range tools {
+			out.Request.Tools = append(out.Request.Tools, grantTool{Name: name, Tool: name + "_vendor"})
+		}
+		return out
+	}
+	cards := []map[string]any{{"id": "c1", "grants": []map[string]any{
+		{"action": "send_draft"}, {"action": "create_coupon"}, {"action": "List_Customers"},
+	}}}
+	stripe, gmail := g("pending", "list_customers", "create_coupon"), g("connected", "send_draft")
+	r := gradeEveryAppApproved([]grant{gmail, stripe}, cards)
+	if r.Grade.Pass || r.Grade.Skipped || r.Grade.Why != "the Card is issued, but a connection it covers isn't connected: list_customers (pending)" {
+		t.Fatalf("Stripe waiting passed: %+v", r)
+	}
+	if r := gradeEveryAppApproved([]grant{gmail, g("connected", "list_customers", "create_coupon")}, cards); !r.Grade.Pass {
+		t.Fatalf("both connected: %+v", r)
+	}
+	// A connection the Cards don't name isn't theirs to wait on.
+	if r := gradeEveryAppApproved([]grant{gmail, g("pending", "read_calendar")}, cards); !r.Grade.Pass {
+		t.Fatalf("an unrelated pending connection failed it: %+v", r)
+	}
+	// The vendor's own tool name counts too.
+	if r := gradeEveryAppApproved([]grant{g("signed_in", "x")}, []map[string]any{{"grants": []map[string]any{{"action": "x_vendor"}}}}); r.Grade.Pass {
+		t.Fatalf("a vendor-named tool waiting passed: %+v", r)
+	}
+	if r := gradeEveryAppApproved([]grant{stripe}, nil); !r.Grade.Skipped || r.Grade.Pass {
+		t.Fatalf("no Card held: %+v", r)
+	}
+	if !counted[everyAppApproved] {
+		t.Fatal("its reason names tools and states only: shown in the public log")
+	}
+}
