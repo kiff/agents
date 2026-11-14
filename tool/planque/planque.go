@@ -626,7 +626,11 @@ func newAgent(agent, name, taf string) string {
 func AgentID(name string) string {
 	var b strings.Builder
 	dash := false
-	for _, r := range strings.ToLower(name) {
+	lower := strings.ToLower(name)
+	for k, v := range twoLetters {
+		lower = strings.ReplaceAll(lower, string(k), v)
+	}
+	for _, r := range lower {
 		if i := strings.IndexRune(accented, r); i >= 0 {
 			r = rune(plain[len([]rune(accented[:i]))])
 		}
@@ -654,9 +658,12 @@ func AgentID(name string) string {
 // accented letters an owner's name for a taf may have, and the plain
 // letters an id carries for them, in order.
 const (
-	accented = "áàâäãåéèêëíìîïóòôöõúùûüñçý"
-	plain    = "aaaaaaeeeeiiiiooooouuuuncy"
+	accented = "áàâäãåąéèêëęíìîïóòôöõøúùûüñńçćýÿłśźżšžčřďťň"
+	plain    = "aaaaaaaeeeeeiiiioooooouuuunnccyylszzszcrdtn"
 )
+
+// twoLetters are the letters an id carries as two (ß is ss, æ is ae).
+var twoLetters = map[rune]string{'ß': "ss", 'æ': "ae", 'œ': "oe"}
 
 // grantView is what the model reads of a grant: what the owner sees and
 // where it stands, nothing more. Agent is set on a request: the taf's KIFF

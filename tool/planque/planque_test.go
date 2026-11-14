@@ -329,6 +329,10 @@ func TestAgentIDIsNewEachTime(t *testing.T) {
 		"agt_refunds":           "agt-refunds-",
 		"  ¡Pagos!  ":           "pagos-",
 		"Facturación Ñandú":     "facturacion-nandu-",
+		"Żółte zgłoszenia":      "zolte-zgloszenia-",
+		"Straße-Rechnungen":     "strasse-rechnungen-",
+		"Cœur Æsir":             "coeur-aesir-",
+		"Łódź ść ę ą ń":         "lodz-sc-e-a-n-",
 		"":                      "taf-",
 		strings.Repeat("a", 60): strings.Repeat("a", 31) + "-",
 	} {
