@@ -126,7 +126,10 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 		c.Skipped += p.Skipped
 		c.Truncated = c.Truncated || p.Truncated
 		if only != "" {
-			i := slices.IndexFunc(p.Tools[at.Offset:], func(ct catalogTool) bool { return ct.Name == only })
+			// By its name, or by its provider's slug (the name a guide and a search give a managed app's tool).
+			i := slices.IndexFunc(p.Tools[at.Offset:], func(ct catalogTool) bool {
+				return ct.Name == only || (ct.Slug != "" && strings.EqualFold(ct.Slug, only))
+			})
 			if i >= 0 {
 				c.Tools = p.Tools[at.Offset+i : at.Offset+i+1]
 				// This is one tool in full, rather than a partial catalog.
@@ -205,7 +208,7 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 	} else if only != "" {
 		if len(c.Tools) == 0 {
 			if c.Next == "" && !c.Truncated && c.Skipped == 0 {
-				return tool.Result{Text: "the catalog has no tool named " + only, IsError: true}, nil
+				return tool.Result{Text: "the catalog has no tool named " + only + "; catalog {grant, q} finds its tools by words", IsError: true}, nil
 			}
 			c.Truncated = true
 			c.Note = "The search is incomplete; the tool is not known to be absent."
