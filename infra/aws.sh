@@ -144,6 +144,13 @@ if [ "$(aws dynamodb describe-continuous-backups --table-name "$TABLE" --query C
   say "turned on point-in-time recovery for $TABLE"
 fi
 
+# Deletion protection: the table can't be dropped by one command, by hand or
+# by a script; a person turns it off first.
+if [ "$(aws dynamodb describe-table --table-name "$TABLE" --query Table.DeletionProtectionEnabled)" != "True" ]; then
+  aws dynamodb update-table --table-name "$TABLE" --deletion-protection-enabled >/dev/null
+  say "turned on deletion protection for $TABLE"
+fi
+
 # --- Attached files (kiff/tafs#209) ------------------------------------------
 
 # The app uploads and downloads through presigned URLs only: nothing in the

@@ -12,6 +12,7 @@ package planque
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -100,7 +101,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"A vendor with a REST API and no MCP server is reached by its key instead: request {api: {url, base, auth: {in, name}}, agent, tools}, " +
 			"where url is the vendor's published OpenAPI description (JSON), base the URL its operations' paths start from, and auth where the key goes " +
 			"(in: header or query, name: the header or parameter the vendor's docs name). The owner gives the key on their phone, with the approval, straight to planque; never ask for it. " +
-			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. support): the tool makes the agent's id from it, with a random part so it is new, " +
+			"name marks a new taf's KIFF agent (e.g. support): the tool makes the agent's id from taf_name, never from name, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. " +
 			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
 			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, taf_name, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
@@ -120,7 +121,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"pins the workspace and makes the ticket and the reply required, so no reply leaves them out or goes elsewhere. " +
 			"Each answer is the grant's id, status and the text the owner will read (each tool by its title; its exact terms are under Details). Asking grants nothing: show an approval with the grant id. " +
 			"setup_reads: true, on a read-only tool, lets you read it yourself once the owner approved it: read {grant, tool, arguments}, with the name the grant lists. " +
-			"An app connected first by its entry (Stripe's, Qonto's) takes your setup reads in its first request: request {entry, setup_reads: [the vendor's tool names]}, approved with the sign-in and connected once signed in, so no second approval; a server takes them with its tools. " +
+			"A first request that connects first takes your setup reads: request {entry, setup_reads} or {server, tools: [], setup_reads}, by the vendor's tool names, approved with the sign-in and connected once signed in (checked against what it lists), so no second approval; with tools at once, a key or reuse, they go on the tools. " +
 			"Tools set while they wait for the owner come back declared: true, in KIFF but unusable until approved: draft the taf's Card over them then, and one approval signs both. Declined, withdraw {grant} takes them back out of KIFF. " +
 			"Use it for a vendor's tool that lists an operation's fields, so you name each argument's path from the vendor, never by guess. " +
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
@@ -172,7 +173,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected), or whose guide to read (guide)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
 			`"new_sign_in":{"type":"boolean","description":"with request {entry} for a provider's app: a sign-in of its own, so the owner can choose another account at the app; without it, a sign-in the account already holds to the app is reused"},` +
-			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with request {entry} for an app connected first (Stripe's, Qonto's): your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
+			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with a first request that connects first, {entry} or {server} with tools []: your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
 			`"profile":{"type":"object","description":"a managed app's drafted profile, kiff.profile.v1, sent with its tools (tools)"}},` +
 			`"required":["action"]}`),
@@ -293,10 +294,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if len(in.Tools) > 0 && string(in.Tools) != "null" && string(in.Tools) != "[]" {
 				return tool.Result{Text: "request {entry} connects the app first, with no tools: once the owner signed in, pick them with catalog {grant} and ask with tools {grant, tools}", IsError: true}, nil
 			}
-			agent := in.Agent
-			if in.Name != "" {
-				agent = AgentID(in.Name)
-			}
+			agent := newAgent(in.Agent, in.Name, in.TafName)
 			ask := map[string]any{"agent": agent}
 			if n := tafName(in.TafName); n != "" {
 				ask["agent_name"] = n
@@ -350,8 +348,16 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if len(in.Uses) > 0 {
 			return tool.Result{Text: "uses goes with request {entry}: the app's tools the taf will use, as search named them", IsError: true}, nil
 		}
+		connectFirst := len(in.Tools) == 0 || string(in.Tools) == "null" || string(in.Tools) == "[]"
 		if len(in.SetupReads) > 0 {
-			return tool.Result{Text: "setup_reads goes with request {entry}, for an app connected first: a server takes its reads with its tools (tools: [{…, setup_reads: true}])", IsError: true}, nil
+			// A server connected first takes them too, approved with the sign-in;
+			// a key, a reused sign-in or tools at once take them with the tools.
+			if !connectFirst || byKey || in.Reuse != "" {
+				return tool.Result{Text: "setup_reads goes with a first request that connects first (request {server} or {entry}, no tools): with tools at once, a key or reuse, put them on the tools (tools: [{…, setup_reads: true}])", IsError: true}, nil
+			}
+			if msg := checkSetupReads(in.SetupReads); msg != "" {
+				return tool.Result{Text: msg, IsError: true}, nil
+			}
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" || string(tools) == "[]" {
@@ -366,11 +372,11 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		}
 		// A name makes a new id here (kiff/tafs#78); an agent id is sent as
 		// given, for Setups whose instructions still make their own.
-		agent := in.Agent
-		if in.Name != "" {
-			agent = AgentID(in.Name)
-		}
+		agent := newAgent(in.Agent, in.Name, in.TafName)
 		ask := map[string]any{"server": in.Server, "agent": agent, "tools": tools}
+		if len(in.SetupReads) > 0 {
+			ask["setup_reads"] = in.SetupReads
+		}
 		if in.Reuse != "" {
 			// The account's sign-in to that vendor, as a connected grant has it: the
 			// owner approves the tools alone, with no new sign-in or key (kiff/tafs#476).
@@ -625,6 +631,16 @@ func tafName(s string) string {
 	return s
 }
 
+// newAgent is the agent a request is for: agent as given, or for a new taf
+// (name set) a new id made from its taf_name, so the agent always carries
+// the taf's own name, never a name the model made up beside it.
+func newAgent(agent, name, taf string) string {
+	if name == "" {
+		return agent
+	}
+	return AgentID(cmp.Or(tafName(taf), name))
+}
+
 // AgentID is a new KIFF agent id from the name the model gave: the name as
 // an id (lowercase letters, digits and dashes) and a random part, at most 40
 // characters. The random part (40 bits) comes from here, not the model,
@@ -632,7 +648,11 @@ func tafName(s string) string {
 func AgentID(name string) string {
 	var b strings.Builder
 	dash := false
-	for _, r := range strings.ToLower(name) {
+	lower := strings.ToLower(name)
+	for k, v := range twoLetters {
+		lower = strings.ReplaceAll(lower, string(k), v)
+	}
+	for _, r := range lower {
 		if i := strings.IndexRune(accented, r); i >= 0 {
 			r = rune(plain[len([]rune(accented[:i]))])
 		}
@@ -660,9 +680,12 @@ func AgentID(name string) string {
 // accented letters an owner's name for a taf may have, and the plain
 // letters an id carries for them, in order.
 const (
-	accented = "áàâäãåéèêëíìîïóòôöõúùûüñçý"
-	plain    = "aaaaaaeeeeiiiiooooouuuuncy"
+	accented = "áàâäãåąéèêëęíìîïóòôöõøúùûüñńçćýÿłśźżšžčřďťň"
+	plain    = "aaaaaaaeeeeeiiiioooooouuuunnccyylszzszcrdtn"
 )
+
+// twoLetters are the letters an id carries as two (ß is ss, æ is ae).
+var twoLetters = map[rune]string{'ß': "ss", 'æ': "ae", 'œ': "oe"}
 
 // grantView is what the model reads of a grant: what the owner sees and
 // where it stands, nothing more. Agent is set on a request: the taf's KIFF

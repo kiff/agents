@@ -39,7 +39,8 @@ func TestSetupReadsWithTheSignInAndAWithdrawal(t *testing.T) {
 		t.Fatalf("request with setup reads: %s %v", text, seen)
 	}
 	for _, bad := range []string{
-		`{"action":"request","server":"https://mcp.example","agent":"refunds-a1","setup_reads":["stripe_api_details"]}`,
+		`{"action":"request","server":"https://mcp.example","agent":"refunds-a1","tools":[{"tool":"list_charges","title":"List charges"}],"setup_reads":["stripe_api_details"]}`,
+		`{"action":"request","reuse":"grt_1","agent":"refunds-a1","tools":[],"setup_reads":["stripe_api_details"]}`,
 		`{"action":"request","entry":"stripe@1","agent":"refunds-a1","setup_reads":["a","a"]}`,
 		`{"action":"request","entry":"stripe@1","agent":"refunds-a1","setup_reads":[" a"]}`,
 		`{"action":"request","entry":"stripe@1","agent":"refunds-a1","setup_reads":["a","b","c","d","e","f","g","h","i","j","k"]}`,
@@ -52,8 +53,10 @@ func TestSetupReadsWithTheSignInAndAWithdrawal(t *testing.T) {
 	if len(seen) != 2 || !strings.HasSuffix(seen[1], "/catalog/stripe@1/guide ") {
 		t.Fatalf("a refused ask reached planque: %v", seen)
 	}
-	if text, _ := call(t, tl, `{"action":"request","server":"https://mcp.example","agent":"refunds-a1","setup_reads":["x"]}`); !strings.Contains(text, "setup_reads goes with request {entry}") {
-		t.Fatalf("a server's setup_reads: %s", text)
+	// A server connected first takes them too, approved with the sign-in (the Eval's setup connects by server).
+	// (This fake answers no grants route: what matters is what reached planque.)
+	if text, _ := call(t, tl, `{"action":"request","server":"https://mcp.example","agent":"refunds-a1","setup_reads":["stripe_api_details","list_accounts"]}`); seen[len(seen)-1] != `POST /v1/accounts/tnt_1/grants {"agent":"refunds-a1","server":"https://mcp.example","setup_reads":["stripe_api_details","list_accounts"],"tools":[]}` {
+		t.Fatalf("a server's setup_reads: %s %v", text, seen)
 	}
 
 	text, isErr = call(t, tl, `{"action":"withdraw","grant":"grt_5"}`)
