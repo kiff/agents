@@ -102,7 +102,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. support): the tool makes the agent's id from it, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. " +
 			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
-			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
+			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, taf_name, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
+			"a provider's app (entry) is reused with tools: [] and nothing more (no entry, uses or setup_reads), its tools picked after from catalog {grant}; " +
 			"ask for a new sign-in or key only when there's none, or planque refuses the reuse. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +

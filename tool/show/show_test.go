@@ -98,16 +98,18 @@ func mustJSON(v any) string {
 func TestWhatDoesNotFitIsRefused(t *testing.T) {
 	long := strings.Repeat("x", show.MaxText+1)
 	for in, want := range map[string]string{
-		`{"type":"banner","id":"a"}`:                                                                                       "type must be one of",
-		`{"type":"notice","id":"Bad Id","tone":"info","text":"x"}`:                                                         "id must be",
-		`{"type":"notice","id":"a","tone":"loud","text":"x"}`:                                                              "tone is one of",
-		`{"type":"notice","id":"a","tone":"info","text":"` + long + `"}`:                                                   "at most",
-		`{"type":"notice","id":"a","tone":"info","text":"x","grant":"grt_1"}`:                                              `has no field "grant"`,
-		`{"type":"notice","id":"a","tone":"info","text":"x","html":"<b>"}`:                                                 "unknown",
-		`{"type":"steps","id":"a","steps":[]}`:                                                                             "1 to 20 steps",
-		`{"type":"steps","id":"a","steps":[{"label":"x","status":"maybe"}]}`:                                               "status is one of",
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"}]}`:                                     "2 to 4",
-		`{"type":"approval","id":"a","grant":"grt 1"}`:                                                                     "planque's grant id",
+		`{"type":"banner","id":"a"}`:                                                   "type must be one of",
+		`{"type":"notice","id":"Bad Id","tone":"info","text":"x"}`:                     "id must be",
+		`{"type":"notice","id":"a","tone":"loud","text":"x"}`:                          "tone is one of",
+		`{"type":"notice","id":"a","tone":"info","text":"` + long + `"}`:               "at most",
+		`{"type":"notice","id":"a","tone":"info","text":"x","grant":"grt_1"}`:          `has no field "grant"`,
+		`{"type":"notice","id":"a","tone":"info","text":"x","html":"<b>"}`:             "unknown",
+		`{"type":"steps","id":"a","steps":[]}`:                                         "1 to 20 steps",
+		`{"type":"steps","id":"a","steps":[{"label":"x","status":"maybe"}]}`:           "status is one of",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"}]}`: "2 to 4",
+		`{"type":"approval","id":"a","grant":"grt 1"}`:                                 "planque's grant id",
+		// The Card's approval alone still names its grant (a setup lost a round leaving it out, 14 Nov).
+		`{"type":"approval","id":"a","draft":"drf_1"}`:                                                                     "the Card's alone too",
 		`{"type":"approval","id":"a","grant":"grt_1","text":"Approve me"}`:                                                 `has no field "text"`,
 		`{"type":"approval","id":"a","grant":"grt_1","title":"Read only"}`:                                                 `has no field "title"`,
 		`{"type":"approval","id":"a","grant":"grt_1","yes":"Cancelar"}`:                                                    `has no field "yes"`,
