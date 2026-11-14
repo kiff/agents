@@ -12,6 +12,7 @@ package planque
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -100,7 +101,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"A vendor with a REST API and no MCP server is reached by its key instead: request {api: {url, base, auth: {in, name}}, agent, tools}, " +
 			"where url is the vendor's published OpenAPI description (JSON), base the URL its operations' paths start from, and auth where the key goes " +
 			"(in: header or query, name: the header or parameter the vendor's docs name). The owner gives the key on their phone, with the approval, straight to planque; never ask for it. " +
-			"name a short name for a new taf's KIFF agent, from the taf's name (e.g. support): the tool makes the agent's id from it, with a random part so it is new, " +
+			"name marks a new taf's KIFF agent (e.g. support): the tool makes the agent's id from taf_name, never from name, with a random part so it is new, " +
 			"and the answer's agent is that id, to use from then on (its draft, its result); agent, instead of name, is an id already made, sent as given. " +
 			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
 			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, taf_name, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
@@ -289,10 +290,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if len(in.Tools) > 0 && string(in.Tools) != "null" && string(in.Tools) != "[]" {
 				return tool.Result{Text: "request {entry} connects the app first, with no tools: once the owner signed in, pick them with catalog {grant} and ask with tools {grant, tools}", IsError: true}, nil
 			}
-			agent := in.Agent
-			if in.Name != "" {
-				agent = AgentID(in.Name)
-			}
+			agent := newAgent(in.Agent, in.Name, in.TafName)
 			ask := map[string]any{"agent": agent}
 			if n := tafName(in.TafName); n != "" {
 				ask["agent_name"] = n
@@ -355,10 +353,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		}
 		// A name makes a new id here (kiff/tafs#78); an agent id is sent as
 		// given, for Setups whose instructions still make their own.
-		agent := in.Agent
-		if in.Name != "" {
-			agent = AgentID(in.Name)
-		}
+		agent := newAgent(in.Agent, in.Name, in.TafName)
 		ask := map[string]any{"server": in.Server, "agent": agent, "tools": tools}
 		if in.Reuse != "" {
 			// The account's sign-in to that vendor, as a connected grant has it: the
@@ -612,6 +607,16 @@ func tafName(s string) string {
 		s = strings.TrimSpace(string(r[:60]))
 	}
 	return s
+}
+
+// newAgent is the agent a request is for: agent as given, or for a new taf
+// (name set) a new id made from its taf_name, so the agent always carries
+// the taf's own name, never a name the model made up beside it.
+func newAgent(agent, name, taf string) string {
+	if name == "" {
+		return agent
+	}
+	return AgentID(cmp.Or(tafName(taf), name))
 }
 
 // AgentID is a new KIFF agent id from the name the model gave: the name as
