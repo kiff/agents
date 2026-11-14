@@ -121,7 +121,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"pins the workspace and makes the ticket and the reply required, so no reply leaves them out or goes elsewhere. " +
 			"Each answer is the grant's id, status and the text the owner will read (each tool by its title; its exact terms are under Details). Asking grants nothing: show an approval with the grant id. " +
 			"setup_reads: true, on a read-only tool, lets you read it yourself once the owner approved it: read {grant, tool, arguments}, with the name the grant lists. " +
-			"An app connected first by its entry (Stripe's, Qonto's) takes your setup reads in its first request: request {entry, setup_reads: [the vendor's tool names]}, approved with the sign-in and connected once signed in, so no second approval; a server takes them with its tools. " +
+			"A first request that connects first takes your setup reads: request {entry, setup_reads} or {server, tools: [], setup_reads}, by the vendor's tool names, approved with the sign-in and connected once signed in (checked against what it lists), so no second approval; with tools at once, a key or reuse, they go on the tools. " +
 			"Tools set while they wait for the owner come back declared: true, in KIFF but unusable until approved: draft the taf's Card over them then, and one approval signs both. Declined, withdraw {grant} takes them back out of KIFF. " +
 			"Use it for a vendor's tool that lists an operation's fields, so you name each argument's path from the vendor, never by guess. " +
 			"status {grant}: pending, approved, signed_in, listed (signed in, tools listed, none given yet), connected (the tools are in KIFF), " +
@@ -172,7 +172,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected), or whose guide to read (guide)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
-			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with request {entry} for an app connected first (Stripe's, Qonto's): your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
+			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with a first request that connects first, {entry} or {server} with tools []: your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
 			`"profile":{"type":"object","description":"a managed app's drafted profile, kiff.profile.v1, sent with its tools (tools)"}},` +
 			`"required":["action"]}`),
@@ -337,8 +337,16 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if len(in.Uses) > 0 {
 			return tool.Result{Text: "uses goes with request {entry}: the app's tools the taf will use, as search named them", IsError: true}, nil
 		}
+		connectFirst := len(in.Tools) == 0 || string(in.Tools) == "null" || string(in.Tools) == "[]"
 		if len(in.SetupReads) > 0 {
-			return tool.Result{Text: "setup_reads goes with request {entry}, for an app connected first: a server takes its reads with its tools (tools: [{…, setup_reads: true}])", IsError: true}, nil
+			// A server connected first takes them too, approved with the sign-in;
+			// a key, a reused sign-in or tools at once take them with the tools.
+			if !connectFirst || byKey || in.Reuse != "" {
+				return tool.Result{Text: "setup_reads goes with a first request that connects first (request {server} or {entry}, no tools): with tools at once, a key or reuse, put them on the tools (tools: [{…, setup_reads: true}])", IsError: true}, nil
+			}
+			if msg := checkSetupReads(in.SetupReads); msg != "" {
+				return tool.Result{Text: msg, IsError: true}, nil
+			}
 		}
 		tools := in.Tools
 		if len(tools) == 0 || string(tools) == "null" || string(tools) == "[]" {
@@ -355,6 +363,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		// given, for Setups whose instructions still make their own.
 		agent := newAgent(in.Agent, in.Name, in.TafName)
 		ask := map[string]any{"server": in.Server, "agent": agent, "tools": tools}
+		if len(in.SetupReads) > 0 {
+			ask["setup_reads"] = in.SetupReads
+		}
 		if in.Reuse != "" {
 			// The account's sign-in to that vendor, as a connected grant has it: the
 			// owner approves the tools alone, with no new sign-in or key (kiff/tafs#476).
