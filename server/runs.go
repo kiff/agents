@@ -505,6 +505,9 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 // the sweep continues it. A withdrawal that fails leaves the cancel
 // recorded; repeating it withdraws the rest.
 func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) {
+	if onCardsOnly(rn) {
+		return s.cancelOnCards(ctx, rn)
+	}
 	if s.Withdraw == nil {
 		return run.Run{}, conflict("paused_run", "a paused run can't be cancelled here: nothing withdraws the calls KIFF holds")
 	}
@@ -538,6 +541,55 @@ func (s *Server) cancelPaused(ctx context.Context, rn run.Run) (run.Run, error) 
 	if s.Background != nil && next.Status == run.Paused && resolved(next, s.now()) {
 		if err := s.Background(context.WithoutCancel(ctx), next.Tenant, next.ID); err != nil && s.Log != nil {
 			s.Log.ErrorContext(ctx, "continuing a cancelled paused run; the sweep will", "run", next.ID, "err", err)
+		}
+	}
+	return next, nil
+}
+
+// onCardsOnly reports whether rn waits only on cards: every requirement it
+// still waits on is a card the owner answers here, and KIFF holds nothing
+// for it. A card has no exception to withdraw, so there is nothing to ask
+// KIFF before the run ends.
+func onCardsOnly(rn run.Run) bool {
+	waits := false
+	for _, q := range rn.Requirements {
+		if !q.Answered.IsZero() {
+			continue
+		}
+		if q.Kind != run.KindCard {
+			return false
+		}
+		waits = true
+	}
+	return waits
+}
+
+// cancelOnCards ends a run paused only on cards. A card has nothing to
+// withdraw, and no card is answered: the cancel is recorded, each card
+// stops waiting now (its Expires, as a card that waited its CardWait out),
+// and the run, resolved, is handed to Background, which ends it CANCELLED at
+// its first checkpoint and ends its recording, as for a withdrawn hold. If
+// Background fails, the sweep continues it the same way.
+func (s *Server) cancelOnCards(ctx context.Context, rn run.Run) (run.Run, error) {
+	at := s.now()
+	next, err := run.Change(ctx, s.Runs, rn, at, func(n *run.Run) error {
+		if n.Status != run.Paused || !onCardsOnly(*n) {
+			return run.ErrConflict // changed meanwhile: read again
+		}
+		n.Cancel = true
+		for i, q := range n.Requirements {
+			if q.Answered.IsZero() && (q.Expires.IsZero() || q.Expires.After(at)) {
+				n.Requirements[i].Expires = at
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return run.Run{}, err
+	}
+	if s.Background != nil && resolved(next, at) {
+		if err := s.Background(context.WithoutCancel(ctx), next.Tenant, next.ID); err != nil && s.Log != nil {
+			s.Log.ErrorContext(ctx, "continuing a cancelled run paused on cards; the sweep will", "run", next.ID, "err", err)
 		}
 	}
 	return next, nil

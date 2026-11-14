@@ -642,7 +642,7 @@ func (c Component) check() error {
 		}
 	case "approval":
 		if !refPattern.MatchString(c.Grant) {
-			return fmt.Errorf("grant is planque's grant id")
+			return fmt.Errorf("grant is planque's grant id: every approval names its grant, the Card's alone too (the same grant as its connection's, with the draft)")
 		}
 		if c.Draft != "" && !refPattern.MatchString(c.Draft) {
 			return fmt.Errorf("draft is KIFF's agent draft id")
