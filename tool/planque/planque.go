@@ -105,7 +105,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
 			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, taf_name, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
 			"a provider's app (entry) is reused with tools: [] and nothing more (no entry, uses or setup_reads), its tools picked after from catalog {grant}; " +
-			"ask for a new sign-in or key only when there's none, or planque refuses the reuse. Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
+			"ask for a new sign-in or key only when there's none, planque refuses the reuse, or the owner wants another account at the app: request {entry, new_sign_in: true} (planque reuses a held sign-in to the app otherwise, the same account). Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
 			"Every argument's path is a field the vendor's operation takes, read from the vendor's own description of it (its OpenAPI description, or the vendor tool that describes an operation's fields), never made up: " +
@@ -171,6 +171,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected), or whose guide to read (guide)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
+			`"new_sign_in":{"type":"boolean","description":"with request {entry} for a provider's app: a sign-in of its own, so the owner can choose another account at the app; without it, a sign-in the account already holds to the app is reused"},` +
 			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with request {entry} for an app connected first (Stripe's, Qonto's): your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
 			`"profile":{"type":"object","description":"a managed app's drafted profile, kiff.profile.v1, sent with its tools (tools)"}},` +
@@ -239,6 +240,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		// SetupReads are Setup's own reads, by the vendor's tool names, on an
 		// entry's first request: approved with the sign-in (kiff/planque#175).
 		SetupReads []string `json:"setup_reads"`
+		// NewSignIn asks a provider's app (request {entry}) for a sign-in of
+		// its own, never the account's held one: another account at the app.
+		NewSignIn bool `json:"new_sign_in"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`
 	}
@@ -308,6 +312,13 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 					return tool.Result{Text: msg, IsError: true}, nil
 				}
 				ask["setup_reads"] = in.SetupReads
+			}
+			if in.NewSignIn {
+				// Only a provider's app takes it; a reviewed entry's own sign-in is never reused.
+				if !strings.HasPrefix(in.Entry, "connector:") {
+					return tool.Result{Text: "new_sign_in is only for a provider's app (an entry such as connector:composio:gmail)", IsError: true}, nil
+				}
+				ask["new_sign_in"] = true
 			}
 			body, _ := json.Marshal(ask)
 			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
