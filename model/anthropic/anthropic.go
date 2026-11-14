@@ -66,6 +66,8 @@ func (m *Model) Turn(ctx context.Context, req model.Request, onText func(string)
 		err = fmt.Errorf("%w: %w", model.ErrProviderBalance, err)
 	} else if err != nil && ToolsRefused(err) {
 		err = fmt.Errorf("%w: %w", model.ErrToolsRefused, err)
+	} else if err != nil && ContextOverflow(err) {
+		err = fmt.Errorf("%w: %w", model.ErrContextOverflow, err)
 	}
 	return r, err
 }

@@ -22,6 +22,12 @@ var ErrProviderBalance = errors.New("model: the provider refused the turn for ou
 // refused on every turn, so the run can't go on.
 var ErrToolsRefused = errors.New("model: the provider refused the request's tools")
 
+// ErrContextOverflow is a turn the provider refused because the request is
+// more than the model can read at once (its context window). Nothing of the
+// turn ran, and the next turn of the same run would only be longer, so the
+// run can't go on.
+var ErrContextOverflow = errors.New("model: the request is longer than the model's context window")
+
 // Role is who wrote a message.
 type Role string
 

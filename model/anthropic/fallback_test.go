@@ -99,3 +99,40 @@ func TestARequestRefusedForItsToolsSaysSo(t *testing.T) {
 		}
 	}
 }
+
+// A request longer than the model's context window is ErrContextOverflow,
+// with the API's words kept for the logs, and never falls back: the backup's
+// window is no larger. Any other bad request isn't, so a run that failed for
+// another reason is never counted as one that outgrew its context.
+func TestARequestLongerThanTheContextWindowSaysSo(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"the prompt too long", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215301 tokens > 200000 maximum"}}`, true},
+		{"input and max_tokens past the limit", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"input length and ` + "`max_tokens`" + ` exceed context limit: 198000 + 8192 > 200000"}}`, true},
+		{"another bad request", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content: tool_use ids were found without tool_result blocks"}}`, false},
+		{"its words with another status", 500, `{"type":"error","error":{"type":"api_error","message":"prompt is too long"}}`, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(c.status)
+			_, _ = w.Write([]byte(c.body))
+		}))
+		m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("test"), option.WithMaxRetries(0))
+		_, err := m.Turn(context.Background(), model.Request{Model: "claude-sonnet-5-5", MaxTokens: 64,
+			Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Hi."}}}}}, nil)
+		srv.Close()
+		if err == nil {
+			t.Fatalf("%s: no error", c.name)
+		}
+		if got := errors.Is(err, model.ErrContextOverflow); got != c.want {
+			t.Errorf("%s: ErrContextOverflow = %v, want %v (%v)", c.name, got, c.want, err)
+		}
+		if c.want && anthropic.FallsBack(err) {
+			t.Errorf("%s: fell back", c.name)
+		}
+	}
+}
