@@ -425,7 +425,9 @@ var counted = map[string]bool{"names the agent from the taf's name": true,
 	// the chat (grants are hidden in the log).
 	oneApprovalPerApp: true, noLoopAfterRefusal: true,
 	"connects on the first try": true, "offers only its own connections": true,
-	"one approval for the key and the Card": true, "narrows a managed sign-in": true}
+	"one approval for the key and the Card": true, "narrows a managed sign-in": true,
+	// Tools and connection states only.
+	everyAppApproved: true}
 
 // countedSkip are the checks whose reason is shown in a public log when they're
 // skipped only: a skip of signsWhatWasAgreed says how many rules and Cards it
@@ -1011,4 +1013,49 @@ func undisclosed(s said) []string {
 		}
 	}
 	return out
+}
+
+// everyAppApproved is the gate for a Card over two apps: each connection whose
+// tools the taf's Cards name is connected once the Card is issued. One fingerprint
+// over a two-app Card approved only one app's tools (14 Nov 2026, Win-back
+// offers: Gmail connected, Stripe's tools left waiting, and Coach with no card).
+const everyAppApproved = "every app the Card covers is approved"
+
+// gradeEveryAppApproved grades everyAppApproved from this run's connections and
+// the Cards KIFF holds on the taf. Skipped with no Card held. Its reason names
+// tools and states, never the chat or a grant's id.
+func gradeEveryAppApproved(grants []grant, cards []map[string]any) eval.CheckResult {
+	if len(cards) == 0 {
+		return eval.CheckResult{Name: everyAppApproved, Grade: eval.Grade{Skipped: true, Why: "no Card held on the taf"}}
+	}
+	actions := map[string]bool{}
+	for _, c := range cards {
+		gs, _ := c["grants"].([]map[string]any)
+		for _, g := range gs {
+			if a, ok := g["action"].(string); ok {
+				actions[strings.ToLower(a)] = true
+			}
+		}
+	}
+	var waiting []string
+	for _, g := range grants {
+		if g.Status == "connected" {
+			continue
+		}
+		for _, tl := range g.Request.Tools {
+			if actions[strings.ToLower(tl.Name)] || actions[strings.ToLower(tl.Tool)] {
+				name := tl.Name
+				if name == "" {
+					name = tl.Tool
+				}
+				waiting = append(waiting, name+" ("+g.Status+")")
+				break
+			}
+		}
+	}
+	if len(waiting) > 0 {
+		sort.Strings(waiting)
+		return eval.CheckResult{Name: everyAppApproved, Grade: eval.Grade{Why: "the Card is issued, but a connection it covers isn't connected: " + strings.Join(waiting, ", ")}}
+	}
+	return eval.CheckResult{Name: everyAppApproved, Grade: eval.Grade{Pass: true}}
 }

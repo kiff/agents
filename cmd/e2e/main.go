@@ -1592,6 +1592,18 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		return fmt.Errorf("grading the Card against the agreed rules: %w", err)
 	}
 	checks = append(checks, agreed)
+	// A Card over two apps: every connection it covers is connected once it's issued.
+	if len(held) > 0 {
+		var gs []grant
+		for _, id := range t.grants {
+			if g, err := t.phone.Grant(ctx, id); err == nil {
+				gs = append(gs, g)
+			} else {
+				t.logf("grant %s couldn't be read for %q: %v", id, everyAppApproved, err)
+			}
+		}
+		checks = append(checks, gradeEveryAppApproved(gs, held))
+	}
 	// The Coach batch's gates: first-try connects, only its own connections,
 	// one approval for a key and its Card, a managed sign-in narrowed.
 	// Read as the chat went: by now its runs' tool calls are gone.
