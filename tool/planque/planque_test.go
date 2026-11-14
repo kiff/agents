@@ -592,7 +592,13 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 	if isErr || seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"invoices-a1","tools":["QUICKBOOKS_LIST_INVOICES","QUICKBOOKS_GET_INVOICE"]}` {
 		t.Fatalf("request with uses: %s %v", text, seen)
 	}
+	// Another account at an app the account already holds: a sign-in of its own, never the held one reused (14 Nov).
+	text, isErr = call(t, tl, `{"action":"request","entry":"connector:composio:quickbooks","agent":"invoices-a1","uses":["QUICKBOOKS_LIST_INVOICES"],"new_sign_in":true}`)
+	if isErr || seen[len(seen)-1] != "POST /v1/accounts/tnt_1/catalog/connector:composio:quickbooks/grants Bearer k_setup "+`{"agent":"invoices-a1","new_sign_in":true,"tools":["QUICKBOOKS_LIST_INVOICES"]}` {
+		t.Fatalf("request with new_sign_in: %s %v", text, seen)
+	}
 	for _, bad := range []string{
+		`{"action":"request","entry":"stripe","agent":"a","new_sign_in":true}`,
 		`{"action":"request","entry":"connector:composio:quickbooks"}`,
 		`{"action":"request","entry":"connector:composio:quickbooks","server":"https://x.example","agent":"a"}`,
 		`{"action":"request","entry":"../grants","agent":"a"}`,
@@ -605,7 +611,7 @@ func TestSearchAndEventsBeforeConnecting(t *testing.T) {
 			t.Errorf("not refused: %s", bad)
 		}
 	}
-	if len(seen) != 6 {
+	if len(seen) != 7 {
 		t.Fatalf("a malformed request reached planque: %v", seen)
 	}
 	// A reviewed entry may answer the grant flat: read as well.
