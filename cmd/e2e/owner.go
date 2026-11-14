@@ -16,6 +16,7 @@ type (
 	phone     = testaccount.Phone
 	grant     = testaccount.Grant
 	grantTool = testaccount.GrantTool
+	grantArg  = testaccount.GrantArgument
 )
 
 // rawWords is what the owner shouldn't read in a grant's approval text

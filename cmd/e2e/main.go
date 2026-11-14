@@ -1928,6 +1928,20 @@ func isChargeRead(t grantTool) bool {
 	return t.Tool == "stripe_api_read" && t.Fixed["stripe_api_operation_id"] == "GetChargesCharge"
 }
 
+// readsByID says whether the taf can name the charge t reads: one of its
+// string arguments goes at parameters.id, the path parameter the operation
+// declares. A narrowed tool passes on nothing else, so without it every read
+// fails at the vendor ("Missing required path parameters: id"), and the taf
+// stops before refunding (main's Eval 43573899065).
+func readsByID(t grantTool) bool {
+	for _, a := range t.Arguments {
+		if a.Path == "parameters.id" && a.Type == "string" {
+			return true
+		}
+	}
+	return false
+}
+
 // isTool says whether action, as KIFF names it (the grant's tool name with
 // planque's per-grant part), is one of names.
 func isTool(action string, names []string) bool {
@@ -2014,6 +2028,10 @@ func coversTheJob(g grant) error {
 			asked["create_refund"] = true
 		}
 		if isChargeRead(t) {
+			if !readsByID(t) {
+				b, _ := json.Marshal(t)
+				return fmt.Errorf("Setup's read of one charge can't name the charge: the operation takes it at parameters.id, and planque passes on only the arguments the grant names: %s", b)
+			}
 			asked["read one charge"] = true
 		}
 	}
