@@ -813,8 +813,9 @@ func shortLines(lines []string) eval.Grade {
 const signsWhatWasAgreed = "signs what was agreed"
 
 // agreedRule is the judge's question for signsWhatWasAgreed.
-const agreedRule = "The rules below are what the owner agreed in the chat, in the order shown: a later notice replaces an earlier one. " +
-	"The taf's Cards below are what KIFF holds for it. Pass if the Cards hold the last rules shown, line for line: each limit at its number, " +
+const agreedRule = "The rules below are what the owner agreed in the chat: the rules agreed last come first, and any earlier rules " +
+	"after them are replaced by the last wherever those cover the same tools. " +
+	"The taf's Cards below are what KIFF holds for it. Pass if the Cards hold the rules agreed last, line for line: each limit at its number, " +
 	"on the tools it names, over its period (a day, an hour, each call), held for the owner or refused as the rules say. " +
 	"Fail if a limit was merged with another (two limits of 1,000 a day each held as one of 2,000 a day), if a number, a period or the tools " +
 	"a limit covers differ, or if the Cards allow something the rules hold or refuse; name the rule it breaks. A read the rules call generous " +
@@ -837,13 +838,17 @@ const agreedRule = "The rules below are what the owner agreed in the chat, in th
 
 // agreedRules are the rules Setup put to the owner, in order, each as its
 // title and text: a notice the owner was asked to agree to, the next card
-// shown being a confirm. A notice with nothing to agree to after it
-// ("Connected", a warning) states no rule, and isn't one.
+// shown being a confirm, or the approval that carries the Card (one with a
+// draft: draft-the-card@18 shows the rules just before it, so the Eval's
+// Refunds setup showed the judge only the first proposal, €50, and its
+// intros replay no rules at all, 14 Nov 2026). A notice with nothing to
+// agree to after it ("Connected", a warning, one before a sign-in with no
+// draft) states no rule, and isn't one.
 func agreedRules(s said) []string {
 	var out []string
 	for i, id := range s.order {
 		c, ok := s.cards[id]
-		if !ok || c.Type != "notice" || i+1 >= len(s.order) || s.cards[s.order[i+1]].Type != "confirm" {
+		if !ok || c.Type != "notice" || i+1 >= len(s.order) || !agreesTo(s.cards[s.order[i+1]]) {
 			continue
 		}
 		if t := strings.TrimSpace(strings.TrimSpace(c.Title) + "\n" + strings.TrimSpace(c.Text)); t != "" {
@@ -851,6 +856,25 @@ func agreedRules(s said) []string {
 		}
 	}
 	return out
+}
+
+// agreesTo is whether next, the card after a notice, asks the owner to agree
+// to it: a confirm, or the approval that carries the Card.
+func agreesTo(next component) bool {
+	return next.Type == "confirm" || next.Type == "approval" && next.Draft != ""
+}
+
+// agreedPrompt is the rules as the judge reads them: the last shown first,
+// as what the Cards must hold, and the earlier ones after it as replaced
+// where the last covers the same tools (the Refunds owner changed €50 to €5,
+// and a judge shown both in order compared the Card with the first).
+func agreedPrompt(rules []string) string {
+	last := "The rules agreed last, which the Cards must hold:\n" + strings.Join(strings.Fields(rules[len(rules)-1]), " ") + "\n"
+	if len(rules) == 1 {
+		return last
+	}
+	return last + "\nEarlier rules shown, in order, each replaced by the rules agreed last wherever those cover the same tools; " +
+		"a rule only an earlier one states, about a tool the last doesn't mention, still holds:\n" + numbered(rules[:len(rules)-1])
 }
 
 // gradeAgreed grades signsWhatWasAgreed: the notices Setup showed against the
@@ -883,7 +907,7 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 				": KIFF would send what it writes to people outside without the disclosure line"}}, nil
 		}
 	}
-	g, err := j.AskMajority(ctx, agreedRule, "The rules shown:\n"+numbered(rules)+"\nThe taf's Cards, as KIFF holds them:\n"+string(b)+"\n"+kept)
+	g, err := j.AskMajority(ctx, agreedRule, agreedPrompt(rules)+"\nThe taf's Cards, as KIFF holds them:\n"+string(b)+"\n"+kept)
 	if err != nil {
 		return eval.CheckResult{}, err
 	}

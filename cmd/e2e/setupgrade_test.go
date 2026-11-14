@@ -806,3 +806,64 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 		}
 	}
 }
+
+// The rules shown just before the approval that carries the Card are rules the
+// owner agreed (draft-the-card@18), and the last ones agreed are what the Card
+// is held to. Eval 43620508387, 14 Nov 2026: the Refunds owner changed €50 a
+// refund to €5, the €5 rules came before the Card's approval, and the judge was
+// shown only the €50 ones; the intros replay's only rules came before its
+// Card's approval, and the gate skipped with 5 Cards held.
+func TestTheRulesBeforeTheCardsApprovalAreTheAgreedOnes(t *testing.T) {
+	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "refund_charge"}}}}
+	refunds := said{cards: map[string]component{
+		"r1":    {Type: "notice", Title: "The rules", Text: "Up to €50 a refund without asking, at most €200 refunded a day."},
+		"ask":   {Type: "confirm", Title: "Agree to these rules?"},
+		"r2":    {Type: "notice", Title: "The rules", Text: "Up to €5 a refund without asking, at most €50 refunded a day. Refunds only in EUR."},
+		"tools": {Type: "approval", Grant: "grt_1", Draft: "drf_1", Title: "Approve its tools and Card"},
+	}, order: []string{"r1", "ask", "r2", "tools"}}
+	got := agreedRules(refunds)
+	if len(got) != 2 || !strings.Contains(got[1], "€5 a refund") {
+		t.Fatalf("the rules shown before the Card's approval weren't counted: %q", got)
+	}
+	v := &verdicts{}
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, refunds, cards); err != nil {
+		t.Fatal(err)
+	}
+	asked := strings.Join(v.asked, "\n")
+	last, earlier, ok := strings.Cut(asked, "Earlier rules shown")
+	if !ok || !strings.Contains(last, "The rules agreed last, which the Cards must hold:") || !strings.Contains(last, "€5 a refund") || strings.Contains(last, "€50 a refund") || !strings.Contains(earlier, "€50 a refund") {
+		t.Fatalf("the judge wasn't shown the €5 rules as the last agreed, the €50 ones as replaced:\n%s", asked)
+	}
+	// The intros replay: its only rules come before the Card's approval. It's graded, not skipped.
+	intros := said{cards: map[string]component{
+		"connect": {Type: "approval", Grant: "grt_s", Title: "Connect the sheet"},
+		"rules":   {Type: "notice", Title: "The rules", Text: "Runs weekday mornings at 8:00. Reads the sheet, up to 1,000 reads a day. Writes drafts only."},
+		"tools":   {Type: "approval", Grant: "grt_s", Draft: "drf_s", Title: "Approve its tools and Card"},
+	}, order: []string{"connect", "rules", "tools"}}
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, intros, cards)
+	if err != nil || r.Grade.Skipped || !r.Grade.Pass {
+		t.Fatalf("the intros order skipped or failed: %+v %v", r, err)
+	}
+	// One set of rules: shown as the last agreed, with no earlier ones.
+	v = &verdicts{}
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, intros, cards); err != nil {
+		t.Fatal(err)
+	}
+	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "The rules agreed last") || strings.Contains(asked, "Earlier rules shown") {
+		t.Fatalf("one set of rules, shown wrongly:\n%s", asked)
+	}
+	// A notice before an approval with no draft (a sign-in, a connect first) asks nothing of the owner's rules.
+	signIn := said{cards: map[string]component{
+		"before":  {Type: "notice", Title: "Before you sign in", Text: "You'll sign in to the sheet's app."},
+		"connect": {Type: "approval", Grant: "grt_s", Title: "Connect the sheet"},
+		"warn":    {Type: "notice", Title: "Heads up", Text: "Sign-ins expire after 90 days."},
+		"in":      {Type: "sign_in", Grant: "grt_s", Draft: "drf_x"},
+	}, order: []string{"before", "connect", "warn", "in"}}
+	if got := agreedRules(signIn); len(got) != 0 {
+		t.Fatalf("a notice before an approval with no draft, or a sign-in, counted as rules: %q", got)
+	}
+	// The judge's rule says which rules the Card is held to.
+	if !strings.Contains(agreedRule, "Pass if the Cards hold the rules agreed last") || !strings.Contains(agreedRule, "the rules agreed last come first") {
+		t.Fatal("the rule doesn't say the Card is held to the rules agreed last")
+	}
+}
