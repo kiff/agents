@@ -841,7 +841,10 @@ const agreedRule = "The rules below are what the owner agreed in the chat: the r
 	"never on a Card, kept only on the tools listed below as disclosed, so a rule that every reply starts with it fails when the tool " +
 	"that sends replies isn't listed (and isn't graded when below says the taf isn't made yet); and a rule the rules themselves say is " +
 	"kept in the taf's instructions because KIFF can't count it (a wording, or a limit for each item with nothing to count it by), " +
-	"never a limit on an amount, a count KIFF counts, or which tools it uses. Any other rule the Cards don't hold fails."
+	"never a limit on an amount, a count KIFF counts, or which tools it uses. Any other rule the Cards don't hold fails. " +
+	"A rule over \"each read tool\", \"every tool\" or an app's tools covers the taf's own tools, listed below when they are: " +
+	"a tool the app offers that isn't among them isn't the taf's, needs no Card (KIFF refuses any call no Card covers), and is never " +
+	"a reason to fail. A tool of the taf's that no Card covers, or covers past the rules, fails."
 
 // agreedRules are the rules Setup put to the owner, in order, each as its
 // title and text: a notice the owner was asked to agree to, the next card
@@ -916,6 +919,11 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 	if len(s.pinned) > 0 {
 		kept = "\nKept on the connection (arguments it fixes to one value):\n" + strings.Join(s.pinned, "\n") + "\n"
 	}
+	// The taf's own tools, so "each read tool" is read against them and not against everything the app offers
+	// (Eval 43648657710: the judge wanted Cards for a sheet's get_sheet, which the taf was never given).
+	if tools := tafTools(s); len(tools) > 0 {
+		kept += "\nThe taf's tools (what its approved connections give it; nothing else is the taf's):\n" + strings.Join(tools, "\n") + "\n"
+	}
 	made, disclosed := disclosedTools(s)
 	switch {
 	case !made:
@@ -942,6 +950,27 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 
 // pinsOf is what a connection fixes, tool by tool, as the judge reads it:
 // "reply_ticket: workspace = ws_demo", in a stable order.
+// tafTools are the tools the taf's approved connections give it, by their names
+// in KIFF, sorted. A tool Setup asked for to read during set-up (setup_reads) is
+// Setup's own, on its reader Card, never the taf's.
+func tafTools(s said) []string {
+	var out []string
+	for _, tl := range s.connected {
+		if tl.SetupReads {
+			continue
+		}
+		name := tl.Name
+		if name == "" {
+			name = tl.Tool
+		}
+		if name != "" && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func pinsOf(g grant) []string {
 	var out []string
 	for _, tl := range g.Request.Tools {
