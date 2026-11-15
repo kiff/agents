@@ -13,11 +13,14 @@ import (
 // little: the same case scores differently run to run, so a baseline is
 // held against the mean.
 type Summary struct {
-	Case         string  `json:"case"`
-	Runs         int     `json:"runs"`
-	Score        float64 `json:"score"`
-	Min          float64 `json:"min"`
-	Max          float64 `json:"max"`
+	Case  string  `json:"case"`
+	Runs  int     `json:"runs"`
+	Score float64 `json:"score"`
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	// Graded counts the gate checks graded over its runs: none, and its
+	// score is no score (a run with nothing to grade), shown as "–".
+	Graded       int     `json:"graded"`
 	CostMicroUSD int64   `json:"cost_micro_usd"`
 	PerItemMicro int64   `json:"cost_per_item_micro_usd"`
 	Turns        float64 `json:"turns"`
@@ -39,6 +42,7 @@ func Summarize(results []Result) []Summary {
 		}
 		s := &out[i]
 		s.Runs++
+		s.Graded += r.Graded
 		s.Score += r.Score
 		s.Min, s.Max = min(s.Min, r.Score), max(s.Max, r.Score)
 		s.CostMicroUSD += r.CostMicroUSD
@@ -122,8 +126,13 @@ func WriteReport(w io.Writer, cfgs []Config, results []Result, lower []string) e
 			failed = append(failed, fmt.Sprintf("%s (%d)", name, n))
 		}
 		slices.Sort(failed)
-		fmt.Fprintf(&b, "| %s | %d | %.2f | %.2f–%.2f | %.4f | %.4f | %.1f | %.0f%% | %s |\n",
-			s.Case, s.Runs, s.Score, s.Min, s.Max, float64(s.CostMicroUSD)/1e6, float64(s.PerItemMicro)/1e6,
+		score, span := fmt.Sprintf("%.2f", s.Score), fmt.Sprintf("%.2f–%.2f", s.Min, s.Max)
+		if s.Graded == 0 {
+			// Nothing to grade on any run (0/0): no score, never a 0.00 that reads as failing.
+			score, span = "–", "–"
+		}
+		fmt.Fprintf(&b, "| %s | %d | %s | %s | %.4f | %.4f | %.1f | %.0f%% | %s |\n",
+			s.Case, s.Runs, score, span, float64(s.CostMicroUSD)/1e6, float64(s.PerItemMicro)/1e6,
 			s.Turns, 100*s.CacheShare, cell(strings.Join(failed, ", ")))
 	}
 	fmt.Fprintf(&b, "\n## Runs\n")
