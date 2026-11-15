@@ -673,4 +673,14 @@ func TestTheAgreedGatesSkipSaysWhyAndItsFailStaysPrivate(t *testing.T) {
 	if strings.Contains(log.String(), "the owner said") {
 		t.Fatalf("a judged fail's reason reached the public log: %q", log.String())
 	}
+	// A pass one judge doubted: the warn in the log, the doubting judge's reason in the transcript only.
+	log.Reset()
+	transcript.Reset()
+	_ = tt.reportSetup([]eval.CheckResult{{Name: signsWhatWasAgreed, Grade: eval.Grade{Pass: true, Split: 1, Why: "the Card counts 20 drafts, the owner said 10"}}})
+	if !strings.Contains(log.String(), "  warn  signs what was agreed (1 of 3 judges said not)\n") || strings.Contains(log.String(), "the owner said") {
+		t.Fatalf("the public log: %q", log.String())
+	}
+	if !strings.Contains(transcript.String(), "WARN signs what was agreed (1 of 3 judges said not): the Card counts 20 drafts, the owner said 10\n") {
+		t.Fatalf("the transcript: %q", transcript.String())
+	}
 }
