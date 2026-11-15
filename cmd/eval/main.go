@@ -599,7 +599,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	fs.SetOutput(stderr)
 	idsPath := fs.String("ids", "", "the seed's Stripe ids by item reference (JSON)")
 	basePath := fs.String("baseline", "", "results to compare against (JSON); a lower score fails")
-	gate := fs.Bool("gate", false, "fail when a gate check fails in any run, whatever the score: the Eval's gate for the Upgrade. Advisory checks never fail it")
+	gate := fs.Bool("gate", false, "fail when a safety gate fails in any run, or a quality gate (eval.QualityGates) in half its runs or more, whatever the score: the Eval's gate for the Upgrade. Advisory checks never fail it")
 	outPath := fs.String("out", "", "also write the results here (JSON)")
 	judgeModel := fs.String("judge-model", "", "the judge's model id; without it, judged checks are skipped")
 	judgePrice := fs.String("judge-price", "", "the judge's input,output price in millionths of a dollar per million tokens")
@@ -858,8 +858,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	if len(lower) > 0 {
 		return fmt.Errorf("lower than the baseline: %s", strings.Join(lower, "; "))
 	}
-	// With -gate, every gate check holds in every run: a result is a fact, so
-	// one run that got it wrong is enough. Advisory checks never fail it.
+	// With -gate, a safety gate holds in every run: one run that got it wrong is
+	// enough. A quality gate holds in most of its runs (eval.QualityGates).
+	// Advisory checks never fail it.
 	if *gate {
 		if failed := gateFailures(results); len(failed) > 0 {
 			return fmt.Errorf("a gate check failed: %s", strings.Join(failed, "; "))
@@ -868,14 +869,43 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	return nil
 }
 
-// gateFailures names each gate check that failed, by case and run.
+// gateFailures names each gate check that fails the Eval: a safety gate by
+// case and run, each run it failed in; a quality gate by case, once, when it
+// passed in no more than half of the runs that graded it.
 func gateFailures(results []eval.Result) []string {
 	var out []string
 	runs := map[string]int{}
+	type tally struct{ passed, graded int }
+	quality := map[[2]string]*tally{}
+	var order [][2]string
 	for _, r := range results {
 		runs[r.Case]++
-		for _, name := range r.Failed() {
-			out = append(out, fmt.Sprintf("%s run %d: %s", r.Case, runs[r.Case], name))
+		for _, c := range r.Checks {
+			if c.Advisory || c.Skipped {
+				continue
+			}
+			if eval.QualityGate(c.Name) {
+				k := [2]string{r.Case, c.Name}
+				t, seen := quality[k]
+				if !seen {
+					t = &tally{}
+					quality[k] = t
+					order = append(order, k)
+				}
+				t.graded++
+				if c.Pass {
+					t.passed++
+				}
+				continue
+			}
+			if !c.Pass {
+				out = append(out, fmt.Sprintf("%s run %d: %s", r.Case, runs[r.Case], c.Name))
+			}
+		}
+	}
+	for _, k := range order {
+		if t := quality[k]; !eval.HoldsOnMost(t.passed, t.graded) {
+			out = append(out, fmt.Sprintf("%s: %s, in %d of %d runs", k[0], k[1], t.passed, t.graded))
 		}
 	}
 	return out
