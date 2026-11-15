@@ -36,6 +36,7 @@ func (f *fakeCloud) servers(t *testing.T) (cloud, planque, kiff *httptest.Server
 		_ = json.NewEncoder(w).Encode(map[string]any{"grants": []map[string]any{
 			{"id": "grt_other", "status": "connected", "request": map[string]any{"agent": "someone-else"}},
 			{"id": "grt_1", "status": "connected", "request": map[string]any{"agent": "refunds-x"}},
+			{"id": "grt_listed", "status": "listed", "request": map[string]any{"agent": "refunds-x"}},
 		}})
 	}))
 	f.planque = planque.URL
@@ -187,6 +188,11 @@ func TestARefusedDraftGoesBackToCoachUnconfirmed(t *testing.T) {
 	if err != nil || reread || answer != refused["answer"] {
 		t.Fatalf("reread %v, answer %q, err %v", reread, answer, err)
 	}
+	// Not marked as one a redraft mends (or from a tafs cloud that doesn't mark it): the owner read the card,
+	// and the refusal came at the tap.
+	if len(tt.approvals) != 1 {
+		t.Fatalf("the owner read %d approvals, want 1", len(tt.approvals))
+	}
 	if got := refusedAnswer(c, answer); got != `[approval a1] failed: the Card covers "list_charges", but …` {
 		t.Fatalf("Coach hears %q", got)
 	}
@@ -226,5 +232,54 @@ func TestARefusedDraftGoesBackToCoachUnconfirmed(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(f.calls, "\n"), "confirm") {
 		t.Fatalf("confirmed after a read again: %v", f.calls)
+	}
+}
+
+// Eval 43690861487's Refunds: the owner read and approved a Card that the
+// check then refused, and approved the redraft, two Card approvals for one
+// app. tafs cloud now checks a connected app's Card as the phone reads the
+// chat: a refusal a new draft mends (marked redraft) goes to Coach before the
+// card is drawn, so the owner never reads, or approves, that card.
+func TestARedraftRefusalReachesCoachBeforeTheOwnerReadsTheCard(t *testing.T) {
+	refused := map[string]any{"outcome": "answered", "code": "vendor_name", "redraft": true, "answer": `failed: the Card covers "list_charges", but …`}
+	tt, f := checkWorld(t, refused)
+	tt.cfg.transcript = &strings.Builder{}
+	c := component{Type: "approval", ID: "a1", Grant: "grt_1", Draft: "drf_1"}
+	var approved string
+	reread, answer, err := tt.approve(context.Background(), c, &approved)
+	if err != nil || reread || answer != refused["answer"] {
+		t.Fatalf("reread %v, answer %q, err %v", reread, answer, err)
+	}
+	if len(tt.approvals) != 0 || len(tt.draftIDs) != 0 || strings.Join(tt.draftRefusals, ",") != "vendor_name" {
+		t.Fatalf("the owner read %d approvals, confirmed %v, refusals %v", len(tt.approvals), tt.draftIDs, tt.draftRefusals)
+	}
+	tr := tt.cfg.transcript.(*strings.Builder).String()
+	if strings.Contains(tr, "the owner reads") || !strings.Contains(tr, "before the card was drawn") {
+		t.Fatalf("transcript: %s", tr)
+	}
+	// The redraft passes: read once by the owner, checked once, confirmed.
+	f.answer, f.calls = map[string]any{"outcome": "ok", "version": "v3"}, nil
+	c.ID, c.Draft = "a2", "drf_2"
+	if _, answer, err = tt.approve(context.Background(), c, &approved); err != nil || answer != "" {
+		t.Fatalf("answer %q, err %v", answer, err)
+	}
+	if strings.Join(f.calls, "\n") != "kiff GET /v1/me/agent-drafts/drf_2\ncloud POST /v1/connect/grants/grt_1/check\nkiff POST /v1/me/agent-drafts/drf_2/confirm" ||
+		len(tt.approvals) != 1 || strings.Join(tt.draftIDs, ",") != "drf_2" {
+		t.Fatalf("calls %v, approvals %d, confirmed %v", f.calls, len(tt.approvals), tt.draftIDs)
+	}
+}
+
+// Only a connected app's Card alone is checked on the read, as tafs cloud
+// does: any other card is read by the owner first, and checked after.
+func TestOnlyAConnectedAppsCardIsCheckedBeforeTheOwnerReads(t *testing.T) {
+	refused := map[string]any{"outcome": "answered", "code": "vendor_name", "redraft": true, "answer": `failed: the Card covers "list_charges", but …`}
+	tt, _ := checkWorld(t, refused)
+	c := component{Type: "approval", ID: "a1", Grant: "grt_listed", Draft: "drf_1"}
+	var approved string
+	if _, answer, err := tt.approve(context.Background(), c, &approved); err != nil || answer != refused["answer"] {
+		t.Fatalf("answer %q, err %v", answer, err)
+	}
+	if len(tt.approvals) != 1 {
+		t.Fatalf("the owner read %d approvals, want 1", len(tt.approvals))
 	}
 }

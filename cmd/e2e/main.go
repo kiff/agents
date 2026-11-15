@@ -1227,6 +1227,30 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		t.logf("card %s read again, already answered: nothing asked", c.ID)
 		return true, "", nil
 	}
+	// A connected app's Card alone is checked as the phone reads the chat,
+	// before its card is drawn (kiff/tafs handler.ts precheck): a refusal a
+	// new draft mends goes to Coach then, and the owner never reads, or
+	// approves, that card (Eval 43690861487's Refunds: two Card approvals for
+	// one app, the first one refused after the owner approved it).
+	// The check on the read stands for the tap's too: nothing changes while
+	// the owner reads.
+	var read *draftChecked
+	if newDraft && g.Status == "connected" {
+		version, err := t.draftVersion(ctx, c.Draft)
+		if err != nil {
+			return false, "", err
+		}
+		checked, err := t.checkDraft(ctx, c.Grant, c.Draft, version)
+		if err != nil {
+			return false, "", err
+		}
+		if !checked.OK && checked.Redraft {
+			t.draftRefusals = append(t.draftRefusals, checked.Code)
+			t.logf("draft refused by tafs cloud's check as the chat was read, before the card was drawn (%s, %s): Coach hears its answer", checkRoute, checked.Code)
+			return false, checked.Answer, nil
+		}
+		read = &checked
+	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
 	t.approvals = append(t.approvals, seen)
 	if raw := rawWords(g); raw != "" && len(g.Request.Tools) > 0 {
@@ -1253,14 +1277,17 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		// app carrying the same Card): confirmed once, as the app does.
 		return false, "", nil
 	}
-	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+c.Draft, nil)
-	if err != nil || d.Err() != nil {
-		return false, "", fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.Err())
-	}
-	version, _ := d.Body["version"].(string)
-	checked, err := t.checkDraft(ctx, c.Grant, c.Draft, version)
-	if err != nil {
-		return false, "", err
+	var checked draftChecked
+	if read != nil {
+		checked = *read
+	} else {
+		version, err := t.draftVersion(ctx, c.Draft)
+		if err != nil {
+			return false, "", err
+		}
+		if checked, err = t.checkDraft(ctx, c.Grant, c.Draft, version); err != nil {
+			return false, "", err
+		}
 	}
 	if !checked.OK {
 		t.draftRefusals = append(t.draftRefusals, checked.Code)
@@ -1268,7 +1295,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		return false, checked.Answer, nil
 	}
 	t.logf("draft passed tafs cloud's check (%s), then confirmed in KIFF", checkRoute)
-	d, err = t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": checked.Version})
+	d, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": checked.Version})
 	if err != nil || d.Err() != nil {
 		return false, "", fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.Err())
 	}

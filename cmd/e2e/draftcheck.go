@@ -22,6 +22,10 @@ type draftChecked struct {
 	Version string
 	Answer  string
 	Code    string
+	// Redraft: a refusal a new draft mends, which tafs cloud hands Coach as
+	// the phone reads the chat, before the card is drawn (kiff/tafs
+	// handler.ts precheck): tafs cloud's own list, marked on its answer.
+	Redraft bool
 }
 
 // checkDraft asks tafs cloud whether Approve would sign draft, at version, for
@@ -46,6 +50,17 @@ func (t *test) checkDraft(ctx context.Context, grant, draft, version string) (dr
 	return checkedFrom(a.Body)
 }
 
+// draftVersion is the version KIFF shows for draft now: the one the check is
+// asked at, as an app sends the version it read.
+func (t *test) draftVersion(ctx context.Context, draft string) (string, error) {
+	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+url.PathEscape(draft), nil)
+	if err != nil || d.Err() != nil {
+		return "", fmt.Errorf("reading the draft %s: %v %v", draft, err, d.Err())
+	}
+	version, _ := d.Body["version"].(string)
+	return version, nil
+}
+
 // checkedFrom reads the check's answer. A read again (its Cards or the Cards
 // in force unread, another version than read) isn't a refusal to hand Coach:
 // the app would read again, and the harness read the draft just before, so
@@ -62,7 +77,8 @@ func checkedFrom(body map[string]any) (draftChecked, error) {
 		if !strings.HasPrefix(str("answer"), "failed: ") && !strings.HasPrefix(str("answer"), "already approved") {
 			return draftChecked{}, fmt.Errorf("tafs cloud's check answered %q, not a refusal", str("answer"))
 		}
-		return draftChecked{Answer: str("answer"), Code: str("code")}, nil
+		redraft, _ := body["redraft"].(bool)
+		return draftChecked{Answer: str("answer"), Code: str("code"), Redraft: redraft}, nil
 	case "read_again":
 		return draftChecked{}, fmt.Errorf("tafs cloud's check said to read the draft again (%s)", str("code"))
 	}
