@@ -912,21 +912,38 @@ type question struct {
 // answerQuestions is the owner's one message for a questions card, as the
 // app sends it: each question's id to {value} or {own}. A test-or-live
 // question gets test (kiff/tafs#89); own, when given, answers the first
-// other question in the owner's words.
+// other question in the owner's words, and every question that offers
+// numbers too: a limit tapped from Setup's options beside the owner's own
+// limits contradicts them (Eval 43686790277: €5 and €50 typed, 50 and 200
+// tapped), and a judge then grades against an owner who said both. A
+// question without numbers (where requests reach the taf) takes its first
+// option, as before.
 func answerQuestions(c component, own string) string {
 	answers := map[string]map[string]string{}
+	first := true
 	for _, q := range c.Questions {
 		switch test, ok := modeOptions(q.Options); {
 		case ok:
 			answers[q.ID] = map[string]string{"value": test}
-		case own != "":
-			answers[q.ID], own = map[string]string{"own": own}, ""
+		case own != "" && (first || offersNumbers(q.Options)):
+			answers[q.ID], first = map[string]string{"own": own}, false
 		case len(q.Options) > 0:
 			answers[q.ID] = map[string]string{"value": q.Options[0].Value}
 		}
 	}
 	b, _ := json.Marshal(answers)
 	return fmt.Sprintf("[questions %s] %s", c.ID, b)
+}
+
+// offersNumbers is whether a question's options carry a number (a limit,
+// an amount, a count): the owner's own words answer it, never a tap.
+func offersNumbers(options []option) bool {
+	for _, o := range options {
+		if strings.ContainsAny(o.Value+o.Label, "0123456789") {
+			return true
+		}
+	}
+	return false
 }
 
 // reply is the owner's next word in a chat whose last run was last: an

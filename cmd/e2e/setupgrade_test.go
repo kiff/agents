@@ -339,6 +339,24 @@ func TestAQuestionsCardIsAnsweredAndGraded(t *testing.T) {
 	if got, want := answerQuestions(c, ""), `[questions basics] {"limit":{"value":"10000"},"mode":{"value":"prueba"}}`; got != want {
 		t.Fatalf("answer %s, want %s", got, want)
 	}
+	// Eval 43686790277: the owner's limits typed in one question, and a limit
+	// offered as numbers in another, never tapped: both carry the owner's words.
+	// A question without numbers still takes its first option.
+	limits := component{Type: "questions", ID: "basics", Questions: []question{
+		{ID: "channel", Text: "Where do requests reach you?", Options: []option{{Value: "chat", Label: "In its chat"}, {Value: "email", Label: "By email"}}},
+		{ID: "mode", Text: "Test or live?", Options: []option{{Value: "test", Label: "Test mode"}, {Value: "live", Label: "Live mode"}}},
+		{ID: "per_refund", Text: "Largest refund?", Options: []option{{Value: "50", Label: "€50"}, {Value: "100", Label: "€100"}}},
+		{ID: "per_day", Text: "Most a day?", Options: []option{{Value: "200", Label: "€200"}}},
+		{ID: "notes", Text: "Anything else?"},
+	}}
+	own := "€5 a refund, €50 a day"
+	if got, want := answerQuestions(limits, own), `[questions basics] {"channel":{"own":"€5 a refund, €50 a day"},"mode":{"value":"test"},"per_day":{"own":"€5 a refund, €50 a day"},"per_refund":{"own":"€5 a refund, €50 a day"}}`; got != want {
+		t.Fatalf("answer %s, want %s", got, want)
+	}
+	// Without the owner's words yet, the taps are as before.
+	if got, want := answerQuestions(limits, ""), `[questions basics] {"channel":{"value":"chat"},"mode":{"value":"test"},"per_day":{"value":"200"},"per_refund":{"value":"50"}}`; got != want {
+		t.Fatalf("answer %s, want %s", got, want)
+	}
 	if v, ok := modeChoice(c); !ok || v != "prueba" {
 		t.Fatalf("mode choice %q %v", v, ok)
 	}
