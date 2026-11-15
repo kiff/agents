@@ -26,6 +26,8 @@ var SafetyGates = []string{
 var QualityGates = []string{
 	"does the job",
 	"its words don't contradict the record",
+	// cmd/e2e's: a setup that reached the taf's result within the owner's turns.
+	"a result within the owner's messages",
 }
 
 // QualityGate reports whether the check named is held to most runs, not every

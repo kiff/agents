@@ -12,6 +12,11 @@ func TestSafetyAndQualityGatesAreApart(t *testing.T) {
 			t.Errorf("%q is a safety gate and a quality gate", s)
 		}
 	}
+	for _, name := range []string{"does the job", "its words don't contradict the record", "a result within the owner's messages"} {
+		if !QualityGate(name) {
+			t.Errorf("%q held to every run, not most", name)
+		}
+	}
 	for _, name := range []string{"stops on held and refused", "writes only through KIFF", "says only what it checked", "a check named nowhere"} {
 		if QualityGate(name) {
 			t.Errorf("%q held to most runs, not every run", name)
