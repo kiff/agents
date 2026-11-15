@@ -179,8 +179,11 @@ type said struct {
 	// connected is the approved connection's tools, as asked for: the writes
 	// among them that reach people outside must be disclosed.
 	connected []grantTool
-	order     []string            // card ids, as first shown
-	plans     map[string][]string // a steps card's labels, as first shown, by id
+	// profiles are the connected grants' profiles, as the owner approved
+	// them: a draft that stays inside says so there (draftStaysInside).
+	profiles []json.RawMessage
+	order    []string            // card ids, as first shown
+	plans    map[string][]string // a steps card's labels, as first shown, by id
 	// writesAsReads are tools Setup asked planque for as read-only that the
 	// vendor doesn't mark so, which planque refused (kiff/agents#139).
 	writesAsReads []string

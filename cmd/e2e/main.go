@@ -907,6 +907,23 @@ type component struct {
 	Options []option `json:"options"`
 	// A questions card's questions (kiff/tafs#138 item 57).
 	Questions []question `json:"questions"`
+	// A rules notice's rules, as data beside its words (draft-the-card@26):
+	// one per tool, what happens past its limit and the figures the owner read.
+	Rules []shownRule `json:"rules"`
+	// A confirm that agrees to a rules notice: the notice's id.
+	Agrees string `json:"agrees"`
+}
+
+// shownRule is one tool's rule on a rules notice: its tool by planque's name,
+// ask or refuse past its limit, and its figures.
+type shownRule struct {
+	Tool   string `json:"tool"`
+	Over   string `json:"over"`
+	Limits []struct {
+		Quantity string `json:"quantity"`
+		Window   string `json:"window"`
+		Limit    *int64 `json:"limit"`
+	} `json:"limits"`
 }
 
 // option is one answer to a confirm or a question.
@@ -1385,7 +1402,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 // connectedGrants are the pins and tools of every grant this run approved
 // that is connected now, in the order approved. One that can't be read is
 // left out, and said.
-func (t *test) connectedGrants(ctx context.Context) (pinned []string, connected []grantTool) {
+func (t *test) connectedGrants(ctx context.Context) (pinned []string, connected []grantTool, profiles []json.RawMessage) {
 	for _, id := range t.grants {
 		g, err := t.phone.Grant(ctx, id)
 		if err != nil {
@@ -1395,9 +1412,12 @@ func (t *test) connectedGrants(ctx context.Context) (pinned []string, connected 
 		if g.Status == "connected" {
 			pinned = append(pinned, pinsOf(g)...)
 			connected = append(connected, g.Request.Tools...)
+			if len(g.Request.Profile) > 0 {
+				profiles = append(profiles, g.Request.Profile)
+			}
 		}
 	}
-	return pinned, connected
+	return pinned, connected, profiles
 }
 
 // readCard is what an approval card asks of the owner, before anything is
@@ -1709,8 +1729,8 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	// What every connection this run approved fixes, and its tools, once
 	// connected: a rule kept there is kept, whatever the case (the refunds
 	// setup showed the judge none, and its EUR rule read as held nowhere).
-	if pinned, connected := t.connectedGrants(ctx); len(connected) > 0 {
-		t.said.pinned, t.said.connected = pinned, connected
+	if pinned, connected, profiles := t.connectedGrants(ctx); len(connected) > 0 {
+		t.said.pinned, t.said.connected, t.said.profiles = pinned, connected, profiles
 	}
 	checks, err := gradeSetup(ctx, t.cfg.judge, o, t.said, tafAgent, m)
 	if err != nil {
@@ -1728,6 +1748,12 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		return fmt.Errorf("grading the Card against the agreed rules: %w", err)
 	}
 	checks = append(checks, agreed)
+	// The agreed rules as data (draft-the-card@26), and a draft invoice that
+	// says it stays inside: tafs cloud only logs either missing for now.
+	checks = append(checks, gradeRulesAsData(t.said), figuresUnsaid(t.said))
+	if t.cfg.invoices {
+		checks = append(checks, gradeDraftStaysInside(t.said))
+	}
 	// A Card over two apps: every connection it covers is connected once it's issued.
 	if len(held) > 0 {
 		var gs []grant

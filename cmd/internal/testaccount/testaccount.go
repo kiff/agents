@@ -231,6 +231,10 @@ type Grant struct {
 		Agent  string      `json:"agent"`
 		Kind   string      `json:"kind"`
 		Tools  []GrantTool `json:"tools"`
+		// Profile is the exact profile the owner approved with the grant
+		// (planque keeps it as sent): its operations, each with its effect
+		// and resource, such as a draft's outside.
+		Profile json.RawMessage `json:"profile"`
 	} `json:"request"`
 	// Events is the grant's record, such as "read list_accounts at …" when
 	// Setup read what the sign-in covers (kiff/planque#14).
