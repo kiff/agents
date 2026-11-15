@@ -193,7 +193,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
-	disconnect := fs.String("disconnect", "", "only this: disconnect the test account's grant with this id, as the owner's phone "+
+	disconnect := fs.String("disconnect", "", "only this: disconnect the test account's one grant whose id starts with this (grt_ and at least 4 more), as the owner's phone "+
 		"(disconnect.go), a one-off for a grant an earlier run left. Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	sweepMode := fs.Bool("sweep", false, "only the teardown: archive the tafs -made names that are still there, as the owner's phone "+
 		"(sweep.go). Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")

@@ -6,13 +6,14 @@ name: E2E disconnect
 # back: done only when planque says disconnected. Another account's grant
 # is answered as not found and is never sent anything.
 #
-# By hand only. The log is public, so it names only the grant's first
-# characters and its status before and after.
+# By hand only. The log is public, inputs included, so the input is the
+# grant's first characters (grt_ and at least 4 more), never the whole id:
+# the one grant of the test account they start is the one disconnected.
 on:
   workflow_dispatch:
     inputs:
       grant:
-        description: "The test account's grant to disconnect (grt_…)"
+        description: "The first characters of the test account's grant to disconnect (grt_ and at least 4 more; never the whole id: this log is public)"
         type: string
         required: true
 permissions:

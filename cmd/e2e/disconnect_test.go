@@ -25,7 +25,7 @@ import (
 func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	var mu sync.Mutex
-	status := map[string]string{"grt_qwBr3staleone": "connected", "grt_gone0000000": "disconnected"}
+	status := map[string]string{"grt_qwBr3staleone": "connected", "grt_gone0000000": "disconnected", "grt_twin1aaaa": "connected", "grt_twin2bbbb": "connected"}
 	deletes := 0
 	planque := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -59,18 +59,20 @@ func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 	ctx := context.Background()
 
 	var out strings.Builder
-	if err := disconnectGrant(ctx, phone, "grt_qwBr3staleone", &out); err != nil || deletes != 1 {
-		t.Fatalf("the stale grant: %v, %d disconnects\n%s", err, deletes, out.String())
+	if err := disconnectGrant(ctx, phone, "grt_qwBr", &out); err != nil || deletes != 1 {
+		t.Fatalf("the stale grant, by its first characters: %v, %d disconnects\n%s", err, deletes, out.String())
 	}
 	if !strings.Contains(out.String(), "grant grt_qwBr…") || !strings.Contains(out.String(), "now: disconnected") || strings.Contains(out.String(), "grt_qwBr3staleone") {
 		t.Fatalf("the public log:\n%s", out.String())
 	}
 	out.Reset()
-	if err := disconnectGrant(ctx, phone, "grt_gone0000000", &out); err != nil || deletes != 1 {
+	if err := disconnectGrant(ctx, phone, "grt_gone", &out); err != nil || deletes != 1 {
 		t.Fatalf("an already disconnected grant was sent again: %v, %d disconnects", err, deletes)
 	}
-	if err := disconnectGrant(ctx, phone, "grt_otheraccount", &out); err == nil || deletes != 1 {
-		t.Fatalf("another account's grant: %v, %d disconnects", err, deletes)
+	for _, prefix := range []string{"grt_othe", "grt_twin", "grt_", "qwBr3sta"} {
+		if err := disconnectGrant(ctx, phone, prefix, &out); err == nil || deletes != 1 {
+			t.Fatalf("%q (none, two, too short, not a grant): %v, %d disconnects", prefix, err, deletes)
+		}
 	}
 }
 
