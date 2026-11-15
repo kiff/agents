@@ -146,8 +146,9 @@ func TestJudgeHasRoomToThink(t *testing.T) {
 	if !errors.Is(err, eval.ErrVerdict) || !strings.Contains(err.Error(), "ran out of room") {
 		t.Fatalf("a cut-off verdict: %v", err)
 	}
-	if j.Spent() != 3 {
-		t.Errorf("a cut-off verdict still costs: spent %d", j.Spent())
+	// Cut off twice (it's asked once more): each reply still costs.
+	if j.Spent() != 6 || len(m.reqs) != 2 {
+		t.Errorf("a cut-off verdict still costs: spent %d over %d asks", j.Spent(), len(m.reqs))
 	}
 	if req := m.reqs[0]; req.MaxTokens < 2048 || req.Effort != "low" {
 		t.Errorf("the judge asked with %d max tokens at effort %q", req.MaxTokens, req.Effort)
@@ -160,6 +161,56 @@ func TestJudgeWithoutVerdict(t *testing.T) {
 		if _, err := j.Ask(context.Background(), "r", "t"); !errors.Is(err, eval.ErrVerdict) {
 			t.Errorf("%q: err %v; want ErrVerdict", text, err)
 		}
+	}
+}
+
+// seqModel answers each turn with the next of texts, the last one again
+// once they run out.
+type seqModel struct {
+	texts []string
+	turns int
+}
+
+func (m *seqModel) Turn(_ context.Context, _ model.Request, _ func(string)) (model.Reply, error) {
+	i := min(m.turns, len(m.texts)-1)
+	m.turns++
+	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: m.texts[i]}}, Stop: model.EndTurn}, nil
+}
+
+// Eval 43695849959's desk: one judge reply lost its format ("Item 1 begins
+// in French: … The") and the suite went ungraded. It's asked once more; a
+// second reply without a verdict is still the error, and a network error
+// isn't retried.
+func TestJudgeAsksOnceMoreWithoutAVerdict(t *testing.T) {
+	m := &seqModel{texts: []string{"Item 1 begins in French: \"Je regarde\" and is not a proper name. The", `{"pass": false, "why": "item 1 is in French"}`}}
+	g, err := (&eval.Judge{Model: m}).Ask(context.Background(), "r", "t")
+	if err != nil || g.Pass || g.Why != "item 1 is in French" || m.turns != 2 {
+		t.Fatalf("got %+v, %v after %d turns; want the second reply's verdict", g, err, m.turns)
+	}
+	m = &seqModel{texts: []string{"no verdict", "still none"}}
+	if _, err := (&eval.Judge{Model: m}).Ask(context.Background(), "r", "t"); !errors.Is(err, eval.ErrVerdict) || m.turns != 2 {
+		t.Fatalf("two replies without a verdict: %v after %d turns", err, m.turns)
+	}
+	m = &seqModel{texts: []string{`{"pass": true, "why": "fine"}`}}
+	if _, err := (&eval.Judge{Model: m}).Ask(context.Background(), "r", "t"); err != nil || m.turns != 1 {
+		t.Fatalf("a verdict at once is asked once: %v after %d turns", err, m.turns)
+	}
+}
+
+// errModel fails every turn, counting them.
+type errModel struct{ turns int }
+
+func (m *errModel) Turn(context.Context, model.Request, func(string)) (model.Reply, error) {
+	m.turns++
+	return model.Reply{}, errors.New("connection reset")
+}
+
+// Only a reply without a verdict is asked again: an error reaching the model
+// is the caller's, as before, asked once.
+func TestJudgeDoesntRetryAnError(t *testing.T) {
+	m := &errModel{}
+	if _, err := (&eval.Judge{Model: m}).Ask(context.Background(), "r", "t"); err == nil || errors.Is(err, eval.ErrVerdict) || m.turns != 1 {
+		t.Fatalf("err %v after %d turns; want the error, asked once", err, m.turns)
 	}
 }
 

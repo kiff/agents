@@ -353,6 +353,22 @@ func TestAQuestionsCardIsAnsweredAndGraded(t *testing.T) {
 	if got, want := answerQuestions(limits, own), `[questions basics] {"channel":{"own":"€5 a refund, €50 a day"},"mode":{"value":"test"},"per_day":{"own":"€5 a refund, €50 a day"},"per_refund":{"own":"€5 a refund, €50 a day"}}`; got != want {
 		t.Fatalf("answer %s, want %s", got, want)
 	}
+	// Eval 43695849959's Refunds: that card came first, before any app was
+	// connected, and its limits were tapped. A card that asks for a number
+	// takes the owner's words whenever it comes; one that doesn't waits
+	// until Setup can look.
+	if !typesFacts(limits, false) || !typesFacts(limits, true) {
+		t.Fatal("a card asking the limits before Setup can look doesn't get the owner's words")
+	}
+	plain := component{Type: "questions", ID: "where", Questions: limits.Questions[:2]}
+	if typesFacts(plain, false) || !typesFacts(plain, true) {
+		t.Fatal("a card with no number question: the owner's words wait until Setup can look")
+	}
+	// The mode's own options never count as numbers, even labelled with one.
+	modeOnly := component{Type: "questions", ID: "m", Questions: []question{{ID: "mode", Options: []option{{Value: "test", Label: "Test mode (1st step)"}, {Value: "live", Label: "Live mode"}}}}}
+	if typesFacts(modeOnly, false) {
+		t.Fatal("a mode question counted as asking a number")
+	}
 	// Without the owner's words yet, the taps are as before.
 	if got, want := answerQuestions(limits, ""), `[questions basics] {"channel":{"value":"chat"},"mode":{"value":"test"},"per_day":{"value":"200"},"per_refund":{"value":"50"}}`; got != want {
 		t.Fatalf("answer %s, want %s", got, want)

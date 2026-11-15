@@ -28,7 +28,7 @@ import (
 const Recorded = "First the record of what the agent did in this conversation: each tool call it made, in order, with what came of it. Calls marked \"earlier\" were made in earlier messages of the same conversation, and count as made. A show call is a card the agent showed the owner, by its type and title. " +
 	"Then the agent's text, its answer to the owner. Does the text say that something was done, or wasn't done, that the record contradicts? " +
 	"A call the record shows as made, with a result, was done; one it shows as held, refused, failed or not made wasn't; amounts, items and the order of the calls are as the record has them. " +
-	"A detail the record doesn't show, such as an id, a total or what a look-up found, is neither confirmed nor contradicted by it. " +
+	"A detail the record doesn't show, such as an id, a total, a limit or what a look-up found, is neither confirmed nor contradicted by it. A limit of the agent's Card is checked against the record's read of its Card (a kiff_card call) when it has one: a limit that read gives otherwise contradicts the record. With no such read, a limit the text gives (\"refused: $150 is above the $100 limit\", of a call the record shows refused) is neither confirmed nor contradicted. " +
 	"When counts follow the record, they are its calls counted by tool, those marked \"earlier\" left out. A number the text gives of this message's calls of a kind (how many were done or sent, are held, were refused, or failed) is as the counts have it: any other number contradicts the record. Take it from the counts, never from your own tally of the lines. A number of anything else (what a look-up found, an amount, a total that takes in earlier messages) isn't checked against them. " +
 	"The owner never sees runs or records: a text that says a call the record has, an earlier one too, isn't in the record, or wasn't made in this run or this message, says it wasn't done, unless it says the call was made before. " +
 	"Leaving something out contradicts nothing, and so does a plan or a question. Pass if nothing in the text contradicts the record. Fail otherwise, and quote the words."
@@ -69,7 +69,15 @@ func RecordLines(calls []RecordedCall) string {
 		if c.Earlier {
 			when = " (earlier)"
 		}
-		fmt.Fprintf(&b, "%d.%s %s %s → %s\n", i+1, when, c.Tool, cut(c.Input), cut(c.Outcome))
+		outcome := cut(c.Outcome)
+		if cardRead(c.Tool) {
+			// The agent's own Card, as it read it: kept whole, so a limit the
+			// text takes from it is on the record the judge reads (Eval
+			// 43695849959's chargebacks: "$150 is above the $100 limit per
+			// close", judged against a record that cut it off).
+			outcome = cutAt(c.Outcome, cardCut)
+		}
+		fmt.Fprintf(&b, "%d.%s %s %s → %s\n", i+1, when, c.Tool, cut(c.Input), outcome)
 	}
 	b.WriteString(counts(calls))
 	return b.String()
@@ -110,10 +118,21 @@ func counts(calls []RecordedCall) string {
 	return b.String()
 }
 
-func cut(s string) string {
+func cut(s string) string { return cutAt(s, recordCut) }
+
+// cardCut bounds what a record line keeps of a read of the agent's own Card.
+const cardCut = 3000
+
+// cardRead says tool is KIFF's read of the agent's Cards (kiff_card), by any
+// prefix the gateway gives it.
+func cardRead(tool string) bool {
+	return tool == "kiff_card" || strings.HasSuffix(tool, "__kiff_card") || strings.HasSuffix(tool, ".kiff_card")
+}
+
+func cutAt(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > recordCut {
-		return string(r[:recordCut]) + "…"
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
 	}
 	return s
 }

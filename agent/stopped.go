@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/kiff/agents/model"
@@ -16,8 +17,14 @@ import (
 // gateway:
 //
 //   - A read that failed, and hasn't been read again since, means the run
-//     doesn't know what's there: nothing is created or changed in that run
-//     (AfterRefusedRead). A later read of the same tool that answers lifts it.
+//     doesn't know what's there: nothing it asked about is created or
+//     changed in that run (AfterRefusedRead). A later read of the same tool
+//     that answers lifts it. What it asked about is the items it named
+//     (itemsOf): a write that names one of them, or any write after a read
+//     that named none (a search, or a list, filtered or not), waits. A read of one item
+//     that failed on a wrong id says nothing of another item (Eval
+//     43695849959's handoff-receiver: two reads with mistyped dispute ids
+//     failed, and the evidence on the right dispute was never submitted).
 //     A read KIFF refused outside the Card isn't one: that's the owner's
 //     limit, not a sign of what the app holds, so the run's other work goes
 //     on (13 Nov: a chargebacks taf whose Card leaves out the shop's order
@@ -84,11 +91,119 @@ type stop struct {
 	refusedBy map[string]int
 	erredBy   map[string]int
 	erred     map[string]int
-	refused   map[string]bool
+	// refused is, by tool, the items each of its reads that failed asked
+	// about (itemsOf), until a read of the tool answers: none for a read
+	// that named no item.
+	refused map[string][][]string
 }
 
 func newStop() *stop {
-	return &stop{refusedBy: map[string]int{}, erredBy: map[string]int{}, erred: map[string]int{}, refused: map[string]bool{}}
+	return &stop{refusedBy: map[string]int{}, erredBy: map[string]int{}, erred: map[string]int{}, refused: map[string][][]string{}}
+}
+
+// itemsOf are the items a read asked about, lowercased: the value KIFF says
+// the call is on (resource, its Card's resource argument), and the values of
+// the input's keys that name an item (namesItem: "order_id", "orderId",
+// "dispute" in retrieve_dispute). Numbers count as their
+// text. None for a read of everything, a search or a filtered list: its
+// status, query or cursor names no item.
+func itemsOf(name string, input json.RawMessage, resource string) []string {
+	var out []string
+	add := func(v any) {
+		switch v := v.(type) {
+		case string:
+			if s := strings.ToLower(strings.TrimSpace(v)); s != "" {
+				out = append(out, s)
+			}
+		case float64:
+			out = append(out, strconv.FormatFloat(v, 'f', -1, 64))
+		}
+	}
+	if resource != "" {
+		add(resource)
+	}
+	words := map[string]bool{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '_' || r == '.' || r == '-' }) {
+		words[w] = true
+	}
+	var obj map[string]any
+	if json.Unmarshal(input, &obj) != nil {
+		return out
+	}
+	for k, v := range obj {
+		if !namesItem(k, words) {
+			continue
+		}
+		if list, ok := v.([]any); ok {
+			for _, e := range list {
+				add(e)
+			}
+			continue
+		}
+		add(v)
+	}
+	return out
+}
+
+// namesItem says an input key names an item: "id" or "ids", one ending in
+// "_id", "_ids", "-id", or, in camel case, "Id" or "Ids" ("orderId"), or a
+// word of the tool's own name. "paid" or "valid" doesn't.
+func namesItem(key string, words map[string]bool) bool {
+	low := strings.ToLower(key)
+	for _, end := range []string{"_id", "_ids", "-id"} {
+		if strings.HasSuffix(low, end) {
+			return true
+		}
+	}
+	return low == "id" || low == "ids" || strings.HasSuffix(key, "Id") || strings.HasSuffix(key, "Ids") || words[low]
+}
+
+// valuesOf are every string and number in a write's input, at any depth,
+// lowercased, numbers as their text: what it may change.
+func valuesOf(input json.RawMessage) []string {
+	var v any
+	if json.Unmarshal(input, &v) != nil {
+		return nil
+	}
+	var out []string
+	var walk func(any)
+	walk = func(x any) {
+		switch x := x.(type) {
+		case string:
+			if s := strings.ToLower(strings.TrimSpace(x)); s != "" {
+				out = append(out, s)
+			}
+		case float64:
+			out = append(out, strconv.FormatFloat(x, 'f', -1, 64))
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
+// blocks says a failed read's items stop a write with these values: a read
+// that named no item stops every write; one that did stops a write that
+// names one of them anywhere in its input.
+func blocks(read, write []string) bool {
+	if len(read) == 0 {
+		return true
+	}
+	for _, r := range read {
+		for _, w := range write {
+			if r == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // callKey is a call's tool and input, the input in one form however its keys
@@ -140,7 +255,7 @@ func (s *stop) see(t tool.Tool, name string, input json.RawMessage, r tool.Resul
 		case failed && r.State == tool.StateRefused:
 			// Outside the Card: it says nothing of what's there, and lifts nothing either.
 		case failed:
-			s.refused[name] = true
+			s.refused[name] = append(s.refused[name], itemsOf(name, input, r.Resource))
 		case r.State != tool.StateHeld && r.State != tool.StateAwaiting && r.State != tool.StateWaiting:
 			delete(s.refused, name)
 		}
@@ -162,7 +277,14 @@ func (s *stop) check(t tool.Tool, name string, input json.RawMessage) string {
 		return AfterTwoFailures
 	}
 	if acts(t, input) && len(s.refused) > 0 {
-		return AfterRefusedRead
+		words := valuesOf(input)
+		for _, reads := range s.refused {
+			for _, read := range reads {
+				if blocks(read, words) {
+					return AfterRefusedRead
+				}
+			}
+		}
 	}
 	return ""
 }

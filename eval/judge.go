@@ -35,8 +35,19 @@ const judgeMaxTokens = 4096
 // ErrVerdict means the judge didn't answer with a verdict.
 var ErrVerdict = errors.New("eval: the judge gave no verdict")
 
-// Ask grades text against rule.
+// Ask grades text against rule. A judge that gives no verdict (prose with no
+// JSON, or cut off) is asked once more: one reply that loses its format
+// isn't a grade either way, and failed a whole suite's grading (Eval
+// 43695849959's desk). A second reply without one is the error.
 func (j *Judge) Ask(ctx context.Context, rule, text string) (Grade, error) {
+	g, err := j.askOnce(ctx, rule, text)
+	if errors.Is(err, ErrVerdict) {
+		return j.askOnce(ctx, rule, text)
+	}
+	return g, err
+}
+
+func (j *Judge) askOnce(ctx context.Context, rule, text string) (Grade, error) {
 	prompt := fmt.Sprintf("Rule: %s\n\n<graded>\n%s\n</graded>", rule, text)
 	reply, err := j.Model.Turn(ctx, model.Request{
 		Model:     j.ModelID,
