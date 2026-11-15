@@ -68,6 +68,12 @@ func gradeRulesAsData(s said) eval.CheckResult {
 		case tl.AmountArg != "" && len(r.Limits) == 0:
 			problems = append(problems, name+" moves money and its rule has no figures")
 		}
+		// A figure may say its own over ("ask past €5 a refund, refuse past €50 a day").
+		for _, l := range r.Limits {
+			if found && l.Over != "" && l.Over != "ask" && l.Over != "refuse" {
+				problems = append(problems, fmt.Sprintf("%s's %s per %s says over %q, not ask or refuse", name, l.Quantity, l.Window, l.Over))
+			}
+		}
 	}
 	switch {
 	case next.Type != "confirm":
@@ -158,10 +164,11 @@ func gradeDraftStaysInside(s said) eval.CheckResult {
 		}
 	}
 	if len(drafts) == 0 {
-		// A key request's tools carry no profile, so there is nothing to mark: skipped,
-		// as "narrows a managed sign-in" is with no managed app. A draft that doesn't say
-		// outside: false discloses, so nothing stays inside unsaid there.
-		return result(eval.Grade{Skipped: true, Why: "no connected profile has a draft operation (none_until_approved): a key request carries no profile, and its drafts disclose"})
+		// A key request's tools carry no profile, so there is nothing to mark and
+		// nothing tafs cloud checks: skipped, as "narrows a managed sign-in" is with no
+		// managed app. A draft's disclosure there rests on Coach's line alone, until
+		// the key path carries a profile.
+		return result(eval.Grade{Skipped: true, Why: "no connected profile has a draft operation (none_until_approved): a key request carries no profile, so tafs cloud checks no disclosure there"})
 	}
 	// Every tool the taf's latest result discloses, with fields or not.
 	disclosed := map[string]bool{}

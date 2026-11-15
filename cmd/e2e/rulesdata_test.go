@@ -23,17 +23,10 @@ func rulesSaid(rules []shownRule, confirm component) said {
 }
 
 func refundRule() shownRule {
-	r := shownRule{Tool: "refund_charge", Over: "ask"}
-	r.Limits = append(r.Limits, struct {
-		Quantity string `json:"quantity"`
-		Window   string `json:"window"`
-		Limit    *int64 `json:"limit"`
-	}{"sum(amount)", "call", limit(500)}, struct {
-		Quantity string `json:"quantity"`
-		Window   string `json:"window"`
-		Limit    *int64 `json:"limit"`
-	}{"sum(amount)", "calendar_day", limit(5000)})
-	return r
+	return shownRule{Tool: "refund_charge", Over: "ask", Limits: []shownLimit{
+		{Quantity: "sum(amount)", Window: "call", Limit: limit(500)},
+		{Quantity: "sum(amount)", Window: "calendar_day", Limit: limit(5000)},
+	}}
 }
 
 func agreeConfirm(agrees string) component {
@@ -54,6 +47,25 @@ func TestTheAgreedRulesAreSentAsData(t *testing.T) {
 	byKiff.Tool = "Refund_Charge_k3"
 	if r := gradeRulesAsData(rulesSaid([]shownRule{byKiff}, agreeConfirm("rules-1"))); !r.Grade.Pass {
 		t.Fatalf("by KIFF's name: %+v", r)
+	}
+}
+
+// A figure may carry its own over: ask past €5 a refund, refuse past €50 a day.
+func TestEachFigureMaySayItsOwnOver(t *testing.T) {
+	mixed := refundRule()
+	mixed.Over = "refuse"
+	mixed.Limits[0].Over = "ask"
+	if r := gradeRulesAsData(rulesSaid([]shownRule{mixed}, agreeConfirm("rules-1"))); !r.Grade.Pass {
+		t.Fatalf("ask on the call's figure, refuse by default: %+v", r.Grade)
+	}
+	var notice component
+	if err := json.Unmarshal([]byte(`{"type":"notice","id":"n","rules":[{"tool":"create_refund","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500,"over":"ask"},{"quantity":"sum(amount)","window":"calendar_day","limit":5000}]}]}`), &notice); err != nil || notice.Rules[0].Limits[0].Over != "ask" || notice.Rules[0].Limits[1].Over != "" {
+		t.Fatalf("a figure's own over isn't read: %v %+v", err, notice.Rules)
+	}
+	bad := refundRule()
+	bad.Limits[1].Over = "owner"
+	if r := gradeRulesAsData(rulesSaid([]shownRule{bad}, agreeConfirm("rules-1"))); r.Grade.Pass || !strings.Contains(r.Grade.Why, `sum(amount) per calendar_day says over "owner"`) {
+		t.Errorf("an unknown over on a figure: %+v", r.Grade)
 	}
 }
 
@@ -198,7 +210,7 @@ func TestADraftThatStaysInsideSaysSo(t *testing.T) {
 		"key path":   invoicesSaid(`null`),
 	} {
 		r := gradeDraftStaysInside(s)
-		if !r.Grade.Skipped || r.Grade.Pass || !strings.Contains(r.Grade.Why, "a key request carries no profile") {
+		if !r.Grade.Skipped || r.Grade.Pass || !strings.Contains(r.Grade.Why, "a key request carries no profile, so tafs cloud checks no disclosure there") {
 			t.Errorf("%s: %+v, want a skip naming the key path", name, r.Grade)
 		}
 	}
