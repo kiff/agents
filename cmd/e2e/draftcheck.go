@@ -1,11 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -142,4 +145,55 @@ func refusalsLine(codes []string) string {
 		line += " (" + strings.Join(codes, ", ") + ")"
 	}
 	return line
+}
+
+// checkedOnRead is whether the owner's app checks an approval card's Card
+// draft as it reads the chat, before drawing the card: when the card signs
+// the Card (kiff/tafs approval.ts stepFor), a connected app's Card alone, or
+// the Card with tools added to an app signed in already (tools_and_cards),
+// or with a key (key_and_cards). A first connection signs the connection
+// alone: its Card comes on a card of its own, checked then.
+func checkedOnRead(g grant) bool {
+	switch {
+	case g.Status == "connected":
+		return true
+	case g.Status == "pending":
+		return g.Request.Kind == "api_key" || g.SignedIn
+	}
+	return false
+}
+
+// resultsLast is the cards in the order they're answered: a result after the
+// others, so an approval shown beside it is answered, and its draft
+// confirmed, before the result is read.
+func resultsLast(shown []component) []component {
+	out := slices.Clone(shown)
+	slices.SortStableFunc(out, func(a, b component) int {
+		return cmp.Compare(boolInt(a.Type == "result"), boolInt(b.Type == "result"))
+	})
+	return out
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// unconfirmedAnswer is tafs cloud's answer to a result over a draft the owner
+// never confirmed, in its words (kiff/tafs handler.ts cardNeverApproved).
+func unconfirmedAnswer(c component) string {
+	name := "the taf"
+	if c.Taf != nil && strings.TrimSpace(c.Taf.Name) != "" {
+		name = strings.TrimSpace(c.Taf.Name)
+	}
+	out, _ := json.Marshal(map[string]string{"failed": fmt.Sprintf("The Card for %s was never approved, so %s isn't set up yet: approve its Card to finish", name, name)})
+	return fmt.Sprintf("[%s %s] %s", c.Type, c.ID, out)
+}
+
+// unconfirmedLine is the public log's line for the results answered back to
+// Coach over a draft this setup never confirmed.
+func unconfirmedLine(n int) string {
+	return fmt.Sprintf("setup results answered back, their draft not confirmed: %d", n)
 }
