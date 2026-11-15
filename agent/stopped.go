@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/kiff/agents/model"
@@ -41,9 +42,24 @@ import (
 const AfterRefusedRead = "Not made: a read in this run was refused, so what's there isn't known, and nothing is created or changed in this run. " +
 	"Stop here, and tell the person in plain words what couldn't be read and what they can do about it. Don't try another way round."
 
-// AfterTwoFailures is what a call to a tool that already failed twice in
-// the run gets back, unmade.
-const AfterTwoFailures = "Not made: this tool already failed twice in this run, and it isn't tried again in it. " +
+// AfterTwoFailures is what the same call, already failed twice in the run
+// by the app, gets back, unmade. It says the call, not the tool: other calls
+// to the tool still go, and a taf told "this tool" stopped would say so to
+// its owner, and be judged against it (dev-android, on this rule's move to
+// counting per call).
+const AfterTwoFailures = "Not made: this call already failed twice in this run, and it isn't tried again in it. " +
+	"Don't try it another way: tell the person in plain words what failed and what they can do about it."
+
+// AfterToolFailures is what a call to a tool the app failed on
+// FailuresPerTool calls in the run, on any inputs, gets back, unmade: no call
+// to it is made again in the run.
+var AfterToolFailures = fmt.Sprintf("Not made: this tool failed on %d calls in this run, and it isn't called again in it. ", FailuresPerTool) +
+	"Stop here, and tell the person in plain words what failed and what they can do about it. Don't try another way round."
+
+// AfterTwoRefusals is what a call to a tool KIFF refused twice in the run
+// gets back, unmade: the owner's limit is the tool's, so no call to it is
+// made again in the run.
+const AfterTwoRefusals = "Not made: KIFF refused this tool twice in this run, and it isn't called again in it. " +
 	"Stop here, and tell the person in plain words what was refused and what they can do about it. Don't try another way round."
 
 // FailuresPerTool is how many of a tool's calls an app may fail in a run, on
@@ -58,7 +74,7 @@ const OutcomeStopped = "not made: the run stopped after a refused call"
 
 // stoppedText says text is one of those rules' words.
 func stoppedText(text string) bool {
-	return text == AfterRefusedRead || text == AfterTwoFailures
+	return text == AfterRefusedRead || text == AfterTwoFailures || text == AfterToolFailures || text == AfterTwoRefusals
 }
 
 // stop is what a run knows of its calls' failures: per tool, how many KIFF
@@ -136,7 +152,13 @@ func (s *stop) check(t tool.Tool, name string, input json.RawMessage) string {
 	if t == nil || !t.Gateway() {
 		return ""
 	}
-	if s.refusedBy[name] >= 2 || s.erred[callKey(name, input)] >= 2 || s.erredBy[name] >= FailuresPerTool {
+	if s.refusedBy[name] >= 2 {
+		return AfterTwoRefusals
+	}
+	if s.erredBy[name] >= FailuresPerTool {
+		return AfterToolFailures
+	}
+	if s.erred[callKey(name, input)] >= 2 {
 		return AfterTwoFailures
 	}
 	if acts(t, input) && len(s.refused) > 0 {

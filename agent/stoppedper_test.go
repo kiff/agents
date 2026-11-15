@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -134,7 +135,7 @@ func TestAToolThatErrsOnEveryCallStillStops(t *testing.T) {
 		t.Fatalf("%d calls reached the app, want %d", total, agent.FailuresPerTool)
 	}
 	for i := agent.FailuresPerTool + 1; i <= agent.FailuresPerTool+2; i++ {
-		if got, _ := resultOf(m.reqs, "c"+string(rune('0'+i))); got != agent.AfterTwoFailures {
+		if got, _ := resultOf(m.reqs, "c"+string(rune('0'+i))); got != agent.AfterToolFailures {
 			t.Fatalf("call %d came back %q", i, got)
 		}
 	}
@@ -161,7 +162,72 @@ func TestKIFFsRefusalStillCountsPerTool(t *testing.T) {
 	if up.reached["du_3"] != 0 || up.reached["du_1"]+up.reached["du_2"] != 2 {
 		t.Fatalf("reached the app: %v", up.reached)
 	}
-	if got, _ := resultOf(m.reqs, "c3"); got != agent.AfterTwoFailures || !strings.HasPrefix(got, "Not made") {
+	if got, _ := resultOf(m.reqs, "c3"); got != agent.AfterTwoRefusals || !strings.HasPrefix(got, "Not made") {
 		t.Fatalf("the third call came back %q", got)
+	}
+}
+
+// The words a stopped call gets back are true of what stopped, since the taf
+// tells its owner from them and is judged against them: one call's words
+// never say the tool stopped (other calls to it still go); the app's
+// backstop names its count; KIFF's refusal names KIFF.
+func TestAStoppedCallsWordsSayWhatStopped(t *testing.T) {
+	if strings.Contains(agent.AfterTwoFailures, "tool") || !strings.Contains(agent.AfterTwoFailures, "this call already failed twice") {
+		t.Errorf("one call's stop: %q", agent.AfterTwoFailures)
+	}
+	if !strings.Contains(agent.AfterToolFailures, fmt.Sprintf("this tool failed on %d calls", agent.FailuresPerTool)) || strings.Contains(agent.AfterToolFailures, "KIFF") {
+		t.Errorf("the backstop: %q", agent.AfterToolFailures)
+	}
+	if !strings.Contains(agent.AfterTwoRefusals, "KIFF refused this tool twice") {
+		t.Errorf("KIFF's refusals: %q", agent.AfterTwoRefusals)
+	}
+	for _, w := range []string{agent.AfterTwoFailures, agent.AfterToolFailures, agent.AfterTwoRefusals} {
+		if !strings.HasPrefix(w, "Not made: ") {
+			t.Errorf("not said as unmade: %q", w)
+		}
+	}
+}
+
+// Each kind of stop is recorded as one: "not made: the run stopped after a
+// refused call", counted nowhere. Never "sent beside a read", which is
+// another rule's.
+func TestEachStopIsRecordedAsStopped(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		tool  *itemTool
+		calls []model.Reply
+		want  string
+	}{
+		{"one call", &itemTool{name: "update_dispute", bad: map[string]bool{"du_typo": true}},
+			[]model.Reply{dispute("c1", "du_typo"), dispute("c2", "du_typo"), dispute("c3", "du_typo")}, agent.AfterTwoFailures},
+		{"KIFF's refusals", &itemTool{name: "update_dispute", refused: true},
+			[]model.Reply{dispute("c1", "du_1"), dispute("c2", "du_2"), dispute("c3", "du_3")}, agent.AfterTwoRefusals},
+		{"the backstop", &itemTool{name: "update_dispute", bad: map[string]bool{"*": true}},
+			[]model.Reply{dispute("c1", "du_1"), dispute("c2", "du_2"), dispute("c3", "du_3"), dispute("c4", "du_4"), dispute("c5", "du_5"), dispute("c6", "du_6")}, agent.AfterToolFailures},
+	} {
+		m := &script{replies: append(c.calls, say("Stopped."))}
+		store, r := start(t, session.KindRun)
+		ctx := context.Background()
+		if _, _, err := agent.Run(ctx, newAgent(m, c.tool), r, nil, "Answer the open disputes.", nil); err != nil {
+			t.Fatal(err)
+		}
+		last := c.calls[len(c.calls)-1].Blocks[0].CallID
+		if got, _ := resultOf(m.reqs, last); got != c.want {
+			t.Fatalf("%s: the last call came back %q", c.name, got)
+		}
+		if err := r.End(ctx); err != nil {
+			t.Fatal(err)
+		}
+		_, events, _ := store.Read(ctx, "t1", r.Session().ID)
+		var outcomes []string
+		for _, e := range events {
+			var b agent.CalledBody
+			if e.Kind == session.Called && json.Unmarshal(e.Body, &b) == nil {
+				outcomes = append(outcomes, b.Outcome)
+			}
+		}
+		if len(outcomes) != len(c.calls) || outcomes[len(outcomes)-1] != agent.OutcomeStopped {
+			t.Errorf("%s: recorded %q, want the last as stopped", c.name, outcomes)
+		}
 	}
 }

@@ -253,7 +253,7 @@ func TestAReadRefusedOnTheCardStopsNoWrite(t *testing.T) {
 	if _, _, err := agent.Run(context.Background(), newAgent(m2, order2), r2, nil, "Work the open disputes.", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := resultOf(m2.reqs, "c3"); got != agent.AfterTwoFailures || order2.n != 2 {
+	if got, _ := resultOf(m2.reqs, "c3"); got != agent.AfterTwoRefusals || order2.n != 2 {
 		t.Fatalf("the third lookup came back %q after %d calls", got, order2.n)
 	}
 }
