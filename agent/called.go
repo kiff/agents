@@ -48,6 +48,7 @@ const (
 	OutcomeHeld     = "held by KIFF for the owner"
 	OutcomeRefused  = "refused by KIFF, not sent"
 	OutcomeApproved = "held by KIFF, approved by the owner, then sent once: done"
+	OutcomeDeclined = "held by KIFF, refused by the owner, not sent"
 	OutcomeChanged  = "held by KIFF, its Card changed for it by the owner, then sent once: done"
 	OutcomeCame     = "sent; its outcome came later, as the vendor's event"
 	OutcomeNotCame  = "sent; its outcome didn't come in time (the wait for the vendor's event ran out)"
@@ -80,7 +81,12 @@ const RecordNote = "What this run did, from its record, call by call, in order. 
 // to its hold, when it was held and has been answered. The result decides:
 // a hold KIFF answered with another word than approved can still have been
 // sent (changed: the Card changed, and the call went under it), so the word
-// only says why a call that didn't go through didn't.
+// only says why a call that didn't go through didn't. A hold the owner
+// refused says it was the owner, as an approved one does: "held by KIFF,
+// refused, not sent" read to a judge as KIFF refusing, and failed a taf that
+// told its owner "You refused the €9 refund" (Eval 43670959911). Any other
+// answer word (an expired hold, say) keeps its own word, so the record never
+// says the owner did what they didn't.
 func outcome(r ToolResultBody, answer string) string {
 	switch {
 	case r.NotMade && stoppedText(r.Text):
@@ -89,6 +95,8 @@ func outcome(r ToolResultBody, answer string) string {
 		return OutcomeNotMade
 	case r.Held():
 		return OutcomeHeld
+	case r.State == tool.StateRefused && ownerRefused(answer):
+		return OutcomeDeclined
 	case r.State == tool.StateRefused && answer != "" && answer != "approved":
 		return "held by KIFF, " + answer + ", not sent"
 	case r.State == tool.StateRefused:
@@ -104,6 +112,10 @@ func outcome(r ToolResultBody, answer string) string {
 	}
 	return OutcomeDone
 }
+
+// ownerRefused is whether KIFF's answer to a hold is the owner's no, the
+// words refusals counts as declined.
+func ownerRefused(answer string) bool { return answer == "refused" || answer == "rejected" }
 
 // recordCalled records a call to a tool outside the agent and its outcome,
 // with why it wasn't done when its result says.

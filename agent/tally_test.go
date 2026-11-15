@@ -77,7 +77,7 @@ func TestTallyOf(t *testing.T) {
 		agent.OutcomeCame:                             "sent",
 		agent.OutcomeHeld:                             "held",
 		agent.OutcomeRefused:                          "refused",
-		"held by KIFF, refused, not sent":             "refused",
+		agent.OutcomeDeclined:                         "refused",
 		"held by KIFF, expired, not sent":             "refused",
 		agent.OutcomeFailed:                           "failed",
 		agent.OutcomeNotCame:                          "unknown",
