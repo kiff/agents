@@ -1053,11 +1053,21 @@ func cardAnswer(c show.Component, msg string) (json.RawMessage, error) {
 			answer = json.RawMessage(rest)
 		case "approval":
 			answer = json.RawMessage(`"approved"`)
-			if strings.HasPrefix(rest, "declined") {
+			switch {
+			case strings.HasPrefix(rest, "declined"):
 				answer = json.RawMessage(`"declined"`)
+			case strings.HasPrefix(rest, "failed:"), strings.HasPrefix(rest, "already approved:"):
+				// tafs cloud's answer as it is, as an owner's app hands it on
+				// (Eval 18's Refunds: a draft its check refused was answered
+				// "approved", so Coach never read "Draft it again" and told the
+				// owner to approve a card that was closed).
+				answer, _ = json.Marshal(rest)
 			}
 		case "sign_in":
 			answer = json.RawMessage(`"signed in"`)
+			if strings.HasPrefix(rest, "failed:") {
+				answer, _ = json.Marshal(rest)
+			}
 		case "result":
 			// tafs cloud's outcome, as JSON: it answers a result, never the owner.
 			answer = json.RawMessage(rest)
