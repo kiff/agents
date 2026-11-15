@@ -35,9 +35,9 @@ on:
         type: string
         default: "all"
       repeat:
-        description: "How many times chargebacks runs (the nightly runs it twice)"
+        description: "How many times each suite runs, setups included: a safety gate holds in every run, a quality gate in most (eval/gates.go)"
         type: string
-        default: "2"
+        default: "3"
       # Comparing models or efforts: Coach and every taf run on this model and
       # effort instead of kiff/tafs' (infra/eval-override.sh), priced as that
       # model charges. Such a run never counts for the Upgrade gate or the
@@ -72,7 +72,8 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # About 52 minutes at three runs a suite (Eval 18 took 34 at one or two).
+    timeout-minutes: 80
     env:
       REPORTS: kiff-agents-eval-reports
       # Each taf a run makes, for the sweep at the end (cmd/e2e -made).
@@ -155,7 +156,7 @@ jobs:
           # refuses any other.
           EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
         run: |
-          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat "${{ inputs.repeat || '2' }}" \
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -repeat "${{ inputs.repeat || '3' }}" \
             -baseline eval/baseline.json -gate \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results.json -report report.md chargebacks
@@ -184,7 +185,7 @@ jobs:
             echo "::notice::Hand-offs between tafs: not measured: kiff/tafs at eval/tafs.ref writes no hand-off definitions"
             exit 0
           fi
-          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate \
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate -repeat "${{ inputs.repeat || '3' }}" \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-handoff.json -report report-handoff.md handoff-sender handoff-nothing handoff-nothing-fr handoff-receiver
       - name: Tickets, a recipe's taf on the fake desk
@@ -208,7 +209,7 @@ jobs:
             echo "::notice::Tickets: not measured: kiff/tafs at eval/tafs.ref has no recipe acknowledge-every-ticket"
             exit 0
           fi
-          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -gate \
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -gate -repeat "${{ inputs.repeat || '3' }}" \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-tickets.json -report report-tickets.md tickets
       - name: Setup with the taf, in English, graded
@@ -237,7 +238,7 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner en -grade -improve -max-cost 4 -owner-turns 14 -transcript setup.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner en -grade -improve -max-cost 4 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript setup.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Setup on the second vendor, a desk by its key
         # The same Setup on a vendor that isn't payments and has no MCP server
         # (kiff/agents#293): the fake vendor's support desk, by its REST API and
@@ -255,7 +256,7 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -transcript desk.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript desk.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Setup on billing, invoices that stay drafts
         # A write whose argument decides whether it's final (kiff/tafs#771):
         # the fake vendor's billing, by its REST API and the key the phone
@@ -273,7 +274,7 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -invoices -grade -max-cost 3 -owner-turns 14 -transcript invoices.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -invoices -grade -max-cost 3 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript invoices.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Replay, introductions from a list
         # A setup that failed an owner, run again (cmd/e2e -replay, replay.go):
         # a list of companies in the fake vendor's spreadsheet and drafts in
@@ -290,7 +291,7 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -replay intros -grade -max-cost 3 -owner-turns 14 -transcript replay-intros.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -replay intros -grade -max-cost 3 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript replay-intros.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off
@@ -324,12 +325,13 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
-          for f in report.md report-handoff.md report-tickets.md setup.md desk.md invoices.md replay-intros.md; do
+          # -repeat writes each setup's runs after the first as setup-2.md, setup-3.md, …
+          for f in report.md report-handoff.md report-tickets.md setup*.md desk*.md invoices*.md replay-intros*.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup.md desk.md invoices.md replay-intros.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"
