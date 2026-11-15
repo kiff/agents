@@ -188,7 +188,6 @@ func (t *test) recipeTaf(ctx context.Context, tafID string) error {
 		return err
 	}
 	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
-	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 	fmt.Fprintln(t.cfg.log, "== the taf, from the recipe")
 	cards, err := t.heldCards(ctx, tafID)
 	if err != nil {

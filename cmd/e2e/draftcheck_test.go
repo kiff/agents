@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/kiff/agents/cmd/internal/testaccount"
+	"github.com/kiff/agents/tool/show"
 )
 
 // fakeCloud is tafs cloud's check route, planque's grants list and KIFF's
@@ -37,6 +38,8 @@ func (f *fakeCloud) servers(t *testing.T) (cloud, planque, kiff *httptest.Server
 			{"id": "grt_other", "status": "connected", "request": map[string]any{"agent": "someone-else"}},
 			{"id": "grt_1", "status": "connected", "request": map[string]any{"agent": "refunds-x"}},
 			{"id": "grt_listed", "status": "listed", "request": map[string]any{"agent": "refunds-x"}},
+			{"id": "grt_adding", "status": "pending", "signed_in": true, "request": map[string]any{"agent": "refunds-x"}},
+			{"id": "grt_key", "status": "pending", "request": map[string]any{"agent": "refunds-x", "kind": "api_key"}},
 		}})
 	}))
 	f.planque = planque.URL
@@ -269,7 +272,55 @@ func TestARedraftRefusalReachesCoachBeforeTheOwnerReadsTheCard(t *testing.T) {
 	}
 }
 
-// Only a connected app's Card alone is checked on the read, as tafs cloud
+// Eval 13's Refunds: the owner approved the tools with the Card in one tap,
+// and the Card was then refused. A card that signs the Card with tools added
+// to an app signed in already, or with a key, is checked on the read too, as
+// tafs cloud does: the refusal reaches Coach before the owner reads it, and
+// nothing is approved on the phone.
+func TestACardSignedWithItsToolsOrKeyIsCheckedBeforeTheOwnerReads(t *testing.T) {
+	refused := map[string]any{"outcome": "answered", "code": "lifetime_sum", "redraft": true, "answer": `failed: the draft caps "refund_charge"'s amount …`}
+	for _, grant := range []string{"grt_adding", "grt_key"} {
+		tt, f := checkWorld(t, refused)
+		c := component{Type: "approval", ID: "a1", Grant: grant, Draft: "drf_1"}
+		var approved string
+		reread, answer, err := tt.approve(context.Background(), c, &approved)
+		if err != nil || reread || answer != refused["answer"] {
+			t.Fatalf("%s: reread %v, answer %q, err %v", grant, reread, answer, err)
+		}
+		if len(tt.approvals) != 0 || approved != "" || len(tt.draftIDs) != 0 || strings.Join(tt.draftRefusals, ",") != "lifetime_sum" {
+			t.Fatalf("%s: read %d approvals, approved %q, confirmed %v, refusals %v", grant, len(tt.approvals), approved, tt.draftIDs, tt.draftRefusals)
+		}
+		if strings.Join(f.calls, "\n") != "kiff GET /v1/me/agent-drafts/drf_1\ncloud POST /v1/connect/grants/"+grant+"/check" {
+			t.Fatalf("%s: calls %v", grant, f.calls)
+		}
+	}
+}
+
+// What the owner's app checks on the read: a card that signs the Card.
+func TestCheckedOnReadIsACardThatSignsTheCard(t *testing.T) {
+	g := func(status, kind string, signedIn bool) grant {
+		var out grant
+		out.Status, out.SignedIn, out.Request.Kind = status, signedIn, kind
+		return out
+	}
+	for _, c := range []struct {
+		g    grant
+		want bool
+	}{
+		{g("connected", "", false), true},
+		{g("pending", "", true), true},          // tools added, signed in already: tools_and_cards
+		{g("pending", "api_key", false), true},  // the key with its Card: key_and_cards
+		{g("pending", "", false), false},        // a first connection: the connection alone
+		{g("listed", "", true), false},          // nothing to approve yet
+		{g("needs_reconnect", "", true), false}, // a sign-in again: the connection alone
+	} {
+		if got := checkedOnRead(c.g); got != c.want {
+			t.Errorf("%+v: %v, want %v", c.g, got, c.want)
+		}
+	}
+}
+
+// Only a card that signs the Card is checked on the read, as tafs cloud
 // does: any other card is read by the owner first, and checked after.
 func TestOnlyAConnectedAppsCardIsCheckedBeforeTheOwnerReads(t *testing.T) {
 	refused := map[string]any{"outcome": "answered", "code": "vendor_name", "redraft": true, "answer": `failed: the Card covers "list_charges", but …`}
@@ -281,5 +332,63 @@ func TestOnlyAConnectedAppsCardIsCheckedBeforeTheOwnerReads(t *testing.T) {
 	}
 	if len(tt.approvals) != 1 {
 		t.Fatalf("the owner read %d approvals, want 1", len(tt.approvals))
+	}
+}
+
+// Eval 13's Refunds: after a refused draft, Coach showed the result over its
+// redraft with no approval of it. tafs cloud answers such a result back to
+// Coach at once, in its own name; so does the harness, and counts it.
+func TestAResultOverAnUnconfirmedDraftIsAnsweredBackByTafsCloud(t *testing.T) {
+	c := component{Type: "result", ID: "done"}
+	c.Taf = &struct {
+		Agent        string `json:"agent"`
+		Name         string `json:"name"`
+		Job          string `json:"job"`
+		Draft        string `json:"draft"`
+		Improves     string `json:"improves"`
+		Note         string `json:"note"`
+		Notes        string `json:"notes"`
+		Kickoff      string `json:"kickoff"`
+		Instructions string `json:"instructions"`
+		Disclose     []struct {
+			Tool   string   `json:"tool"`
+			Fields []string `json:"fields"`
+		} `json:"disclose"`
+	}{Name: "Refunds", Draft: "drf_2"}
+	msg := unconfirmedAnswer(c)
+	if msg != `[result done] {"failed":"The Card for Refunds was never approved, so Refunds isn't set up yet: approve its Card to finish"}` {
+		t.Fatalf("the answer: %s", msg)
+	}
+	var sc show.Component
+	raw, _ := json.Marshal(c)
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		t.Fatal(err)
+	}
+	out, err := cardAnswer(sc, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a show.Answered
+	if err := json.Unmarshal(out, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.AnsweredBy != "tafs cloud" || !strings.Contains(string(a.Answer), "was never approved") {
+		t.Fatalf("answered %+v", a)
+	}
+	if got := unconfirmedLine(1); got != "setup results answered back, their draft not confirmed: 1" {
+		t.Fatalf("the log says %q", got)
+	}
+}
+
+// A result is answered after the cards beside it: an approval shown with it
+// is confirmed first, so its result is never answered back for that.
+func TestResultsAreAnsweredLast(t *testing.T) {
+	got := resultsLast([]component{{Type: "result", ID: "r"}, {Type: "approval", ID: "a"}, {Type: "questions", ID: "q"}})
+	var ids []string
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	if strings.Join(ids, ",") != "a,q,r" {
+		t.Fatalf("order %v", ids)
 	}
 }

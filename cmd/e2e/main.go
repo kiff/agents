@@ -398,6 +398,9 @@ type test struct {
 	// draftRefusals are tafs cloud's reason codes for the drafts its check
 	// refused this run (checkRoute), in order: each was handed back to Coach.
 	draftRefusals []string
+	// unconfirmedResults counts the results answered back to Coach over a
+	// draft this run never confirmed, as tafs cloud answers them.
+	unconfirmedResults int
 	// approvals are the approval cards the owner answered, in order, each
 	// with its grant, its draft and whether the grant takes a key.
 	approvals []approvalSeen
@@ -528,6 +531,11 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	fmt.Fprintln(t.cfg.log, "== the setup chat")
 	tafID, draftID, err := t.converse(ctx)
 	t.setupTimings(ctx) // also after a failed chat: a slow one is worth reading
+	// The drafts tafs cloud's check refused, and the results answered back over
+	// a draft not confirmed, said whatever came of the chat: one that stopped
+	// early counted none (Eval 13's Refunds: one refusal, and no line).
+	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
+	fmt.Fprintln(t.cfg.log, unconfirmedLine(t.unconfirmedResults))
 	if err != nil {
 		return err
 	}
@@ -541,7 +549,6 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 			t.logf("billing is connected by its key, its invoices pinned to draft, with no send")
 		}
 		fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
-		fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 		if t.cfg.judge != nil {
 			return t.grade(ctx, tafID)
 		}
@@ -554,7 +561,6 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	}
 	// Counts only, never the words, in every run: a drift in length shows (kiff/agents#185).
 	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
-	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 	if len(t.setupSkills) > 0 {
 		// Setting up a new taf needs none of Setup's skills (kiff/tafs#218).
 		if err := t.readNone(ctx, t.setupSession); err != nil {
@@ -1020,12 +1026,18 @@ func cardAnswer(c show.Component, msg string) (json.RawMessage, error) {
 			}
 		case "sign_in":
 			answer = json.RawMessage(`"signed in"`)
+		case "result":
+			// tafs cloud's outcome, as JSON: it answers a result, never the owner.
+			answer = json.RawMessage(rest)
 		default:
 			answer, _ = json.Marshal(rest)
 		}
 		a, err := show.Answer(c, answer)
 		if err != nil {
 			return nil, fmt.Errorf("the owner's answer to %s %s: %w", c.Type, c.ID, err)
+		}
+		if c.Type == "result" {
+			a.AnsweredBy = "tafs cloud"
 		}
 		return json.Marshal(a)
 	}
@@ -1112,7 +1124,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 		// Each card this turn's answer goes to, by its id: Setup may wait on
 		// two at once (an approval beside its questions), each answered apart.
 		t.cardAnswers = map[string]string{}
-		for _, c := range shown {
+		for _, c := range resultsLast(shown) {
 			key := c.Type + "/" + c.ID + "/" + c.Grant + "/" + c.Draft
 			if c.Grant != "" {
 				// The same approval shown again for a grant that changed (its tools
@@ -1197,6 +1209,18 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 				msg = fmt.Sprintf("[%s %s] approved, signed in", c.Type, c.ID)
 			case "result":
+				if c.Taf != nil && c.Taf.Draft != "" && !slices.Contains(t.draftIDs, c.Taf.Draft) {
+					// A result over a draft this run never confirmed, with no approval of
+					// it left this turn (results come last): tafs cloud answers it back to
+					// Coach at once, and Coach shows the approval (kiff/tafs handler.ts
+					// handOver; Eval 13's Refunds showed one after a refused draft).
+					t.unconfirmedResults++
+					t.logf("result %s over a draft not confirmed: tafs cloud answers it back to Coach", c.ID)
+					msg = unconfirmedAnswer(c)
+					answered[key] = msg
+					t.cardAnswers[c.ID] = msg
+					continue
+				}
 				if err := t.keepResult(r, ch.Session, c.ID); err != nil {
 					return "", "", err
 				}
@@ -1250,15 +1274,16 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		t.logf("card %s read again, already answered: nothing asked", c.ID)
 		return true, "", nil
 	}
-	// A connected app's Card alone is checked as the phone reads the chat,
-	// before its card is drawn (kiff/tafs handler.ts precheck): a refusal a
+	// A Card is checked as the phone reads the chat, before its card is drawn,
+	// whenever the card signs it (checkedOnRead: a connected app's Card alone,
+	// or the Card with added tools or a key; kiff/tafs handler.ts precheck): a refusal a
 	// new draft mends goes to Coach then, and the owner never reads, or
 	// approves, that card (Eval 43690861487's Refunds: two Card approvals for
 	// one app, the first one refused after the owner approved it).
 	// The check on the read stands for the tap's too: nothing changes while
 	// the owner reads.
 	var read *draftChecked
-	if newDraft && g.Status == "connected" {
+	if newDraft && checkedOnRead(g) {
 		version, err := t.draftVersion(ctx, c.Draft)
 		if err != nil {
 			return false, "", err
