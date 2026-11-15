@@ -42,6 +42,7 @@
 package main
 
 import (
+	"cmp"
 	"github.com/kiff/agents/cmd/internal/testaccount"
 
 	"context"
@@ -192,6 +193,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
+	disconnect := fs.String("disconnect", "", "only this: disconnect the test account's one grant whose id starts with this (grt_ and at least 4 more), as the owner's phone "+
+		"(disconnect.go), a one-off for a grant an earlier run left. Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	sweepMode := fs.Bool("sweep", false, "only the teardown: archive the tafs -made names that are still there, as the owner's phone "+
 		"(sweep.go). Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
@@ -270,6 +273,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	if *sweepMode {
 		return runSweep(ctx, kiff.APIURL, cfg, stdout)
+	}
+	if *disconnect != "" {
+		return runDisconnect(ctx, kiff.APIURL, cmp.Or(env("E2E_PLANQUE"), "https://planque.kiff.dev"), cfg, *disconnect, stdout)
 	}
 	cfg.vendor, cfg.vendorToken = env("E2E_VENDOR"), env("E2E_VENDOR_TOKEN")
 	if cfg.deskKey = env("E2E_DESK_KEY"); cfg.deskKey != "" {
@@ -1280,15 +1286,15 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		return true, "", nil
 	}
 	// A Card is checked as the phone reads the chat, before its card is drawn,
-	// whenever the card signs it (checkedOnRead: a connected app's Card alone,
-	// or the Card with added tools or a key; kiff/tafs handler.ts precheck): a refusal a
+	// whenever tafs cloud says it is (checked_on_read on its check: the card
+	// signs the Card, by kiff/tafs checkedOnReadFor; handler.ts precheck): a refusal a
 	// new draft mends goes to Coach then, and the owner never reads, or
 	// approves, that card (Eval 43690861487's Refunds: two Card approvals for
 	// one app, the first one refused after the owner approved it).
 	// The check on the read stands for the tap's too: nothing changes while
 	// the owner reads.
 	var read *draftChecked
-	if newDraft && checkedOnRead(g) {
+	if newDraft {
 		version, err := t.draftVersion(ctx, c.Draft)
 		if err != nil {
 			return false, "", err
@@ -1297,12 +1303,17 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		if err != nil {
 			return false, "", err
 		}
-		if !checked.OK && checked.Redraft {
-			t.draftRefusals = append(t.draftRefusals, checked.Code)
-			t.logf("draft refused by tafs cloud's check as the chat was read, before the card was drawn (%s, %s): Coach hears its answer", checkRoute, checked.Code)
-			return false, checked.Answer, nil
+		// A card the read doesn't check (a first connection, which signs the
+		// connection alone) is read by the owner first: its check here says
+		// nothing yet, and the tap checks it as before.
+		if checked.CheckedOnRead {
+			if !checked.OK && checked.Redraft {
+				t.draftRefusals = append(t.draftRefusals, checked.Code)
+				t.logf("draft refused by tafs cloud's check as the chat was read, before the card was drawn (%s, %s): Coach hears its answer", checkRoute, checked.Code)
+				return false, checked.Answer, nil
+			}
+			read = &checked
 		}
-		read = &checked
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
 	t.approvals = append(t.approvals, seen)

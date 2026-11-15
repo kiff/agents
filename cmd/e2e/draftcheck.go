@@ -29,7 +29,17 @@ type draftChecked struct {
 	// the phone reads the chat, before the card is drawn (kiff/tafs
 	// handler.ts precheck): tafs cloud's own list, marked on its answer.
 	Redraft bool
+	// CheckedOnRead: whether tafs cloud checks this card's draft as the
+	// owner's app reads the chat, before drawing it (kiff/tafs
+	// checkedOnReadFor, the rule markSigns uses), for an app that can sign
+	// what appCan says. tafs cloud's word, never a copy of its rule here.
+	CheckedOnRead bool
 }
+
+// appCan is what the owner's app says it can sign as it reads the chat
+// (kiff/tafs: the Android and iOS apps with an approval key send these), so
+// the check answers checked_on_read for the card that app would draw.
+var appCan = []string{"tools_and_cards", "key_and_cards", "signs"}
 
 // checkDraft asks tafs cloud whether Approve would sign draft, at version, for
 // grant: the harness confirms drafts in KIFF itself, so without it none of
@@ -43,7 +53,7 @@ func (t *test) checkDraft(ctx context.Context, grant, draft, version string) (dr
 	}
 	cloud := &client{Base: strings.TrimRight(t.cfg.cloud, "/"), HTTP: t.hc, Auth: bearerAuth(t.cfg.session)}
 	a, err := cloud.DoWith(ctx, http.MethodPost, "/v1/connect/grants/"+url.PathEscape(grant)+"/check",
-		map[string]string{"draft": draft, "shown_draft": version}, http.Header{"Planque-Device-Signature": {proof}})
+		map[string]any{"draft": draft, "shown_draft": version, "can": appCan}, http.Header{"Planque-Device-Signature": {proof}})
 	if err != nil {
 		return draftChecked{}, fmt.Errorf("tafs cloud's check of the draft: %w", err)
 	}
@@ -70,18 +80,24 @@ func (t *test) draftVersion(ctx context.Context, draft string) (string, error) {
 // it fails the step, with the code.
 func checkedFrom(body map[string]any) (draftChecked, error) {
 	str := func(k string) string { s, _ := body[k].(string); return s }
+	// A tafs cloud that doesn't say it (before kiff/tafs#1095) would leave
+	// the harness guessing which cards the read checks: it stops instead.
+	onRead, said := body["checked_on_read"].(bool)
+	if !said && str("outcome") != "read_again" {
+		return draftChecked{}, errors.New("tafs cloud's check didn't say checked_on_read: it needs kiff/tafs#1095 deployed")
+	}
 	switch str("outcome") {
 	case "ok":
 		if str("version") == "" {
 			return draftChecked{}, errors.New("tafs cloud's check said ok with no version")
 		}
-		return draftChecked{OK: true, Version: str("version")}, nil
+		return draftChecked{OK: true, Version: str("version"), CheckedOnRead: onRead}, nil
 	case "answered":
 		if !strings.HasPrefix(str("answer"), "failed: ") && !strings.HasPrefix(str("answer"), "already approved") {
 			return draftChecked{}, fmt.Errorf("tafs cloud's check answered %q, not a refusal", str("answer"))
 		}
 		redraft, _ := body["redraft"].(bool)
-		return draftChecked{Answer: str("answer"), Code: str("code"), Redraft: redraft}, nil
+		return draftChecked{Answer: str("answer"), Code: str("code"), Redraft: redraft, CheckedOnRead: onRead}, nil
 	case "read_again":
 		return draftChecked{}, fmt.Errorf("tafs cloud's check said to read the draft again (%s)", str("code"))
 	}
@@ -145,22 +161,6 @@ func refusalsLine(codes []string) string {
 		line += " (" + strings.Join(codes, ", ") + ")"
 	}
 	return line
-}
-
-// checkedOnRead is whether the owner's app checks an approval card's Card
-// draft as it reads the chat, before drawing the card: when the card signs
-// the Card (kiff/tafs approval.ts stepFor), a connected app's Card alone, or
-// the Card with tools added to an app signed in already (tools_and_cards),
-// or with a key (key_and_cards). A first connection signs the connection
-// alone: its Card comes on a card of its own, checked then.
-func checkedOnRead(g grant) bool {
-	switch {
-	case g.Status == "connected":
-		return true
-	case g.Status == "pending":
-		return g.Request.Kind == "api_key" || g.SignedIn
-	}
-	return false
 }
 
 // resultsLast is the cards in the order they're answered: a result after the
