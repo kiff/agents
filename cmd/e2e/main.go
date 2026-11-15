@@ -1793,12 +1793,6 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)
-		// A warning's dissent, as ADVICE: the reason the judge that said not gave,
-		// in the private transcript only (it quotes the chat), so a split can be
-		// read as drift or noise without a rerun.
-		if c.Pass && c.Split > 0 && c.Why != "" && t.cfg.transcript != nil {
-			fmt.Fprintf(t.cfg.transcript, "WARN %s (%d of %d judges said not): %s\n", c.Name, c.Split, eval.Votes, oneLine(c.Why))
-		}
 		// The private transcript keeps the judges' reason in CI too, and every text in
 		// full: a judged fail is read from there.
 		if !c.Pass && c.Why != "" && t.cfg.transcript != nil {

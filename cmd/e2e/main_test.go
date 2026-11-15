@@ -674,23 +674,3 @@ func TestTheAgreedGatesSkipSaysWhyAndItsFailStaysPrivate(t *testing.T) {
 		t.Fatalf("a judged fail's reason reached the public log: %q", log.String())
 	}
 }
-
-// A warning's dissent (Eval 43710691280's invoices: "signs what was agreed",
-// 1 of 3 judges said not, its reason kept nowhere): the judge's reason goes
-// under the warning in the private transcript, as ADVICE does, and never in
-// the public log.
-func TestAWarningsDissentIsInTheTranscriptOnly(t *testing.T) {
-	var log, transcript bytes.Buffer
-	tt := &test{out: &redacting{w: &log, ci: true}, said: said{messages: []string{"Hi."}},
-		cfg: config{log: &log, transcript: &transcript, judge: &eval.Judge{}}}
-	why := "the Card counts one invoice per order, ever,\nwhich the owner never said"
-	if err := tt.reportSetup([]eval.CheckResult{{Name: signsWhatWasAgreed, Grade: eval.Grade{Pass: true, Split: 1, Why: why}}}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(log.String(), "  warn  signs what was agreed (1 of 3 judges said not)\n") || strings.Contains(log.String(), "owner never said") {
-		t.Fatalf("the public log: %q", log.String())
-	}
-	if want := "WARN signs what was agreed (1 of 3 judges said not): the Card counts one invoice per order, ever, which the owner never said\n"; !strings.Contains(transcript.String(), want) {
-		t.Fatalf("the transcript: %q", transcript.String())
-	}
-}
