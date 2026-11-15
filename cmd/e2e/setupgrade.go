@@ -826,7 +826,8 @@ const agreedRule = "The rules below are what the owner agreed in the chat: the r
 	"on the tools it names, over its period (a day, an hour, each call), held for the owner or refused as the rules say. " +
 	"Fail if a limit was merged with another (two limits of 1,000 a day each held as one of 2,000 a day), if a number, a period or the tools " +
 	"a limit covers differ, or if the Cards allow something the rules hold or refuse; name the rule it breaks. A read the rules call generous " +
-	"with no number passes with any daily count. How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
+	"with no number passes with any daily count, and so does a count on reads the rules say KIFF adds (KIFF needs a total on every Card): " +
+	"it's KIFF's, not a limit the owner set, so it passes at the number the rules name, or at any number when they name none. How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
 	"an aggregate's limit over its window bounds the calls together, unless it has a per: then the limit is for each value of that " +
 	"argument apart, so {count, lifetime, 1, per: order} is one per order, ever, never one in all; on_exceed \"owner\" (or none) holds past a limit, \"refuse\" refuses. " +
 	"Past a per_action_max, a call held for the owner can be approved once. Past an aggregate's limit, a call held for the owner can't be " +

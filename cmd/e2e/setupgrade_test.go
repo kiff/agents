@@ -824,6 +824,13 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 			t.Fatalf("the rule doesn't say %q", want)
 		}
 	}
+	// The reads' Card carries a count KIFF needs on every Card (draft-the-card@24): the rules show it as KIFF's, and the judge
+	// passes it, at the number the rules name, never as a limit the owner set.
+	for _, want := range []string{"a count on reads the rules say KIFF adds", "it's KIFF's, not a limit the owner set", "at the number the rules name"} {
+		if !strings.Contains(agreedRule, want) {
+			t.Fatalf("the rule doesn't say %q", want)
+		}
+	}
 	// A judge that finds a merged limit fails the gate.
 	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"merged with another"}}, ModelID: "judge"}, s, cards)
 	if r.Grade.Pass || r.Grade.Skipped || r.Advisory {
