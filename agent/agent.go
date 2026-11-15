@@ -631,7 +631,7 @@ func loopAnswers(r run.Run, held []ToolResultBody) ([]ToolResultBody, bool) {
 func refusals(r run.Run, held []ToolResultBody) (refused, declined int) {
 	for _, h := range held {
 		switch q, _ := requirement(r, h.CallID); {
-		case q.Answer == "refused" || q.Answer == "rejected":
+		case ownerRefused(q.Answer):
 			declined++
 		case h.State == tool.StateRefused:
 			refused++

@@ -530,7 +530,7 @@ func TestARefusedHoldIsInTheRecordAsNotSent(t *testing.T) {
 	}
 	got := m.reqs[len(m.reqs)-1].Messages
 	results := got[len(got)-1].Blocks
-	if note := results[len(results)-1].Text; !strings.HasSuffix(note, `- [called] asked to change: stripe_refund {"charge":"ch_big"} → held by KIFF, refused, not sent`) {
+	if note := results[len(results)-1].Text; !strings.HasSuffix(note, `- [called] asked to change: stripe_refund {"charge":"ch_big"} → held by KIFF, refused by the owner, not sent`) {
 		t.Fatalf("the continued run read %q", note)
 	}
 }
