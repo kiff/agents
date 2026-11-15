@@ -27,7 +27,7 @@ import (
 func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	var mu sync.Mutex
-	status := map[string]string{"grt_qwBr3staleone": "connected", "grt_gone0000000": "disconnected", "grt_twin1aaaa": "connected", "grt_twin2bbbb": "connected"}
+	status := map[string]string{"grt_qwBr3staleone": "connected", "grt_gone0000000": "disconnected", "grt_twin1aaaa": "connected", "grt_twin2bbbb": "connected", "grt_failsWholeId": "connected"}
 	deletes := 0
 	planque := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -38,8 +38,12 @@ func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/tnt/grants":
+			// As planque: the disconnected ones only when asked for.
 			var gs []map[string]string
 			for id, st := range status {
+				if st == "disconnected" && r.URL.Query().Get("include") != "disconnected" {
+					continue
+				}
 				gs = append(gs, map[string]string{"id": id, "status": st})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"grants": gs})
@@ -47,6 +51,11 @@ func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 			id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/tnt/grants/")
 			if _, ok := status[id]; !ok {
 				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+				return
+			}
+			if id == "grt_failsWholeId" {
+				// planque's words may name the whole id: they never reach the public log.
+				http.Error(w, `{"error":"grant `+id+` can't be disconnected now"}`, http.StatusConflict)
 				return
 			}
 			deletes++
@@ -70,6 +79,11 @@ func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 	out.Reset()
 	if err := disconnectGrant(ctx, phone, "grt_gone", &out); err != nil || deletes != 1 {
 		t.Fatalf("an already disconnected grant was sent again: %v, %d disconnects", err, deletes)
+	}
+	// planque refuses, naming the whole id: the error says only its first characters.
+	err := disconnectGrant(ctx, phone, "grt_fail", &out)
+	if err == nil || strings.Contains(err.Error(), "grt_failsWholeId") || !strings.Contains(err.Error(), "grt_fail…") {
+		t.Fatalf("an error naming the whole id: %v", err)
 	}
 	for _, prefix := range []string{"grt_othe", "grt_twin", "grt_", "qwBr3sta", "grt_qwBr3staleone"} {
 		if err := disconnectGrant(ctx, phone, prefix, &out); err == nil || deletes != 1 {
