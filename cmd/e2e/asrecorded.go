@@ -49,6 +49,9 @@ func (t *test) tafAsRecorded(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("answer %d's record: %w", i+1, err)
 		}
+		// What the judge reads beside the answer, to the transcript only: a
+		// reason can then be checked against it.
+		t.logf("taf  answer %d's record, as the judge reads it:\n%s", i+1, strings.TrimRight(eval.RecordLines(calls), "\n"))
 		g, err := t.cfg.judge.AskMajority(ctx, eval.Recorded, eval.RecordedText(calls, text))
 		if err != nil {
 			return err

@@ -95,10 +95,11 @@ func TestAToolThatFailedTwiceIsNotTriedAgain(t *testing.T) {
 		{Text: "LinkedIn refused it (it answered 403)", IsError: true},
 	}}
 	read := &seqTool{name: "github__releases", access: tool.Read, results: []tool.Result{{Text: `[{"tag":"v2"}]`}}}
+	// The same post each time: an app's error counts per call, the tool with its input.
 	m := &script{replies: []model.Reply{
-		uses("c1", "linkedin__post"),
-		uses("c2", "linkedin__post"),
-		uses("c3", "linkedin__post"),
+		use("c1", "linkedin__post", `{"text":"v2 is out"}`),
+		use("c2", "linkedin__post", `{"text":"v2 is out"}`),
+		use("c3", "linkedin__post", `{"text":"v2 is out"}`),
 		uses("c4", "github__releases"),
 		say("LinkedIn refused the post: the connection can't post as you. Sign in to LinkedIn again from Account, then ask me to post."),
 	}}

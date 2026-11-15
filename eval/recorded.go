@@ -48,8 +48,16 @@ const recordCut = 300
 
 // RecordedText is what a Recorded judge reads: the record, then the text.
 func RecordedText(calls []RecordedCall, text string) string {
+	return "Record:\n" + RecordLines(calls) + "\nText:\n" + text
+}
+
+// RecordLines is the record as a judge reads it, without the answer: its
+// calls, one a line, numbered, and their counts by tool. A transcript shows
+// it beside each answer, so a judge's reason can be checked against what it
+// read (Eval 43674391351: "the record has no call that shows a card", and
+// no report listed the answer's calls).
+func RecordLines(calls []RecordedCall) string {
 	var b strings.Builder
-	b.WriteString("Record:\n")
 	if len(calls) == 0 {
 		b.WriteString("(no calls)\n")
 	}
@@ -61,8 +69,6 @@ func RecordedText(calls []RecordedCall, text string) string {
 		fmt.Fprintf(&b, "%d.%s %s %s → %s\n", i+1, when, c.Tool, cut(c.Input), cut(c.Outcome))
 	}
 	b.WriteString(counts(calls))
-	b.WriteString("\nText:\n")
-	b.WriteString(text)
 	return b.String()
 }
 

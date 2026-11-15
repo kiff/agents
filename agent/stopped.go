@@ -21,8 +21,15 @@ import (
 //     limit, not a sign of what the app holds, so the run's other work goes
 //     on (13 Nov: a chargebacks taf whose Card leaves out the shop's order
 //     lookup stopped settling its disputes).
-//   - A tool gets one more try once it failed, to find out why: failing
-//     twice in a run, it isn't called again in that run (AfterTwoFailures).
+//   - A call gets one more try once it failed, to find out why: failing
+//     twice in a run, it isn't made again in that run (AfterTwoFailures).
+//     An app's error counts per call, the tool with its input: a batch
+//     job's typo in one item's id stopped every other item's write (Eval
+//     43674391351, chargebacks run 2: two update_dispute calls failed on a
+//     mistyped dispute id, and the other disputes went unsettled). A tool
+//     that errs on every call still stops, after FailuresPerTool errors in
+//     all. A call KIFF refused counts per tool: the owner's limit is the
+//     tool's, whatever the input.
 //
 // Each such call is refused back to the model unmade, as OneAtATime is, and
 // its words ask the model to stop and tell the person in plain words what
@@ -39,6 +46,12 @@ const AfterRefusedRead = "Not made: a read in this run was refused, so what's th
 const AfterTwoFailures = "Not made: this tool already failed twice in this run, and it isn't tried again in it. " +
 	"Stop here, and tell the person in plain words what was refused and what they can do about it. Don't try another way round."
 
+// FailuresPerTool is how many of a tool's calls an app may fail in a run, on
+// any inputs, before the tool isn't called again in it: two items' tries
+// each and one more, so an app that errs on every call (its sign-in ended,
+// say) stops the run as before, a few calls later.
+const FailuresPerTool = 5
+
 // OutcomeStopped is a Called event's outcome for a call refused back by
 // those rules: never made, and counted nowhere.
 const OutcomeStopped = "not made: the run stopped after a refused call"
@@ -48,14 +61,33 @@ func stoppedText(text string) bool {
 	return text == AfterRefusedRead || text == AfterTwoFailures
 }
 
-// stop is what a run knows of its calls' failures: per tool, how many
-// failed, and the reads still refused.
+// stop is what a run knows of its calls' failures: per tool, how many KIFF
+// refused and how many the app failed; per call (the tool with its input),
+// how many the app failed; and the reads still refused.
 type stop struct {
-	failed  map[string]int
-	refused map[string]bool
+	refusedBy map[string]int
+	erredBy   map[string]int
+	erred     map[string]int
+	refused   map[string]bool
 }
 
-func newStop() *stop { return &stop{failed: map[string]int{}, refused: map[string]bool{}} }
+func newStop() *stop {
+	return &stop{refusedBy: map[string]int{}, erredBy: map[string]int{}, erred: map[string]int{}, refused: map[string]bool{}}
+}
+
+// callKey is a call's tool and input, the input in one form however its keys
+// were ordered or spaced, so the same call made twice is one key.
+func callKey(name string, input json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(input, &v); err != nil {
+		return name + "\x00" + strings.TrimSpace(string(input))
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return name + "\x00" + strings.TrimSpace(string(input))
+	}
+	return name + "\x00" + string(b)
+}
 
 // failure says a call's result is a failure that counts: a call to an app
 // through KIFF's gateway that came back an error, or that KIFF refused. A
@@ -80,8 +112,12 @@ func (s *stop) see(t tool.Tool, name string, input json.RawMessage, r tool.Resul
 		return
 	}
 	failed := failure(t, r, notMade)
-	if failed {
-		s.failed[name]++
+	switch {
+	case failed && r.State == tool.StateRefused:
+		s.refusedBy[name]++
+	case failed:
+		s.erredBy[name]++
+		s.erred[callKey(name, input)]++
 	}
 	if !acts(t, input) {
 		switch {
@@ -100,7 +136,7 @@ func (s *stop) check(t tool.Tool, name string, input json.RawMessage) string {
 	if t == nil || !t.Gateway() {
 		return ""
 	}
-	if s.failed[name] >= 2 {
+	if s.refusedBy[name] >= 2 || s.erred[callKey(name, input)] >= 2 || s.erredBy[name] >= FailuresPerTool {
 		return AfterTwoFailures
 	}
 	if acts(t, input) && len(s.refused) > 0 {

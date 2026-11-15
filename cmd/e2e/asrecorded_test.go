@@ -126,6 +126,20 @@ func TestEachAnswerIsJudgedAgainstItsRecord(t *testing.T) {
 	if !strings.Contains(transcript, "taf  against its record, answer 2: judged") || strings.Contains(transcript, "answer 1:") || strings.Contains(log, ": judged") {
 		t.Fatalf("the verdict's reason, transcript:\n%s\nlog:\n%s", transcript, log)
 	}
+	// Each answer's record, as the judge reads it, is in the transcript, so a
+	// reason can be checked against it; the public log has none of it.
+	for _, want := range []string{
+		"taf  answer 1's record, as the judge reads it:\n1. retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done",
+		"taf  answer 2's record, as the judge reads it:\n1. (earlier) retrieve_charge_7f2a",
+		"taf  answer 3's record, as the judge reads it:\n(no calls)",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("the transcript has no %q:\n%s", want, transcript)
+		}
+	}
+	if strings.Contains(log, "record, as the judge reads it") || strings.Contains(log, "ch_1") {
+		t.Errorf("the public log shows a record:\n%s", log)
+	}
 	records := map[string]int{
 		"Record:\n1. retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done\n\nText:\nYes, €7 can be refunded.":                                                                                           0,
 		"Record:\n1. (earlier) retrieve_charge_7f2a {\"charge\":\"ch_1\"} → done\n2. create_refund_7f2a {\"charge\":\"ch_1\",\"amount\":700} → " + agent.OutcomeApproved + "\n\nText:\nYou approved": 0,
