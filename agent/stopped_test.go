@@ -348,7 +348,7 @@ func TestAFailedReadStopsOnlyWritesOnWhatItAskedAbout(t *testing.T) {
 	}
 }
 
-// dev-android on #502: a failed list with a filter names no item, and a
+// A failed list with a filter names no item, and a
 // failed read of a numeric id names that id. Only keys that name an item
 // count (an id, or a word of the tool's name), numbers as their text.
 // Category: authority

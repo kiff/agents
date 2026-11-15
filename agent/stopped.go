@@ -106,7 +106,7 @@ func newStop() *stop {
 // the input's keys that name an item (namesItem: "order_id", "orderId",
 // "dispute" in retrieve_dispute). Numbers count as their
 // text. None for a read of everything, a search or a filtered list: its
-// status, query or cursor names no item (dev-android on #502).
+// status, query or cursor names no item.
 func itemsOf(name string, input json.RawMessage, resource string) []string {
 	var out []string
 	add := func(v any) {
