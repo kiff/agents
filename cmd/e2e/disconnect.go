@@ -33,7 +33,12 @@ func runDisconnect(ctx context.Context, apiBase, planqueBase string, cfg config,
 		return fmt.Errorf("KIFF didn't take the phone's session: %v %v", err, me.Err())
 	}
 	tenant, _ := me.Body["tenant_id"].(string)
-	return disconnectGrant(ctx, testaccount.NewPhone(pk, planqueBase, tenant, hc), id, out)
+	phone := testaccount.NewPhone(pk, planqueBase, tenant, hc)
+	// planque asks KIFF whether this device signed (d=), as for the app and the run.
+	if phone.Device, err = testaccount.ThisDevice(ctx, testaccount.KIFFSession(apiBase, cfg.session, tenant, pk, hc)); err != nil {
+		return fmt.Errorf("the phone's device in KIFF: %w", err)
+	}
+	return disconnectGrant(ctx, phone, id, out)
 }
 
 // disconnectGrant disconnects the phone's account's one grant whose id
