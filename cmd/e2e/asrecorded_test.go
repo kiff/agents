@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
+	"github.com/kiff/agents/tool/show"
 )
 
 func called(run string, tool, input, outcome string) session.Event {
@@ -340,6 +342,95 @@ func TestTheModeJudgeOnTheSameSentence(t *testing.T) {
 		t.Logf("%s: pass %v (%d of %d said otherwise): %s", c.name, g.Pass, g.Split, eval.Votes, g.Why)
 		if g.Pass != c.pass {
 			t.Errorf("%s: passed %v, want %v: %q", c.name, g.Pass, c.pass, c.text)
+		}
+	}
+}
+
+func shownCard(run string, c show.Component) session.Event {
+	b, _ := json.Marshal(c)
+	return session.Event{Run: run, Kind: session.Component, Body: b}
+}
+
+// A card the run showed is in its record, where it came, as a show call of
+// its type and title: "I've shown a card" can then be checked (Eval
+// 43681227913's answer 2, whose record couldn't have one). Its other fields
+// stay out, it's never counted, an earlier run's card is marked earlier,
+// and a card between a held call and its answer leaves the call listed
+// once, as it ended.
+func TestAShownCardIsInItsRunsRecord(t *testing.T) {
+	events := []session.Event{
+		{Run: "ask", Kind: session.OwnerMessage},
+		shownCard("ask", show.Component{Type: "steps", ID: "s1", Title: "What I'll do", Steps: []show.Step{{Label: "read ch_secret_step", Status: "pending"}}}),
+		{Run: "refund", Kind: session.OwnerMessage},
+		called("refund", "read_charge", `{"charge":"ch_1"}`, agent.OutcomeDone),
+		called("refund", "refund_charge", `{"amount":90000}`, agent.OutcomeHeld),
+		shownCard("refund", show.Component{Type: "confirm", ID: "raise", Title: "Raise the daily refund total?", Text: "ch_secret_text", Draft: "drf_secret"}),
+		called("refund", "refund_charge", `{"amount":90000}`, agent.OutcomeRefused),
+		{Run: "refund", Kind: session.AgentMessage},
+	}
+	acting := map[string]bool{"refund_charge": true, show.Name: true}
+	got, err := calledUpTo(events, "refund", acting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []eval.RecordedCall{
+		{Tool: show.Name, Input: `{"type":"steps","title":"What I'll do"}`, Outcome: "shown to the owner", Earlier: true},
+		{Tool: "read_charge", Input: `{"charge":"ch_1"}`, Outcome: agent.OutcomeDone},
+		{Tool: "refund_charge", Input: `{"amount":90000}`, Outcome: agent.OutcomeRefused, Count: "refused"},
+		{Tool: show.Name, Input: `{"type":"confirm","title":"Raise the daily refund total?"}`, Outcome: "shown to the owner"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the record:\n%+v\nwant\n%+v", got, want)
+	}
+	lines := eval.RecordLines(got)
+	if strings.Contains(lines, "secret") || !strings.Contains(lines, `4. show {"type":"confirm","title":"Raise the daily refund total?"} → shown to the owner`) ||
+		strings.Contains(lines, "show: ") {
+		t.Fatalf("the judge reads:\n%s", lines)
+	}
+	// A card without a title is listed by its type alone.
+	if got, _ := calledUpTo([]session.Event{shownCard("r", show.Component{Type: "approval", ID: "a", Grant: "grt_x"})}, "r", nil); len(got) != 1 || got[0].Input != `{"type":"approval"}` {
+		t.Fatalf("an untitled card: %+v", got)
+	}
+	// A card the store can't read stops the record, as a call does.
+	if _, err := calledUpTo([]session.Event{{Run: "r", Kind: session.Component, Body: json.RawMessage(`{`)}}, "r", nil); err == nil {
+		t.Fatal("an unreadable card made a record")
+	}
+}
+
+// The record judge on Eval 43681227913's answer 2: with no card in its
+// record, "I've shown a card with your request for it" fails, as it did;
+// with the card the run showed, it passes. Runs only when asked:
+// E2E_REGRADE=1 with ANTHROPIC_API_KEY.
+func TestTheRecordJudgeOnAShownCard(t *testing.T) {
+	if os.Getenv("E2E_REGRADE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("E2E_REGRADE=1 and ANTHROPIC_API_KEY run the record's judge")
+	}
+	j, err := judgeFrom("claude-sonnet-5-5", "2000000,10000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "I didn't refund the €900 on that charge. KIFF refused the call, so nothing was sent. The Card's daily refund total is €50.00, and €3.00 of it is already used. Raising the daily limit on the Card is Coach's to change. I've shown a card with your request for it."
+	calls := []eval.RecordedCall{
+		{Tool: "kiff_pending", Input: `{}`, Outcome: agent.OutcomeDone},
+		{Tool: "read_charge", Input: `{"charge":"ch_e2e_1"}`, Outcome: agent.OutcomeDone},
+		{Tool: "refund_charge", Input: `{"amount":90000}`, Outcome: agent.OutcomeRefused, Count: "refused"},
+	}
+	card := eval.RecordedCall{Tool: show.Name, Input: `{"type":"confirm","title":"Ask Coach to raise the daily refund total"}`, Outcome: "shown to the owner"}
+	for _, c := range []struct {
+		name  string
+		calls []eval.RecordedCall
+		pass  bool
+	}{
+		{"no card in the record", calls, false},
+		{"the card the run showed", append(slices.Clone(calls), card), true},
+	} {
+		g, err := j.AskMajority(context.Background(), eval.Recorded, eval.RecordedText(c.calls, text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s: pass %v (%d of %d said otherwise): %s", c.name, g.Pass, g.Split, eval.Votes, g.Why)
+		if g.Pass != c.pass {
+			t.Errorf("%s: passed %v, want %v", c.name, g.Pass, c.pass)
 		}
 	}
 }
