@@ -354,6 +354,8 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[` + limit("max(amount)", "call", `,"limit":1`) + `]`):                        "count or sum(<arg>)",
 		notice(`[` + limit("sum()", "call", `,"limit":1`) + `]`):                              "count or sum(<arg>)",
 		notice(`[` + limit("count", "lifetime", `,"limit":1`) + `]`):                          "call or calendar_day",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"maybe"`) + `]`):       "over is ask or refuse, or left out",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"Ask"`) + `]`):         "over is ask or refuse, or left out",
 		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                "limit is required",
 		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                     "0 or more",
 		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                    "wrong shape",
@@ -395,5 +397,25 @@ func TestARefusedLimitNamesNoFigure(t *testing.T) {
 		if strings.Contains(err.Error(), n) {
 			t.Fatalf("the refusal says %s: %v", n, err)
 		}
+	}
+}
+
+// Each limit may say what happens past it, where the owner agreed otherwise
+// than the rule's over: ask past €5 a refund, refuse past €50 a day (Eval 16).
+// A limit that doesn't say keeps the rule's; both come back as shown.
+func TestALimitSaysItsOwnOver(t *testing.T) {
+	in := `{"type":"notice","id":"refunds-rules","tone":"info","text":"A refund over €5 waits for you; at most €50 a day, then refused.",` +
+		`"rules":[{"tool":"create_refund","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500,"over":"ask"},` +
+		`{"quantity":"sum(amount)","window":"calendar_day","limit":5000}]}]}`
+	c, err := show.Parse(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.Rules[0].Limits; l[0].Over != "ask" || l[1].Over != "" || c.Rules[0].Over != "refuse" {
+		t.Fatalf("limits: %+v", l)
+	}
+	b, _ := json.Marshal(c)
+	if !strings.Contains(string(b), `"limit":500,"over":"ask"}`) || !strings.Contains(string(b), `"limit":5000}`) {
+		t.Fatalf("recorded: %s", b)
 	}
 }
