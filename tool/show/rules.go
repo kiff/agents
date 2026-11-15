@@ -19,6 +19,11 @@ const (
 	MaxRules      = 64
 	MaxRuleLimits = 4
 	MaxRuleTool   = 128
+	// MaxRuleLimit is the largest limit, 2^53-1: tafs cloud reads the
+	// notice in JavaScript, where a larger integer is rounded, so the figure
+	// it checked would not be the one the owner agreed (as KIFF and planque
+	// refuse past it).
+	MaxRuleLimit = 1<<53 - 1
 	// Agree is the value of a confirm's option by which the owner agrees to
 	// the rules notice it names.
 	Agree = "agree"
@@ -51,6 +56,9 @@ var (
 )
 
 func checkRules(rules []Rule) error {
+	if rules != nil && len(rules) == 0 {
+		return fmt.Errorf("rules, when given, has at least one rule: leave it out for a notice with none")
+	}
 	if len(rules) > MaxRules {
 		return fmt.Errorf("rules has at most %d rules, one per tool", MaxRules)
 	}
@@ -66,6 +74,8 @@ func checkRules(rules []Rule) error {
 			return fmt.Errorf("rule %d: another rule has tool %q; one rule per tool", i+1, r.Tool)
 		case !slices.Contains(overs, r.Over):
 			return fmt.Errorf("rule %d (%s): over is ask or refuse", i+1, r.Tool)
+		case r.Limits != nil && len(r.Limits) == 0:
+			return fmt.Errorf("rule %d (%s): limits, when given, has at least one limit: leave it out for none", i+1, r.Tool)
 		case len(r.Limits) > MaxRuleLimits:
 			return fmt.Errorf("rule %d (%s): at most %d limits", i+1, r.Tool, MaxRuleLimits)
 		}
@@ -82,6 +92,8 @@ func checkRules(rules []Rule) error {
 				return fmt.Errorf("%s: limit is required, in the Card's units", at)
 			case *l.Limit < 0:
 				return fmt.Errorf("%s: limit is 0 or more", at)
+			case *l.Limit > MaxRuleLimit:
+				return fmt.Errorf("%s: limit is at most %d", at, int64(MaxRuleLimit))
 			case pairs[l.Quantity+" "+l.Window]:
 				return fmt.Errorf("%s: another limit has %s per %s; one figure each", at, l.Quantity, l.Window)
 			}

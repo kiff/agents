@@ -307,7 +307,7 @@ func TestATafShowsOnlyItsOwnCards(t *testing.T) {
 func TestARulesNoticeAndItsAgreementAreShown(t *testing.T) {
 	notice := `{"type":"notice","id":"rules","tone":"info","text":"Refunds up to €5 each, €50 a day; past that, I stop.",` +
 		`"rules":[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},` +
-		`{"quantity":"sum(amount)","window":"calendar_day","limit":5000},{"quantity":"count","window":"calendar_day","limit":0}]},` +
+		`{"quantity":"sum(amount)","window":"calendar_day","limit":9007199254740991},{"quantity":"count","window":"calendar_day","limit":0}]},` +
 		`{"tool":"send_reply","over":"ask"}]}`
 	c, err := show.Parse(json.RawMessage(notice))
 	if err != nil {
@@ -357,6 +357,9 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                "limit is required",
 		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                     "0 or more",
 		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                    "wrong shape",
+		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):         "at most 9007199254740991",
+		notice(`[]`): "at least one rule",
+		notice(`[{"tool":"send_reply","over":"ask","limits":[]}]`): "at least one limit",
 		notice(`[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},{"quantity":"sum(amount)","window":"call","limit":100}]}]`): "one figure each",
 		notice(`[{"tool":"send_reply","over":"ask","per":"day"}]`):                                                                           "unknown",
 		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"agrees":"rules"}`:            `value "agree"`,

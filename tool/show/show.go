@@ -398,10 +398,10 @@ func (t Tool) Spec() model.ToolSpec {
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
-			`"rules":{"type":"array","maxItems":64,"description":"a rules notice: one per tool the draft will cover, what the owner agrees to past its limit and the limit's figures",` +
+			`"rules":{"type":"array","minItems":1,"maxItems":64,"description":"a rules notice: one per tool the draft will cover, what the owner agrees to past its limit and the limit's figures",` +
 			`"items":{"type":"object","properties":{"tool":{"type":"string","description":"planque's name for the tool, before KIFF's suffix"},"over":{"type":"string","enum":["ask","refuse"]},` +
-			`"limits":{"type":"array","maxItems":4,"items":{"type":"object","properties":{"quantity":{"type":"string","description":"count, or sum(<arg>) such as sum(amount)"},` +
-			`"window":{"type":"string","enum":["call","calendar_day"]},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
+			`"limits":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"quantity":{"type":"string","description":"count, or sum(<arg>) such as sum(amount)"},` +
+			`"window":{"type":"string","enum":["call","calendar_day"]},"limit":{"type":"integer","minimum":0,"maximum":9007199254740991,"description":"in the Card's own units: minor units of the connection's currency for an amount"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
 			`"agrees":{"type":"string","description":"a confirm that agrees to a rules notice: the notice's id; it has an option with value agree"},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +
 			`"call":{"type":"string","description":"the tool the step waits on, by name: done only once that call went through"}},"required":["label","status"]}},` +
