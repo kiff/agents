@@ -299,3 +299,73 @@ func TestATafShowsOnlyItsOwnCards(t *testing.T) {
 		t.Fatal("Coach's spec changed")
 	}
 }
+
+// A rules notice carries, beside its words, what the owner agrees to for each
+// tool (over) and its figures (limits); the confirm that agrees names it and
+// has the agree option. Both come back from Parse as shown, figures included,
+// 0 among them: tafs cloud checks the draft's Cards against them at Approve.
+func TestARulesNoticeAndItsAgreementAreShown(t *testing.T) {
+	notice := `{"type":"notice","id":"rules","tone":"info","text":"Refunds up to €5 each, €50 a day; past that, I stop.",` +
+		`"rules":[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},` +
+		`{"quantity":"sum(amount)","window":"calendar_day","limit":5000},{"quantity":"count","window":"calendar_day","limit":0}]},` +
+		`{"tool":"send_reply","over":"ask"}]}`
+	c, err := show.Parse(json.RawMessage(notice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Rules) != 2 || c.Rules[0].Over != "refuse" || len(c.Rules[0].Limits) != 3 || *c.Rules[0].Limits[2].Limit != 0 || c.Rules[1].Limits != nil {
+		t.Fatalf("rules: %+v", c.Rules)
+	}
+	b, _ := json.Marshal(c)
+	if !strings.Contains(string(b), `{"quantity":"count","window":"calendar_day","limit":0}`) || !strings.Contains(string(b), `{"tool":"send_reply","over":"ask"}`) {
+		t.Fatalf("recorded: %s", b)
+	}
+	agree := `{"type":"confirm","id":"agree-rules","text":"Agree to these rules?","agrees":"rules","options":[{"value":"agree","label":"Agree"},{"value":"change","label":"Change something"}]}`
+	c, err = show.Parse(json.RawMessage(agree))
+	if err != nil || c.Agrees != "rules" {
+		t.Fatalf("agrees: %q %v", c.Agrees, err)
+	}
+	b, _ = json.Marshal(c)
+	if !strings.Contains(string(b), `"agrees":"rules"`) {
+		t.Fatalf("recorded: %s", b)
+	}
+}
+
+func TestRulesThatDoNotFitAreRefused(t *testing.T) {
+	notice := func(rules string) string {
+		return `{"type":"notice","id":"rules","tone":"info","text":"x","rules":` + rules + `}`
+	}
+	limit := func(q, w, l string) string {
+		return `{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"` + q + `","window":"` + w + `"` + l + `}]}`
+	}
+	many := make([]string, show.MaxRules+1)
+	for i := range many {
+		many[i] = fmt.Sprintf(`{"tool":"t%d","over":"ask"}`, i)
+	}
+	five := `{"tool":"refund_charge","over":"refuse","limits":[` + strings.Repeat(`{"quantity":"count","window":"call","limit":1},`, 4) + `{"quantity":"count","window":"call","limit":1}]}`
+	for in, want := range map[string]string{
+		notice(`[{"tool":"","over":"ask"}]`):                                                  "tool is required",
+		notice(`[{"tool":"` + strings.Repeat("t", 129) + `","over":"ask"}]`):                  "at most 128",
+		notice(`[{"tool":"send_reply","over":"ask"},{"tool":" Send_Reply","over":"refuse"}]`): "one rule per tool",
+		notice(`[{"tool":"send_reply","over":"maybe"}]`):                                      "over is ask or refuse",
+		notice(`[{"tool":"send_reply"}]`):                                                     "over is ask or refuse",
+		notice(`[` + strings.Join(many, ",") + `]`):                                           "at most 64 rules",
+		notice(`[` + five + `]`):                                                              "at most 4 limits",
+		notice(`[` + limit("max(amount)", "call", `,"limit":1`) + `]`):                        "count or sum(<arg>)",
+		notice(`[` + limit("sum()", "call", `,"limit":1`) + `]`):                              "count or sum(<arg>)",
+		notice(`[` + limit("count", "lifetime", `,"limit":1`) + `]`):                          "call or calendar_day",
+		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                "limit is required",
+		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                     "0 or more",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                    "wrong shape",
+		notice(`[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},{"quantity":"sum(amount)","window":"call","limit":100}]}]`): "one figure each",
+		notice(`[{"tool":"send_reply","over":"ask","per":"day"}]`):                                                                           "unknown",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"agrees":"rules"}`:            `value "agree"`,
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"agree","label":"Y"},{"value":"n","label":"N"}],"agrees":"Rules Notice"}`: "by its id",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"rules":[]}`:                  `has no field "rules"`,
+		`{"type":"notice","id":"a","tone":"info","text":"x","agrees":"rules"}`:                                                               `has no field "agrees"`,
+	} {
+		if _, err := show.Parse(json.RawMessage(in)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", in, err, want)
+		}
+	}
+}
