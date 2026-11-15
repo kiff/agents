@@ -72,8 +72,10 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    # About 52 minutes at three runs a suite (Eval 18 took 34 at one or two).
-    timeout-minutes: 80
+    # About 95 minutes at three runs a suite: Eval 19 took 15 for chargebacks and
+    # about 42 for the hand-offs before tickets and the four setups (Eval 18
+    # took 34 in all at one or two).
+    timeout-minutes: 130
     env:
       REPORTS: kiff-agents-eval-reports
       # Each taf a run makes, for the sweep at the end (cmd/e2e -made).
