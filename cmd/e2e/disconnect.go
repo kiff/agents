@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -35,15 +36,31 @@ func runDisconnect(ctx context.Context, apiBase, planqueBase string, cfg config,
 	return disconnectGrant(ctx, testaccount.NewPhone(pk, planqueBase, tenant, hc), id, out)
 }
 
-// disconnectGrant disconnects the phone's account's grant id and reads it
-// back: only a grant that reads as disconnected after is done. One already
-// disconnected is left as it is.
-func disconnectGrant(ctx context.Context, phone *testaccount.Phone, id string, out io.Writer) error {
-	name := shortGrant(id)
-	g, err := phone.Grant(ctx, id)
-	if err != nil {
-		return fmt.Errorf("grant %s isn't the test account's, or can't be read: %w", name, err)
+// disconnectGrant disconnects the phone's account's one grant whose id
+// starts with prefix, and reads it back: only a grant that reads as
+// disconnected after is done. One already disconnected is left as it is.
+// The input is a prefix, never the whole id: a dispatch's inputs are shown
+// in the run's public log. No grant, or more than one, sends nothing.
+func disconnectGrant(ctx context.Context, phone *testaccount.Phone, prefix string, out io.Writer) error {
+	name := shortGrant(prefix)
+	if len(prefix) < len("grt_")+4 || len(prefix) > len("grt_")+8 || !strings.HasPrefix(prefix, "grt_") {
+		// A whole id given by mistake is refused too: nothing runs on it.
+		return fmt.Errorf("give the grant's first 8 characters (grt_ and 4 more), never its whole id")
 	}
+	gs, err := phone.Grants(ctx)
+	if err != nil {
+		return fmt.Errorf("the test account's grants can't be read: %w", err)
+	}
+	var match []testaccount.Grant
+	for _, g := range gs {
+		if strings.HasPrefix(g.ID, prefix) {
+			match = append(match, g)
+		}
+	}
+	if len(match) != 1 {
+		return fmt.Errorf("%d of the test account's grants start with %s: give one grant's first characters", len(match), name)
+	}
+	g, id := match[0], match[0].ID
 	fmt.Fprintf(out, "grant %s on the test account: %s\n", name, g.Status)
 	if g.Status == "disconnected" {
 		return nil
@@ -67,5 +84,5 @@ func shortGrant(id string) string {
 	if len(id) > 8 {
 		return id[:8] + "…"
 	}
-	return id
+	return id + "…"
 }
