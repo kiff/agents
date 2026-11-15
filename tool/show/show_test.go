@@ -354,10 +354,12 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[` + limit("max(amount)", "call", `,"limit":1`) + `]`):                        "count or sum(<arg>)",
 		notice(`[` + limit("sum()", "call", `,"limit":1`) + `]`):                              "count or sum(<arg>)",
 		notice(`[` + limit("count", "lifetime", `,"limit":1`) + `]`):                          "call or calendar_day",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"maybe"`) + `]`):       "over is ask or refuse, or left out",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"Ask"`) + `]`):         "over is ask or refuse, or left out",
 		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                "limit is required",
 		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                     "0 or more",
 		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                    "wrong shape",
-		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):         "at most 9007199254740991",
+		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):         "larger than a Card takes",
 		notice(`[]`): "at least one rule",
 		notice(`[{"tool":"send_reply","over":"ask","limits":[]}]`): "at least one limit",
 		notice(`[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},{"quantity":"sum(amount)","window":"call","limit":100}]}]`): "one figure each",
@@ -370,5 +372,50 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		if _, err := show.Parse(json.RawMessage(in)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", in, err, want)
 		}
+	}
+}
+
+// The largest limit stays a check, never a number in what Coach reads: Coach
+// copied it into a Card's lifetime total once (Eval 16), which no owner agreed.
+func TestTheLargestLimitIsNotInTheSpec(t *testing.T) {
+	spec := show.New().Spec()
+	for _, n := range []string{"9007199254740991", "9007199254740992", "2^53"} {
+		if strings.Contains(spec.Description, n) || strings.Contains(string(spec.InputSchema), n) {
+			t.Fatalf("the spec says %s", n)
+		}
+	}
+}
+
+// A refused limit names no figure either: Coach reads the refusal.
+func TestARefusedLimitNamesNoFigure(t *testing.T) {
+	in := `{"type":"notice","id":"rules","tone":"info","text":"x","rules":[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":9007199254740992}]}]}`
+	_, err := show.Parse(json.RawMessage(in))
+	if err == nil {
+		t.Fatal("accepted a limit past 2^53-1")
+	}
+	for _, n := range []string{"9007199254740991", "9007199254740992", "2^53"} {
+		if strings.Contains(err.Error(), n) {
+			t.Fatalf("the refusal says %s: %v", n, err)
+		}
+	}
+}
+
+// Each limit may say what happens past it, where the owner agreed otherwise
+// than the rule's over: ask past €5 a refund, refuse past €50 a day (Eval 16).
+// A limit that doesn't say keeps the rule's; both come back as shown.
+func TestALimitSaysItsOwnOver(t *testing.T) {
+	in := `{"type":"notice","id":"refunds-rules","tone":"info","text":"A refund over €5 waits for you; at most €50 a day, then refused.",` +
+		`"rules":[{"tool":"create_refund","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500,"over":"ask"},` +
+		`{"quantity":"sum(amount)","window":"calendar_day","limit":5000}]}]}`
+	c, err := show.Parse(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.Rules[0].Limits; l[0].Over != "ask" || l[1].Over != "" || c.Rules[0].Over != "refuse" {
+		t.Fatalf("limits: %+v", l)
+	}
+	b, _ := json.Marshal(c)
+	if !strings.Contains(string(b), `"limit":500,"over":"ask"}`) || !strings.Contains(string(b), `"limit":5000}`) {
+		t.Fatalf("recorded: %s", b)
 	}
 }

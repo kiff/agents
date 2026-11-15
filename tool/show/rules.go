@@ -31,7 +31,8 @@ const (
 
 // Rule is one tool's: Tool is planque's name for it before KIFF's suffix
 // (send_reply, not send_reply_k3f9), since the rules are agreed before the
-// tools are declared; Over is ask or refuse.
+// tools are declared; Over is ask or refuse: what happens past a limit that
+// doesn't say its own.
 type Rule struct {
 	Tool   string  `json:"tool"`
 	Over   string  `json:"over"`
@@ -42,10 +43,13 @@ type Rule struct {
 // sum(<arg>)) over Window (call, or calendar_day), at most Limit, in the
 // Card's own units (minor units of the connection's currency for an amount).
 // Limit is required: 0 is a figure (never), so a pointer tells it from unsaid.
+// Over, when given, is what happens past this figure, where it differs from
+// the rule's: ask past €5 a refund, refuse past €50 a day (Eval 16).
 type Limit struct {
 	Quantity string `json:"quantity"`
 	Window   string `json:"window"`
 	Limit    *int64 `json:"limit"`
+	Over     string `json:"over,omitempty"`
 }
 
 var (
@@ -88,12 +92,16 @@ func checkRules(rules []Rule) error {
 				return fmt.Errorf("%s: quantity is count or sum(<arg>), as on the Card", at)
 			case !slices.Contains(ruleWindows, l.Window):
 				return fmt.Errorf("%s: window is call or calendar_day", at)
+			case l.Over != "" && !slices.Contains(overs, l.Over):
+				return fmt.Errorf("%s: over is ask or refuse, or left out for the rule's", at)
 			case l.Limit == nil:
 				return fmt.Errorf("%s: limit is required, in the Card's units", at)
 			case *l.Limit < 0:
 				return fmt.Errorf("%s: limit is 0 or more", at)
 			case *l.Limit > MaxRuleLimit:
-				return fmt.Errorf("%s: limit is at most %d", at, int64(MaxRuleLimit))
+				// No figure here: Coach reads this refusal, and copied the
+				// largest limit into a Card once (Eval 16).
+				return fmt.Errorf("%s: limit is larger than a Card takes; give the figure the owner agreed, in the Card's own units", at)
 			case pairs[l.Quantity+" "+l.Window]:
 				return fmt.Errorf("%s: another limit has %s per %s; one figure each", at, l.Quantity, l.Window)
 			}
