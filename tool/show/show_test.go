@@ -372,3 +372,14 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// The largest limit stays a check, never a number in what Coach reads: Coach
+// copied it into a Card's lifetime total once (Eval 16), which no owner agreed.
+func TestTheLargestLimitIsNotInTheSpec(t *testing.T) {
+	spec := show.New().Spec()
+	for _, n := range []string{"9007199254740991", "9007199254740992", "2^53"} {
+		if strings.Contains(spec.Description, n) || strings.Contains(string(spec.InputSchema), n) {
+			t.Fatalf("the spec says %s", n)
+		}
+	}
+}
