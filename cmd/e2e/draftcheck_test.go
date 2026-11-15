@@ -338,8 +338,7 @@ func TestWhichCardsTheReadChecksIsTafsCloudsWord(t *testing.T) {
 	}
 	tr := tt.cfg.log.(*redacting).w.(*strings.Builder).String()
 	if strings.Contains(tr, "before the card was drawn") {
-		t.Fatalf("a card tafs cloud doesn't check on the read was refused before the owner read it:
-%s", tr)
+		t.Fatalf("a card tafs cloud doesn't check on the read was refused before the owner read it:\n%s", tr)
 	}
 }
 
