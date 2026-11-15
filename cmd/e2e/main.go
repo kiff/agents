@@ -1789,6 +1789,11 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 		fmt.Fprintln(t.cfg.log, line)
 		// The private transcript keeps the judges' reason in CI too, and every text in
 		// full: a judged fail is read from there.
+		// A pass one judge doubted keeps that judge's reason there too, so the doubt can be
+		// read, never in the public log: it quotes the chat.
+		if c.Pass && c.Split > 0 && c.Why != "" && t.cfg.transcript != nil {
+			fmt.Fprintf(t.cfg.transcript, "WARN %s (%d of %d judges said not): %s\n", c.Name, c.Split, eval.Votes, c.Why)
+		}
 		if !c.Pass && c.Why != "" && t.cfg.transcript != nil {
 			fmt.Fprintf(t.cfg.transcript, "%s %s: %s\n", strings.ToUpper(mark), c.Name, c.Why)
 			if !judgedTexts {
