@@ -85,7 +85,8 @@ import (
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	// Each run has its own 20 minutes (run); -repeat runs them one after another.
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Minute)
 	defer cancel()
 	out := &redacting{w: os.Stdout}
 	if err := run(ctx, os.Args[1:], out, os.Getenv); err != nil {
@@ -206,9 +207,19 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"(they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
 	person := fs.String("person", "", "-people-signin: maria (an editor) or luis (a viewer)")
 	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id. A sign-in approved on another account writes nothing")
+	repeat := fs.Int("repeat", 1, "run the case this many times, one after another, each with its own transcript (setup.md, setup-2.md, …), "+
+		"then hold the graded checks to the Eval's bar (eval/gates.go): a safety gate in every run, a quality gate in most")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *repeat > 1 {
+		return repeatRuns(ctx, *repeat, args, *transcript, stdout, func(ctx context.Context, a []string) error {
+			return run(ctx, a, stdout, env)
+		})
+	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, 20*time.Minute)
+	defer cancel()
 	if *peopleSignin != "" {
 		f, err := os.OpenFile(*peopleSignin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
@@ -1291,7 +1302,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 			}
 		}
 	}
-	return "", "", fmt.Errorf("no result after %d owner messages", t.cfg.maxTurns)
+	return "", "", noResult{turns: t.cfg.maxTurns}
 }
 
 // approve is the owner's answer to an approval: on the phone, the grant
@@ -1807,6 +1818,7 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 	if err != nil {
 		return err
 	}
+	record(ctx, checks)
 	return t.reportSetup(checks)
 }
 
