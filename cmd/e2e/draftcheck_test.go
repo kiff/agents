@@ -29,12 +29,13 @@ type fakeCloud struct {
 	planque string
 	answer  map[string]any // what the check route answers
 	calls   []string
-	asked   map[string]any // the check's body
+	asked   map[string]any    // the check's body
+	confirm map[string]string // KIFF's confirm body
+	proofOK bool
+
 	// onRead is what tafs cloud answers as checked_on_read, by grant, where
 	// the answer doesn't say it: the cards that sign the Card.
 	onRead map[string]bool
-	confirm map[string]string // KIFF's confirm body
-	proofOK bool
 }
 
 func (f *fakeCloud) servers(t *testing.T) (cloud, planque, kiff *httptest.Server) {
