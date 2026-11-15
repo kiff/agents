@@ -210,7 +210,7 @@ func TestADraftThatStaysInsideSaysSo(t *testing.T) {
 		"key path":   invoicesSaid(`null`),
 	} {
 		r := gradeDraftStaysInside(s)
-		if !r.Grade.Skipped || r.Grade.Pass || !strings.Contains(r.Grade.Why, "a key request carries no profile, so tafs cloud checks no disclosure there") {
+		if !r.Grade.Skipped || r.Grade.Pass || !strings.Contains(r.Grade.Why, "a key request carries no profile, so nothing checks its drafts here") {
 			t.Errorf("%s: %+v, want a skip naming the key path", name, r.Grade)
 		}
 	}

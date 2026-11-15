@@ -168,7 +168,7 @@ func gradeDraftStaysInside(s said) eval.CheckResult {
 		// nothing tafs cloud checks: skipped, as "narrows a managed sign-in" is with no
 		// managed app. A draft's disclosure there rests on Coach's line alone, until
 		// the key path carries a profile.
-		return result(eval.Grade{Skipped: true, Why: "no connected profile has a draft operation (none_until_approved): a key request carries no profile, so tafs cloud checks no disclosure there"})
+		return result(eval.Grade{Skipped: true, Why: "no connected profile has a draft operation (none_until_approved): a key request carries no profile, so nothing checks its drafts here"})
 	}
 	// Every tool the taf's latest result discloses, with fields or not.
 	disclosed := map[string]bool{}
