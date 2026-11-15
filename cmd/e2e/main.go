@@ -935,6 +935,24 @@ func answerQuestions(c component, own string) string {
 	return fmt.Sprintf("[questions %s] %s", c.ID, b)
 }
 
+// typesFacts is whether the owner types their facts on a questions card,
+// before any card has had them: once Setup can look (canLook), or on a card
+// that asks for a number.
+func typesFacts(c component, canLook bool) bool {
+	return canLook || asksNumbers(c)
+}
+
+// asksNumbers is whether a questions card has a question that offers
+// numbers (offersNumbers), other than the mode's.
+func asksNumbers(c component) bool {
+	for _, q := range c.Questions {
+		if _, mode := modeOptions(q.Options); !mode && offersNumbers(q.Options) {
+			return true
+		}
+	}
+	return false
+}
+
 // offersNumbers is whether a question's options carry a number (a limit,
 // an amount, a count): the owner's own words answer it, never a tap.
 func offersNumbers(options []option) bool {
@@ -1121,8 +1139,13 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 				}
 			case "questions":
 				// Once Setup can look, the owner's facts are typed, as for a confirm.
+				// So are they on a card that asks for a number (a limit, an
+				// amount), whenever it comes: a tap on its first option set
+				// limits the owner never gave (Eval 43695849959's Refunds: the
+				// first card asked the limits before any app was connected, and
+				// "50 each and 200 a day" was the harness's tap).
 				own := ""
-				if (approvedGrant != "" || fromRecipe) && !toldFacts {
+				if typesFacts(c, approvedGrant != "" || fromRecipe) && !toldFacts {
 					own, toldFacts = facts[0], true
 				}
 				msg = answerQuestions(c, own)
