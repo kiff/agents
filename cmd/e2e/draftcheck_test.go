@@ -392,3 +392,38 @@ func TestResultsAreAnsweredLast(t *testing.T) {
 		t.Fatalf("order %v", ids)
 	}
 }
+
+// Eval 14's Refunds: the transcript had the owner's "agree" to the rules and
+// nothing of what was agreed. A notice and a confirm card's words are printed
+// in the transcript, whole, once per card, and again when they change; never
+// in the public log; other cards, and a card with no words, print nothing.
+func TestTheOwnerReadsANoticeAndAConfirmInTheTranscript(t *testing.T) {
+	tr := &strings.Builder{}
+	pub := &strings.Builder{}
+	tt := &test{out: &redacting{w: pub, ci: true}, cfg: config{log: pub, transcript: tr}}
+	long := strings.Repeat("each refund up to €5, ", 20) + "and no more than 1,000 refunds a day"
+	notice := component{Type: "notice", ID: "rules", Title: "Refunds' rules", Text: "  " + long + "\n"}
+	tt.noteRead(notice)
+	tt.noteRead(notice)
+	tt.noteRead(component{Type: "confirm", ID: "rules-confirm-1", Text: "Agree to these rules?"})
+	tt.noteRead(component{Type: "approval", ID: "a1", Text: "Approve to connect Stripe"})
+	tt.noteRead(component{Type: "notice", ID: "empty"})
+	notice.Text = "Up to €5 each, €50 a day"
+	tt.noteRead(notice)
+	got := strings.Split(strings.TrimSpace(tr.String()), "\n")
+	want := []string{
+		"the owner reads the notice rules: Refunds' rules: " + strings.TrimSpace(long),
+		"the owner reads the confirm rules-confirm-1: Agree to these rules?",
+		"the owner reads the notice rules: Refunds' rules: Up to €5 each, €50 a day",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("transcript:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// Whole: the limit at the end of a long notice is there.
+	if !strings.Contains(tr.String(), "1,000 refunds a day") {
+		t.Fatal("the notice was cut")
+	}
+	if strings.Contains(pub.String(), "refund") {
+		t.Fatalf("the public log has the notice: %s", pub.String())
+	}
+}

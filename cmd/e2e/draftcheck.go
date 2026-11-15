@@ -197,3 +197,38 @@ func unconfirmedAnswer(c component) string {
 func unconfirmedLine(n int) string {
 	return fmt.Sprintf("setup results answered back, their draft not confirmed: %d", n)
 }
+
+// noteRead prints in the transcript what a notice or a confirm card says, as
+// the owner reads it: Coach's rules notice above its confirm is where a limit
+// the owner never gave first shows (Eval 14's Refunds: the transcript had
+// the owner's "agree" and nothing of what was agreed). Once per card, and
+// again only when its words change. The transcript only: never the public
+// log, since a notice can carry the owner's limits.
+func (t *test) noteRead(c component) {
+	if c.Type != "notice" && c.Type != "confirm" {
+		return
+	}
+	said := readWords(c)
+	if t.noticesRead == nil {
+		t.noticesRead = map[string]string{}
+	}
+	// Unchanged, or no words at all (the map's zero value): nothing to print.
+	if t.noticesRead[c.ID] == said {
+		return
+	}
+	t.noticesRead[c.ID] = said
+	t.logf("the owner reads the %s %s: %s", c.Type, c.ID, said)
+}
+
+// readWords is a card's title and text on one line, whole, as the owner reads
+// them: a notice's last line may be the limit that matters.
+func readWords(c component) string {
+	title, text := flat(c.Title), flat(c.Text)
+	switch {
+	case title != "" && text != "":
+		return title + ": " + text
+	case title != "":
+		return title
+	}
+	return text
+}
