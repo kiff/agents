@@ -1114,3 +1114,16 @@ func TestANewTafsAgentIsNamedFromItsTafName(t *testing.T) {
 		}
 	}
 }
+
+// A managed app's profile marks a draft email or reply, as a send, with the
+// resource it reaches and outside: true, so Approve counts a draft that can
+// reach people outside the company like a send (its disclosure), and a
+// draft invoice, which reaches no one, needs none.
+func TestTheProfileMarksADraftThatReachesPeopleOutside(t *testing.T) {
+	spec := planque.New("http://planque.invalid", "tnt_1", "k_setup", nil).Spec()
+	for _, want := range []string{`"none_until_approved\" (a draft)`, `A send, or a draft email or reply, also carries \"resource\":{\"arg\":<its thread or recipient argument>`, `\"outside\":true}`, "outside the owner's company once sent"} {
+		if !strings.Contains(spec.Description, strings.ReplaceAll(want, `\"`, `"`)) {
+			t.Fatalf("the description lacks %q", want)
+		}
+	}
+}
