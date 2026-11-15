@@ -1286,15 +1286,15 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		return true, "", nil
 	}
 	// A Card is checked as the phone reads the chat, before its card is drawn,
-	// whenever the card signs it (checkedOnRead: a connected app's Card alone,
-	// or the Card with added tools or a key; kiff/tafs handler.ts precheck): a refusal a
+	// whenever tafs cloud says it is (checked_on_read on its check: the card
+	// signs the Card, by kiff/tafs checkedOnReadFor; handler.ts precheck): a refusal a
 	// new draft mends goes to Coach then, and the owner never reads, or
 	// approves, that card (Eval 43690861487's Refunds: two Card approvals for
 	// one app, the first one refused after the owner approved it).
 	// The check on the read stands for the tap's too: nothing changes while
 	// the owner reads.
 	var read *draftChecked
-	if newDraft && checkedOnRead(g) {
+	if newDraft {
 		version, err := t.draftVersion(ctx, c.Draft)
 		if err != nil {
 			return false, "", err
@@ -1303,12 +1303,17 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		if err != nil {
 			return false, "", err
 		}
-		if !checked.OK && checked.Redraft {
-			t.draftRefusals = append(t.draftRefusals, checked.Code)
-			t.logf("draft refused by tafs cloud's check as the chat was read, before the card was drawn (%s, %s): Coach hears its answer", checkRoute, checked.Code)
-			return false, checked.Answer, nil
+		// A card the read doesn't check (a first connection, which signs the
+		// connection alone) is read by the owner first: its check here says
+		// nothing yet, and the tap checks it as before.
+		if checked.CheckedOnRead {
+			if !checked.OK && checked.Redraft {
+				t.draftRefusals = append(t.draftRefusals, checked.Code)
+				t.logf("draft refused by tafs cloud's check as the chat was read, before the card was drawn (%s, %s): Coach hears its answer", checkRoute, checked.Code)
+				return false, checked.Answer, nil
+			}
+			read = &checked
 		}
-		read = &checked
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
 	t.approvals = append(t.approvals, seen)

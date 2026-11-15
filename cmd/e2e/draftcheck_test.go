@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,7 +29,10 @@ type fakeCloud struct {
 	planque string
 	answer  map[string]any // what the check route answers
 	calls   []string
-	asked   map[string]string // the check's body
+	asked   map[string]any // the check's body
+	// onRead is what tafs cloud answers as checked_on_read, by grant, where
+	// the answer doesn't say it: the cards that sign the Card.
+	onRead map[string]bool
 	confirm map[string]string // KIFF's confirm body
 	proofOK bool
 }
@@ -49,7 +54,12 @@ func (f *fakeCloud) servers(t *testing.T) (cloud, planque, kiff *httptest.Server
 		f.calls = append(f.calls, "cloud "+r.Method+" "+r.URL.Path)
 		_ = json.NewDecoder(r.Body).Decode(&f.asked)
 		f.proofOK = r.Header.Get("Authorization") == "Bearer session" && f.verifies(r.Header.Get("Planque-Device-Signature"))
-		_ = json.NewEncoder(w).Encode(f.answer)
+		answer := maps.Clone(f.answer)
+		if _, said := answer["checked_on_read"]; !said && answer != nil && answer["outcome"] != "read_again" {
+			grant := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/connect/grants/"), "/check")
+			answer["checked_on_read"] = f.onRead[grant]
+		}
+		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	kiff = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -94,7 +104,9 @@ func (f *fakeCloud) verifies(h string) bool {
 
 func checkWorld(t *testing.T, answer map[string]any) (*test, *fakeCloud) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	f := &fakeCloud{key: key, answer: answer}
+	// As tafs cloud answers for these grants: a connected app's Card alone, the
+	// Card with added tools or a key are checked on the read; a listed one isn't.
+	f := &fakeCloud{key: key, answer: answer, onRead: map[string]bool{"grt_1": true, "grt_adding": true, "grt_key": true}}
 	cloud, planque, kiff := f.servers(t)
 	out := &redacting{w: &strings.Builder{}}
 	tt := &test{out: out, cfg: config{cloud: cloud.URL, session: "session", log: out}, hc: cloud.Client(),
@@ -146,10 +158,13 @@ func TestTheChecksAnswersAreRead(t *testing.T) {
 		ok   bool
 		err  bool
 	}{
-		{map[string]any{"outcome": "ok", "version": "v3"}, true, false},
-		{map[string]any{"outcome": "ok"}, false, true},
-		{map[string]any{"outcome": "answered", "answer": "failed: no Card covers \"Read a charge\"", "code": "uncovered"}, false, false},
-		{map[string]any{"outcome": "answered", "answer": "approved"}, false, true},
+		{map[string]any{"outcome": "ok", "version": "v3", "checked_on_read": false}, true, false},
+		{map[string]any{"outcome": "ok", "checked_on_read": true}, false, true},
+		{map[string]any{"outcome": "answered", "answer": "failed: no Card covers \"Read a charge\"", "code": "uncovered", "checked_on_read": true}, false, false},
+		{map[string]any{"outcome": "answered", "answer": "approved", "checked_on_read": true}, false, true},
+		// A tafs cloud that doesn't say checked_on_read: the harness won't guess.
+		{map[string]any{"outcome": "ok", "version": "v3"}, false, true},
+		{map[string]any{"outcome": "answered", "answer": "failed: no Card covers \"Read a charge\"", "code": "uncovered"}, false, true},
 		{map[string]any{"outcome": "read_again", "code": "cards_unread"}, false, true},
 		{map[string]any{"outcome": "sign"}, false, true},
 		{map[string]any{}, false, true},
@@ -296,27 +311,35 @@ func TestACardSignedWithItsToolsOrKeyIsCheckedBeforeTheOwnerReads(t *testing.T) 
 	}
 }
 
-// What the owner's app checks on the read: a card that signs the Card.
-func TestCheckedOnReadIsACardThatSignsTheCard(t *testing.T) {
-	g := func(status, kind string, signedIn bool) grant {
-		var out grant
-		out.Status, out.SignedIn, out.Request.Kind = status, signedIn, kind
-		return out
+// Which cards the read checks is tafs cloud's word (checked_on_read), asked
+// with what the owner's app can sign, never a copy of its rule here (the copy
+// differed from tafs cloud's in two steps, so a refusal the owner would meet
+// at the tap didn't show in an Eval).
+func TestWhichCardsTheReadChecksIsTafsCloudsWord(t *testing.T) {
+	refused := map[string]any{"outcome": "answered", "code": "vendor_name", "redraft": true, "answer": `failed: the Card covers "list_charges", but …`}
+	tt, f := checkWorld(t, refused)
+	c := component{Type: "approval", ID: "a1", Grant: "grt_1", Draft: "drf_1"}
+	var approved string
+	if _, answer, err := tt.approve(context.Background(), c, &approved); err != nil || answer != refused["answer"] {
+		t.Fatalf("checked on the read: answer %q, err %v", answer, err)
 	}
-	for _, c := range []struct {
-		g    grant
-		want bool
-	}{
-		{g("connected", "", false), true},
-		{g("pending", "", true), true},          // tools added, signed in already: tools_and_cards
-		{g("pending", "api_key", false), true},  // the key with its Card: key_and_cards
-		{g("pending", "", false), false},        // a first connection: the connection alone
-		{g("listed", "", true), false},          // nothing to approve yet
-		{g("needs_reconnect", "", true), false}, // a sign-in again: the connection alone
-	} {
-		if got := checkedOnRead(c.g); got != c.want {
-			t.Errorf("%+v: %v, want %v", c.g, got, c.want)
-		}
+	// Asked as the app reads: with what it can sign.
+	can, _ := f.asked["can"].([]any)
+	if fmt.Sprint(can) != fmt.Sprint([]any{"tools_and_cards", "key_and_cards", "signs"}) {
+		t.Fatalf("the check was asked with can %v", f.asked["can"])
+	}
+	// The same connected grant, where tafs cloud says the read doesn't check it:
+	// the owner reads the card, whatever its status suggests.
+	tt, f = checkWorld(t, refused)
+	f.onRead["grt_1"] = false
+	// Refused at the tap instead, after the owner read it, as tafs cloud would.
+	if _, answer, err := tt.approve(context.Background(), c, &approved); err != nil || answer != refused["answer"] || len(tt.approvals) != 1 {
+		t.Fatalf("not checked on the read: answer %q, err %v, the owner read %d approvals", answer, err, len(tt.approvals))
+	}
+	tr := tt.cfg.log.(*redacting).w.(*strings.Builder).String()
+	if strings.Contains(tr, "before the card was drawn") {
+		t.Fatalf("a card tafs cloud doesn't check on the read was refused before the owner read it:
+%s", tr)
 	}
 }
 
