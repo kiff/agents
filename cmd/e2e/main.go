@@ -917,13 +917,18 @@ type component struct {
 // shownRule is one tool's rule on a rules notice: its tool by planque's name,
 // ask or refuse past its limit, and its figures.
 type shownRule struct {
-	Tool   string `json:"tool"`
-	Over   string `json:"over"`
-	Limits []struct {
-		Quantity string `json:"quantity"`
-		Window   string `json:"window"`
-		Limit    *int64 `json:"limit"`
-	} `json:"limits"`
+	Tool   string       `json:"tool"`
+	Over   string       `json:"over"`
+	Limits []shownLimit `json:"limits"`
+}
+
+// shownLimit is one of a rule's figures. Its own over, when it says one, is
+// what the owner agreed past that figure; else the rule's over is.
+type shownLimit struct {
+	Quantity string `json:"quantity"`
+	Window   string `json:"window"`
+	Limit    *int64 `json:"limit"`
+	Over     string `json:"over"`
 }
 
 // option is one answer to a confirm or a question.

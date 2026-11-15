@@ -430,7 +430,9 @@ var counted = map[string]bool{"names the agent from the taf's name": true,
 	"connects on the first try": true, "offers only its own connections": true,
 	"one approval for the key and the Card": true, "narrows a managed sign-in": true,
 	// Tools and connection states only.
-	everyAppApproved: true}
+	everyAppApproved: true,
+	// Tools, rule fields, card kinds and card ids, never the chat.
+	rulesAsData: true, draftStaysInside: true}
 
 // countedSkip are the checks whose reason is shown in a public log when they're
 // skipped only: a skip of signsWhatWasAgreed says how many rules and Cards it

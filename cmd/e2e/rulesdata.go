@@ -68,6 +68,12 @@ func gradeRulesAsData(s said) eval.CheckResult {
 		case tl.AmountArg != "" && len(r.Limits) == 0:
 			problems = append(problems, name+" moves money and its rule has no figures")
 		}
+		// A figure may say its own over ("ask past €5 a refund, refuse past €50 a day").
+		for _, l := range r.Limits {
+			if found && l.Over != "" && l.Over != "ask" && l.Over != "refuse" {
+				problems = append(problems, fmt.Sprintf("%s's %s per %s says over %q, not ask or refuse", name, l.Quantity, l.Window, l.Over))
+			}
+		}
 	}
 	switch {
 	case next.Type != "confirm":
@@ -130,7 +136,8 @@ func agreedNotice(s said) (notice, next component, ok bool) {
 
 // gradeDraftStaysInside grades draftStaysInside: every draft operation
 // (none_until_approved) in the connected profiles says outside: false, and
-// the taf's result doesn't disclose its tool. Run on -invoices only, whose
+// the taf's result doesn't disclose its tool. Skipped when no connected
+// profile has one, as on a key request, which carries no profile. Run on -invoices only, whose
 // drafts are invoices: a draft email or reply elsewhere is counted as
 // reaching outside, and undisclosed checks that.
 func gradeDraftStaysInside(s said) eval.CheckResult {
@@ -157,7 +164,11 @@ func gradeDraftStaysInside(s said) eval.CheckResult {
 		}
 	}
 	if len(drafts) == 0 {
-		return result(eval.Grade{Why: "no connected profile has a draft operation (none_until_approved)"})
+		// A key request's tools carry no profile, so there is nothing to mark and
+		// nothing tafs cloud checks: skipped, as "narrows a managed sign-in" is with no
+		// managed app. A draft's disclosure there rests on Coach's line alone, until
+		// the key path carries a profile.
+		return result(eval.Grade{Skipped: true, Why: "no connected profile has a draft operation (none_until_approved): a key request carries no profile, so nothing checks its drafts here"})
 	}
 	// Every tool the taf's latest result discloses, with fields or not.
 	disclosed := map[string]bool{}
@@ -209,16 +220,17 @@ func slicesContainsValue(options []option, value string) bool {
 	return false
 }
 
-// numberIn matches a number as a text writes it, with spaces, dots, commas or
-// apostrophes between its digits.
-var numberIn = regexp.MustCompile(`\d(?:[\d\s.,\x{00a0}\x{202f}']*\d)?`)
+// numberIn matches a number as a text writes it, with spaces, tabs, dots, commas
+// or apostrophes between its digits. A number never runs across a line break:
+// "€5\n50 a day" is 5 and 50, not 550.
+var numberIn = regexp.MustCompile(`\d(?:[\d \t.,\x{00a0}\x{202f}']*\d)?`)
 
 // numbersIn is every number the text writes, read each way its separators
 // allow: the last , or . as the decimal mark, or every one between thousands.
 func numbersIn(text string) map[float64]bool {
 	out := map[float64]bool{}
 	for _, m := range numberIn.FindAllString(text, -1) {
-		raw := strings.NewReplacer(" ", "", " ", "", " ", "", "'", "").Replace(m)
+		raw := strings.NewReplacer(" ", "", "\t", "", " ", "", " ", "", "'", "").Replace(m)
 		add := func(v string) {
 			if n, err := strconv.ParseFloat(v, 64); err == nil {
 				out[n] = true
