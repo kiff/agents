@@ -184,12 +184,22 @@ func TestADraftThatStaysInsideSaysSo(t *testing.T) {
 		"no resource": {invoicesSaid(`{"operations":[{"tool":"create_draft_invoice","effect":"none_until_approved"}]}`), "doesn't say outside: false"},
 		"outside":     {invoicesSaid(strings.Replace(inside, `"outside":false`, `"outside":true`, 1)), "says outside: true"},
 		"disclosed":   {invoicesSaid(inside, "create_draft_invoice_q7"), "is in the taf's disclose"},
-		"no draft":    {invoicesSaid(`{"operations":[{"tool":"list_invoices","effect":"none"}]}`), "no connected profile has a draft operation"},
-		"no profile":  {invoicesSaid(`not json`), "no connected profile has a draft operation"},
 	} {
 		r := gradeDraftStaysInside(c.s)
-		if r.Grade.Pass || !strings.Contains(r.Grade.Why, c.want) {
+		if r.Grade.Pass || r.Grade.Skipped || !strings.Contains(r.Grade.Why, c.want) {
 			t.Errorf("%s: %+v, want a failure saying %q", name, r.Grade, c.want)
+		}
+	}
+	// No profile with a draft (a key request's tools carry none): skipped, saying why,
+	// and the reason shows in CI.
+	for name, s := range map[string]said{
+		"no draft":   invoicesSaid(`{"operations":[{"tool":"list_invoices","effect":"none"}]}`),
+		"no profile": invoicesSaid(`not json`),
+		"key path":   invoicesSaid(`null`),
+	} {
+		r := gradeDraftStaysInside(s)
+		if !r.Grade.Skipped || r.Grade.Pass || !strings.Contains(r.Grade.Why, "a key request carries no profile") {
+			t.Errorf("%s: %+v, want a skip naming the key path", name, r.Grade)
 		}
 	}
 }

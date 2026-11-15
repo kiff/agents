@@ -130,7 +130,8 @@ func agreedNotice(s said) (notice, next component, ok bool) {
 
 // gradeDraftStaysInside grades draftStaysInside: every draft operation
 // (none_until_approved) in the connected profiles says outside: false, and
-// the taf's result doesn't disclose its tool. Run on -invoices only, whose
+// the taf's result doesn't disclose its tool. Skipped when no connected
+// profile has one, as on a key request, which carries no profile. Run on -invoices only, whose
 // drafts are invoices: a draft email or reply elsewhere is counted as
 // reaching outside, and undisclosed checks that.
 func gradeDraftStaysInside(s said) eval.CheckResult {
@@ -157,7 +158,10 @@ func gradeDraftStaysInside(s said) eval.CheckResult {
 		}
 	}
 	if len(drafts) == 0 {
-		return result(eval.Grade{Why: "no connected profile has a draft operation (none_until_approved)"})
+		// A key request's tools carry no profile, so there is nothing to mark: skipped,
+		// as "narrows a managed sign-in" is with no managed app. A draft that doesn't say
+		// outside: false discloses, so nothing stays inside unsaid there.
+		return result(eval.Grade{Skipped: true, Why: "no connected profile has a draft operation (none_until_approved): a key request carries no profile, and its drafts disclose"})
 	}
 	// Every tool the taf's latest result discloses, with fields or not.
 	disclosed := map[string]bool{}
