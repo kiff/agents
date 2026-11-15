@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -60,5 +61,54 @@ func TestARunPastAFailedGateStillFailsForIt(t *testing.T) {
 	}
 	if err := afterSetup(nil, nil); err != nil {
 		t.Fatalf("nothing failed: %v", err)
+	}
+}
+
+// scenario's step after the setup chat: a failed graded gate still lets the
+// taf's trial run, and the run fails for both; an error grading stops it
+// before the trial; with no judge the trial alone decides (PM: a test that
+// drives the scenario's path, after Eval 43670959911 measured the trial).
+func TestTheTrialRunsPastAFailedGateOnly(t *testing.T) {
+	ctx := context.Background()
+	gate := setupGatesFailed{names: []string{signsWhatWasAgreed}}
+	later := errors.New("the taf's answer 4 says something was done, or not, that its record contradicts")
+
+	for _, c := range []struct {
+		name       string
+		grade      func(context.Context) error
+		trial      error
+		wantTrial  bool
+		wantGate   bool
+		wantLater  bool
+		wantLogged bool
+	}{
+		{"a gate fails, then the trial", func(context.Context) error { return gate }, later, true, true, true, true},
+		{"a gate fails, the trial passes", func(context.Context) error { return gate }, nil, true, true, false, true},
+		{"grading errs: no trial", func(context.Context) error { return errors.New("the judge didn't answer") }, nil, false, false, false, false},
+		{"every gate passes", func(context.Context) error { return nil }, later, true, false, true, false},
+		{"no judge", nil, later, true, false, true, false},
+	} {
+		var log bytes.Buffer
+		ran := false
+		err := runPastGates(ctx, &log, c.grade, func(context.Context) error { ran = true; return c.trial })
+		var gates setupGatesFailed
+		if ran != c.wantTrial {
+			t.Errorf("%s: the trial ran %v", c.name, ran)
+		}
+		if got := errors.As(err, &gates); got != c.wantGate {
+			t.Errorf("%s: the gate in the error: %v (%v)", c.name, got, err)
+		}
+		if got := errors.Is(err, later); got != c.wantLater {
+			t.Errorf("%s: the trial's failure in the error: %v (%v)", c.name, got, err)
+		}
+		if got := strings.Contains(log.String(), "the taf is still tried"); got != c.wantLogged {
+			t.Errorf("%s: logged %q", c.name, log.String())
+		}
+		if !c.wantTrial && err == nil {
+			t.Errorf("%s: an error grading was dropped", c.name)
+		}
+		if c.wantTrial && !c.wantGate && !c.wantLater && err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
 	}
 }
