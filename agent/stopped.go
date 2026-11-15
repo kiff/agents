@@ -16,8 +16,14 @@ import (
 // gateway:
 //
 //   - A read that failed, and hasn't been read again since, means the run
-//     doesn't know what's there: nothing is created or changed in that run
-//     (AfterRefusedRead). A later read of the same tool that answers lifts it.
+//     doesn't know what's there: nothing it asked about is created or
+//     changed in that run (AfterRefusedRead). A later read of the same tool
+//     that answers lifts it. What it asked about is its input's words: a
+//     write that names one of them, or any write after a read that named
+//     none (a search or a list of everything), waits. A read of one item
+//     that failed on a wrong id says nothing of another item (Eval
+//     43695849959's handoff-receiver: two reads with mistyped dispute ids
+//     failed, and the evidence on the right dispute was never submitted).
 //     A read KIFF refused outside the Card isn't one: that's the owner's
 //     limit, not a sign of what the app holds, so the run's other work goes
 //     on (13 Nov: a chargebacks taf whose Card leaves out the shop's order
@@ -84,11 +90,63 @@ type stop struct {
 	refusedBy map[string]int
 	erredBy   map[string]int
 	erred     map[string]int
-	refused   map[string]bool
+	// refused is, by tool, the words of each of its reads that failed and
+	// wasn't read again since: nil words for a read that named nothing.
+	refused map[string][][]string
 }
 
 func newStop() *stop {
-	return &stop{refusedBy: map[string]int{}, erredBy: map[string]int{}, erred: map[string]int{}, refused: map[string]bool{}}
+	return &stop{refusedBy: map[string]int{}, erredBy: map[string]int{}, erred: map[string]int{}, refused: map[string][][]string{}}
+}
+
+// wordsOf are the strings in a call's input, of three characters or more,
+// lowercased: the ids, names and queries it asked about. Numbers and flags
+// are left out: a page size or a limit names no item.
+func wordsOf(input json.RawMessage) []string {
+	var v any
+	if json.Unmarshal(input, &v) != nil {
+		if s := strings.TrimSpace(string(input)); len([]rune(s)) >= 3 {
+			return []string{strings.ToLower(s)}
+		}
+		return nil
+	}
+	var out []string
+	var walk func(any)
+	walk = func(x any) {
+		switch x := x.(type) {
+		case string:
+			if s := strings.ToLower(strings.TrimSpace(x)); len([]rune(s)) >= 3 {
+				out = append(out, s)
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
+// blocks says a failed read's words stop a write with these: a read that
+// named nothing stops every write; one that named something stops a write
+// that names one of the same.
+func blocks(read, write []string) bool {
+	if len(read) == 0 {
+		return true
+	}
+	for _, r := range read {
+		for _, w := range write {
+			if r == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // callKey is a call's tool and input, the input in one form however its keys
@@ -140,7 +198,7 @@ func (s *stop) see(t tool.Tool, name string, input json.RawMessage, r tool.Resul
 		case failed && r.State == tool.StateRefused:
 			// Outside the Card: it says nothing of what's there, and lifts nothing either.
 		case failed:
-			s.refused[name] = true
+			s.refused[name] = append(s.refused[name], wordsOf(input))
 		case r.State != tool.StateHeld && r.State != tool.StateAwaiting && r.State != tool.StateWaiting:
 			delete(s.refused, name)
 		}
@@ -162,7 +220,14 @@ func (s *stop) check(t tool.Tool, name string, input json.RawMessage) string {
 		return AfterTwoFailures
 	}
 	if acts(t, input) && len(s.refused) > 0 {
-		return AfterRefusedRead
+		words := wordsOf(input)
+		for _, reads := range s.refused {
+			for _, read := range reads {
+				if blocks(read, words) {
+					return AfterRefusedRead
+				}
+			}
+		}
 	}
 	return ""
 }
