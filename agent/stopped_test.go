@@ -95,10 +95,11 @@ func TestAToolThatFailedTwiceIsNotTriedAgain(t *testing.T) {
 		{Text: "LinkedIn refused it (it answered 403)", IsError: true},
 	}}
 	read := &seqTool{name: "github__releases", access: tool.Read, results: []tool.Result{{Text: `[{"tag":"v2"}]`}}}
+	// The same post each time: an app's error counts per call, the tool with its input.
 	m := &script{replies: []model.Reply{
-		uses("c1", "linkedin__post"),
-		uses("c2", "linkedin__post"),
-		uses("c3", "linkedin__post"),
+		use("c1", "linkedin__post", `{"text":"v2 is out"}`),
+		use("c2", "linkedin__post", `{"text":"v2 is out"}`),
+		use("c3", "linkedin__post", `{"text":"v2 is out"}`),
 		uses("c4", "github__releases"),
 		say("LinkedIn refused the post: the connection can't post as you. Sign in to LinkedIn again from Account, then ask me to post."),
 	}}
@@ -252,7 +253,7 @@ func TestAReadRefusedOnTheCardStopsNoWrite(t *testing.T) {
 	if _, _, err := agent.Run(context.Background(), newAgent(m2, order2), r2, nil, "Work the open disputes.", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := resultOf(m2.reqs, "c3"); got != agent.AfterTwoFailures || order2.n != 2 {
+	if got, _ := resultOf(m2.reqs, "c3"); got != agent.AfterTwoRefusals || order2.n != 2 {
 		t.Fatalf("the third lookup came back %q after %d calls", got, order2.n)
 	}
 }
