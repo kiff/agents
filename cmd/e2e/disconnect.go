@@ -43,8 +43,9 @@ func runDisconnect(ctx context.Context, apiBase, planqueBase string, cfg config,
 // in the run's public log. No grant, or more than one, sends nothing.
 func disconnectGrant(ctx context.Context, phone *testaccount.Phone, prefix string, out io.Writer) error {
 	name := shortGrant(prefix)
-	if len(prefix) < len("grt_")+4 || !strings.HasPrefix(prefix, "grt_") {
-		return fmt.Errorf("%q: give the grant's first characters, grt_ and at least 4 more", name)
+	if len(prefix) < len("grt_")+4 || len(prefix) > len("grt_")+8 || !strings.HasPrefix(prefix, "grt_") {
+		// A whole id given by mistake is refused too: nothing runs on it.
+		return fmt.Errorf("give the grant's first 8 characters (grt_ and 4 more), never its whole id")
 	}
 	gs, err := phone.Grants(ctx)
 	if err != nil {

@@ -69,9 +69,9 @@ func TestADisconnectIsTheTestAccountsOwnAndReadBack(t *testing.T) {
 	if err := disconnectGrant(ctx, phone, "grt_gone", &out); err != nil || deletes != 1 {
 		t.Fatalf("an already disconnected grant was sent again: %v, %d disconnects", err, deletes)
 	}
-	for _, prefix := range []string{"grt_othe", "grt_twin", "grt_", "qwBr3sta"} {
+	for _, prefix := range []string{"grt_othe", "grt_twin", "grt_", "qwBr3sta", "grt_qwBr3staleone"} {
 		if err := disconnectGrant(ctx, phone, prefix, &out); err == nil || deletes != 1 {
-			t.Fatalf("%q (none, two, too short, not a grant): %v, %d disconnects", prefix, err, deletes)
+			t.Fatalf("%q (none, two, too short, not a grant, a whole id): %v, %d disconnects", prefix, err, deletes)
 		}
 	}
 }
