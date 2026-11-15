@@ -184,8 +184,7 @@ func (t *test) improve(ctx context.Context, tafID string) error {
 	if status, body := t.agentsCall(api, http.MethodPost, pending, map[string]any{"draft": draft}); status != http.StatusOK {
 		return fmt.Errorf("beginning the switch: %d %v", status, body)
 	}
-	version, _ := d.Body["version"].(string)
-	c, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version})
+	c, err := t.confirmChecked(ctx, draft, d.Body, "")
 	if err != nil || c.Err() != nil {
 		return fmt.Errorf("confirming the version's Card: %v %v", err, c.Err())
 	}
@@ -241,8 +240,7 @@ func (t *test) tryVersion(ctx context.Context, tafID string, n int, draft string
 	if err != nil || d.Err() != nil {
 		return fmt.Errorf("reading the draft to try: %v %v", err, d.Err())
 	}
-	version, _ := d.Body["version"].(string)
-	c, err := t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+draft+"/confirm", map[string]string{"version": version, "as": "trial"})
+	c, err := t.confirmChecked(ctx, draft, d.Body, "trial")
 	if err != nil || c.Err() != nil {
 		return fmt.Errorf("starting the trial on the phone: %v %v", err, c.Err())
 	}
@@ -386,9 +384,12 @@ func (t *test) improveChat(ctx context.Context, first, agree, tafID, tafsID stri
 					return improvement{}, errors.New("Setup asked the owner to approve the version's draft in the chat: that would change the Cards the taf runs on now")
 				}
 				// A tool the job lacks, connected for the same agent.
-				reread, err := t.approve(ctx, c, &approvedGrant)
+				reread, refused, err := t.approve(ctx, c, &approvedGrant)
 				if err != nil {
 					return improvement{}, err
+				}
+				if refused != "" {
+					return improvement{}, fmt.Errorf("an approval with no draft was refused by tafs cloud's check: %s", refused)
 				}
 				if reread {
 					continue // the card already answered, read again

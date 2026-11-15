@@ -395,6 +395,9 @@ type test struct {
 	// end so a run leaves no taf behind.
 	tafAgents []string
 	draftIDs  []string
+	// draftRefusals are tafs cloud's reason codes for the drafts its check
+	// refused this run (checkRoute), in order: each was handed back to Coach.
+	draftRefusals []string
 	// approvals are the approval cards the owner answered, in order, each
 	// with its grant, its draft and whether the grant takes a key.
 	approvals []approvalSeen
@@ -1108,13 +1111,21 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 					t.said.chose = "test" // answerQuestions picks test for the mode, as on a confirm
 				}
 			case "approval", "sign_in":
-				reread, err := t.approve(ctx, c, &approvedGrant)
+				reread, refused, err := t.approve(ctx, c, &approvedGrant)
 				if err != nil {
 					return "", "", err
 				}
 				if reread {
 					// The card already answered, read again: no new answer for it.
 					answered[key] = "read again"
+					continue
+				}
+				if refused != "" {
+					// tafs cloud's check refused the draft: Coach hears Approve's answer, as an
+					// owner's app tells it, and drafts again. Nothing was confirmed.
+					msg = refusedAnswer(c, refused)
+					answered[key] = msg
+					t.cardAnswers[c.ID] = msg
 					continue
 				}
 				if c.Draft != "" {
@@ -1176,16 +1187,18 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 
 // approve is the owner's answer to an approval: on the phone, the grant
 // (approve, sign in, confirm) unless it is already connected; in KIFF, the
-// draft.
-func (t *test) approve(ctx context.Context, c component, approved *string) (reread bool, err error) {
+// draft, once tafs cloud's check passes it (checkRoute). refused is the
+// check's answer when it doesn't: the draft isn't confirmed, and the caller
+// hands Coach that answer, as an owner's app does.
+func (t *test) approve(ctx context.Context, c component, approved *string) (reread bool, refused string, err error) {
 	if c.Grant == "" {
-		return false, fmt.Errorf("an %s with no grant", c.Type)
+		return false, "", fmt.Errorf("an %s with no grant", c.Type)
 	}
 	t.out.hide(c.Grant, "<a grant>")
 	t.out.hide(c.Draft, "<a draft>")
 	g, err := t.phone.Grant(ctx, c.Grant)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	// A card read again as its run goes on (a paused run resumed after the
 	// owner answered it) is the card already answered, whatever its grant has
@@ -1193,12 +1206,12 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 	seen, newDraft, reread := t.readCard(c, g)
 	if reread {
 		t.logf("card %s read again, already answered: nothing asked", c.ID)
-		return true, nil
+		return true, "", nil
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))
 	t.approvals = append(t.approvals, seen)
 	if raw := rawWords(g); raw != "" && len(g.Request.Tools) > 0 {
-		return false, fmt.Errorf("the approval shows the owner %s, not words", raw)
+		return false, "", fmt.Errorf("the approval shows the owner %s, not words", raw)
 	}
 	switch g.Status {
 	case "connected":
@@ -1208,7 +1221,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 	default:
 		status, err := t.phone.ApproveAndSignIn(ctx, g)
 		if err != nil {
-			return false, fmt.Errorf("the grant %s: %w", g.ID, err)
+			return false, "", fmt.Errorf("the grant %s: %w", g.ID, err)
 		}
 		if !slices.Contains(t.grants, g.ID) {
 			t.grants = append(t.grants, g.ID)
@@ -1219,16 +1232,26 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 	if !newDraft {
 		// No draft, or one this run confirmed already (an approval of another
 		// app carrying the same Card): confirmed once, as the app does.
-		return false, nil
+		return false, "", nil
 	}
 	d, err := t.kiff.Do(ctx, http.MethodGet, "/v1/me/agent-drafts/"+c.Draft, nil)
 	if err != nil || d.Err() != nil {
-		return false, fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.Err())
+		return false, "", fmt.Errorf("reading the draft %s: %v %v", c.Draft, err, d.Err())
 	}
 	version, _ := d.Body["version"].(string)
-	d, err = t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": version})
+	checked, err := t.checkDraft(ctx, c.Grant, c.Draft, version)
+	if err != nil {
+		return false, "", err
+	}
+	if !checked.OK {
+		t.draftRefusals = append(t.draftRefusals, checked.Code)
+		t.logf("draft refused by tafs cloud's check (%s, %s): Coach hears its answer", checkRoute, checked.Code)
+		return false, checked.Answer, nil
+	}
+	t.logf("draft passed tafs cloud's check (%s), then confirmed in KIFF", checkRoute)
+	d, err = t.kiff.Do(ctx, http.MethodPost, "/v1/me/agent-drafts/"+c.Draft+"/confirm", map[string]string{"version": checked.Version})
 	if err != nil || d.Err() != nil {
-		return false, fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.Err())
+		return false, "", fmt.Errorf("confirming the draft %s: %v %v", c.Draft, err, d.Err())
 	}
 	t.draftIDs = append(t.draftIDs, c.Draft)
 	if a, ok := d.Body["agent_id"].(string); ok && a != "" && !slices.Contains(t.tafAgents, a) {
@@ -1246,7 +1269,7 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		}
 	}
 	t.logf("draft %s confirmed in KIFF: Cards %v", c.Draft, t.cardIDs)
-	return false, nil
+	return false, "", nil
 }
 
 // connectedGrants are the pins and tools of every grant this run approved
