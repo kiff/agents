@@ -11,6 +11,7 @@ import (
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool/show"
 )
 
 // tafAsRecorded is the gate's judged check of the taf's answers (the owner,
@@ -78,7 +79,10 @@ func (t *test) tafAsRecorded(ctx context.Context) error {
 // once, as it ended. Only a call of a tool in acting is counted
 // (eval.RecordedCall.Count), as the runner's count for the taf takes in
 // only the calls that act: a look-up is in neither, so "I looked up 3
-// charges" after one list call is no miscount.
+// charges" after one list call is no miscount. A card shown to the owner is
+// in the record too, as a show call of its type and title, its data left
+// out: "I've shown a card" was judged against a record without the run's
+// cards, which only Called events made (Eval 43681227913's answer 2).
 func calledUpTo(events []session.Event, run string, acting map[string]bool) ([]eval.RecordedCall, error) {
 	last := -1
 	for i, e := range events {
@@ -93,9 +97,18 @@ func calledUpTo(events []session.Event, run string, acting map[string]bool) ([]e
 		run  string
 		body agent.CalledBody
 		held bool
+		card bool // a card shown, never counted
 	}
 	var entries []entry
 	for _, e := range events[:last+1] {
+		if e.Kind == session.Component {
+			b, err := shownCall(e.Body)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, entry{run: e.Run, body: b, card: true})
+			continue
+		}
 		if e.Kind != session.Called {
 			continue
 		}
@@ -119,11 +132,32 @@ func calledUpTo(events []session.Event, run string, acting map[string]bool) ([]e
 	calls := make([]eval.RecordedCall, len(entries))
 	for i, en := range entries {
 		calls[i] = eval.RecordedCall{Tool: en.body.Tool, Input: string(en.body.Input), Outcome: en.body.Outcome, Earlier: en.run != run}
-		if acting[en.body.Tool] {
+		if acting[en.body.Tool] && !en.card {
 			calls[i].Count = countOf(en.body.Outcome)
 		}
 	}
 	return calls, nil
+}
+
+// shown is a shown card's outcome in the record.
+const shown = "shown to the owner"
+
+// shownCall is a card the run showed, as its record lists it: a show call
+// of the card's type and title, none of its other fields (its steps, its
+// options, a draft), and never counted, as a card acts on nothing.
+func shownCall(body json.RawMessage) (agent.CalledBody, error) {
+	var c show.Component
+	if err := json.Unmarshal(body, &c); err != nil {
+		return agent.CalledBody{}, fmt.Errorf("a shown card: %w", err)
+	}
+	in, err := json.Marshal(struct {
+		Type  string `json:"type"`
+		Title string `json:"title,omitempty"`
+	}{c.Type, c.Title})
+	if err != nil {
+		return agent.CalledBody{}, err
+	}
+	return agent.CalledBody{Tool: show.Name, Input: in, Outcome: shown}, nil
 }
 
 // tafActs is the taf's tools that act, by the names its calls are recorded
