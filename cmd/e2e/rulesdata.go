@@ -209,16 +209,17 @@ func slicesContainsValue(options []option, value string) bool {
 	return false
 }
 
-// numberIn matches a number as a text writes it, with spaces, dots, commas or
-// apostrophes between its digits.
-var numberIn = regexp.MustCompile(`\d(?:[\d\s.,\x{00a0}\x{202f}']*\d)?`)
+// numberIn matches a number as a text writes it, with spaces, tabs, dots, commas
+// or apostrophes between its digits. A number never runs across a line break:
+// "€5\n50 a day" is 5 and 50, not 550.
+var numberIn = regexp.MustCompile(`\d(?:[\d \t.,\x{00a0}\x{202f}']*\d)?`)
 
 // numbersIn is every number the text writes, read each way its separators
 // allow: the last , or . as the decimal mark, or every one between thousands.
 func numbersIn(text string) map[float64]bool {
 	out := map[float64]bool{}
 	for _, m := range numberIn.FindAllString(text, -1) {
-		raw := strings.NewReplacer(" ", "", " ", "", " ", "", "'", "").Replace(m)
+		raw := strings.NewReplacer(" ", "", "\t", "", " ", "", " ", "", "'", "").Replace(m)
 		add := func(v string) {
 			if n, err := strconv.ParseFloat(v, 64); err == nil {
 				out[n] = true

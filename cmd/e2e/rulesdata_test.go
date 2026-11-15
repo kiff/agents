@@ -121,10 +121,21 @@ func TestTheAgreedFiguresAreInTheWords(t *testing.T) {
 	if r := figuresUnsaid(s); r.Grade.Pass || !strings.Contains(r.Grade.Why, "refund_charge sum(amount) per call 700") {
 		t.Fatalf("€7 not said: %+v", r.Grade)
 	}
-	for text, want := range map[string]float64{"5,00 €": 5, "1.000": 1000, "1 000,50": 1000.5, "€50": 50, "1'250": 1250} {
+	for text, want := range map[string]float64{"5,00 €": 5, "1.000": 1000, "1 000,50": 1000.5, "€50": 50, "1'250": 1250, "1\t000": 1000} {
 		if !numbersIn(text)[want] {
 			t.Errorf("%q doesn't read %v: %v", text, want, numbersIn(text))
 		}
+	}
+	// A number never runs across a line break: each line's own is read.
+	if got := numbersIn("€1 000\n50 a day"); !got[1000] || !got[50] || got[100050] {
+		t.Errorf("across a line break: %v", got)
+	}
+	s = rulesSaid([]shownRule{refundRule()}, agreeConfirm("rules-1"))
+	n := s.cards["rules-1"]
+	n.Text = "Refunds of €5\nor less, €50 a day."
+	s.cards["rules-1"] = n
+	if r := figuresUnsaid(s); !r.Grade.Pass {
+		t.Errorf("€5 at a line's end still said: %+v", r.Grade)
 	}
 }
 
@@ -179,6 +190,16 @@ func TestADraftThatStaysInsideSaysSo(t *testing.T) {
 		r := gradeDraftStaysInside(c.s)
 		if r.Grade.Pass || !strings.Contains(r.Grade.Why, c.want) {
 			t.Errorf("%s: %+v, want a failure saying %q", name, r.Grade, c.want)
+		}
+	}
+}
+
+// Both gates' reasons name tools, rule fields and card ids, never the chat, so a
+// public CI log shows them (Eval 16's draft fail showed no reason).
+func TestTheNewGatesReasonsShowInCI(t *testing.T) {
+	for _, name := range []string{rulesAsData, draftStaysInside} {
+		if !counted[name] {
+			t.Errorf("%q's reason is hidden from the CI log", name)
 		}
 	}
 }
