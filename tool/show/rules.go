@@ -93,7 +93,9 @@ func checkRules(rules []Rule) error {
 			case *l.Limit < 0:
 				return fmt.Errorf("%s: limit is 0 or more", at)
 			case *l.Limit > MaxRuleLimit:
-				return fmt.Errorf("%s: limit is at most %d", at, int64(MaxRuleLimit))
+				// No figure here: Coach reads this refusal, and copied the
+				// largest limit into a Card once (Eval 16).
+				return fmt.Errorf("%s: limit is larger than a Card takes; give the figure the owner agreed, in the Card's own units", at)
 			case pairs[l.Quantity+" "+l.Window]:
 				return fmt.Errorf("%s: another limit has %s per %s; one figure each", at, l.Quantity, l.Window)
 			}

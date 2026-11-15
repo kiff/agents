@@ -357,7 +357,7 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                "limit is required",
 		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                     "0 or more",
 		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                    "wrong shape",
-		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):         "at most 9007199254740991",
+		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):         "larger than a Card takes",
 		notice(`[]`): "at least one rule",
 		notice(`[{"tool":"send_reply","over":"ask","limits":[]}]`): "at least one limit",
 		notice(`[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},{"quantity":"sum(amount)","window":"call","limit":100}]}]`): "one figure each",
@@ -380,6 +380,20 @@ func TestTheLargestLimitIsNotInTheSpec(t *testing.T) {
 	for _, n := range []string{"9007199254740991", "9007199254740992", "2^53"} {
 		if strings.Contains(spec.Description, n) || strings.Contains(string(spec.InputSchema), n) {
 			t.Fatalf("the spec says %s", n)
+		}
+	}
+}
+
+// A refused limit names no figure either: Coach reads the refusal.
+func TestARefusedLimitNamesNoFigure(t *testing.T) {
+	in := `{"type":"notice","id":"rules","tone":"info","text":"x","rules":[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":9007199254740992}]}]}`
+	_, err := show.Parse(json.RawMessage(in))
+	if err == nil {
+		t.Fatal("accepted a limit past 2^53-1")
+	}
+	for _, n := range []string{"9007199254740991", "9007199254740992", "2^53"} {
+		if strings.Contains(err.Error(), n) {
+			t.Fatalf("the refusal says %s: %v", n, err)
 		}
 	}
 }
