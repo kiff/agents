@@ -347,3 +347,36 @@ func TestAFailedReadStopsOnlyWritesOnWhatItAskedAbout(t *testing.T) {
 		t.Fatalf("after an unscoped read failed, a write came back %q, made %d time(s)", got, evidence2.n)
 	}
 }
+
+// dev-android on #502: a failed list with a filter names no item, and a
+// failed read of a numeric id names that id. Only keys that name an item
+// count (an id, or a word of the tool's name), numbers as their text.
+// Category: authority
+// Attack: a filtered list fails, then a write elsewhere; a numeric id's read fails, then a write on it
+// Refused: both writes, unmade; a write on another order goes
+func TestAFailedFilteredListOrNumericIDStillStopsTheWrite(t *testing.T) {
+	cases := []struct {
+		name, readTool, read, write string
+		stopped                     bool
+	}{
+		{"a filtered list with a cursor", "stripe__list_disputes", `{"status":"needs_response","starting_after":"dp_1","limit":20}`, `{"dispute":"dp_2003","submit":true}`, true},
+		{"a numeric id", "shop__get_order", `{"order_id":12345,"fields":"items"}`, `{"order_id":12345,"status":"cancelled"}`, true},
+		{"a camel-case id", "shop__get_order", `{"orderId":"A-77"}`, `{"order":{"orderId":"a-77"},"status":"cancelled"}`, true},
+		{"another order", "shop__get_order", `{"order_id":12345}`, `{"order_id":12346,"status":"cancelled"}`, false},
+		{"another order, by a camel-case id", "shop__get_order", `{"orderId":"A-77"}`, `{"orderId":"B-1","status":"cancelled"}`, false},
+		{"a key that only ends in id", "shop__list_orders", `{"paid":"yes","valid":"now"}`, `{"order_id":9}`, true},
+	}
+	for _, c := range cases {
+		read := &seqTool{name: c.readTool, access: tool.Read, results: []tool.Result{{Text: "the app answered 500", IsError: true}}}
+		write := &seqTool{name: "app__update", access: tool.Write, results: []tool.Result{{Text: `{}`, State: tool.StateForwarded}}}
+		m := &script{replies: []model.Reply{use("c1", c.readTool, c.read), use("c2", "app__update", c.write), say("Done.")}}
+		_, r := start(t, session.KindRun)
+		if _, _, err := agent.Run(context.Background(), newAgent(m, read, write), r, nil, "Work it.", nil); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := resultOf(m.reqs, "c2")
+		if stopped := got == agent.AfterRefusedRead; stopped != c.stopped || (write.n == 0) != c.stopped {
+			t.Errorf("%s: the write came back %q, made %d time(s); want stopped %v", c.name, got, write.n, c.stopped)
+		}
+	}
+}

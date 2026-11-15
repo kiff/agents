@@ -65,4 +65,9 @@ func TestTheCardsReadIsKeptWholeInTheRecord(t *testing.T) {
 	if !strings.Contains(Recorded, "a total, a limit or what a look-up found, is neither confirmed nor contradicted") {
 		t.Error("the rule doesn't name a limit as a detail the record neither confirms nor contradicts")
 	}
+	// dev-android on #502: with the Card read on the record, a made-up limit
+	// ($50 where the Card says $100) is checked, not waved through.
+	if !strings.Contains(Recorded, "A limit of the agent's Card is checked against the record's read of its Card (a kiff_card call) when it has one") {
+		t.Error("the rule doesn't check a limit against the Card read when the record has one")
+	}
 }
