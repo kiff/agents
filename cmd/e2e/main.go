@@ -556,45 +556,53 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 			return err
 		}
 	}
+	// A graded gate that failed doesn't stop the taf's trial: the run goes on,
+	// measures it, and fails at its end with both. Anything else still stops it.
+	var gateFailed error
 	if t.cfg.judge != nil {
 		if err := t.grade(ctx, tafID); err != nil {
-			return err
+			var gates setupGatesFailed
+			if !errors.As(err, &gates) {
+				return err
+			}
+			gateFailed = err
+			fmt.Fprintln(t.cfg.log, "the setup chat failed a gate: the taf is still tried, and the run fails at its end")
 		}
 	}
 	if err := t.setupReadsRecorded(ctx); err != nil {
-		return err
+		return afterSetup(gateFailed, err)
 	}
 	if t.cfg.replay != nil {
 		// A replay ends at the result: connecting the apps and the Card is what it replays.
-		return nil
+		return gateFailed
 	}
 
 	if t.cfg.people {
 		fmt.Fprintln(t.cfg.log, "== step 9's people")
-		return t.peopleChecks(ctx, tafID, draftID)
+		return afterSetup(gateFailed, t.peopleChecks(ctx, tafID, draftID))
 	}
 	fmt.Fprintln(t.cfg.log, "== the taf")
 	if err := t.useTaf(ctx, tafID, draftID); err != nil {
-		return err
+		return afterSetup(gateFailed, err)
 	}
 	if t.cfg.tafDef != "" {
 		// The taf as kiff/tafs defines it answers the owner concisely
 		// (kiff/tafs#102): advice, reported and never failing the run.
 		if err := t.tafConcise(ctx); err != nil {
-			return err
+			return afterSetup(gateFailed, err)
 		}
 		fmt.Fprintf(t.cfg.log, "taf  concise: %d answers\n", len(t.tafSaid))
 	}
 	// What the taf says was done, or not, is as its record has it: a gate.
 	if err := t.tafAsRecorded(ctx); err != nil {
-		return err
+		return afterSetup(gateFailed, err)
 	}
 	if t.cfg.improve {
 		if t.stripe != nil {
-			return errors.New("-improve runs against the fake vendor")
+			return afterSetup(gateFailed, errors.New("-improve runs against the fake vendor"))
 		}
 		if err := t.improve(ctx, tafID); err != nil {
-			return err
+			return afterSetup(gateFailed, err)
 		}
 	}
 	if len(t.setupSkills) > 0 {
@@ -604,12 +612,12 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		}
 	}
 	if err := t.checkRecords(ctx); err != nil {
-		return err
+		return afterSetup(gateFailed, err)
 	}
 	if len(t.skillMisses) > 0 {
-		return fmt.Errorf("Setup's skills: %s", strings.Join(t.skillMisses, "; "))
+		return afterSetup(gateFailed, fmt.Errorf("Setup's skills: %s", strings.Join(t.skillMisses, "; ")))
 	}
-	return nil
+	return gateFailed
 }
 
 // enrol makes sure planque has the owner's phone: the first time, the
@@ -1697,9 +1705,28 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 		fmt.Fprintf(t.cfg.transcript, "setup judge $%.4f\n", float64(t.cfg.judge.Spent())/1e6)
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("the setup chat failed: %s", strings.Join(failed, ", "))
+		return setupGatesFailed{names: failed}
 	}
 	return nil
+}
+
+// setupGatesFailed is the setup chat's graded gates that failed: the chat ran,
+// and what it did is judged wrong. Unlike an error that stopped the run, it
+// doesn't stop the taf's trial after the hand-over: the run measures both and
+// fails at its end (Eval 43666453786: a setup gate hid the Refunds trial).
+type setupGatesFailed struct{ names []string }
+
+func (e setupGatesFailed) Error() string {
+	return "the setup chat failed: " + strings.Join(e.names, ", ")
+}
+
+// afterSetup is err with a failed setup gate kept beside it, so a run that
+// went on past one still fails for it.
+func afterSetup(setup, err error) error {
+	if setup == nil {
+		return err
+	}
+	return errors.Join(setup, err)
 }
 
 // useTaf is tafs cloud and the owner after the hand-over: the taf's key is
