@@ -303,6 +303,11 @@ type Component struct {
 	// the read a run repeated, and how many pages it read, for tafs cloud to
 	// word the card in the owner's language.
 	Loop *Loop `json:"loop,omitempty"`
+	// Rules are a rules notice's, beside its words: what the owner agrees to
+	// for each tool the draft will cover (rules.go). Agrees is the confirm's
+	// that agrees to them: the notice's id.
+	Rules  []Rule `json:"rules,omitempty"`
+	Agrees string `json:"agrees,omitempty"`
 	// Waits says the run pauses on this card until it's answered, and who
 	// answers it: WaitsOwner (Answerable: the person) or WaitsService
 	// (ByService: the service that hands the owner over). The show tool sets
@@ -333,8 +338,8 @@ func waitsOn(t string) string {
 // fields lists the fields each type may carry, besides type and id.
 var fields = map[string][]string{
 	"steps":     {"title", "steps"},
-	"notice":    {"tone", "title", "text"},
-	"confirm":   {"text", "options"},
+	"notice":    {"tone", "title", "text", "rules"},
+	"confirm":   {"text", "options", "agrees"},
 	"questions": {"text", "questions"},
 	"approval":  {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
 	"sign_in":   {"grant", "service", "title", "text", "yes", "no", "note"},
@@ -393,6 +398,11 @@ func (t Tool) Spec() model.ToolSpec {
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
+			`"rules":{"type":"array","minItems":1,"maxItems":64,"description":"a rules notice: one per tool the draft will cover, what the owner agrees to past its limit and the limit's figures",` +
+			`"items":{"type":"object","properties":{"tool":{"type":"string","description":"planque's name for the tool, before KIFF's suffix"},"over":{"type":"string","enum":["ask","refuse"]},` +
+			`"limits":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"quantity":{"type":"string","description":"count, or sum(<arg>) such as sum(amount)"},` +
+			`"window":{"type":"string","enum":["call","calendar_day"]},"limit":{"type":"integer","minimum":0,"maximum":9007199254740991,"description":"in the Card's own units: minor units of the connection's currency for an amount"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
+			`"agrees":{"type":"string","description":"a confirm that agrees to a rules notice: the notice's id; it has an option with value agree"},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +
 			`"call":{"type":"string","description":"the tool the step waits on, by name: done only once that call went through"}},"required":["label","status"]}},` +
 			`"options":{"type":"array","items":{"type":"object","properties":{"value":{"type":"string"},"label":{"type":"string"}},"required":["value","label"]}},` +
@@ -587,6 +597,9 @@ func (c Component) check() error {
 		if err := text("title", c.Title, false, MaxLabel); err != nil {
 			return err
 		}
+		if err := checkRules(c.Rules); err != nil {
+			return err
+		}
 		return text("text", c.Text, true, MaxText)
 	case "confirm":
 		if err := text("text", c.Text, true, MaxText); err != nil {
@@ -596,6 +609,9 @@ func (c Component) check() error {
 			return fmt.Errorf("options has 2 to %d options", MaxOptions)
 		}
 		if err := checkOptions(c.Options, false); err != nil {
+			return err
+		}
+		if err := checkAgrees(c.Agrees, c.Options); err != nil {
 			return err
 		}
 	case "questions":
