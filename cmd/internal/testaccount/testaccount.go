@@ -273,6 +273,21 @@ func (p *Phone) Grant(ctx context.Context, id string) (Grant, error) {
 	return Grant{}, fmt.Errorf("planque has no grant %s for this account", id)
 }
 
+// GrantsProof is the phone's signed read of its account's grants, as the app
+// hands it to tafs cloud (Planque-Device-Signature) for tafs cloud to read
+// them from planque: signed fresh each time, as planque takes each once.
+func (p *Phone) GrantsProof(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.Planque.Base+p.AccountPath()+"/grants", nil)
+	if err != nil {
+		return "", err
+	}
+	p.Planque.Auth(req, nil)
+	if h := req.Header.Get("Planque-Device-Signature"); h != "" {
+		return h, nil
+	}
+	return "", errors.New("the phone made no signature for its grants")
+}
+
 // approveAndSignIn is the owner approving a grant on the phone, signing in
 // at the vendor in a browser that follows redirects up to the app's return
 // link, and the phone confirming with the code that link carries. A grant
