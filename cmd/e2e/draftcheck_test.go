@@ -194,6 +194,16 @@ func TestARefusedDraftGoesBackToCoachUnconfirmed(t *testing.T) {
 		len(tt.draftIDs) != 0 || strings.Join(tt.draftRefusals, ",") != "vendor_name" {
 		t.Fatalf("calls %v, confirmed %v, refusals %v", f.calls, tt.draftIDs, tt.draftRefusals)
 	}
+	// The public log says how many drafts were refused, by code, and none when none were.
+	if got := refusalsLine(tt.draftRefusals); got != "setup drafts refused by tafs cloud's check: 1 (vendor_name)" {
+		t.Fatalf("the log says %q", got)
+	}
+	if got := refusalsLine(nil); got != "setup drafts refused by tafs cloud's check: 0" {
+		t.Fatalf("with none, the log says %q", got)
+	}
+	if got := refusalsLine([]string{"vendor_name", "uncovered"}); got != "setup drafts refused by tafs cloud's check: 2 (vendor_name, uncovered)" {
+		t.Fatalf("two: %q", got)
+	}
 	// The transcript names the route that refused it, and its code.
 	if tr := tt.cfg.transcript.(*strings.Builder).String(); !strings.Contains(tr, checkRoute) || !strings.Contains(tr, "vendor_name") {
 		t.Fatalf("transcript: %s", tr)

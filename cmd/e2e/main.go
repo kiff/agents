@@ -541,6 +541,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 			t.logf("billing is connected by its key, its invoices pinned to draft, with no send")
 		}
 		fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
+		fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 		if t.cfg.judge != nil {
 			return t.grade(ctx, tafID)
 		}
@@ -553,6 +554,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	}
 	// Counts only, never the words, in every run: a drift in length shows (kiff/agents#185).
 	fmt.Fprintf(t.cfg.log, "setup words: %s\n", words(t.said.messages))
+	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 	if len(t.setupSkills) > 0 {
 		// Setting up a new taf needs none of Setup's skills (kiff/tafs#218).
 		if err := t.readNone(ctx, t.setupSession); err != nil {

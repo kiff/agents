@@ -115,3 +115,15 @@ func (t *test) confirmChecked(ctx context.Context, draft string, d map[string]an
 func refusedAnswer(c component, refused string) string {
 	return fmt.Sprintf("[%s %s] %s", c.Type, c.ID, refused)
 }
+
+// refusalsLine is the public log's line for the drafts tafs cloud's check
+// refused this setup, with their reason codes in order (codes carry no data):
+// a first draft refused and a second confirmed would otherwise read as one
+// draft signed.
+func refusalsLine(codes []string) string {
+	line := fmt.Sprintf("setup drafts refused by tafs cloud's check: %d", len(codes))
+	if len(codes) > 0 {
+		line += " (" + strings.Join(codes, ", ") + ")"
+	}
+	return line
+}
