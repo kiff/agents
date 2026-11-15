@@ -427,6 +427,10 @@ type test struct {
 	said      said   // what Setup wrote, for -grade
 	// cardAnswers is this turn's answer to each card shown, by its id.
 	cardAnswers map[string]string
+	// noticesRead is what each notice and confirm card said when the
+	// transcript last printed it, by its id: printed once, and again only
+	// when its words change.
+	noticesRead map[string]string
 	tafSaid     []string // the taf's answers in the chat, checked with -taf
 	tafAsked    []string // what the owner sent for each, as the transcript says it
 	tafRuns     []tafRun // the chat and run each came from, for its record
@@ -1125,6 +1129,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 		// two at once (an approval beside its questions), each answered apart.
 		t.cardAnswers = map[string]string{}
 		for _, c := range resultsLast(shown) {
+			t.noteRead(c)
 			key := c.Type + "/" + c.ID + "/" + c.Grant + "/" + c.Draft
 			if c.Grant != "" {
 				// The same approval shown again for a grant that changed (its tools
