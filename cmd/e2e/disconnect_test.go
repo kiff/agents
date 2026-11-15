@@ -5,6 +5,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -95,5 +97,44 @@ func TestTheOneOffDisconnectRunsAloneAsThePhone(t *testing.T) {
 		if strings.Contains(s, never) {
 			t.Fatalf("e2e-disconnect.yml has %q", never)
 		}
+	}
+}
+
+// The run itself, from the phone's session: planque asks KIFF whether the
+// device that signed is known (d= in the signature), so the phone names
+// its device in KIFF, as the app and every run do. Without it planque
+// answered 401 "this device isn't known to KIFF" and nothing was sent
+// (agents' first dispatch of the one-off).
+func TestTheDisconnectRunSignsAsThePhonesDevice(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalPKCS8PrivateKey(key)
+	kiff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenant_id": "tnt"})
+		case "/v1/me/devices":
+			_ = json.NewEncoder(w).Encode(map[string]any{"devices": []any{map[string]any{"id": "dev_other"}, map[string]any{"id": "dev_phone", "this_device": true}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer kiff.Close()
+	status, deletes := "connected", 0
+	planque := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Planque-Device-Signature"), ",d=dev_phone") {
+			http.Error(w, `{"error":"this device isn't known to KIFF: sign in to KIFF on it again"}`, http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			deletes++
+			status = "disconnected"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"grants": []any{map[string]string{"id": "grt_qwBr3staleone", "status": status}}})
+	}))
+	defer planque.Close()
+	var out strings.Builder
+	cfg := config{session: "session", phone: base64.StdEncoding.EncodeToString(der)}
+	if err := runDisconnect(context.Background(), kiff.URL, planque.URL, cfg, "grt_qwBr", &out); err != nil || deletes != 1 || !strings.Contains(out.String(), "now: disconnected") {
+		t.Fatalf("the run: %v, %d disconnects\n%s", err, deletes, out.String())
 	}
 }
