@@ -8,7 +8,8 @@ import (
 )
 
 func result(c string, score float64, cost int64, failed ...string) eval.Result {
-	r := eval.Result{Case: c, Score: score, CostMicroUSD: cost, PerItemMicro: cost / 2, Context: eval.Context{Turns: 4, CacheShare: 0.5}}
+	// Graded as a run is: a score comes from gate checks graded (6 here).
+	r := eval.Result{Case: c, Score: score, Graded: 6, Passed: int(score*6 + 0.5), CostMicroUSD: cost, PerItemMicro: cost / 2, Context: eval.Context{Turns: 4, CacheShare: 0.5}}
 	for _, f := range failed {
 		r.Checks = append(r.Checks, eval.CheckResult{Name: f, Grade: eval.Grade{Why: "no"}})
 	}
@@ -79,5 +80,22 @@ func TestTheReportNamesWhereTheTurnsRan(t *testing.T) {
 		if !strings.Contains(b.String(), c.want) {
 			t.Errorf("runs on %q: the report lacks %q:\n%s", c.runsOn, c.want, b.String())
 		}
+	}
+}
+
+// A case whose runs had nothing to grade (0/0: a hand-off with nothing to
+// hand over) has no score: "–", never a 0.00 that reads as failing.
+func TestAnUngradedCaseHasNoScore(t *testing.T) {
+	var b strings.Builder
+	none := eval.Result{Case: "handoff-nothing-fr", CostMicroUSD: 5100, Context: eval.Context{Turns: 2, CacheShare: 0.98}}
+	graded := result("chargebacks", 1, 100_000)
+	if err := eval.WriteReport(&b, nil, []eval.Result{graded, none}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "| handoff-nothing-fr | 1 | – | – | 0.0051 |") || strings.Contains(b.String(), "| handoff-nothing-fr | 1 | 0.00") {
+		t.Fatalf("an ungraded case's row:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "| chargebacks | 1 | 1.00 | 1.00–1.00 |") {
+		t.Fatalf("a graded case's row:\n%s", b.String())
 	}
 }

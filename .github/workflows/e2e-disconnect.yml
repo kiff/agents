@@ -1,0 +1,40 @@
+name: E2E disconnect
+# A one-off beside the sweep: disconnect one grant of the test account that
+# an earlier run left connected (cmd/e2e -disconnect, disconnect.go). It
+# runs as the owner's phone, through planque's own disconnect route, signed
+# with the phone's key like any device's disconnect, and reads the grant
+# back: done only when planque says disconnected. Another account's grant
+# is answered as not found and is never sent anything.
+#
+# By hand only. The log is public, so it names only the grant's first
+# characters and its status before and after.
+on:
+  workflow_dispatch:
+    inputs:
+      grant:
+        description: "The test account's grant to disconnect (grt_…)"
+        type: string
+        required: true
+permissions:
+  contents: read
+# The test account's group: it never runs beside an Eval or E2E run.
+concurrency:
+  group: test-account
+  cancel-in-progress: false
+jobs:
+  disconnect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Disconnect the grant, as the owner's phone
+        env:
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          GRANT: ${{ inputs.grant }}
+        run: |
+          case "$GRANT" in grt_*) ;; *) echo "not a grant id"; exit 1 ;; esac
+          go run ./cmd/e2e -disconnect "$GRANT"

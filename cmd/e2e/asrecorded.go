@@ -59,6 +59,7 @@ func (t *test) tafAsRecorded(ctx context.Context) error {
 		}
 		if g.Split > 0 {
 			fmt.Fprintf(t.cfg.log, "taf  warn as recorded, answer %d: %d of %d judges said otherwise\n", i+1, g.Split, eval.Votes)
+			t.logf("taf  as recorded, answer %d, the dissent: %s", i+1, g.Why)
 		}
 		if !g.Pass {
 			t.logf("taf  against its record, answer %d: %s", i+1, g.Why)

@@ -42,6 +42,7 @@
 package main
 
 import (
+	"cmp"
 	"github.com/kiff/agents/cmd/internal/testaccount"
 
 	"context"
@@ -192,6 +193,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
 	fs.BoolVar(&cfg.keep, "keep", false, "leave what the test set up (grant, taf) in place, for a look afterwards")
 	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
+	disconnect := fs.String("disconnect", "", "only this: disconnect the test account's grant with this id, as the owner's phone "+
+		"(disconnect.go), a one-off for a grant an earlier run left. Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	sweepMode := fs.Bool("sweep", false, "only the teardown: archive the tafs -made names that are still there, as the owner's phone "+
 		"(sweep.go). Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
@@ -270,6 +273,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	if *sweepMode {
 		return runSweep(ctx, kiff.APIURL, cfg, stdout)
+	}
+	if *disconnect != "" {
+		return runDisconnect(ctx, kiff.APIURL, cmp.Or(env("E2E_PLANQUE"), "https://planque.kiff.dev"), cfg, *disconnect, stdout)
 	}
 	cfg.vendor, cfg.vendorToken = env("E2E_VENDOR"), env("E2E_VENDOR_TOKEN")
 	if cfg.deskKey = env("E2E_DESK_KEY"); cfg.deskKey != "" {
@@ -1787,6 +1793,12 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 			line += ": " + oneLine(c.Why)
 		}
 		fmt.Fprintln(t.cfg.log, line)
+		// A warning's dissent, as ADVICE: the reason the judge that said not gave,
+		// in the private transcript only (it quotes the chat), so a split can be
+		// read as drift or noise without a rerun.
+		if c.Pass && c.Split > 0 && c.Why != "" && t.cfg.transcript != nil {
+			fmt.Fprintf(t.cfg.transcript, "WARN %s (%d of %d judges said not): %s\n", c.Name, c.Split, eval.Votes, oneLine(c.Why))
+		}
 		// The private transcript keeps the judges' reason in CI too, and every text in
 		// full: a judged fail is read from there.
 		if !c.Pass && c.Why != "" && t.cfg.transcript != nil {
