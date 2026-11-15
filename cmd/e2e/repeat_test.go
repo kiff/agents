@@ -11,8 +11,12 @@ import (
 	"github.com/kiff/agents/eval"
 )
 
-func passCheck(name string) eval.CheckResult { return eval.CheckResult{Name: name, Grade: eval.Grade{Pass: true}} }
-func missCheck(name string) eval.CheckResult { return eval.CheckResult{Name: name, Grade: eval.Grade{Why: "no"}} }
+func passCheck(name string) eval.CheckResult {
+	return eval.CheckResult{Name: name, Grade: eval.Grade{Pass: true}}
+}
+func missCheck(name string) eval.CheckResult {
+	return eval.CheckResult{Name: name, Grade: eval.Grade{Why: "no"}}
+}
 
 func TestEachRunWritesItsOwnTranscript(t *testing.T) {
 	for in, want := range map[[2]any]string{
@@ -69,7 +73,10 @@ func TestTheBarHoldsSafetyInEveryRunAndQualityInMost(t *testing.T) {
 func TestRepeatRunsTallyTheirGradesAndFailABrokenRun(t *testing.T) {
 	quality := eval.QualityGates[0]
 	runs := []func(context.Context) error{
-		func(ctx context.Context) error { record(ctx, []eval.CheckResult{missCheck(quality)}); return setupGatesFailed{names: []string{quality}} },
+		func(ctx context.Context) error {
+			record(ctx, []eval.CheckResult{missCheck(quality)})
+			return setupGatesFailed{names: []string{quality}}
+		},
 		func(ctx context.Context) error { record(ctx, []eval.CheckResult{passCheck(quality)}); return nil },
 		func(ctx context.Context) error { record(ctx, []eval.CheckResult{passCheck(quality)}); return nil },
 	}
@@ -93,7 +100,9 @@ func TestRepeatRunsTallyTheirGradesAndFailABrokenRun(t *testing.T) {
 	noResultTwice := []func(context.Context) error{
 		func(context.Context) error { return noResult{turns: 14} },
 		func(ctx context.Context) error { record(ctx, []eval.CheckResult{passCheck(quality)}); return nil },
-		func(context.Context) error { return errors.Join(setupGatesFailed{names: []string{"x"}}, noResult{turns: 14}) },
+		func(context.Context) error {
+			return errors.Join(setupGatesFailed{names: []string{"x"}}, noResult{turns: 14})
+		},
 	}
 	err := repeatRuns(context.Background(), 3, nil, "", &log, once(noResultTwice))
 	if err == nil || !strings.Contains(err.Error(), aResult) {
@@ -119,5 +128,34 @@ func TestARunAloneHasNoTally(t *testing.T) {
 	record(context.Background(), []eval.CheckResult{passCheck("x")})
 	if tallyFrom(context.Background()) != nil {
 		t.Fatal("a tally without -repeat")
+	}
+}
+
+// A run that reached a result passes aResult: no result in 1 of 3 runs holds
+// with a warning when aResult is a quality gate, and in 2 of 3 fails.
+func TestEveryRunCountsTowardAResult(t *testing.T) {
+	once := func(misses ...bool) func(context.Context, []string) error {
+		i := 0
+		return func(ctx context.Context, _ []string) error {
+			i++
+			if misses[i-1] {
+				return noResult{turns: 14}
+			}
+			return nil
+		}
+	}
+	var log bytes.Buffer
+	err := repeatRuns(context.Background(), 3, nil, "", &log, once(true, false, false))
+	if eval.QualityGate(aResult) {
+		if err != nil || !strings.Contains(log.String(), "warn  "+aResult+": 2 of 3 runs (quality)") {
+			t.Fatalf("no result in 1 of 3 runs: %v\n%s", err, log.String())
+		}
+	} else if err == nil {
+		t.Fatal("no result in 1 of 3 held as a safety gate")
+	}
+	log.Reset()
+	err = repeatRuns(context.Background(), 3, nil, "", &log, once(true, false, true))
+	if err == nil || !strings.Contains(log.String(), "FAIL  "+aResult+": 1 of 3 runs") {
+		t.Fatalf("no result in 2 of 3 runs held: %v\n%s", err, log.String())
 	}
 }

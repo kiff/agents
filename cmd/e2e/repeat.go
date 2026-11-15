@@ -97,12 +97,16 @@ func repeatRuns(ctx context.Context, n int, args []string, transcript string, lo
 		fmt.Fprintf(log, "run %d of %d\n", i, n)
 		t.runs = append(t.runs, nil)
 		err := once(ctx, withoutRepeat(args, runTranscript(transcript, i)))
-		if err == nil {
-			continue
-		}
+		// Every run counts toward aResult: one that reached a result passes it,
+		// so a lone miss is 2 of 3, not 0 of 1.
+		result := eval.Grade{Pass: true}
 		var none noResult
 		if errors.As(err, &none) {
-			record(ctx, []eval.CheckResult{{Name: aResult, Grade: eval.Grade{Why: none.Error()}}})
+			result = eval.Grade{Why: none.Error()}
+		}
+		record(ctx, []eval.CheckResult{{Name: aResult, Grade: result}})
+		if err == nil {
+			continue
 		}
 		if rest := apartFromGrades(err); rest != nil {
 			broke = append(broke, fmt.Sprintf("run %d: %v", i, rest))
