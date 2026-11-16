@@ -29,6 +29,10 @@ type Chat struct {
 	// the definition's own), as tafs cloud names them for a new Coach
 	// conversation (kiff/tafs#525, way 1); sent with the first message only.
 	Skills []string
+	// Only limits the conversation's session for good (session.Only), as
+	// tafs cloud does for a way in narrower than the agent's own; sent with
+	// the first message only. Nil: none.
+	Only *session.Only
 }
 
 // Send runs text, the owner's message, as a new run in the conversation, and
@@ -39,7 +43,7 @@ type Chat struct {
 func (c *Chat) Send(ctx context.Context, text string, emit func(agent.Event)) (run.Run, error) {
 	st := server.Start{Tenant: c.Tenant, Agent: c.Agent, Session: c.Session, Trigger: run.ByOwner, Input: text}
 	if c.Session == "" {
-		st.Skills = c.Skills
+		st.Skills, st.Only = c.Skills, c.Only
 	}
 	r, err := c.Runner.Start(ctx, st)
 	if err != nil {

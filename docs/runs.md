@@ -335,6 +335,38 @@ run's cost by the kind of work it did (a new job, a change, a question). It
 changes nothing the model reads, the API's run view doesn't show it, and
 nothing logs it.
 
+### A skill named only when a session opens
+
+A definition's skill may be `named_only` (`{"name", "version", "named_only": true}`
+in its `skills`): it is for one way into the agent, and kept out of every other.
+It is never in the catalog the instructions carry, and `read_skill` never lists
+or reads it. Only a run that opens a session names it in `skills`, and the
+session then carries its body like any loaded skill. Nothing adds it to a
+session after its first run: a later run naming it, and the service's
+`PUT …/skills`, are 409 `skills_limited` (`registry.ErrSkillsLimited`), and
+nothing is added.
+
+### A session's limit
+
+A run that opens a session may limit it for good:
+`POST /agents/{id}/runs` with `only: {"skills": true, "tools": ["tafs_state", "taf_task"]}`.
+It needs a new session: with `session_id` or `chat` it's 400. `tools` names 1 to
+32 tools, by the name the model sees.
+
+The session keeps the limit (`Session.Only`, shown as `only` wherever the
+session is). Every run in it:
+
+- is offered only the tools in `tools`, and any other is left out;
+- with `skills`, reads only its own skills. `read_skill` is offered over those
+  alone and refuses any other name, and the agent's catalog of the rest leaves
+  its instructions.
+
+The limit can't be widened. A later run can't change it, and no skill is added
+to a session limited to its own: a later run naming a new skill, or the service's
+`PUT …/skills`, is 409 `skills_limited`. A message to the requester's live chat
+(`chat: "live"`) never goes on in a limited session, however recent; it goes on
+in their latest other chat or opens one.
+
 ## When KIFF holds a call
 
 ```go

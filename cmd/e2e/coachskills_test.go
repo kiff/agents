@@ -41,6 +41,8 @@ func TestStartSkillsFollowTafsCloudsTable(t *testing.T) {
 		"improve": {"cards-and-holds@1", "connect-an-app@1", "draft-the-card@1", "halting@1", "improve-a-taf@1", "name-the-tools@2"},
 		"other":   nil,
 	}
+	tt.setupSkillRefs = append(tt.setupSkillRefs, "ask-a-taf@1")
+	withTaf["watch"] = []string{"ask-a-taf@1"} // the watch skill alone, whatever the account holds
 	for entry, w := range withTaf {
 		if got := tt.startSkills(entry, true); !slices.Equal(got, w) {
 			t.Fatalf("%s with a taf: %v, want %v", entry, got, w)

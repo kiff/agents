@@ -210,6 +210,22 @@ func skillsAreKeptAndAddedOnce(t *testing.T, b Backend, c *clock) {
 	if got, err := b.Skills(context.Background(), s.Tenant, "s-with"); err != nil || !slices.Equal(got, []string{"cards@1"}) {
 		t.Fatalf("created with skills: %v, %v", got, err)
 	}
+	// A limit is kept as created, read back and listed with the session,
+	// and a session created without one reads back without.
+	only := session.Session{ID: "s-only", Tenant: s.Tenant, Agent: "coach", Kind: session.KindChat, Started: c.now(), Updated: c.now(), Owner: "member:ana",
+		Skills: []string{"ask@1"}, Only: &session.Only{Skills: true, Tools: []string{"tafs_state", "taf_task"}}}
+	check(t, b.Create(context.Background(), only))
+	read, _, err := b.Read(context.Background(), s.Tenant, "s-only")
+	if err != nil || read.Only == nil || !read.Only.Skills || !slices.Equal(read.Only.Tools, []string{"tafs_state", "taf_task"}) {
+		t.Fatalf("the limit read back: %+v, %v", read.Only, err)
+	}
+	listed, err := b.ListOwned(context.Background(), s.Tenant, "coach", "member:ana", 10)
+	if err != nil || len(listed) != 1 || listed[0].Only == nil {
+		t.Fatalf("listed: %+v, %v", listed, err)
+	}
+	if read, _, err := b.Read(context.Background(), s.Tenant, "s-with"); err != nil || read.Only != nil {
+		t.Fatalf("a session without a limit reads back with %+v, %v", read.Only, err)
+	}
 }
 
 func recordAndRead(t *testing.T, b Backend, c *clock) {

@@ -54,6 +54,12 @@ type Package struct {
 type Ref struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// NamedOnly keeps the skill to the sessions that name it when they
+	// open (a run's skills, on its first run): it is never in the agent's
+	// catalog, read_skill never lists or reads it for another session, and
+	// it is never added to a session after its first run. A skill for one
+	// way into the agent, kept out of every other.
+	NamedOnly bool `json:"named_only,omitempty"`
 }
 
 func (r Ref) String() string { return r.Name + "@" + r.Version }

@@ -65,8 +65,19 @@ func (r *Recorder) Open(ctx context.Context, tenant, agent string, kind Kind) (S
 
 // OpenOwned creates a session that is owner's thread (Session.Owner).
 func (r *Recorder) OpenOwned(ctx context.Context, tenant, agent string, kind Kind, owner string) (Session, error) {
+	return r.OpenLimited(ctx, tenant, agent, kind, owner, nil)
+}
+
+// OpenLimited is OpenOwned with the session's limit (Session.Only), kept
+// with it from the start: nil is no limit.
+func (r *Recorder) OpenLimited(ctx context.Context, tenant, agent string, kind Kind, owner string, only *Only) (Session, error) {
+	if only != nil {
+		if err := only.Check(); err != nil {
+			return Session{}, err
+		}
+	}
 	now := r.now().UTC()
-	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Started: now, Updated: now, Expires: r.expires(now), Owner: owner}
+	s := Session{ID: newID(), Tenant: tenant, Agent: agent, Kind: kind, Started: now, Updated: now, Expires: r.expires(now), Owner: owner, Only: only.Clone()}
 	if err := r.store.Create(ctx, s); err != nil {
 		return Session{}, err
 	}

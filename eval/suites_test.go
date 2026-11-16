@@ -25,7 +25,11 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		{"kiff/tafs", []string{"runtime/src/cloud/tafdef.ts"}, []string{All}},
 		// tafs cloud's runtime, which every setup calls live: eval-carry.sh diffs the whole tree.
 		{"kiff/tafs", []string{"runtime/src/cloud/approval.ts"}, []string{All}},
-		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "setup"}},
+		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "route", "setup"}},
+		// The watch's skill is the route suite's alone; the agents' e2e runs it too.
+		{"kiff/tafs", []string{"runtime/skills/coach/ask-a-taf/1/SKILL.md"}, []string{"route"}},
+		{"kiff/agents", []string{"cmd/e2e/route.go"}, []string{"route"}},
+		{"kiff/agents", []string{"cmd/e2e/planwords.go"}, []string{"connect", "route", "setup"}},
 		// The tickets recipe's taf calls through the connection server at run time, not only at setup.
 		{"kiff/planque", []string{"internal/gateway/proxy.go"}, []string{"connect", "recipe-tickets", "setup"}},
 		// eval-carry.sh's stand-in for "a planque commit since": any path maps the same.
@@ -68,7 +72,7 @@ func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
 
 	// Eval 19: everything held but intros; a run of connect now carries the rest.
 	from, short := s.Carry([]string{"connect"}, []EarlierRun{skipped, full(19, "failure")})
-	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || len(from) != 4 {
+	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || len(from) != 5 {
 		t.Errorf("connect after Eval 19: from %v, short %v", from, short)
 	}
 	// A run of setup alone can't carry connect: it failed there.
@@ -88,7 +92,7 @@ func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
 	if _, short := s.Carry([]string{"connect"}, []EarlierRun{partial, full(19, "success")}); short["handoffs"] != "it failed in run 20" {
 		t.Errorf("an older pass outvoted a newer failure: %v", short)
 	}
-	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 4 {
+	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 5 {
 		t.Errorf("no earlier run: %v", short)
 	}
 }

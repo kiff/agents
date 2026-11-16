@@ -38,6 +38,7 @@ package dynamodb
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -214,6 +215,10 @@ func metaItem(se session.Session) map[string]types.AttributeValue {
 	if len(se.Skills) > 0 {
 		item["skills"] = stringList(se.Skills)
 	}
+	if se.Only != nil {
+		only, _ := json.Marshal(se.Only) // a struct of a bool and strings: it always marshals
+		item["only"] = s(string(only))
+	}
 	item["runs"] = &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{}}
 	if !se.Expires.IsZero() {
 		item["ttl"] = ttl(se.Expires)
@@ -249,6 +254,14 @@ func metaOf(tenant string, item map[string]types.AttributeValue) meta {
 				m.Skills = append(m.Skills, sv.Value)
 			}
 		}
+	}
+	if v := getS(item, "only"); v != "" {
+		// A limit that doesn't read back limits to nothing: never the agent's all.
+		only := &session.Only{}
+		if err := json.Unmarshal([]byte(v), only); err != nil {
+			only = &session.Only{Tools: []string{}}
+		}
+		m.Only = only
 	}
 	if v, ok := item["runs"].(*types.AttributeValueMemberM); ok {
 		m.runs = v.Value

@@ -109,6 +109,9 @@ type Start struct {
 	// After is the thread's run still at work when this one came: it waits
 	// for it (run.Run.After), one run at a time per thread.
 	After string
+	// Only limits the session this run opens (session.Only): only with no
+	// Session. Never applied to a session that exists.
+	Only *session.Only
 }
 
 // runView is a run as the API shows it: no paused turn (it holds what tools
@@ -681,6 +684,10 @@ type startBody struct {
 	// named on its first run: each one the definition
 	// names, or 400. Later, they are added to what the session holds, once.
 	Skills []string `json:"skills,omitempty"`
+	// Only limits the new session this run opens, for good (session.Only):
+	// its tools by name, and with skills, its skills to the ones it names.
+	// Only with no session_id and no chat: 400 otherwise.
+	Only *session.Only `json:"only,omitempty"`
 	// DedupKey names the request at its origin (a door message's id): one
 	// key starts one run of the agent, however often it is sent, and a
 	// second send gets the first run (RequestRunID). Background only.
@@ -770,7 +777,9 @@ func (s *Server) liveChat(ctx context.Context, tenant, agent string, q run.Reque
 		window = DefaultLiveChat
 	}
 	for _, sess := range list {
-		if sess.Owner != q.Key() || sess.Kind != session.KindChat {
+		// A limited session (session.Only) is its own way in: a live message
+		// never goes on in one, whatever came last.
+		if sess.Owner != q.Key() || sess.Kind != session.KindChat || sess.Only != nil {
 			continue
 		}
 		if !sess.Archived && s.now().Sub(sess.Updated) < window {
@@ -885,6 +894,17 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad(`chat is "live", or left out`))
 		return
 	}
+	if body.Only != nil {
+		// A limit opens its session: never one that exists, whose runs had more.
+		if body.SessionID != "" || body.Chat != "" {
+			s.fail(w, r, bad("only opens a new session: no session_id, and no chat"))
+			return
+		}
+		if err := body.Only.Check(); err != nil {
+			s.fail(w, r, bad("%s", strings.TrimPrefix(err.Error(), "session: ")))
+			return
+		}
+	}
 	id := r.PathValue("id")
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		s.fail(w, r, err)
@@ -967,13 +987,21 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
-		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills}
+		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills, Only: body.Only}
 	if len(st.Skills) > 0 {
 		// The session's skills are the definition's, by name and version:
 		// any other is refused here, before anything is stored.
 		d, err := s.Agents.Get(ctx, c.Tenant, id)
 		if err == nil {
 			err = d.CheckSessionSkills(st.Skills)
+		}
+		// Going on in a session: no named-only skill, and none at all for a
+		// session limited to its own (409), as the runner refuses them too.
+		if err == nil && st.Session != "" {
+			var sess session.Session
+			if sess, _, err = s.Sessions.Read(ctx, c.Tenant, st.Session); err == nil {
+				err = d.CheckAddSkills(sess.Skills, st.Skills, sess.Only != nil && sess.Only.Skills)
+			}
 		}
 		if err != nil {
 			s.fail(w, r, err)

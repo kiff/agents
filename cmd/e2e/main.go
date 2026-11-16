@@ -122,6 +122,7 @@ type config struct {
 	people                                          bool    // step 9's people on a shared taf, instead of the taf's own checks
 	replay                                          *replay // -replay: a setup that failed an owner, run again (replay.go)
 	plan                                            *plan   // -plan: what Coach says about an app before its sign-in (planwords.go)
+	route                                           bool    // -route: a watch request reaches the one taf whose job it is (route.go)
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
 	recipe                                          *recipe   // -recipe: the owner says a recipe's words alone, on the desk, and the taf is graded against its card
@@ -193,6 +194,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	planName := fs.String("plan", "", "what Coach says about an app before the owner signs in to it (planwords.go): sheets or gmail, "+
 		"today's examples of a sign-in planque can't narrow and one it can. The owner asks for a job that only reads, in -owner en or fr; the run "+
 		"stops at the first approval or sign-in card, never answered, with no taf after. Needs -grade")
+	routeMode := fs.Bool("route", false, "a request spoken on the watch, by its own way into Coach (route.go): ten synthetic tafs, "+
+		"each request handed to the one taf whose job it is, or to none when none or several could, and a phone chat that never reaches the watch skill. "+
+		"Needs only ANTHROPIC_API_KEY: nothing reaches KIFF, planque or an account. -grade judges what it says when it hands nothing")
 	recipeFile := fs.String("recipe", "", "a recipe from kiff/tafs (recipes/<id>.md), with -desk: the owner says its words alone, unchanged, "+
 		"then only where the desk is and that Setup may connect; the run goes on to the taf, whose Card -grade checks against the recipe's card")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
@@ -219,7 +223,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		return err
 	}
 	if *repeat > 1 {
-		return repeatRuns(ctx, *repeat, args, *transcript, e2eCase(cfg.desk, cfg.invoices, *replayName, *planName), stdout, func(ctx context.Context, a []string) error {
+		return repeatRuns(ctx, *repeat, args, *transcript, e2eCase(cfg.desk, cfg.invoices, *replayName, *planName, *routeMode), stdout, func(ctx context.Context, a []string) error {
 			return run(ctx, a, stdout, env)
 		})
 	}
@@ -362,6 +366,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		}
 		cfg.plan = p
 	}
+	if *routeMode {
+		if err := routeFlag(cfg); err != nil {
+			return err
+		}
+		cfg.route = true
+	}
 	cfg.planque = env("E2E_PLANQUE")
 	if cfg.planque == "" {
 		cfg.planque = "https://planque.kiff.dev"
@@ -369,8 +379,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	if cfg.cloud = env("E2E_TAFS_CLOUD"); cfg.cloud == "" {
 		cfg.cloud = "https://cloud.tafs.kiff.dev"
 	}
-	for name, v := range map[string]string{"ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY"), "E2E_KIFF_SESSION": cfg.session,
-		"E2E_SETUP_KEY": cfg.setupKey, "E2E_PHONE_KEY": cfg.phone, "E2E_VENDOR": cfg.vendor} {
+	required := map[string]string{"ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY"), "E2E_KIFF_SESSION": cfg.session,
+		"E2E_SETUP_KEY": cfg.setupKey, "E2E_PHONE_KEY": cfg.phone, "E2E_VENDOR": cfg.vendor}
+	if cfg.route {
+		required = map[string]string{"ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY")} // nothing reaches the account
+	}
+	for name, v := range required {
 		if v == "" {
 			return fmt.Errorf("%s is required", name)
 		}
@@ -412,6 +426,7 @@ type test struct {
 	intent  string  // the test payment the taf refunds
 
 	keys     *memory.Drafts // the agents' KIFF keys, by reference, and taf drafts
+	route    *routeTools    // -route's tafs_state and taf_task, in place of the gateway's; nil otherwise
 	sessions *memory.Store
 	rn       *runner.Runner
 	// warm keeps each agent's gateway session for its next run, as the Lambda does.
@@ -508,6 +523,9 @@ func (t *test) logf(format string, args ...any) {
 }
 
 func (t *test) scenario(ctx context.Context, m model.Model) error {
+	if t.cfg.route {
+		return t.routeScenario(ctx, m)
+	}
 	fmt.Fprintln(t.cfg.log, "== setup")
 	pk, err := testaccount.ParsePhone(t.cfg.phone)
 	if err != nil {
@@ -727,6 +745,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 		Agents: t.agents, Secrets: keyring{t.keys}, Model: t.words, Gateways: []string{kiff.URL}, Skills: skills,
 		// As the Lambda does: a chat's next message reuses its agent's gateway session (kiff.Sessions).
 		Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
+			if t.route != nil {
+				return t.route.tools(), nil // -route: the ten tafs, never the account's gateway
+			}
 			return t.warm.Tools(ctx, gateway, tenant, agent, key)
 		},
 		Own: func(tenant, agent string, version int) []tool.Tool {

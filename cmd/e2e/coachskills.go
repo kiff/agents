@@ -20,6 +20,9 @@ import (
 var coachStart = map[string][]string{
 	"free":    {"set-up-a-taf", "connect-an-app", "name-the-tools", "draft-the-card", "usage-and-plans"},
 	"improve": {"improve-a-taf", "connect-an-app", "name-the-tools", "draft-the-card"},
+	// The watch's way in (tafs cloud's signed watch path): the watch skill
+	// alone, whatever the account holds, in a session limited to it (route.go).
+	"watch": {routeSkill},
 }
 
 // coachWithTaf is what an account with a taf of its own adds to every start,
@@ -33,7 +36,7 @@ var coachWithTaf = []string{"cards-and-holds", "halting"}
 // does.
 func (t *test) startSkills(entry string, hasTaf bool) []string {
 	want := coachStart[entry]
-	if hasTaf && len(want) > 0 {
+	if hasTaf && len(want) > 0 && entry != "watch" {
 		want = append(slices.Clone(want), coachWithTaf...)
 	}
 	var out []string
