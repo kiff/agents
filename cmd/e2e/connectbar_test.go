@@ -137,6 +137,27 @@ func TestTheConnectBar(t *testing.T) {
 	if r := byName(gradeConnectBar(barRun{asks: []connectAsk{bad, again}, statements: clean}))[noLoopAfterRefusal]; r.Pass {
 		t.Errorf("a refused pin sent again: %+v", r)
 	}
+	// A resource_argument planque refused, then left out or corrected: another request, not a loop
+	// (Eval 19, intros: "sheet" refused 400, sent again without it, counted as asked again as it was).
+	res := func(tools string) []session.Event {
+		return []session.Event{callEvent(t, "r_"+tools[10:14], map[string]any{"action": "request", "entry": "connector:managed:googlesheets",
+			"uses": []string{"SHEETS_APPEND"}, "tools": json.RawMessage(tools)})}
+	}
+	wrong := connectAsksOf(res(`[{"tool":"SHEETS_APPEND","title":"Add a row","resource_argument":"sheet"}]`))[0]
+	wrong.Refused = "planque answered 400: resource_argument sheet must be one of the tool's string arguments"
+	for _, next := range []string{
+		`[{"tool":"SHEETS_APPEND","title":"Add a row"}]`,
+		`[{"tool":"SHEETS_APPEND","title":"Add a row","resource_argument":"spreadsheet_id"}]`,
+	} {
+		if r := byName(gradeConnectBar(barRun{asks: []connectAsk{wrong, connectAsksOf(res(next))[0]}, statements: clean}))[noLoopAfterRefusal]; !r.Pass {
+			t.Errorf("a resource_argument fixed after a refusal (%s): %+v", next, r)
+		}
+	}
+	// The same resource_argument sent again, its title reworded: still a loop.
+	same2 := connectAsksOf(res(`[{"tool":"SHEETS_APPEND","title":"Append a row","resource_argument":"sheet"}]`))[0]
+	if r := byName(gradeConnectBar(barRun{asks: []connectAsk{wrong, same2}, statements: clean}))[noLoopAfterRefusal]; r.Pass || !strings.Contains(r.Why, "asked again as it was") {
+		t.Errorf("a refused resource_argument sent again: %+v", r)
+	}
 	// Tools added to a connected grant: refused, then sent again as they were.
 	tools := toolsAsksOf([]session.Event{
 		callEvent(t, "t1", map[string]any{"action": "tools", "grant": "grt_li", "tools": []map[string]any{{"tool": "LINKEDIN_GET_COMPANY", "title": "Read the page"}}}),
