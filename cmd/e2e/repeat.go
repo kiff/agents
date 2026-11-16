@@ -215,8 +215,10 @@ func holdToBar(runs [][]eval.CheckResult, caseName string, log io.Writer) []stri
 
 // e2eCase is the case a run of cmd/e2e is, as eval.yml's transcripts name it
 // and a known miss (eval/known.json) names its case.
-func e2eCase(desk, invoices bool, replay string) string {
+func e2eCase(desk, invoices bool, replay, plan string) string {
 	switch {
+	case plan != "":
+		return "plan-" + plan
 	case replay != "":
 		return "replay-" + replay
 	case desk:

@@ -235,6 +235,11 @@ type Grant struct {
 		// (planque keeps it as sent): its operations, each with its effect
 		// and resource, such as a draft's outside.
 		Profile json.RawMessage `json:"profile"`
+		// Connector is a provider's app's sign-in: UsualAccess when planque
+		// couldn't narrow it to the taf's tools, so it asks for more.
+		Connector struct {
+			UsualAccess bool `json:"usual_access"`
+		} `json:"connector"`
 	} `json:"request"`
 	// Events is the grant's record, such as "read list_accounts at …" when
 	// Setup read what the sign-in covers (kiff/planque#14).

@@ -25,7 +25,8 @@ const MaxKnownDays = 3
 type Known struct {
 	Check string `json:"check"`
 	// Case is where it missed: cmd/eval's case (chargebacks) or cmd/e2e's
-	// (setup, desk, invoices, replay-intros), as the tallies name it.
+	// (setup, desk, invoices, replay-intros, plan-sheets, plan-notion),
+	// as the tallies name it.
 	Case  string `json:"case"`
 	Since string `json:"since"` // YYYY-MM-DD
 	Until string `json:"until"` // YYYY-MM-DD, its last day

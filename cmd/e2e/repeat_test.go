@@ -164,10 +164,11 @@ func TestEveryRunCountsTowardAResult(t *testing.T) {
 // names exactly one.
 func TestARunNamesItsCaseAsTheTranscriptsDo(t *testing.T) {
 	for want, got := range map[string]string{
-		"setup":         e2eCase(false, false, ""),
-		"desk":          e2eCase(true, false, ""),
-		"invoices":      e2eCase(false, true, ""),
-		"replay-intros": e2eCase(false, false, "intros"),
+		"setup":         e2eCase(false, false, "", ""),
+		"desk":          e2eCase(true, false, "", ""),
+		"invoices":      e2eCase(false, true, "", ""),
+		"replay-intros": e2eCase(false, false, "intros", ""),
+		"plan-sheets":   e2eCase(false, false, "", "sheets"),
 	} {
 		if got != want {
 			t.Errorf("%s, want %s", got, want)
