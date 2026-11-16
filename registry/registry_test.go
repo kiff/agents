@@ -67,6 +67,13 @@ func TestCheckRefuses(t *testing.T) {
 	if err := registrytest.Definition("t1", "payouts").Check(); err != nil {
 		t.Fatalf("the valid definition is refused: %v", err)
 	}
+	// Coach's own deferred tools, as kiff/tafs defines them (#1029 took them to 18).
+	coach := registrytest.Definition("t1", "setup")
+	coach.DeferredTools = []string{"tafs_state", "taf_run", "taf_check", "taf_task", "run_stop", "taf_pause", "taf_results", "taf_dial", "taf_estimate",
+		"web_read", "taf_labels", "mission_create", "mission", "business_context", "version_try", "version_install", "app_look", "app_act"}
+	if err := coach.Check(); err != nil {
+		t.Fatalf("Coach's deferred tools are refused: %v", err)
+	}
 	for _, e := range append([]string{""}, model.Efforts...) { // none is the provider's default
 		d := registrytest.Definition("t1", "payouts")
 		d.Effort = e
