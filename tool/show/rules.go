@@ -42,6 +42,9 @@ type Rule struct {
 // Limit is one figure the owner agreed for a tool: Quantity (count, or
 // sum(<arg>)) over Window (call, or calendar_day), at most Limit, in the
 // Card's own units (minor units of the connection's currency for an amount).
+// Per, when given, is a total for each item ("one invoice per order, ever"):
+// the argument the Card's aggregate counts it by (its per), over any of a
+// Card's windows but call, so tafs cloud signs only the per totals agreed.
 // Limit is required: 0 is a figure (never), so a pointer tells it from unsaid.
 // Over, when given, is what happens past this figure, where it differs from
 // the rule's: ask past €5 a refund, refuse past €50 a day (Eval 16).
@@ -50,11 +53,16 @@ type Limit struct {
 	Window   string `json:"window"`
 	Limit    *int64 `json:"limit"`
 	Over     string `json:"over,omitempty"`
+	Per      string `json:"per,omitempty"`
 }
 
 var (
-	overs        = []string{"ask", "refuse"}
-	ruleWindows  = []string{"call", "calendar_day"}
+	overs       = []string{"ask", "refuse"}
+	ruleWindows = []string{"call", "calendar_day"}
+	// perWindows are a Card aggregate's windows (tool/drafts): a total for
+	// each item may be over any of them.
+	perWindows   = []string{"calendar_day", "rolling_1h", "rolling_24h", "rolling_7d", "lifetime"}
+	perPattern   = regexp.MustCompile(`^[A-Za-z0-9_.]{1,64}$`)
 	sumPattern   = regexp.MustCompile(`^sum\([A-Za-z0-9_.]{1,64}\)$`)
 	foldRuleTool = func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 )
@@ -90,8 +98,12 @@ func checkRules(rules []Rule) error {
 			switch {
 			case l.Quantity != "count" && !sumPattern.MatchString(l.Quantity):
 				return fmt.Errorf("%s: quantity is count or sum(<arg>), as on the Card", at)
-			case !slices.Contains(ruleWindows, l.Window):
-				return fmt.Errorf("%s: window is call or calendar_day", at)
+			case l.Per != "" && !perPattern.MatchString(l.Per):
+				return fmt.Errorf("%s: per is the argument each item is counted by, as on the Card's aggregate", at)
+			case l.Per != "" && !slices.Contains(perWindows, l.Window):
+				return fmt.Errorf("%s: a total for each item has the window of the Card's aggregate: %s", at, strings.Join(perWindows, ", "))
+			case l.Per == "" && !slices.Contains(ruleWindows, l.Window):
+				return fmt.Errorf("%s: window is call or calendar_day, or, with per, the Card's aggregate's", at)
 			case l.Over != "" && !slices.Contains(overs, l.Over):
 				return fmt.Errorf("%s: over is ask or refuse, or left out for the rule's", at)
 			case l.Limit == nil:
@@ -102,10 +114,10 @@ func checkRules(rules []Rule) error {
 				// No figure here: Coach reads this refusal, and copied the
 				// largest limit into a Card once (Eval 16).
 				return fmt.Errorf("%s: limit is larger than a Card takes; give the figure the owner agreed, in the Card's own units", at)
-			case pairs[l.Quantity+" "+l.Window]:
+			case pairs[l.Quantity+" "+l.Window+" "+l.Per]:
 				return fmt.Errorf("%s: another limit has %s per %s; one figure each", at, l.Quantity, l.Window)
 			}
-			pairs[l.Quantity+" "+l.Window] = true
+			pairs[l.Quantity+" "+l.Window+" "+l.Per] = true
 		}
 	}
 	return nil

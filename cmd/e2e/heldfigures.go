@@ -36,33 +36,50 @@ func unagreedFigures(s said, cards []map[string]any) []string {
 		if name == "" {
 			name = tl.Tool
 		}
+		namesPer := false
+		for _, l := range rule.Limits {
+			namesPer = namesPer || strings.TrimSpace(l.Per) != ""
+		}
 		for _, f := range figuresHeld(cards, foldTool(name)) {
 			if f.quantity == "count" && f.limit == int64(0) {
 				continue
 			}
+			if f.per != "" && !namesPer && !perTotalsAgreed {
+				continue
+			}
 			named := false
 			for _, l := range rule.Limits {
-				if strings.TrimSpace(l.Quantity) == f.quantity && foldTool(l.Window) == f.window {
+				if strings.TrimSpace(l.Quantity) == f.quantity && foldTool(l.Window) == f.window && foldTool(l.Per) == f.per {
 					named = true
 					break
 				}
 			}
 			if !named {
-				out = append(out, fmt.Sprintf("%s %s per %s %v", name, f.quantity, f.window, f.limit))
+				each := ""
+				if f.per != "" {
+					each = " for each " + f.per
+				}
+				out = append(out, fmt.Sprintf("%s %s per %s%s %v", name, f.quantity, f.window, each, f.limit))
 			}
 		}
 	}
 	return out
 }
 
+// perTotalsAgreed: every total for each item must be named by a figure, on a
+// rule that names none too. Off until the definitions that put per totals in
+// the rules are upgraded; tafs cloud's TAFS_RULES_PER switches with it.
+const perTotalsAgreed = false
+
 type heldFigure struct {
-	quantity, window string
-	limit            any
+	quantity, window, per string
+	limit                 any
 }
 
 // figuresHeld are the figures the Cards set on one tool (its KIFF name,
 // folded): each call's cap from its grants' per_action_max, and each total
-// with no per from the Cards' aggregates, in the window it names.
+// from the Cards' aggregates, in the window it names, with its per (folded)
+// when it is a total for each item.
 func figuresHeld(cards []map[string]any, name string) []heldFigure {
 	var out []heldFigure
 	for _, c := range cards {
@@ -75,19 +92,17 @@ func figuresHeld(cards []map[string]any, name string) []heldFigure {
 			covers = true
 			for _, m := range asList(g["per_action_max"]) {
 				q, _ := m["quantity"].(string)
-				out = append(out, heldFigure{strings.TrimSpace(q), "call", number(m["max"])})
+				out = append(out, heldFigure{strings.TrimSpace(q), "call", "", number(m["max"])})
 			}
 		}
 		if !covers {
 			continue
 		}
 		for _, a := range asList(c["aggregates"]) {
-			if per, _ := a["per"].(string); strings.TrimSpace(per) != "" {
-				continue
-			}
 			q, _ := a["quantity"].(string)
 			w, _ := a["window"].(string)
-			out = append(out, heldFigure{strings.TrimSpace(q), foldTool(w), number(a["limit"])})
+			per, _ := a["per"].(string)
+			out = append(out, heldFigure{strings.TrimSpace(q), foldTool(w), foldTool(per), number(a["limit"])})
 		}
 	}
 	return out

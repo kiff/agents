@@ -966,6 +966,8 @@ type shownLimit struct {
 	Window   string `json:"window"`
 	Limit    *int64 `json:"limit"`
 	Over     string `json:"over"`
+	// Per, on a total for each item: the argument the Card's aggregate counts it by.
+	Per string `json:"per"`
 }
 
 // option is one answer to a confirm or a question.
