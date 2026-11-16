@@ -522,6 +522,12 @@ func TestGrantsListsATafsConnections(t *testing.T) {
 		!strings.Contains(spec.Description, "each is copied from what you read, never named from memory") {
 		t.Fatalf("the description doesn't say argument names are copied: %s", spec.Description)
 	}
+	// A path is read before it's fixed, and a limit Setup can't fix is said as kept in the taf's
+	// instructions (Eval 20, intros: the notice kept the marks to one column, and only the sheet was fixed).
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "Read before you fix: before a fixed_arguments or arguments path goes in a request, read that operation's fields") ||
+		!strings.Contains(spec.Description, "is fixed only on a path you read; one you can't fix is said in the rules notice as \"in its instructions\"") {
+		t.Fatalf("the description doesn't say a path is read before it's fixed, or where an unfixed limit is kept: %s", spec.Description)
+	}
 }
 
 // Before connecting anything, search finds tools across apps by words, with
