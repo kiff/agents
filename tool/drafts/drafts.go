@@ -71,6 +71,12 @@ func uncovered(granted [][]string, cards []map[string]json.RawMessage) []string 
 	return out
 }
 
+// holder is a planque that can say whether it holds any grant for an
+// agent (planque.Tool.AgentHolds).
+type holder interface {
+	AgentHolds(ctx context.Context, agent string) (bool, error)
+}
+
 // New returns the draft tool for the agent whose KIFF key is key.
 func New(svc *drafts.Service, tenant, key string) *Tool {
 	return &Tool{svc: svc, tenant: tenant, key: key}
@@ -214,6 +220,18 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	// planque can't be read, or can't tell those reads apart, nothing is
 	// checked: the draft goes as before.
 	if t.granted != nil {
+		// The taf's agent is the one Coach asked planque's grant for. An id
+		// planque holds no grant for, in any state, is a guess (a taf's name
+		// without the suffix its grant has): KIFF would make a second agent
+		// and a second draft, and the approval could show either (16 Nov:
+		// "row-counter" 6 s before "row-counter-szmoih7n", one Coach turn).
+		// When planque can't say, the draft goes as before.
+		if h, ok := t.granted.(holder); ok {
+			if held, err := h.AgentHolds(ctx, in.AgentID); err == nil && !held {
+				return tool.Result{Text: fmt.Sprintf("Not submitted: planque holds no grant for agent %q, so it has no app to call. "+
+					"A taf's draft is for the agent its planque grant names (the grant's agent): submit it again under that id, unchanged otherwise.", in.AgentID), IsError: true}, nil
+			}
+		}
 		if names, known, err := t.granted.AgentTools(ctx, in.AgentID); err == nil && known {
 			if missing := uncovered(names, cards); len(missing) > 0 {
 				return tool.Result{Text: fmt.Sprintf("Not submitted: the taf was given %s, on a connection this draft covers in part, and no Card in it covers %s. "+

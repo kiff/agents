@@ -715,6 +715,31 @@ type grantView struct {
 	Declared bool `json:"declared,omitempty"`
 }
 
+// AgentHolds says whether planque holds any grant for agent, in any state:
+// connected, waiting for the owner or a key, or ended. A taf's agent holds
+// the grant Coach asked for it, so an agent with none is one no connection
+// was ever asked for: a draft for it gives Cards to an agent that can call
+// nothing (tool/drafts).
+func (t *Tool) AgentHolds(ctx context.Context, agent string) (bool, error) {
+	if !pathSafe(agent) {
+		return false, fmt.Errorf("planque: an agent id that can't be in a path")
+	}
+	raw, refused, err := t.do(ctx, http.MethodGet, "/v1/accounts/"+url.PathEscape(t.tenant)+"/agents/"+url.PathEscape(agent)+"/grants", nil)
+	if err != nil {
+		return false, err
+	}
+	if refused != nil {
+		return false, fmt.Errorf("planque: %s", refused.Text)
+	}
+	var list struct {
+		Grants []json.RawMessage `json:"grants"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return false, fmt.Errorf("planque: an agent's grants: %w", err)
+	}
+	return len(list.Grants) > 0, nil
+}
+
 // AgentTools is, for each of agent's connected grants, the KIFF name of each
 // of its tools, as planque lists them for the setup agent, leaving out its
 // own reads (setup_reads) and any tool listed with no KIFF name: what the
