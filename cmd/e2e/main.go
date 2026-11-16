@@ -121,6 +121,7 @@ type config struct {
 	invoices                                        bool    // billing by its key, for drafts only: Setup's connection only
 	people                                          bool    // step 9's people on a shared taf, instead of the taf's own checks
 	replay                                          *replay // -replay: a setup that failed an owner, run again (replay.go)
+	plan                                            *plan   // -plan: what Coach says about an app before its sign-in (planwords.go)
 	log                                             io.Writer
 	transcript                                      io.Writer // each step's details, also in CI (-transcript); nil: none
 	recipe                                          *recipe   // -recipe: the owner says a recipe's words alone, on the desk, and the taf is graded against its card
@@ -172,7 +173,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.StringVar(&cfg.tafDef, "taf", "", "the taf's definition (JSON, a job of kiff/tafs' tafdef.ts, such as refunds.json): its instructions and effort; its answers in the chat are then checked for concision. Empty: a short built-in one")
 	fs.StringVar(&cfg.skillsDir, "skills", "", "a directory of skills, <name>/<version>/SKILL.md each, that -setup and -taf may name (kiff/tafs#218); empty: none")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
-	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es")
+	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es (and fr, with -plan)")
 	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, concise messages, no ids asked, the agent's name, choices")
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
@@ -189,6 +190,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"no send), with no taf after")
 	replayName := fs.String("replay", "", "a setup that failed an owner, run again on the fake vendor with their words (replay.go): intros. "+
 		"Needs E2E_DESK_KEY; graded with the bar for connecting an app, through to the result, with no taf after")
+	planName := fs.String("plan", "", "what Coach says about an app before the owner signs in to it (planwords.go): sheets, whose "+
+		"sign-in planque can't narrow, or typeform, whose it can. The owner asks for a job that only reads, in -owner en or fr; the run "+
+		"stops at the first approval or sign-in card, never answered, with no taf after. Needs -grade")
 	recipeFile := fs.String("recipe", "", "a recipe from kiff/tafs (recipes/<id>.md), with -desk: the owner says its words alone, unchanged, "+
 		"then only where the desk is and that Setup may connect; the run goes on to the taf, whose Card -grade checks against the recipe's card")
 	fs.BoolVar(&cfg.improve, "improve", false, "then the improve case (kiff/tafs#107): Setup makes the taf's next version, a trial shows it, the owner switches, and it runs")
@@ -215,7 +219,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		return err
 	}
 	if *repeat > 1 {
-		return repeatRuns(ctx, *repeat, args, *transcript, e2eCase(cfg.desk, cfg.invoices, *replayName), stdout, func(ctx context.Context, a []string) error {
+		return repeatRuns(ctx, *repeat, args, *transcript, e2eCase(cfg.desk, cfg.invoices, *replayName, *planName), stdout, func(ctx context.Context, a []string) error {
 			return run(ctx, a, stdout, env)
 		})
 	}
@@ -239,8 +243,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		defer f.Close()
 		cfg.transcript = f
 	}
-	if _, ok := owners[cfg.owner]; !ok {
-		return fmt.Errorf("-owner %q: en or es", cfg.owner)
+	if _, ok := owners[cfg.owner]; !ok && (*planName == "" || cfg.owner != "fr") {
+		return fmt.Errorf("-owner %q: en or es (or fr, with -plan)", cfg.owner)
 	}
 	if *regradeFile != "" {
 		if stdout.ci {
@@ -350,6 +354,13 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 			return err
 		}
 		cfg.recipe = &r
+	}
+	if *planName != "" {
+		p, err := planFlag(*planName, cfg, *grade)
+		if err != nil {
+			return err
+		}
+		cfg.plan = p
 	}
 	cfg.planque = env("E2E_PLANQUE")
 	if cfg.planque == "" {
@@ -558,6 +569,11 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 		t.setupSkillRefs = append(t.setupSkillRefs, r.String())
 	}
 
+	if t.cfg.plan != nil {
+		// A plan ends at its first approval card: nothing is approved, and no taf is made.
+		fmt.Fprintln(t.cfg.log, "== the plan, up to its approval")
+		return t.planChat(ctx)
+	}
 	fmt.Fprintln(t.cfg.log, "== the setup chat")
 	tafID, draftID, err := t.converse(ctx)
 	t.setupTimings(ctx) // also after a failed chat: a slow one is worth reading

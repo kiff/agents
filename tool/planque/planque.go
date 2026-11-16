@@ -713,6 +713,31 @@ type grantView struct {
 	// usable only once the key is in. Coach drafts the Card over them then,
 	// so the key sheet signs the key and the Card together.
 	Declared bool `json:"declared,omitempty"`
+	// UsualAccess: planque couldn't narrow the app's sign-in to the taf's
+	// tools, so it asks for more access than the taf uses (planque keeps it on
+	// the request's connector). Coach says so before the owner signs in, and
+	// never calls the connection read-only (kiff/tafs connect-an-app@28).
+	UsualAccess bool `json:"usual_access,omitempty"`
+}
+
+// UnmarshalJSON reads planque's grant, with its connector's usual_access
+// lifted to the top, where the model reads it.
+func (g *grantView) UnmarshalJSON(b []byte) error {
+	type plain grantView
+	var v struct {
+		plain
+		Request struct {
+			Connector struct {
+				UsualAccess bool `json:"usual_access"`
+			} `json:"connector"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*g = grantView(v.plain)
+	g.UsualAccess = g.UsualAccess || v.Request.Connector.UsualAccess
+	return nil
 }
 
 // AgentTools is, for each of agent's connected grants, the KIFF name of each
