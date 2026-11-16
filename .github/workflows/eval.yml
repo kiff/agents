@@ -33,7 +33,7 @@ on:
       # counts for the Upgrade gate or the nightly's skip: it ends red,
       # whatever its checks said, and its steps give each suite's verdict.
       suites:
-        description: "The suites to run: all, or some of connect, setup, cards, handoffs, recipe-tickets (eval/suites.json); some never count for the Upgrade"
+        description: "The suites to run: all, or some of connect, setup, cards, handoffs, recipe-tickets, route (eval/suites.json); some never count for the Upgrade"
         type: string
         default: "all"
       repeat:
@@ -78,10 +78,10 @@ jobs:
     # 40 for the hand-offs and 25 for the first setup. Each suite's step has a
     # limit of its own, about twice its longest run at three (Eval 19): a stuck
     # suite fails its own step, and the steps after it, the sweep and the
-    # report included, still run. The job's limit is above their sum (230,
-    # with the three plan steps) so it is never the one that stops a run. A run with -repeat above 3 may
+    # report included, still run. The job's limit is above their sum (240,
+    # with the three plan steps and the route step) so it is never the one that stops a run. A run with -repeat above 3 may
     # pass a suite's limit: that suite's step fails, and says so.
-    timeout-minutes: 245
+    timeout-minutes: 255
     env:
       REPORTS: kiff-agents-eval-reports
       # Each taf a run makes, for the sweep at the end (cmd/e2e -made).
@@ -351,6 +351,20 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan gmail -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-gmail.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - name: Route, the watch's requests over ten tafs
+        # A request spoken on the watch reaches Coach by its own way in
+        # (cmd/e2e -route, route.go): a session that loads only the watch
+        # skill and is limited to reading the tafs and handing one a task.
+        # Over ten synthetic tafs, each request goes to the one taf whose job
+        # it is, once; none is guessed when none or several could; no watch
+        # session reaches a phone skill; and a phone chat never reaches the
+        # watch skill. Its taf_task only records: nothing reaches KIFF,
+        # planque or the account, so it needs the model's key alone.
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',route,'))
+        timeout-minutes: 10
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -route -grade -repeat "${{ inputs.repeat || '3' }}" -transcript route.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off
@@ -385,12 +399,12 @@ jobs:
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
           # -repeat writes each setup's runs after the first as setup-2.md, setup-3.md, …
-          for f in report.md report-handoff.md report-tickets.md setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md; do
+          for f in report.md report-handoff.md report-tickets.md setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"

@@ -19,6 +19,10 @@
     "recipe-tickets": {
       "about": "The tickets recipe's taf on the fake desk.",
       "steps": ["Tickets, a recipe's taf on the fake desk"]
+    },
+    "route": {
+      "about": "A request spoken on the watch, by its own way into Coach: handed to the one taf of ten whose job it is, to none when none or several could, and never reaching a phone skill; a phone chat never reaches the watch skill.",
+      "steps": ["Route, the watch's requests over ten tafs"]
     }
   },
   "paths": {
@@ -27,10 +31,11 @@
       {"prefix": "runtime/skills/coach/name-the-tools/", "suites": ["connect", "setup"]},
       {"prefix": "runtime/skills/coach/draft-the-card/", "suites": ["connect", "setup"]},
       {"prefix": "runtime/skills/coach/set-up-a-taf/", "suites": ["connect", "setup"]},
-      {"prefix": "runtime/skills/coach/lock.json", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/ask-a-taf/", "suites": ["route"]},
+      {"prefix": "runtime/skills/coach/lock.json", "suites": ["connect", "route", "setup"]},
       {"prefix": "runtime/skills/coach/", "suites": ["setup"]},
       {"prefix": "runtime/skills/kiff/", "suites": ["cards", "handoffs", "recipe-tickets"]},
-      {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "route", "setup"]},
       {"prefix": "runtime/src/recipes.ts", "suites": ["recipe-tickets"]},
       {"prefix": "android/", "suites": []},
       {"prefix": "ios/", "suites": []},
@@ -41,7 +46,8 @@
       {"prefix": "tool/planque/", "suites": ["connect", "setup"]},
       {"prefix": "eval/cases/handoff", "suites": ["handoffs"]},
       {"prefix": "eval/cases/tickets", "suites": ["recipe-tickets"]},
-      {"prefix": "cmd/e2e/", "suites": ["connect", "setup"]},
+      {"prefix": "cmd/e2e/route", "suites": ["route"]},
+      {"prefix": "cmd/e2e/", "suites": ["connect", "route", "setup"]},
       {"prefix": "docs/", "suites": []}
     ],
     "kiff/planque": [
