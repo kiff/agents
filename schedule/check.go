@@ -200,21 +200,33 @@ func (e *CheckError) Unwrap() error { return e.Err }
 // vendorStatus is an app's HTTP status in a refused call's text: "answered 400", or a JSON "code": 400.
 var vendorStatus = regexp.MustCompile(`(?:answered|"code"\s*:)\s*([1-5][0-9]{2})\b`)
 
-// vendorCode is an app's status code in it, a word in capitals ("status": "FAILED_PRECONDITION").
+// vendorCode is an app's status code in it ("status": "FAILED_PRECONDITION"), kept only when it is one of
+// canonicalCodes: a word in capitals elsewhere in the answer can be an order's status or a name.
 var vendorCode = regexp.MustCompile(`"status"\s*:\s*"([A-Z][A-Z_]{2,39})"`)
 
-// VendorAnswer is how an app answered a read it refused, from the call's text: its HTTP status and,
-// when it gives one, its status code in capitals ("400 FAILED_PRECONDITION"). Only those: never the
-// app's message, which can quote what the read was about. Empty when the text gives neither.
+// canonicalCodes are the error codes apps answer with (Google's canonical codes, which most APIs reuse).
+var canonicalCodes = map[string]bool{
+	"INVALID_ARGUMENT": true, "FAILED_PRECONDITION": true, "OUT_OF_RANGE": true, "UNAUTHENTICATED": true,
+	"PERMISSION_DENIED": true, "NOT_FOUND": true, "ABORTED": true, "ALREADY_EXISTS": true, "RESOURCE_EXHAUSTED": true,
+	"CANCELLED": true, "DATA_LOSS": true, "UNKNOWN": true, "INTERNAL": true, "UNIMPLEMENTED": true, "UNAVAILABLE": true,
+	"DEADLINE_EXCEEDED": true,
+}
+
+// VendorAnswer is how an app answered a read it refused, from the call's text: its HTTP status and, when
+// it gives a canonical one, its error code ("400 FAILED_PRECONDITION"). Only those: never the app's
+// message, which can quote what the read was about. Without an HTTP status, nothing: a code alone may be
+// part of an answer that isn't an error.
 func VendorAnswer(text string) string {
-	var out []string
-	if m := vendorStatus.FindStringSubmatch(text); m != nil {
-		out = append(out, m[1])
+	m := vendorStatus.FindStringSubmatch(text)
+	if m == nil {
+		return ""
 	}
-	if m := vendorCode.FindStringSubmatch(text); m != nil {
-		out = append(out, m[1])
+	for _, c := range vendorCode.FindAllStringSubmatch(text, -1) {
+		if canonicalCodes[c[1]] {
+			return m[1] + " " + c[1]
+		}
 	}
-	return strings.Join(out, " ")
+	return m[1]
 }
 
 // vendorOf is how the app answered the read that stopped a check, when err says (CheckError.Vendor).

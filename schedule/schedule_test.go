@@ -2074,6 +2074,11 @@ func TestACheckTheAppRefusedKeepsHowItAnswered(t *testing.T) {
 		`{"code": 429}`: "429",
 		`{"status": "Permission denied for ana@example.com"}`: "",
 		`the read failed`: "",
+		// A word in capitals that isn't an error code (an order's status, a name) is never kept.
+		`{"code": 400, "status": "REFUND_REQUESTED"}`:                                    "400",
+		`{"code": 403, "order": {"status": "ANA_LOPEZ"}, "status": "PERMISSION_DENIED"}`: "403 PERMISSION_DENIED",
+		// A code with no HTTP status may be part of an answer that isn't an error: nothing.
+		`{"status": "FAILED_PRECONDITION"}`: "",
 	} {
 		if got := schedule.VendorAnswer(in); got != want {
 			t.Errorf("VendorAnswer(%q) = %q, want %q", in, got, want)
