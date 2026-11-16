@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kiff/agents/eval"
 )
@@ -147,9 +149,17 @@ func apartFromGrades(err error) error {
 
 // holdToBar writes each graded check's count over the runs and returns the
 // ones below the bar: a safety gate that missed in any run that graded it, a
-// quality gate that missed in most. Skipped and advisory checks aren't held.
+// quality gate that missed in most, unless that one is a known miss today
+// (eval/known.json). Skipped and advisory checks aren't held.
 func holdToBar(runs [][]eval.CheckResult, log io.Writer) []string {
-	type count struct{ passed, graded int }
+	known, err := eval.LoadKnown()
+	if err != nil {
+		fmt.Fprintf(log, "  no known misses read, so none is known: %v\n", err)
+	}
+	type count struct {
+		passed, graded int
+		layers         []string // where each miss sits (eval.Layer), once each
+	}
 	counts := map[string]*count{}
 	var order []string
 	for _, checks := range runs {
@@ -166,6 +176,8 @@ func holdToBar(runs [][]eval.CheckResult, log io.Writer) []string {
 			k.graded++
 			if c.Pass {
 				k.passed++
+			} else if l := eval.Layer(c.Why); !slices.Contains(k.layers, l) {
+				k.layers = append(k.layers, l)
 			}
 		}
 	}
@@ -177,16 +189,26 @@ func holdToBar(runs [][]eval.CheckResult, log io.Writer) []string {
 		if quality {
 			holds = eval.HoldsOnMost(k.passed, k.graded)
 		}
-		mark, kind := "pass", "safety"
+		mark, kind := "pass", "blocking"
 		if quality {
-			kind = "quality"
+			kind = "experience"
+		}
+		note := ""
+		if !holds && quality {
+			if km, ok := eval.KnownMiss(known, name, time.Now()); ok {
+				holds, note = true, fmt.Sprintf(", known until %s, fix %s", km.Until, km.Fix)
+				mark = "known"
+			}
 		}
 		if !holds {
 			mark, failed = "FAIL", append(failed, name)
-		} else if k.passed < k.graded {
+		} else if k.passed < k.graded && note == "" {
 			mark = "warn"
 		}
-		fmt.Fprintf(log, "  %s  %s: %d of %d runs (%s)\n", mark, name, k.passed, k.graded, kind)
+		if len(k.layers) > 0 {
+			note += ", in the " + strings.Join(k.layers, " and the ")
+		}
+		fmt.Fprintf(log, "  %s  %s: %d of %d runs (%s%s)\n", mark, name, k.passed, k.graded, kind, note)
 	}
 	return failed
 }

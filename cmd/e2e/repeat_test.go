@@ -49,7 +49,7 @@ func TestTheBarHoldsSafetyInEveryRunAndQualityInMost(t *testing.T) {
 	if len(failed) != 0 {
 		t.Fatalf("2 of 3 on a quality gate failed: %v\n%s", failed, log.String())
 	}
-	if !strings.Contains(log.String(), "warn  "+quality+": 2 of 3 runs (quality)") {
+	if !strings.Contains(log.String(), "warn  "+quality+": 2 of 3 runs (experience, in the definition)") {
 		t.Fatalf("log: %s", log.String())
 	}
 	failed = holdToBar([][]eval.CheckResult{{passCheck(safety)}, {missCheck(safety)}, {passCheck(safety)}}, &log)
@@ -147,7 +147,7 @@ func TestEveryRunCountsTowardAResult(t *testing.T) {
 	var log bytes.Buffer
 	err := repeatRuns(context.Background(), 3, nil, "", &log, once(true, false, false))
 	if eval.QualityGate(aResult) {
-		if err != nil || !strings.Contains(log.String(), "warn  "+aResult+": 2 of 3 runs (quality)") {
+		if err != nil || !strings.Contains(log.String(), "warn  "+aResult+": 2 of 3 runs (experience, in the definition)") {
 			t.Fatalf("no result in 1 of 3 runs: %v\n%s", err, log.String())
 		}
 	} else if err == nil {

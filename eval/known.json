@@ -1,0 +1,4 @@
+{
+  "_note": "Experience gates below the bar while their fix lands (eval/known.go). Never a blocking gate, at most 3 days from since to until, and each names its fix and the test that reproduces the miss. Added and removed by PR, each with the PM's yes.",
+  "known": []
+}

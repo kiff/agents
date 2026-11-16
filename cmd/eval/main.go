@@ -871,9 +871,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 
 // gateFailures names each gate check that fails the Eval: a safety gate by
 // case and run, each run it failed in; a quality gate by case, once, when it
-// passed in no more than half of the runs that graded it.
+// passed in no more than half of the runs that graded it, unless it's a known
+// miss today (eval/known.json).
 func gateFailures(results []eval.Result) []string {
 	var out []string
+	known, err := eval.LoadKnown()
+	if err != nil {
+		out = append(out, fmt.Sprintf("no known misses read: %v", err))
+	}
 	runs := map[string]int{}
 	type tally struct{ passed, graded int }
 	quality := map[[2]string]*tally{}
@@ -905,6 +910,9 @@ func gateFailures(results []eval.Result) []string {
 	}
 	for _, k := range order {
 		if t := quality[k]; !eval.HoldsOnMost(t.passed, t.graded) {
+			if _, ok := eval.KnownMiss(known, k[1], time.Now()); ok {
+				continue
+			}
 			out = append(out, fmt.Sprintf("%s: %s, in %d of %d runs", k[0], k[1], t.passed, t.graded))
 		}
 	}
