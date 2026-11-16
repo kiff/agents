@@ -119,19 +119,25 @@ func planqueAsksOf(events []session.Event, action string) []connectAsk {
 	return out
 }
 
-// toolsShape is a request's tools in a stable form: each tool's name, pins
-// and arguments, sorted by name, keys in order (encoding/json sorts a map's).
-// What else a tool carries (its title) doesn't make it another request.
+// toolsShape is a request's tools in a stable form: each tool with every
+// field it carries but its words (title, and the taf's name for it), sorted
+// by tool, keys in order (encoding/json sorts a map's). A field changed,
+// added or dropped (a resource_argument planque refused, then left out) makes
+// another request (Eval 19, intros); a title reworded doesn't.
 func toolsShape(raw json.RawMessage) string {
-	var tools []struct {
-		Tool  string `json:"tool"`
-		Fixed any    `json:"fixed_arguments,omitempty"`
-		Args  any    `json:"arguments,omitempty"`
-	}
+	var tools []map[string]any
 	if json.Unmarshal(raw, &tools) != nil || len(tools) == 0 {
 		return ""
 	}
-	sort.SliceStable(tools, func(i, j int) bool { return tools[i].Tool < tools[j].Tool })
+	for _, t := range tools {
+		delete(t, "title")
+		delete(t, "name")
+	}
+	sort.SliceStable(tools, func(i, j int) bool {
+		a, _ := tools[i]["tool"].(string)
+		b, _ := tools[j]["tool"].(string)
+		return a < b
+	})
 	b, _ := json.Marshal(tools)
 	return string(b)
 }

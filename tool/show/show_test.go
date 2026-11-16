@@ -117,9 +117,11 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"approval","id":"a","grant":"grt_1","note":"Solo puede leer"}`:                                            `has no field "note"`,
 		`{"type":"sign_in","id":"a","grant":"grt_1","service":"x.test","yes":"` + strings.Repeat("y", 41) + `"}`:           "yes is 41 characters",
 		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"yes":"Y"}`: `has no field "yes"`,
-		`{"type":"sign_in","id":"a","grant":"grt_1"}`:                                                                      "service is",
-		`{"type":"result","id":"a","text":"done"}`:                                                                         "taf.agent",
-		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1"},"text":"done"}`:                          "taf.kickoff",
+		// Rules on a confirm say where they go, so one retry fixes it (Eval 19, intros: refused 3 times).
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"agree","label":"Agree"},{"value":"n","label":"N"}],"rules":[{"tool":"t","over":"ask"}]}`: `on a notice of their own (type notice, with rules), then a confirm with agrees`,
+		`{"type":"sign_in","id":"a","grant":"grt_1"}`:                                             "service is",
+		`{"type":"result","id":"a","text":"done"}`:                                                "taf.agent",
+		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1"},"text":"done"}`: "taf.kickoff",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"billpay","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"done"}`: "leave taf.job out",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"k"},"text":"done"}`:                                                                                                                                                  "taf.cron",
 		// Every schedule checks first: a scheduled taf names the read that lists its work.

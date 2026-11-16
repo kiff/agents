@@ -112,7 +112,9 @@ func (t *Tool) Spec() model.ToolSpec {
 			"Every argument's path is a field the vendor's operation takes, read from the vendor's own description of it (its OpenAPI description, or the vendor tool that describes an operation's fields), never made up: " +
 			"to narrow a broad tool (one that takes an operation's name and its parameters) to one operation, connect the describing tool first, with setup_reads, and add the write after the owner approved it. " +
 			"amount_argument names only the argument the operation takes for the money it moves, in its own units; a write that moves no money (posting a reply, moving a meeting, sharing a file) has none, and its Card limits its calls. " +
-			"resource_argument names the string argument the call acts on (the ticket, the event, the payment), one the taf's read of it takes. " +
+			"resource_argument names the string argument the call acts on, one the taf's read of it takes, by its exact name in the tool's own input schema (catalog lists it) or the operation's fields: " +
+			"copy that name, never the thing's (a sheet, a ticket, a payment) when the argument is called otherwise; planque refuses any name the tool doesn't take. " +
+			"So with amount_argument, unit_lookup's argument and every fixed_arguments and arguments path: each is copied from what you read, never named from memory. " +
 			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read that says its unit: " +
 			"the read's name (not its vendor tool), its argument that takes the same id, and where the unit is in its answer; KIFF refuses a call in another unit than the Card's. " +
 			"When the vendor has both test and live, the grant says which the sign-in acts in; set up in test first when the owner has it. " +
