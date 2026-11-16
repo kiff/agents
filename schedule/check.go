@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -187,10 +188,43 @@ const (
 type CheckError struct {
 	Reason CheckReason
 	Err    error
+	// Vendor is how the app answered a read it refused (ReasonReadNotMade), as VendorAnswer reads it
+	// ("400 FAILED_PRECONDITION"); empty when the read never reached the app or the answer gives
+	// neither.
+	Vendor string
 }
 
 func (e *CheckError) Error() string { return e.Err.Error() }
 func (e *CheckError) Unwrap() error { return e.Err }
+
+// vendorStatus is an app's HTTP status in a refused call's text: "answered 400", or a JSON "code": 400.
+var vendorStatus = regexp.MustCompile(`(?:answered|"code"\s*:)\s*([1-5][0-9]{2})\b`)
+
+// vendorCode is an app's status code in it, a word in capitals ("status": "FAILED_PRECONDITION").
+var vendorCode = regexp.MustCompile(`"status"\s*:\s*"([A-Z][A-Z_]{2,39})"`)
+
+// VendorAnswer is how an app answered a read it refused, from the call's text: its HTTP status and,
+// when it gives one, its status code in capitals ("400 FAILED_PRECONDITION"). Only those: never the
+// app's message, which can quote what the read was about. Empty when the text gives neither.
+func VendorAnswer(text string) string {
+	var out []string
+	if m := vendorStatus.FindStringSubmatch(text); m != nil {
+		out = append(out, m[1])
+	}
+	if m := vendorCode.FindStringSubmatch(text); m != nil {
+		out = append(out, m[1])
+	}
+	return strings.Join(out, " ")
+}
+
+// vendorOf is how the app answered the read that stopped a check, when err says (CheckError.Vendor).
+func vendorOf(err error) string {
+	var ce *CheckError
+	if errors.As(err, &ce) {
+		return ce.Vendor
+	}
+	return ""
+}
 
 // reasonOf is why err stopped a check: its CheckReason when it carries one, else a failed read.
 func reasonOf(err error) CheckReason {
@@ -205,21 +239,21 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 	next = c
 	var root any
 	if err := json.Unmarshal([]byte(result), &root); err != nil {
-		return "", c, 0, 0, &CheckError{ReasonNotJSON, fmt.Errorf("schedule: the check's read isn't JSON: %w", err)}
+		return "", c, 0, 0, &CheckError{Reason: ReasonNotJSON, Err: fmt.Errorf("schedule: the check's read isn't JSON: %w", err)}
 	}
 	list := root
 	if c.Items != "" {
 		for _, k := range strings.Split(c.Items, ".") {
 			m, ok := list.(map[string]any)
 			if !ok {
-				return "", c, 0, 0, &CheckError{ReasonNoItems, fmt.Errorf("schedule: the check's read has no %q", c.Items)}
+				return "", c, 0, 0, &CheckError{Reason: ReasonNoItems, Err: fmt.Errorf("schedule: the check's read has no %q", c.Items)}
 			}
 			list = m[k]
 		}
 	}
 	arr, ok := list.([]any)
 	if !ok {
-		return "", c, 0, 0, &CheckError{ReasonNotAList, fmt.Errorf("schedule: the check's read has no list at %q", c.Items)}
+		return "", c, 0, 0, &CheckError{Reason: ReasonNotAList, Err: fmt.Errorf("schedule: the check's read has no list at %q", c.Items)}
 	}
 	type item struct {
 		cur, digest string
@@ -264,7 +298,7 @@ func (c Check) batch(input, result string) (runInput string, next Check, n, tooL
 	// see one as new and would stay quiet for good. It fails instead, so
 	// the schedule's failing count says so.
 	if len(arr) > 0 && carried == 0 {
-		return "", c, 0, 0, &CheckError{ReasonNoCursor, fmt.Errorf("schedule: the check's items have no %q field", c.Cursor)}
+		return "", c, 0, 0, &CheckError{Reason: ReasonNoCursor, Err: fmt.Errorf("schedule: the check's items have no %q field", c.Cursor)}
 	}
 	if taking {
 		return "", next, 0, 0, nil
