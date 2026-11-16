@@ -515,6 +515,13 @@ func TestGrantsListsATafsConnections(t *testing.T) {
 		!strings.Contains(spec.Description, "one connection per vendor") || !strings.Contains(spec.Description, "grants with no agent lists every connection") {
 		t.Fatalf("the description doesn't say how to add: %s", spec.Description)
 	}
+	// Every argument name Setup writes is copied from the tool's own schema, never the thing's name
+	// (Eval 19, intros: resource_argument "sheet", which the Sheets tool doesn't take, refused 400).
+	if spec := tl.Spec(); !strings.Contains(spec.Description, "by its exact name in the tool's own input schema") ||
+		!strings.Contains(spec.Description, "never the thing's (a sheet, a ticket, a payment)") ||
+		!strings.Contains(spec.Description, "each is copied from what you read, never named from memory") {
+		t.Fatalf("the description doesn't say argument names are copied: %s", spec.Description)
+	}
 }
 
 // Before connecting anything, search finds tools across apps by words, with

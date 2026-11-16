@@ -398,7 +398,7 @@ func (t Tool) Spec() model.ToolSpec {
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
-			`"rules":{"type":"array","minItems":1,"maxItems":64,"description":"a rules notice: one per tool the draft will cover, what the owner agrees to past its limit and the limit's figures",` +
+			`"rules":{"type":"array","minItems":1,"maxItems":64,"description":"a notice only (type notice), never a confirm: the rules notice, one per tool the draft will cover, what the owner agrees to past its limit and the limit's figures",` +
 			`"items":{"type":"object","properties":{"tool":{"type":"string","description":"planque's name for the tool, before KIFF's suffix"},"over":{"type":"string","enum":["ask","refuse"]},` +
 			`"limits":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"quantity":{"type":"string","description":"count, or sum(<arg>) such as sum(amount)"},` +
 			`"window":{"type":"string","enum":["call","calendar_day"]},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
@@ -540,6 +540,11 @@ func Parse(input json.RawMessage) (Component, error) {
 	}
 	for k := range raw {
 		if k != "type" && k != "id" && !slices.Contains(fields[c.Type], k) {
+			// The rules go on a notice of their own, which a confirm then agrees to: said
+			// here, so one retry fixes it (Eval 19, intros: a confirm with rules, refused 3 times).
+			if k == "rules" {
+				return Component{}, fmt.Errorf("a %s has no field \"rules\": show the rules on a notice of their own (type notice, with rules), then a confirm with agrees set to that notice's id", c.Type)
+			}
 			return Component{}, fmt.Errorf("a %s has no field %q; it takes %s", c.Type, k, strings.Join(fields[c.Type], ", "))
 		}
 	}
