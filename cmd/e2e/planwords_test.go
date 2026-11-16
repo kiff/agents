@@ -273,3 +273,22 @@ func TestThePlanFlag(t *testing.T) {
 		}
 	}
 }
+
+// The Drive proof (16 Nov): a later step was titled "Agree the rules:
+// read-only file search", after the grant said its sign-in was wide. Next to a
+// sign-in that can't be narrowed, a person reads "read-only" as the access, so a
+// step title fails on it wherever it comes: the tool is named instead ("search
+// your files").
+func TestAReadOnlyStepTitleAfterAWideGrantFails(t *testing.T) {
+	events := conversation(
+		wrote("I'll set up a taf that reads your new order rows each Monday and tells you the total."),
+		asked("grt_1", true),
+		wrote("Google's sign-in asks for more access than the taf uses; the taf still uses only its own tools."),
+		steps("Connect Google Sheets", "Agree the rules: read-only row search", "Start the taf"),
+		approvalFor("grt_1"),
+	)
+	wantPlan(t, graded(t, plans["sheets"], events, true), planNoReadOnlyWords, false, false)
+	// Named by what it does, the same plan passes (planque's request is two events: its call and its answer).
+	events[4] = steps("Connect Google Sheets", "Agree the rules: search your rows", "Start the taf")
+	wantPlan(t, graded(t, plans["sheets"], events, true), planNoReadOnlyWords, true, false)
+}
