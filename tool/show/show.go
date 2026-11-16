@@ -401,7 +401,8 @@ func (t Tool) Spec() model.ToolSpec {
 			`"rules":{"type":"array","minItems":1,"maxItems":64,"description":"a notice only (type notice), never a confirm: the rules notice, one per tool the draft will cover, what the owner agrees to past its limit and the limit's figures",` +
 			`"items":{"type":"object","properties":{"tool":{"type":"string","description":"planque's name for the tool, before KIFF's suffix"},"over":{"type":"string","enum":["ask","refuse"]},` +
 			`"limits":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"quantity":{"type":"string","description":"count, or sum(<arg>) such as sum(amount)"},` +
-			`"window":{"type":"string","enum":["call","calendar_day"]},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
+			`"window":{"type":"string","enum":["call","calendar_day","rolling_1h","rolling_24h","rolling_7d","lifetime"],"description":"call or calendar_day; with per, the window of the Card's aggregate"},` +
+			`"per":{"type":"string","description":"a total for each item: the argument the Card's aggregate counts it by (its per)"},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
 			`"over":{"type":"string","enum":["ask","refuse"],"description":"what happens past this figure, when it isn't the rule's over"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
 			`"agrees":{"type":"string","description":"a confirm that agrees to a rules notice: the notice's id; it has an option with value agree"},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +

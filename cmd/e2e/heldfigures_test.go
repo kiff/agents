@@ -55,6 +55,30 @@ func TestTheCardsHoldOnlyTheAgreedFigures(t *testing.T) {
 			t.Errorf("%s: %v", kept, got)
 		}
 	}
+	// A rule that names a total for each item names them all: the same quantity, window and per, or it's unagreed.
+	perRule := func(cards string) []string {
+		s, held := heldRefunds(t, cards)
+		notice := s.cards["rules-1"]
+		one := int64(1)
+		notice.Rules[0].Limits = append(notice.Rules[0].Limits, shownLimit{Quantity: "count", Window: "lifetime", Limit: &one, Per: "charge"})
+		s.cards["rules-1"] = notice
+		return unagreedFigures(s, held)
+	}
+	withPer := func(agg string) string {
+		return strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": []`, `"max": 500}]}], "aggregates": [`+agg+`]`, 1)
+	}
+	if got := perRule(withPer(`{"quantity": "count", "limit": 1, "window": "lifetime", "per": " Charge"}`)); len(got) != 0 {
+		t.Errorf("the agreed per total: %v", got)
+	}
+	for agg, want := range map[string]string{
+		`{"quantity": "count", "limit": 1, "window": "lifetime", "per": "customer"}`:     "refund_charge_k3 count per lifetime for each customer 1",
+		`{"quantity": "count", "limit": 1, "window": "rolling_7d", "per": "charge"}`:     "refund_charge_k3 count per rolling_7d for each charge 1",
+		`{"quantity": "sum(amount)", "limit": 1, "window": "lifetime", "per": "charge"}`: "refund_charge_k3 sum(amount) per lifetime for each charge 1",
+	} {
+		if got := perRule(withPer(agg)); len(got) != 1 || got[0] != want {
+			t.Errorf("%s: %v, want %q", agg, got, want)
+		}
+	}
 	// A rule with no figures names none to compare.
 	s, held := heldRefunds(t, hour)
 	notice := s.cards["rules-1"]

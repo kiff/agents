@@ -333,6 +333,26 @@ func TestARulesNoticeAndItsAgreementAreShown(t *testing.T) {
 	}
 }
 
+// A total for each item ("one invoice per order, ever") is a figure the owner
+// agrees like the others: its per and its window as on the Card's aggregate,
+// beside the day's total on the same quantity.
+func TestARuleNamesATotalForEachItem(t *testing.T) {
+	notice := `{"type":"notice","id":"rules","tone":"info","text":"One invoice per order, ever, and 20 a day.",` +
+		`"rules":[{"tool":"create_invoice","over":"refuse","limits":[{"quantity":"count","window":"lifetime","per":"order_id","limit":1},` +
+		`{"quantity":"count","window":"calendar_day","limit":20}]}]}`
+	c, err := show.Parse(json.RawMessage(notice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.Rules[0].Limits; len(l) != 2 || l[0].Per != "order_id" || l[0].Window != "lifetime" || l[1].Per != "" {
+		t.Fatalf("limits: %+v", l)
+	}
+	b, _ := json.Marshal(c)
+	if !strings.Contains(string(b), `"per":"order_id"`) || strings.Count(string(b), `"per"`) != 1 {
+		t.Fatalf("recorded: %s", b)
+	}
+}
+
 func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 	notice := func(rules string) string {
 		return `{"type":"notice","id":"rules","tone":"info","text":"x","rules":` + rules + `}`
@@ -356,12 +376,15 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[` + limit("max(amount)", "call", `,"limit":1`) + `]`):                        "count or sum(<arg>)",
 		notice(`[` + limit("sum()", "call", `,"limit":1`) + `]`):                              "count or sum(<arg>)",
 		notice(`[` + limit("count", "lifetime", `,"limit":1`) + `]`):                          "call or calendar_day",
-		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"maybe"`) + `]`):       "over is ask or refuse, or left out",
-		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"Ask"`) + `]`):         "over is ask or refuse, or left out",
-		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                "limit is required",
-		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                     "0 or more",
-		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                    "wrong shape",
-		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):         "larger than a Card takes",
+		notice(`[` + limit("count", "call", `,"limit":1,"per":"order_id"`) + `]`):             "the window of the Card's aggregate",
+		notice(`[` + limit("count", "lifetime", `,"limit":1,"per":"order id"`) + `]`):         "per is the argument",
+		notice(`[{"tool":"t","over":"refuse","limits":[{"quantity":"count","window":"lifetime","per":"order_id","limit":1},{"quantity":"count","window":"lifetime","per":"order_id","limit":2}]}]`): "one figure each",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"maybe"`) + `]`):                                                                                                             "over is ask or refuse, or left out",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1,"over":"Ask"`) + `]`):                                                                                                               "over is ask or refuse, or left out",
+		notice(`[` + limit("count", "calendar_day", ``) + `]`):                                                                                                                                      "limit is required",
+		notice(`[` + limit("count", "calendar_day", `,"limit":-1`) + `]`):                                                                                                                           "0 or more",
+		notice(`[` + limit("count", "calendar_day", `,"limit":1.5`) + `]`):                                                                                                                          "wrong shape",
+		notice(`[` + limit("sum(amount)", "call", `,"limit":9007199254740992`) + `]`):                                                                                                               "larger than a Card takes",
 		notice(`[]`): "at least one rule",
 		notice(`[{"tool":"send_reply","over":"ask","limits":[]}]`): "at least one limit",
 		notice(`[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},{"quantity":"sum(amount)","window":"call","limit":100}]}]`): "one figure each",
