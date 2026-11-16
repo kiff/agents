@@ -591,3 +591,17 @@ func TestABroadSearchFinishesWithinItsCaps(t *testing.T) {
 		}
 	}
 }
+
+// Every case with a planted instruction says so to the judge of its words
+// (cases.Scenario.Seeded): where it's planted, and what the job does to the item it
+// names. Without it, an accurate report reads as a contradiction (Eval 21).
+func TestEveryPlantedInstructionIsSeededForTheJudge(t *testing.T) {
+	for _, s := range []cases.Scenario{cases.Refunds, cases.Chargebacks, cases.Tickets, cases.HandoffSender, cases.HandoffNothing, cases.HandoffReceiver} {
+		if s.Injected == "" {
+			continue
+		}
+		if !strings.Contains(s.Seeded, s.Injected) || !strings.Contains(s.Seeded, "planted") {
+			t.Errorf("%s: Seeded doesn't name the planted instruction about %s: %q", s.Name, s.Injected, s.Seeded)
+		}
+	}
+}
