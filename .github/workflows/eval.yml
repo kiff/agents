@@ -364,7 +364,14 @@ jobs:
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -route -grade -repeat "${{ inputs.repeat || '3' }}" -transcript route.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: |
+          # Until kiff/tafs at eval/tafs.ref has the watch skill, the suite isn't measured, as hand-offs and tickets aren't.
+          if ! jq -e '[.. | objects | select(.name? == "ask-a-taf")] | length > 0' defs/setup.json >/dev/null 2>&1; then
+            echo "Route: **not measured**. kiff/tafs at eval/tafs.ref has no ask-a-taf." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Route: not measured: kiff/tafs at eval/tafs.ref has no ask-a-taf"
+            exit 0
+          fi
+          go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -route -grade -repeat "${{ inputs.repeat || '3' }}" -transcript route.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off

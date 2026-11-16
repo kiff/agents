@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/kiff/agents/agent"
@@ -27,7 +28,13 @@ func (x *execution) limit(ctx context.Context, a *agent.Agent, d registry.Defini
 			if err != nil {
 				return err
 			}
-			a.System = strings.Replace(a.System, "\n\n"+skill.Catalog(all), "", 1)
+			// Fail closed: the catalog must be found to be taken out, or the session would still list the other skills.
+			if cat := skill.Catalog(all); cat != "" {
+				if !strings.Contains(a.System, "\n\n"+cat) {
+					return fmt.Errorf("limited session: the skills catalog wasn't found in the instructions, so it can't be left out")
+				}
+				a.System = strings.Replace(a.System, "\n\n"+cat, "", 1)
+			}
 		}
 		if refs := d.SessionRefs(sess.Skills); len(refs) > 0 {
 			ps, err := registry.LoadSkills(ctx, x.rn.Builder.Skills, x.tenant, refs)
