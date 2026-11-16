@@ -239,8 +239,11 @@ func readWords(c component) string {
 // draft is refused (kiff/tafs approval.ts splitApproval), so its key is never
 // approved apart from the Card (Eval 20b, intros run 1). It returns that
 // refusal's answer for Coach, or "" when the card may be drawn. A tafs cloud
-// that doesn't take a draftless check yet answers 4xx: the card is drawn as
-// before, and the log says so.
+// that doesn't take a draftless check yet answers its own 400 for a missing
+// draft (notTakenYet): the card is drawn as before, the log says so, and the
+// closing lines count it. Any other refusal (a proof planque won't take, a
+// grant that isn't the account's) fails the step: it's never read as "not
+// taken yet".
 func (t *test) checkSplit(ctx context.Context, grant string) (string, error) {
 	proof, err := t.phone.GrantsProof(ctx)
 	if err != nil {
@@ -252,8 +255,9 @@ func (t *test) checkSplit(ctx context.Context, grant string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tafs cloud's check of a draftless approval: %w", err)
 	}
-	if a.Status >= 400 && a.Status < 500 {
-		t.logf("tafs cloud's check takes no draftless approval yet (%d): the card is drawn as before", a.Status)
+	if notTakenYet(a.Status, a.Body) {
+		t.splitUnchecked++
+		t.logf("tafs cloud's check takes no draftless approval yet: the card is drawn as before")
 		return "", nil
 	}
 	if err := a.Err(); err != nil {
@@ -269,4 +273,14 @@ func (t *test) checkSplit(ctx context.Context, grant string) (string, error) {
 		return answer, nil
 	}
 	return "", nil
+}
+
+// notTakenYet is tafs cloud's answer, before kiff/tafs#1187, to a check sent
+// with no draft: its 400 asking for the Card draft. Only that one.
+func notTakenYet(status int, body map[string]any) bool {
+	msg, _ := body["error"].(string)
+	if m, _ := body["message"].(string); m != "" {
+		msg = m
+	}
+	return status == http.StatusBadRequest && strings.Contains(msg, "its Card draft")
 }

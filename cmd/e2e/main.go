@@ -420,6 +420,10 @@ type test struct {
 	// draftRefusals are tafs cloud's reason codes for the drafts its check
 	// refused this run (checkRoute), in order: each was handed back to Coach.
 	draftRefusals []string
+	// splitUnchecked counts the draftless approvals tafs cloud's check didn't
+	// take yet (checkSplit): above 0, "one approval for the key and the Card"
+	// wasn't measured against tafs cloud's guard on those cards.
+	splitUnchecked int
 	// unconfirmedResults counts the results answered back to Coach over a
 	// draft this run never confirmed, as tafs cloud answers them.
 	unconfirmedResults int
@@ -561,6 +565,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	// a draft not confirmed, said whatever came of the chat: one that stopped
 	// early counted none (Eval 13's Refunds: one refusal, and no line).
 	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
+	fmt.Fprintf(t.cfg.log, "draftless approvals tafs cloud's check didn't take: %d\n", t.splitUnchecked)
 	fmt.Fprintln(t.cfg.log, unconfirmedLine(t.unconfirmedResults))
 	if err != nil {
 		return err

@@ -32,6 +32,7 @@ type fakeCloud struct {
 	asked   map[string]any    // the check's body
 	confirm map[string]string // KIFF's confirm body
 	proofOK bool
+	status  int // the check route's status, 200 when 0
 
 	// onRead is what tafs cloud answers as checked_on_read, by grant, where
 	// the answer doesn't say it: the cards that sign the Card.
@@ -59,6 +60,9 @@ func (f *fakeCloud) servers(t *testing.T) (cloud, planque, kiff *httptest.Server
 		if _, said := answer["checked_on_read"]; !said && answer != nil && answer["outcome"] != "read_again" {
 			grant := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/connect/grants/"), "/check")
 			answer["checked_on_read"] = f.onRead[grant]
+		}
+		if f.status != 0 {
+			w.WriteHeader(f.status)
 		}
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
@@ -475,5 +479,21 @@ func TestADraftlessApprovalIsAskedAboutAsTheChatIsRead(t *testing.T) {
 		if got, err := tt.checkSplit(context.Background(), "grt_key"); err != nil || got != "" {
 			t.Errorf("%s: %q %v, want the card drawn", name, got, err)
 		}
+	}
+	// A tafs cloud before kiff/tafs#1187: its own 400 for a missing draft draws
+	// the card, counted for the closing lines. Any other refusal fails the step.
+	f.status = http.StatusBadRequest
+	f.answer = map[string]any{"error": "bad_request", "message": "send the grant, its Card draft and the draft's version you read"}
+	if got, err := tt.checkSplit(context.Background(), "grt_key"); err != nil || got != "" || tt.splitUnchecked != 1 {
+		t.Errorf("not taken yet: %q %v, counted %d", got, err, tt.splitUnchecked)
+	}
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		f.status, f.answer = status, map[string]any{"error": "refused", "message": "the device signature isn't one planque takes"}
+		if _, err := tt.checkSplit(context.Background(), "grt_key"); err == nil {
+			t.Errorf("a %d that isn't \"not taken yet\" drew the card", status)
+		}
+	}
+	if tt.splitUnchecked != 1 {
+		t.Errorf("counted %d, want only the one not taken", tt.splitUnchecked)
 	}
 }
