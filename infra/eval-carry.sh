@@ -9,35 +9,48 @@
 #
 # Needs GH_TOKEN, a full clone of kiff/tafs at ./tafs (eval.yml's
 # definitions step) and this repository's history (fetch-depth 0). "Touched"
-# is cmd/evalsuites over kiff/tafs' definition sources (the ones kiff/tafs'
-# Upgrade gate compares) from that run's eval/tafs.ref to this one's, and
-# over kiff/agents from that run's commit to this one. A change neither
-# names (a planque deploy, tafs cloud's runtime) isn't seen here, as it
-# isn't by a full run's verdict either.
+# is cmd/evalsuites (eval/suites.json's paths, where anything unmapped
+# touches every suite) over:
+#   - kiff/tafs, every path from that run's eval/tafs.ref to this one's, and
+#     every path changed on tafs' main since that run started: tafs cloud
+#     deploys from main, not from the ref, and the setups call it live;
+#   - kiff/agents, from that run's commit to this one;
+#   - kiff/planque, when its main has a commit since that run started (its
+#     deploys follow main; suites.json maps all of it to the same suites).
+# Only runs of the last 7 days carry, which bounds what no diff sees (KIFF,
+# the model provider).
 set -euo pipefail
 [ $# -eq 1 ] || { echo "usage: $0 <,suites,>" >&2; exit 2; }
 list=$1
-sources="runtime/src/jobs.ts runtime/src/kiff-skill.ts runtime/skills runtime/src/cloud/tafdef.ts runtime/src/cloud/setupdef.ts"
 ref=$(tr -d '[:space:]' < eval/tafs.ref)
 bin=${RUNNER_TEMP:-/tmp}/evalsuites
 go build -o "$bin" ./cmd/evalsuites
 
-# Earlier runs on main, newest first: never this one, an override, or a run
-# at another repeat than the bar's (their titles say so, eval.yml's run-name).
+# Earlier runs on main of the last 7 days, newest first: never this one, an
+# override, or a run at another repeat than the bar's (their titles say so,
+# eval.yml's run-name).
 runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/eval.yml/runs?branch=main&status=completed&per_page=20" \
-  --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | select(.display_title | (contains(\", override \") or contains(\", repeat \")) | not) | \"\(.id) \(.head_sha)\"")
+  --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | select((.created_at | fromdateiso8601) > (now - 7 * 86400))
+    | select(.display_title | (contains(\", override \") or contains(\", repeat \")) | not) | \"\(.id) \(.head_sha) \(.created_at)\"")
 
 earlier='[]'
-while read -r id sha; do
+while read -r id sha started; do
   [ -n "$id" ] || continue
   if git cat-file -e "$sha^{commit}" 2>/dev/null && their=$(git show "$sha:eval/tafs.ref" 2>/dev/null | tr -d '[:space:]') \
     && git -C tafs cat-file -e "$their^{commit}" 2>/dev/null; then
-    touched=$({ git -C tafs diff --name-only "$their" "$ref" -- $sources | "$bin" -repo kiff/tafs
-      git diff --name-only "$sha" HEAD | "$bin" -repo kiff/agents; } | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -s .)
+    planque=$(gh api "repos/kiff/planque/commits?sha=main&since=$started&per_page=1" --jq length)
+    touched=$({ { git -C tafs diff --name-only "$their" "$ref"
+        git -C tafs log --format= --name-only --since="$started" origin/main; } | sort -u | "$bin" -repo kiff/tafs
+      git diff --name-only "$sha" HEAD | "$bin" -repo kiff/agents
+      # Any planque commit: every planque path maps to the same suites.
+      [ "$planque" = 0 ] || echo main | "$bin" -repo kiff/planque; } | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -s .)
   else
     touched='["all"]' # its commit or its tafs ref can't be read: nothing carries from it
   fi
-  steps=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$id/jobs" --jq '[.jobs[].steps[] | {(.name): (.conclusion // "")}] | add // {}')
+  # A step name in two jobs counts as its worst: any other conclusion over
+  # success, success over skipped.
+  steps=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$id/jobs" --jq '[.jobs[].steps[] | {name, c: (.conclusion // "")}]
+    | group_by(.name) | map({(.[0].name): ([.[].c] | if any(. != "success" and . != "skipped" and . != "") then (map(select(. != "success" and . != "skipped" and . != ""))[0]) elif any(. == "success") then "success" else "skipped" end)}) | add // {}')
   earlier=$(jq -c --argjson id "$id" --argjson steps "$steps" --argjson touched "$touched" '. + [{id: $id, steps: $steps, touched: $touched}]' <<<"$earlier")
 done <<<"$runs"
 

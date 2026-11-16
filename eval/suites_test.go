@@ -23,9 +23,13 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		{"kiff/tafs", []string{"android/app/src/Main.kt", "docs/coach.md"}, nil},
 		{"kiff/tafs", []string{"runtime/skills/kiff/SKILL.md", "ios/Tafs/App.swift"}, []string{"cards", "handoffs", "recipe-tickets"}},
 		{"kiff/tafs", []string{"runtime/src/cloud/tafdef.ts"}, []string{All}},
+		// tafs cloud's runtime, which every setup calls live: eval-carry.sh diffs the whole tree.
+		{"kiff/tafs", []string{"runtime/src/cloud/approval.ts"}, []string{All}},
 		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "setup"}},
 		// The tickets recipe's taf calls through the connection server at run time, not only at setup.
 		{"kiff/planque", []string{"internal/gateway/proxy.go"}, []string{"connect", "recipe-tickets", "setup"}},
+		// eval-carry.sh's stand-in for "a planque commit since": any path maps the same.
+		{"kiff/planque", []string{"main"}, []string{"connect", "recipe-tickets", "setup"}},
 		{"kiff/elsewhere", []string{"main.go"}, []string{All}},
 	} {
 		if got := s.For(c.repo, c.paths); !slices.Equal(got, c.want) {
