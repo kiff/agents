@@ -662,6 +662,8 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 			return true, err
 		}
 		return true, nil
+	case r.statusDue().IsZero() || !r.statusDue().Before(now):
+		return false, nil // due only for a note or a report this sweep doesn't send
 	case r.Status == Pending && r.After != "" && sw.Continue != nil:
 		return sw.queued(ctx, r, now)
 	case r.Status == Pending && !r.Cancel && sw.Continue != nil && r.Resumes < MaxResumes:

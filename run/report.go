@@ -45,7 +45,14 @@ func (rp Reporting) Put(ctx context.Context, prev, next Run) error {
 	ctx = context.WithoutCancel(ctx)
 	if err := rp.Report(ctx, next); err != nil {
 		rp.log("run: a usage report was not sent; it's kept and sent again", err)
-		_ = rp.keep(ctx, next, 1)
+		// Kept on the run as stored, not as next: the Runs under this one
+		// may have stored more on the same move (a note still owed), and a
+		// write from next would drop it at the same version.
+		r := next
+		if stored, err := rp.Runs.Get(ctx, next.Tenant, next.ID); err == nil {
+			r = stored
+		}
+		_ = rp.keep(ctx, r, 1)
 	}
 	return nil
 }
