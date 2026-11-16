@@ -247,3 +247,72 @@ func TestADraftThatLeavesAGrantedToolUncoveredIsNotSent(t *testing.T) {
 		t.Errorf("without a planque: %+v", r)
 	}
 }
+
+// holds is a fake planque that also says which agents it holds a grant for.
+type holds struct {
+	granted
+	agents map[string]bool
+	err    error
+}
+
+func (h holds) AgentHolds(_ context.Context, agent string) (bool, error) {
+	return h.agents[agent], h.err
+}
+
+// One Coach turn, two drafts 6 s apart: the first under the taf's bare name,
+// which planque holds no grant for, the second under the agent its grant
+// names (16 Nov, "row-counter" then "row-counter-szmoih7n"). The first never
+// reaches KIFF, so there is one agent and one draft. An agent with a grant
+// in any state (waiting for its key, say) is drafted for as before, and when
+// planque can't say, the draft goes too.
+func TestADraftForAnAgentWithNoGrantIsNotSent(t *testing.T) {
+	var agents []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			AgentID string `json:"agent_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		agents = append(agents, body.AgentID)
+		w.WriteHeader(201)
+		w.Write([]byte(`{"id":"drf_1","agent_id":"` + body.AgentID + `","status":"draft","version":"v1","claim_secret":"kiff_claim_s3cret"}`))
+	}))
+	defer srv.Close()
+	m := memory.NewDrafts()
+	newTool := func(g tool.Granted) *tooldrafts.Tool {
+		tl := tooldrafts.New(&drafts.Service{Store: m, Keys: m, KIFF: kiffapi.New(srv.URL, nil)}, "t1", "kiff_key_setup")
+		tl.CheckGrants(g)
+		return tl
+	}
+	draft := func(agent string) json.RawMessage {
+		return json.RawMessage(`{"action":"submit","agent_id":"` + agent + `","label":"Row counter","cards":[` +
+			`{"id":"reads","grants":[{"action":"read_rows"}]}]}`)
+	}
+	planque := holds{granted: granted{grants: [][]string{{"read_rows"}}, known: true}, agents: map[string]bool{"row-counter-szmoih7n": true}}
+
+	tl := newTool(planque)
+	r, err := tl.Call(context.Background(), draft("row-counter"))
+	if err != nil || !r.IsError || !strings.Contains(r.Text, `"row-counter"`) || !strings.Contains(r.Text, "grant names") {
+		t.Fatalf("a draft for an agent with no grant: %+v %v", r, err)
+	}
+	if r, err := tl.Call(context.Background(), draft("row-counter-szmoih7n")); err != nil || r.IsError {
+		t.Fatalf("the draft for the grant's agent: %+v %v", r, err)
+	}
+	if !slices.Equal(agents, []string{"row-counter-szmoih7n"}) {
+		t.Fatalf("KIFF got drafts for %v, want the grant's agent alone", agents)
+	}
+
+	// A grant waiting for its key, nothing connected yet: the key sheet signs
+	// the key and the Card together, so the draft goes.
+	waiting := holds{granted: granted{known: true}, agents: map[string]bool{"refunds-k5j6m5qx": true}}
+	if r, err := newTool(waiting).Call(context.Background(), draft("refunds-k5j6m5qx")); err != nil || r.IsError {
+		t.Fatalf("an agent whose grant waits for its key: %+v %v", r, err)
+	}
+	// planque can't say: the draft goes as before.
+	unread := holds{granted: granted{known: true}, err: context.DeadlineExceeded}
+	if r, err := newTool(unread).Call(context.Background(), draft("row-counter")); err != nil || r.IsError {
+		t.Fatalf("planque unread: %+v %v", r, err)
+	}
+	if len(agents) != 3 {
+		t.Fatalf("KIFF got %d drafts, want 3", len(agents))
+	}
+}

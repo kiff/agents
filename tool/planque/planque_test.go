@@ -1141,3 +1141,27 @@ func TestTheProfileMarksADraftThatReachesPeopleOutside(t *testing.T) {
 		}
 	}
 }
+
+// AgentHolds counts every grant planque lists for the agent, whatever its
+// state: an agent with none is one no connection was asked for.
+func TestAgentHoldsAnyGrant(t *testing.T) {
+	listing := `{"grants":[{"id":"g1","status":"pending"}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/accounts/t1/agents/row-counter-szmoih7n/grants" {
+			w.Write([]byte(`{"grants":[]}`))
+			return
+		}
+		w.Write([]byte(listing))
+	}))
+	defer srv.Close()
+	tl := planque.New(srv.URL, "t1", "kiff_key_setup", nil)
+	if held, err := tl.AgentHolds(context.Background(), "row-counter-szmoih7n"); err != nil || !held {
+		t.Fatalf("a pending grant: %v %v", held, err)
+	}
+	if held, err := tl.AgentHolds(context.Background(), "row-counter"); err != nil || held {
+		t.Fatalf("an agent with no grant: %v %v", held, err)
+	}
+	if _, err := tl.AgentHolds(context.Background(), "../other"); err == nil {
+		t.Fatal("an agent id outside the path was asked")
+	}
+}
