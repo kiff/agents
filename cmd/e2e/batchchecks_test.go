@@ -118,6 +118,19 @@ func TestTheCoachBatchsGates(t *testing.T) {
 	if r := byName(gradeBatch(twoKeys, []approvalSeen{{Grant: "grt_sh", Key: true}, {Grant: "grt_mb", Key: true}, {Grant: "grt_mb", Draft: "drf_9", Key: true}}, nil))["one approval for the key and the Card"]; r.Pass || !strings.Contains(r.Why, "grt_mb") {
 		t.Errorf("two key apps, the Card apart: %+v", r)
 	}
+	// Eval 20b, introductions run 1: the sheet's key with the draft, which tafs cloud refused (other_app_first); then
+	// the mail's key shown alone; both cards read again; then the mail with the draft. The mail's key and the Card took
+	// two approvals: failed, naming the mail. Runs 2 and 3 showed the mail's key with the same draft: passed.
+	run1 := []approvalSeen{{Grant: "grt_sh", Draft: "drf_9", Key: true}, {Grant: "grt_mb", Key: true},
+		{Grant: "grt_sh", Draft: "drf_9", Key: true, Again: true}, {Grant: "grt_mb", Key: true, Again: true},
+		{Grant: "grt_mb", Draft: "drf_9", Key: true}}
+	if r := byName(gradeBatch(twoKeys, run1, nil))["one approval for the key and the Card"]; r.Pass || r.Skipped || !strings.Contains(r.Why, "grt_mb") || strings.Contains(r.Why, "grt_sh") {
+		t.Errorf("Eval 20b intros run 1, the mail's key apart from the Card: %+v", r)
+	}
+	runs23 := []approvalSeen{{Grant: "grt_sh", Draft: "drf_9", Key: true}, {Grant: "grt_mb", Draft: "drf_9", Key: true}}
+	if r := byName(gradeBatch(twoKeys, runs23, nil))["one approval for the key and the Card"]; !r.Pass {
+		t.Errorf("Eval 20b intros runs 2 and 3, the mail's key with the same draft: %+v", r)
+	}
 
 	// Not declared (connected first, its tools picked after): the key first is the documented flow.
 	if r := byName(gradeBatch([]connectAsk{{API: true, Grant: "grt_8"}}, []approvalSeen{{Grant: "grt_8", Key: true}}, nil))["one approval for the key and the Card"]; !r.Skipped || r.Pass {
