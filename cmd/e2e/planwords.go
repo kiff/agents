@@ -252,10 +252,12 @@ func readOnlyWordsIn(texts []planText) []string {
 // readsOnly are the words after "read only" that make it what the taf does,
 // not what a sign-in allows: "it will read only the rows added since its last
 // run" (Eval 22b, 16 Nov) is the job, as the skill asks Coach to say it.
-// "read-only", hyphenated, is never the job.
+// "read-only", hyphenated, is never the job, and neither is "read only what"
+// or "read only one": "the sign-in can read only what the taf needs" is a
+// claim about access.
 var readsOnly = map[string]bool{"the": true, "a": true, "an": true, "its": true, "your": true, "my": true, "their": true,
-	"this": true, "that": true, "these": true, "those": true, "new": true, "each": true, "every": true, "one": true,
-	"what": true, "rows": true, "lines": true, "emails": true, "messages": true, "pages": true}
+	"this": true, "that": true, "these": true, "those": true, "new": true, "each": true, "every": true,
+	"rows": true, "lines": true, "emails": true, "messages": true, "pages": true}
 
 // claimIn is the first match of re in text that claims a connection, a
 // sign-in or a step is harmless, as it reads: one where "read only" names
@@ -413,6 +415,17 @@ func (t *test) planChat(ctx context.Context) error {
 		}
 		wide = g.Request.Connector.UsualAccess
 		t.logf("planque's grant for %s: usual_access %t", p.app, wide)
+	}
+	// Which kind of sign-in the run met is planque's, not the case's: say
+	// which half it measured, on the run's own log as a GitHub annotation, so
+	// a run that only ever meets one kind is seen. Kinds only, never Coach's words.
+	switch {
+	case grant == "":
+		fmt.Fprintf(t.cfg.log, "::warning::plan %s: planque made no grant, so this run measures nothing of wider\n", p.app)
+	case wide:
+		fmt.Fprintf(t.cfg.log, "::notice::plan %s: planque's sign-in is wide; this run doesn't measure \"never wider for a narrowed sign-in\"\n", p.app)
+	default:
+		fmt.Fprintf(t.cfg.log, "::notice::plan %s: planque narrowed the sign-in; this run measures \"never wider for a narrowed sign-in\"\n", p.app)
 	}
 	for _, x := range run.texts {
 		t.logf("  %s: %s", x.where, oneLine(x.text))

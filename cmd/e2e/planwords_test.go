@@ -139,6 +139,7 @@ func TestReadOnlyFailsWhereverCoachWritesIt(t *testing.T) {
 		{"a message", wrote("The connection is read only."), `a message says "read only"`},
 		{"a message, read only and a word after", wrote("It's read only access to your sheet."), `a message says "read only"`},
 		{"a message, the job's words and then the claim", wrote("It will read only the new rows: the sign-in is read-only."), `a message says "read-only"`},
+		{"a message, read only what it needs", wrote("The sign-in can read only what the taf needs."), `a message says "read only"`},
 		{"an option, in French", showed(`{"type":"questions","id":"q1","questions":[{"id":"x","text":"Connecter Google Sheets ?","options":[{"value":"oui","label":"Oui, en lecture seule"}]}]}`), `a option says "lecture seule"`},
 		{"a message, in French", wrote("La connexion ne modifie rien dans ton tableur."), `a message says "ne modifie rien"`},
 		{"a message, won't change", wrote("It won't change anything."), `a message says "won't change anything"`},
