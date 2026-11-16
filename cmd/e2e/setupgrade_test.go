@@ -989,3 +989,60 @@ func TestTheAgreedJudgeIsShownTheTafsOwnTools(t *testing.T) {
 		t.Fatal("an empty list of the taf's tools was shown")
 	}
 }
+
+// Eval 20, introductions runs 2 and 3: the rules kept the taf's marks to one column while the connection fixed only
+// the sheet, and the judge alone caught it. The harness now reads it as a fact, before any judge is asked.
+func TestAColumnTheRulesKeepIsFixedOrSaidToBeInItsInstructions(t *testing.T) {
+	rules := func(text string) said {
+		return said{cards: map[string]component{
+			"rules": {Type: "notice", Title: "Your taf's rules", Text: text},
+			"ask":   {Type: "confirm", Title: "Agree to these rules?"},
+		}, order: []string{"rules", "ask"}}
+	}
+	sheetOnly := func(s said, fixed map[string]any) said {
+		var g grant
+		g.Request.Tools = []grantTool{{Tool: "update_row", Name: "update_row_k3f9", Fixed: fixed}}
+		s.pinned = pinsOf(g)
+		return s
+	}
+	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "update_row_k3f9"}}}}
+	grade := func(s said) (eval.CheckResult, *verdicts) {
+		v := &verdicts{}
+		r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r, v
+	}
+	for _, line := range []string{
+		"Update row: marks each company only in its 'Intro status' column, up to 20 a day; more refused.",    // run 2
+		"Update row: writes \"drafted\" in an 'Intro drafted' column of sheet sh_eval only, up to 20 a day.", // run 3
+	} {
+		s := sheetOnly(rules("List rows: reads the sheet.\n"+line), map[string]any{"spreadsheet_id": "sh_eval"})
+		r, v := grade(s)
+		if r.Grade.Pass || r.Grade.Skipped || !strings.Contains(r.Grade.Why, "column, but the connection doesn't fix it") || len(v.asked) != 0 {
+			t.Fatalf("%q with only the sheet fixed: %+v, judge asked %d times", line, r.Grade, len(v.asked))
+		}
+		// Said to be kept in its instructions, it's the judge's to grade, as any rule kept there.
+		r, v = grade(sheetOnly(rules("List rows: reads the sheet.\n"+line+" (in its instructions)"), map[string]any{"spreadsheet_id": "sh_eval"}))
+		if !r.Grade.Pass || len(v.asked) == 0 {
+			t.Fatalf("%q kept in its instructions: %+v, judge asked %d times", line, r.Grade, len(v.asked))
+		}
+	}
+	// Fixed on the connection by its name, or by a range or a column path, it's held: the judge grades the rest.
+	for _, fixed := range []map[string]any{
+		{"spreadsheet_id": "sh_eval", "values.column": "Intro status"},
+		{"spreadsheet_id": "sh_eval", "range": "Companies!E:E"},
+	} {
+		r, v := grade(sheetOnly(rules("Update row: marks each company only in its 'Intro status' column, up to 20 a day."), fixed))
+		if !r.Grade.Pass || len(v.asked) == 0 {
+			t.Fatalf("the column fixed as %v: %+v, judge asked %d times", fixed, r.Grade, len(v.asked))
+		}
+	}
+	// A column named without "only" limits nothing, and an unquoted one is left to the judge.
+	for _, line := range []string{"Update row: the 'Intro status' column says what was done.", "Update row: only the status column, up to 20 a day."} {
+		if r, v := grade(sheetOnly(rules(line), map[string]any{"spreadsheet_id": "sh_eval"})); !r.Grade.Pass || len(v.asked) == 0 {
+			t.Fatalf("%q: %+v, judge asked %d times", line, r.Grade, len(v.asked))
+		}
+	}
+}

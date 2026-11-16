@@ -74,10 +74,14 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    # About 95 minutes at three runs a suite: Eval 19 took 15 for chargebacks and
-    # about 42 for the hand-offs before tickets and the four setups (Eval 18
-    # took 34 in all at one or two).
-    timeout-minutes: 130
+    # About 95 minutes at three runs a suite: Eval 19 took 14 for chargebacks,
+    # 40 for the hand-offs and 25 for the first setup. Each suite's step has a
+    # limit of its own, about twice its longest run at three (Eval 19): a stuck
+    # suite fails its own step, and the steps after it, the sweep and the
+    # report included, still run. The job's limit is above their sum (200) so
+    # it is never the one that stops a run. A run with -repeat above 3 may
+    # pass a suite's limit: that suite's step fails, and says so.
+    timeout-minutes: 215
     env:
       REPORTS: kiff-agents-eval-reports
       # Each taf a run makes, for the sweep at the end (cmd/e2e -made).
@@ -152,6 +156,7 @@ jobs:
           echo "Override **$label**: Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own}. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: Chargebacks, two seeded runs
         if: steps.unchanged.outputs.skip != 'true' && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',cards,'))
+        timeout-minutes: 30
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -178,6 +183,7 @@ jobs:
         # over" writes no hand-off definitions: the step says so and measures
         # nothing.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',handoffs,'))
+        timeout-minutes: 60
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
@@ -200,6 +206,7 @@ jobs:
         # gated. A tafs commit without the recipe writes no definition for it:
         # the step says so and measures nothing.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',recipe-tickets,'))
+        timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -235,6 +242,7 @@ jobs:
         # the judge is Sonnet, as for chargebacks, and its judged checks take
         # a majority of three.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',setup,'))
+        timeout-minutes: 45
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -252,6 +260,7 @@ jobs:
         # carry no amount, reads marked read-only. A Setup rule passes on both
         # vendors or fails the night.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        timeout-minutes: 15
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -270,6 +279,7 @@ jobs:
         # are connected: create_invoice pinned to status draft
         # (fixed_arguments), and no send_invoice.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        timeout-minutes: 15
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -287,6 +297,7 @@ jobs:
         # (one approval per app plus its Card, no raw error, no loop) and the
         # rest, through to the result. Red until the bar holds.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        timeout-minutes: 25
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}

@@ -115,6 +115,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"resource_argument names the string argument the call acts on, one the taf's read of it takes, by its exact name in the tool's own input schema (catalog lists it) or the operation's fields: " +
 			"copy that name, never the thing's (a sheet, a ticket, a payment) when the argument is called otherwise; planque refuses any name the tool doesn't take. " +
 			"So with amount_argument, unit_lookup's argument and every fixed_arguments and arguments path: each is copied from what you read, never named from memory. " +
+			"Read before you fix: before a fixed_arguments or arguments path goes in a request, read that operation's fields (catalog {grant, tool} in full, or the vendor's describing tool); never leave out a limit the owner agreed because you didn't read them. " +
+			"A limit on what a write touches (one sheet, one column, one folder) is fixed only on a path you read; one you can't fix is said in the rules notice as \"in its instructions\", never as kept by the connection or the Card. " +
 			"unit_lookup {tool, argument, path} names, for a tool that moves money, the read that says its unit: " +
 			"the read's name (not its vendor tool), its argument that takes the same id, and where the unit is in its answer; KIFF refuses a call in another unit than the Card's. " +
 			"When the vendor has both test and live, the grant says which the sign-in acts in; set up in test first when the owner has it. " +
