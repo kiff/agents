@@ -46,6 +46,7 @@ func (m *Store) Create(_ context.Context, s session.Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s.Held = nil
+	s.Only = s.Only.Clone()
 	m.sessions[s.ID] = &memSession{s: s, runs: map[string]*session.RunState{}}
 	return nil
 }
@@ -142,6 +143,7 @@ func (m *Store) Read(_ context.Context, tenant, id string) (session.Session, []s
 	}
 	s := ms.s
 	s.Held = slices.Clone(s.Held)
+	s.Only = s.Only.Clone()
 	return s, live(ms.events, m.now(), func(session.Event) bool { return true }), nil
 }
 

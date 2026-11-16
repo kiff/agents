@@ -503,6 +503,55 @@ func (d Definition) CheckSessionSkills(skills []string) error {
 	return nil
 }
 
+// CatalogSkills are the definition's skills any session may read: all but
+// the named-only ones (skill.Ref.NamedOnly), in the definition's order.
+func (d Definition) CatalogSkills() []skill.Ref {
+	var out []skill.Ref
+	for _, r := range d.Skills {
+		if !r.NamedOnly {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// SessionRefs are the definition's skills the session loaded, in the
+// definition's order.
+func (d Definition) SessionRefs(skills []string) []skill.Ref {
+	var out []skill.Ref
+	for _, r := range d.Skills {
+		if slices.Contains(skills, r.String()) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// ErrSkillsLimited means a run or the agent's service asked to add a skill
+// to a session after its first run that it may not take there: a named-only
+// skill, or any skill on a session whose limit keeps it to its own
+// (session.Only). Nothing is added.
+var ErrSkillsLimited = errors.New("registry: that skill can't be added to this session")
+
+// CheckAddSkills refuses adding to a session that holds have the skills of
+// add it doesn't hold yet, when one is named-only, or when the session is
+// limited to its own skills (onlyOwn). Adding one it holds changes nothing,
+// so it is never refused here.
+func (d Definition) CheckAddSkills(have, add []string, onlyOwn bool) error {
+	for _, s := range add {
+		if slices.Contains(have, s) {
+			continue
+		}
+		if onlyOwn {
+			return fmt.Errorf("%w: the session keeps to its own skills (%s)", ErrSkillsLimited, s)
+		}
+		if slices.ContainsFunc(d.Skills, func(r skill.Ref) bool { return r.NamedOnly && r.String() == s }) {
+			return fmt.Errorf("%w: %s is named only when a session opens", ErrSkillsLimited, s)
+		}
+	}
+	return nil
+}
+
 // SessionSkillText is the bodies of the session's skills (Session.Skills)
 // for the context, after the definition's instructions: in the definition's
 // order, never the order they were picked in, so the prefix is the same for
@@ -823,8 +872,8 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, b.Workspace(tenant, run))
 	}
 	system := d.Instructions
-	if len(d.Skills) > 0 {
-		ps, err := LoadSkills(ctx, b.Skills, tenant, d.Skills)
+	if refs := d.CatalogSkills(); len(refs) > 0 {
+		ps, err := LoadSkills(ctx, b.Skills, tenant, refs)
 		if err != nil {
 			return agent.Agent{}, d, err
 		}

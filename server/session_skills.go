@@ -49,6 +49,10 @@ func (s *Server) addSessionSkills(ctx context.Context, c Caller, r *http.Request
 	if err := d.CheckSessionSkills(body.Add); err != nil {
 		return 0, nil, err
 	}
+	// Never a named-only skill, and none to a session limited to its own (409).
+	if err := d.CheckAddSkills(sess.Skills, body.Add, sess.Only != nil && sess.Only.Skills); err != nil {
+		return 0, nil, err
+	}
 	have, err := s.Sessions.AddSkills(ctx, c.Tenant, sid, body.Add)
 	if err != nil {
 		return 0, nil, err

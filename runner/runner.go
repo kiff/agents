@@ -269,8 +269,9 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		case run.ByTrial:
 			kind = session.KindTrial
 		}
-		// A requester's new session is theirs (#219).
-		sess, err := rec.OpenOwned(ctx, s.Tenant, s.Agent, kind, s.Requester.Key())
+		// A requester's new session is theirs (#219), with its limit, if the
+		// run names one (session.Only), from the start.
+		sess, err := rec.OpenLimited(ctx, s.Tenant, s.Agent, kind, s.Requester.Key(), s.Only)
 		if err != nil {
 			return run.Run{}, err
 		}
@@ -283,6 +284,11 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		// Another agent's session, or another person's, is not found.
 		if sess.Agent != s.Agent || !sess.ContinuedBy(s.Requester.Key()) {
 			return run.Run{}, session.ErrNotFound
+		}
+		// A later run adds no named-only skill, and none at all to a
+		// session limited to its own (session.Only).
+		if err := d.CheckAddSkills(sess.Skills, s.Skills, sess.Only != nil && sess.Only.Skills); err != nil {
+			return run.Run{}, err
 		}
 	}
 	// The session's skills, once it is known to be this agent's and this
@@ -569,6 +575,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		sp.mark("session skills")
 	}
 	a.Reload = x.addedSkills(d, sess.Skills)
+	if err := x.limit(ctx, &a, d, sess); err != nil {
+		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("limiting it to its session: %w", err))
+	}
 	if sess.Kind == session.KindChat {
 		a.System += "\n\n" + NamesNote // the same for each of the agent's chats, so it caches
 	}

@@ -447,6 +447,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusConflict, "attachment_sent", "a file was already sent with another message: attach it again"
 	case errors.Is(err, registry.ErrSkillNotNamed):
 		status, code, msg = http.StatusBadRequest, "skill_not_named", err.Error()
+	case errors.Is(err, registry.ErrSkillsLimited):
+		status, code, msg = http.StatusConflict, "skills_limited", err.Error()
 	case errors.Is(err, attach.ErrInvalid):
 		status, code, msg = http.StatusBadRequest, "invalid", strings.TrimPrefix(err.Error(), attach.ErrInvalid.Error()+": ")
 	}

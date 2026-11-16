@@ -59,7 +59,7 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	opened := s.Session == "" // the contract: the run says whether it opened its session
 	if opened {
 		s.Session = "s-" + run.NewID()
-		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now, Owner: s.Requester.Key()}); err != nil {
+		if err := rr.store.Create(ctx, session.Session{ID: s.Session, Tenant: s.Tenant, Agent: s.Agent, Kind: session.KindChat, Started: now, Updated: now, Owner: s.Requester.Key(), Only: s.Only.Clone()}); err != nil {
 			return run.Run{}, err
 		}
 	} else if sess, _, err := rr.store.Read(ctx, s.Tenant, s.Session); err != nil || sess.Agent != s.Agent || !sess.OwnedBy(s.Requester.Key()) {

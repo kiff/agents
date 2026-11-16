@@ -12,7 +12,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -59,6 +61,59 @@ type Session struct {
 	// context carries their bodies after the agent's instructions, in the
 	// definition's order; a skill is added once.
 	Skills []string `json:"skills,omitempty"`
+	// Only limits the session, from its first run on, and is never widened
+	// (Only). Nil: the agent's tools and skills, as always.
+	Only *Only `json:"only,omitempty"`
+}
+
+// Only is a session's limit, named by the run that opens it and kept with it:
+// a narrower set of the agent's tools and skills for every run in it, such as
+// a chat opened from a device with a narrower job than the agent's own.
+//
+// With Skills, the session's skills are the only ones it reads: read_skill
+// lists and reads those alone, and no skill is added to it after its first
+// run. Tools names the tools its runs are offered, by the name the model
+// sees: any other is left out (read_skill is offered with Skills, and only if
+// the session has skills). The limit is set once, when the session opens, and
+// a later run can't change it.
+type Only struct {
+	Skills bool     `json:"skills,omitempty"`
+	Tools  []string `json:"tools"`
+}
+
+// MaxOnlyTools bounds Only.Tools.
+const MaxOnlyTools = 32
+
+// Check refuses a limit naming no tool, a blank or repeated one, or more than
+// MaxOnlyTools.
+func (o Only) Check() error {
+	if len(o.Tools) == 0 || len(o.Tools) > MaxOnlyTools {
+		return fmt.Errorf("session: only.tools names 1 to %d tools", MaxOnlyTools)
+	}
+	seen := map[string]bool{}
+	for _, n := range o.Tools {
+		if strings.TrimSpace(n) != n || n == "" || seen[n] {
+			return fmt.Errorf("session: only.tools names %q badly or twice", n)
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
+// Offers says whether a run in the session is offered the tool by that name.
+func (o *Only) Offers(name, skillTool string) bool {
+	if o == nil {
+		return true
+	}
+	return slices.Contains(o.Tools, name) || (o.Skills && name == skillTool)
+}
+
+// Clone is a copy of the limit that shares nothing with it.
+func (o *Only) Clone() *Only {
+	if o == nil {
+		return nil
+	}
+	return &Only{Skills: o.Skills, Tools: slices.Clone(o.Tools)}
 }
 
 // AddSkills is have with the skills of add it doesn't hold yet appended, in
