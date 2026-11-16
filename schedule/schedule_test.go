@@ -2060,3 +2060,58 @@ func TestACheckRunThatOutgrewItsContextCountsAsFailing(t *testing.T) {
 		t.Fatalf("one that may have acted: check %+v, %s, failing %+v", c, outcome(at(0)).Outcome, got.Failing)
 	}
 }
+
+// "Unanswered emails" (16 Nov): the app refused the check's read, and the firing kept only "read not
+// made". Now the firing and its line keep how the app answered, its status and code, so the taf can
+// say why it didn't run, and still never the app's words.
+func TestACheckTheAppRefusedKeepsHowItAnswered(t *testing.T) {
+	text := `Gmail refused it (it answered 400): { "error": { "code": 400, "message": "Precondition check failed for ana@example.com.", "errors": [ { "message": "Precondition check failed.", "domain": "global", "reason": "failedPrecondition" } ], "status": "FAILED_PRECONDITION" } }. No claim is made about whether an effect occurred.`
+	if got := schedule.VendorAnswer(text); got != "400 FAILED_PRECONDITION" {
+		t.Fatalf("VendorAnswer = %q", got)
+	}
+	for in, want := range map[string]string{
+		`Stripe refused it (it answered 404): no such charge ch_1`: "404",
+		`{"code": 429}`: "429",
+		`{"status": "Permission denied for ana@example.com"}`: "",
+		`the read failed`: "",
+		// A word in capitals that isn't an error code (an order's status, a name) is never kept.
+		`{"code": 400, "status": "REFUND_REQUESTED"}`:                                    "400",
+		`{"code": 403, "order": {"status": "ANA_LOPEZ"}, "status": "PERMISSION_DENIED"}`: "403 PERMISSION_DENIED",
+		// A code with no HTTP status may be part of an answer that isn't an error: nothing.
+		`{"status": "FAILED_PRECONDITION"}`: "",
+	} {
+		if got := schedule.VendorAnswer(in); got != want {
+			t.Errorf("VendorAnswer(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	f := newFixture()
+	var out bytes.Buffer
+	f.sv.Log = slog.New(slog.NewJSONHandler(&out, nil))
+	s := scheduletest.Schedule("t1", "inbox")
+	s.Cron = "*/15 * * * *"
+	s.AppCheck = &schedule.Check{Tool: "list_threads", Items: "threads", Cursor: "historyId"}
+	if err := f.store.Put(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	refused := &schedule.CheckError{Reason: schedule.ReasonReadNotMade, Vendor: schedule.VendorAnswer(text),
+		Err: errors.New("lambda: the check's read list_threads wasn't made: forwarded, the app answered 400 FAILED_PRECONDITION")}
+	f.sv.Probe = func(context.Context, string, string, schedule.Check) (string, error) { return "", refused }
+	if err := f.sv.Fire(ctx, "t1", "inbox", time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("fire = nil, want the check's error")
+	}
+	var line map[string]any
+	if err := json.Unmarshal(out.Bytes(), &line); err != nil {
+		t.Fatalf("log %q: %v", out.String(), err)
+	}
+	if line["reason"] != string(schedule.ReasonReadNotMade) || line["vendor"] != "400 FAILED_PRECONDITION" || len(line) != 7 {
+		t.Fatalf("line %v", line)
+	}
+	if strings.Contains(out.String(), "example.com") || strings.Contains(out.String(), "Precondition") {
+		t.Fatalf("the line carries the app's words: %s", out.String())
+	}
+	h, err := f.history.Firings(ctx, "t1", "inbox", 1)
+	if err != nil || len(h) != 1 || h[0].Outcome != schedule.FiredCheckFailed || h[0].Reason != string(schedule.ReasonReadNotMade) || h[0].Vendor != "400 FAILED_PRECONDITION" {
+		t.Fatalf("firing kept %+v, %v", h, err)
+	}
+}

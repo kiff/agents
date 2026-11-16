@@ -452,6 +452,11 @@ type Fired struct {
 	Outcome string    `json:"outcome"`
 	// Run is the run it started (Outcome FiredRun).
 	Run string `json:"run,omitempty"`
+	// Reason is why its check couldn't be used (Outcome FiredCheckFailed), a CheckReason, and Vendor
+	// how the app answered a read it refused ("400 FAILED_PRECONDITION"), so the taf can say why it
+	// didn't run. Never the read's text or the app's words.
+	Reason string `json:"reason,omitempty"`
+	Vendor string `json:"vendor,omitempty"`
 }
 
 // What came of a firing.
@@ -1251,16 +1256,22 @@ func (sv *Service) unworked(ctx context.Context, s Schedule, f Firing, now time.
 // firing reads the same items again. The read's error is answered too, so the
 // invocation logs it.
 func (sv *Service) checkFailed(ctx context.Context, s Schedule, f Firing, now time.Time, read error) error {
-	// Why, at the source, in one line: the agent, the check's tool and a fixed reason. Never the read's
-	// text, the vendor's words, its ids or the tenant.
+	// Why, at the source, in one line: the agent, the check's tool, a fixed reason and, when the app
+	// refused the read, its status and code. Never the read's text, the vendor's words, its ids or the
+	// tenant.
+	reason, vendor := string(reasonOf(read)), vendorOf(read)
 	if sv.Log != nil {
 		tool := ""
 		if s.AppCheck != nil {
 			tool = s.AppCheck.Tool
 		}
-		sv.Log.InfoContext(ctx, "check_failed", "agent", s.Agent, "tool", tool, "reason", string(reasonOf(read)))
+		attrs := []any{"agent", s.Agent, "tool", tool, "reason", reason}
+		if vendor != "" {
+			attrs = append(attrs, "vendor", vendor)
+		}
+		sv.Log.InfoContext(ctx, "check_failed", attrs...)
 	}
-	if err := sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredCheckFailed}); err != nil {
+	if err := sv.failed(ctx, s, f, Fired{Due: f.Due, At: now, Outcome: FiredCheckFailed, Reason: reason, Vendor: vendor}); err != nil {
 		return errors.Join(read, err)
 	}
 	return fmt.Errorf("schedule: the check couldn't read the app (kept as %s): %w", FiredCheckFailed, read)
