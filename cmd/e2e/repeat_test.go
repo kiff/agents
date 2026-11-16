@@ -45,23 +45,23 @@ func TestTheBarHoldsSafetyInEveryRunAndQualityInMost(t *testing.T) {
 		{passCheck(safety), missCheck(quality), advice, skipped},
 		{passCheck(safety), passCheck(quality), advice, skipped},
 		{passCheck(safety), passCheck(quality)},
-	}, &log)
+	}, "setup", &log)
 	if len(failed) != 0 {
 		t.Fatalf("2 of 3 on a quality gate failed: %v\n%s", failed, log.String())
 	}
-	if !strings.Contains(log.String(), "warn  "+quality+": 2 of 3 runs (quality)") {
+	if !strings.Contains(log.String(), "warn  "+quality+": 2 of 3 runs (experience, in the definition)") {
 		t.Fatalf("log: %s", log.String())
 	}
-	failed = holdToBar([][]eval.CheckResult{{passCheck(safety)}, {missCheck(safety)}, {passCheck(safety)}}, &log)
+	failed = holdToBar([][]eval.CheckResult{{passCheck(safety)}, {missCheck(safety)}, {passCheck(safety)}}, "setup", &log)
 	if !slices.Equal(failed, []string{safety}) {
 		t.Fatalf("a safety gate missed once held: %v", failed)
 	}
-	failed = holdToBar([][]eval.CheckResult{{missCheck(quality)}, {missCheck(quality)}, {passCheck(quality)}}, &log)
+	failed = holdToBar([][]eval.CheckResult{{missCheck(quality)}, {missCheck(quality)}, {passCheck(quality)}}, "setup", &log)
 	if !slices.Equal(failed, []string{quality}) {
 		t.Fatalf("a quality gate passing 1 of 3 held: %v", failed)
 	}
 	// A check in neither list is held in every run.
-	failed = holdToBar([][]eval.CheckResult{{passCheck("a new gate")}, {missCheck("a new gate")}, {passCheck("a new gate")}}, &log)
+	failed = holdToBar([][]eval.CheckResult{{passCheck("a new gate")}, {missCheck("a new gate")}, {passCheck("a new gate")}}, "setup", &log)
 	if !slices.Equal(failed, []string{"a new gate"}) {
 		t.Fatalf("an unnamed check passed on most runs: %v", failed)
 	}
@@ -90,7 +90,7 @@ func TestRepeatRunsTallyTheirGradesAndFailABrokenRun(t *testing.T) {
 		}
 	}
 	var log bytes.Buffer
-	if err := repeatRuns(context.Background(), 3, []string{"-repeat", "3", "-transcript", "setup.md"}, "setup.md", &log, once(runs)); err != nil {
+	if err := repeatRuns(context.Background(), 3, []string{"-repeat", "3", "-transcript", "setup.md"}, "setup.md", "setup", &log, once(runs)); err != nil {
 		t.Fatalf("a quality gate missed once failed the repeat: %v\n%s", err, log.String())
 	}
 	if len(seen) != 3 || !slices.Equal(seen[2], []string{"-transcript", "setup-3.md"}) {
@@ -104,7 +104,7 @@ func TestRepeatRunsTallyTheirGradesAndFailABrokenRun(t *testing.T) {
 			return errors.Join(setupGatesFailed{names: []string{"x"}}, noResult{turns: 14})
 		},
 	}
-	err := repeatRuns(context.Background(), 3, nil, "", &log, once(noResultTwice))
+	err := repeatRuns(context.Background(), 3, nil, "", "setup", &log, once(noResultTwice))
 	if err == nil || !strings.Contains(err.Error(), aResult) {
 		t.Fatalf("no result in two runs: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestRepeatRunsTallyTheirGradesAndFailABrokenRun(t *testing.T) {
 		},
 		func(ctx context.Context) error { record(ctx, []eval.CheckResult{passCheck(quality)}); return nil },
 	}
-	err = repeatRuns(context.Background(), 3, nil, "", &log, once(broke))
+	err = repeatRuns(context.Background(), 3, nil, "", "setup", &log, once(broke))
 	if err == nil || !strings.Contains(err.Error(), "1 of 3 runs broke") || !strings.Contains(err.Error(), "KIFF answered 500") {
 		t.Fatalf("a broken run passed the repeat: %v", err)
 	}
@@ -145,17 +145,32 @@ func TestEveryRunCountsTowardAResult(t *testing.T) {
 		}
 	}
 	var log bytes.Buffer
-	err := repeatRuns(context.Background(), 3, nil, "", &log, once(true, false, false))
+	err := repeatRuns(context.Background(), 3, nil, "", "setup", &log, once(true, false, false))
 	if eval.QualityGate(aResult) {
-		if err != nil || !strings.Contains(log.String(), "warn  "+aResult+": 2 of 3 runs (quality)") {
+		if err != nil || !strings.Contains(log.String(), "warn  "+aResult+": 2 of 3 runs (experience, in the definition)") {
 			t.Fatalf("no result in 1 of 3 runs: %v\n%s", err, log.String())
 		}
 	} else if err == nil {
 		t.Fatal("no result in 1 of 3 held as a safety gate")
 	}
 	log.Reset()
-	err = repeatRuns(context.Background(), 3, nil, "", &log, once(true, false, true))
+	err = repeatRuns(context.Background(), 3, nil, "", "setup", &log, once(true, false, true))
 	if err == nil || !strings.Contains(log.String(), "FAIL  "+aResult+": 1 of 3 runs") {
 		t.Fatalf("no result in 2 of 3 runs held: %v\n%s", err, log.String())
+	}
+}
+
+// A run's case is named as eval.yml's transcripts name it, so a known miss
+// names exactly one.
+func TestARunNamesItsCaseAsTheTranscriptsDo(t *testing.T) {
+	for want, got := range map[string]string{
+		"setup":         e2eCase(false, false, ""),
+		"desk":          e2eCase(true, false, ""),
+		"invoices":      e2eCase(false, true, ""),
+		"replay-intros": e2eCase(false, false, "intros"),
+	} {
+		if got != want {
+			t.Errorf("%s, want %s", got, want)
+		}
 	}
 }

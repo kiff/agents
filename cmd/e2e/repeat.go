@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kiff/agents/eval"
 )
@@ -88,7 +90,7 @@ func withoutRepeat(args []string, transcript string) []string {
 // bar. A run that failed for anything but its graded checks or reaching no
 // result fails the repeat: the bar decides graded checks, never a run that
 // broke.
-func repeatRuns(ctx context.Context, n int, args []string, transcript string, log io.Writer,
+func repeatRuns(ctx context.Context, n int, args []string, transcript, caseName string, log io.Writer,
 	once func(context.Context, []string) error) error {
 	t := &tally{}
 	ctx = context.WithValue(ctx, tallyKey{}, t)
@@ -112,7 +114,7 @@ func repeatRuns(ctx context.Context, n int, args []string, transcript string, lo
 			broke = append(broke, fmt.Sprintf("run %d: %v", i, rest))
 		}
 	}
-	failed := holdToBar(t.runs, log)
+	failed := holdToBar(t.runs, caseName, log)
 	switch {
 	case len(broke) > 0:
 		return fmt.Errorf("%d of %d runs broke: %s", len(broke), n, strings.Join(broke, "; "))
@@ -147,9 +149,17 @@ func apartFromGrades(err error) error {
 
 // holdToBar writes each graded check's count over the runs and returns the
 // ones below the bar: a safety gate that missed in any run that graded it, a
-// quality gate that missed in most. Skipped and advisory checks aren't held.
-func holdToBar(runs [][]eval.CheckResult, log io.Writer) []string {
-	type count struct{ passed, graded int }
+// quality gate that missed in most, unless that one is a known miss today in
+// caseName (eval/known.json). Skipped and advisory checks aren't held.
+func holdToBar(runs [][]eval.CheckResult, caseName string, log io.Writer) []string {
+	known, err := eval.LoadKnown()
+	if err != nil {
+		fmt.Fprintf(log, "  no known misses read, so none is known: %v\n", err)
+	}
+	type count struct {
+		passed, graded int
+		layers         []string // where each miss sits (eval.Layer), once each
+	}
 	counts := map[string]*count{}
 	var order []string
 	for _, checks := range runs {
@@ -166,6 +176,8 @@ func holdToBar(runs [][]eval.CheckResult, log io.Writer) []string {
 			k.graded++
 			if c.Pass {
 				k.passed++
+			} else if l := eval.Layer(c.Why); !slices.Contains(k.layers, l) {
+				k.layers = append(k.layers, l)
 			}
 		}
 	}
@@ -177,16 +189,40 @@ func holdToBar(runs [][]eval.CheckResult, log io.Writer) []string {
 		if quality {
 			holds = eval.HoldsOnMost(k.passed, k.graded)
 		}
-		mark, kind := "pass", "safety"
+		mark, kind := "pass", "blocking"
 		if quality {
-			kind = "quality"
+			kind = "experience"
+		}
+		note := ""
+		if !holds && quality {
+			if km, ok := eval.KnownMiss(known, name, caseName, time.Now()); ok {
+				holds, note = true, fmt.Sprintf(", known until %s, fix %s", km.Until, km.Fix)
+				mark = "known"
+			}
 		}
 		if !holds {
 			mark, failed = "FAIL", append(failed, name)
-		} else if k.passed < k.graded {
+		} else if k.passed < k.graded && note == "" {
 			mark = "warn"
 		}
-		fmt.Fprintf(log, "  %s  %s: %d of %d runs (%s)\n", mark, name, k.passed, k.graded, kind)
+		if len(k.layers) > 0 {
+			note += ", in the " + strings.Join(k.layers, " and the ")
+		}
+		fmt.Fprintf(log, "  %s  %s: %d of %d runs (%s%s)\n", mark, name, k.passed, k.graded, kind, note)
 	}
 	return failed
+}
+
+// e2eCase is the case a run of cmd/e2e is, as eval.yml's transcripts name it
+// and a known miss (eval/known.json) names its case.
+func e2eCase(desk, invoices bool, replay string) string {
+	switch {
+	case replay != "":
+		return "replay-" + replay
+	case desk:
+		return "desk"
+	case invoices:
+		return "invoices"
+	}
+	return "setup"
 }
