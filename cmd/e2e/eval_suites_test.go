@@ -10,11 +10,12 @@ import (
 )
 
 // The Eval runs in suites (eval/suites.json): a dispatch names some, and each
-// suite's steps run only when it's asked for, or all are. A run of some
-// suites never counts for kiff/tafs' Upgrade gate, which takes the latest
-// completed run on main, when it succeeded, as a full pass: it says so in its
-// name and ends red whatever its checks said.
-func TestTheEvalRunsInSuitesAndOnlyAllCountsForTheUpgrade(t *testing.T) {
+// suite's steps run only when it's asked for, or all are. kiff/tafs' Upgrade
+// gate takes the latest completed run on main, when it succeeded, as a full
+// pass, so a run of some suites says so in its name and counts only when
+// every other suite's pass carries (infra/eval-carry.sh): otherwise it ends
+// red whatever its checks said.
+func TestTheEvalRunsInSuitesAndOnlyAFullVerdictCountsForTheUpgrade(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "eval.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -35,8 +36,12 @@ func TestTheEvalRunsInSuitesAndOnlyAllCountsForTheUpgrade(t *testing.T) {
 	if !strings.Contains(s, "      suites:\n") || !strings.Contains(s, `default: "all"`) {
 		t.Fatal("eval.yml has no suites input defaulting to all")
 	}
-	if !strings.Contains(s, "run-name: ${{ inputs.suites != '' && inputs.suites != 'all' && format('Eval, suites {0}', inputs.suites) ||") {
-		t.Fatal("a run of some suites doesn't say so in its name")
+	// Its name says so, as it does an override or another repeat, which
+	// eval-carry.sh leaves out of the earlier runs.
+	for _, name := range []string{"format(', suites {0}', inputs.suites)", "format(', override {0}'", "format(', repeat {0}', inputs.repeat)"} {
+		if !strings.Contains(strings.SplitN(s, "\n", 7)[5], name) {
+			t.Errorf("the run-name doesn't hold %s", name)
+		}
 	}
 	if !strings.Contains(steps["The suites to run"], "go run ./cmd/evalsuites -check -asked") {
 		t.Fatal("the asked suites aren't checked against eval/suites.json")
@@ -66,12 +71,30 @@ func TestTheEvalRunsInSuitesAndOnlyAllCountsForTheUpgrade(t *testing.T) {
 			t.Errorf("%q runs a case but is in no suite", name)
 		}
 	}
-	// A run of some suites ends red, after every other step.
+	// A run of some suites is decided last, after every other step: red
+	// below the bar's repeat or when another suite has no pass to carry.
 	last := order[len(order)-1]
-	if last != "A run of some suites doesn't count for the Upgrade gate" {
+	if last != "A run of some suites counts only on earlier passes" {
 		t.Fatalf("the last step is %q", last)
 	}
-	if body := steps[last]; !strings.Contains(body, "if: always() && steps.suites.outputs.list != '' && steps.suites.outputs.list != ',all,'") || !strings.Contains(body, "exit 1") {
-		t.Fatalf("a run of some suites doesn't end red:\n%s", body)
+	body := steps[last]
+	for _, want := range []string{
+		"if: always() && steps.suites.outputs.list != '' && steps.suites.outputs.list != ',all,'",
+		`if [ "$REPEAT" != 3 ]; then`,
+		`if ! infra/eval-carry.sh "$LIST"; then`,
+		"exit 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the last step doesn't hold %q:\n%s", want, body)
+		}
+	}
+	carry, err := os.ReadFile(filepath.Join("..", "..", "infra", "eval-carry.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`contains(\", override \") or contains(\", repeat \")`, `-carry -asked "$list"`, "set -euo pipefail"} {
+		if !strings.Contains(string(carry), want) {
+			t.Errorf("eval-carry.sh doesn't hold %s", want)
+		}
 	}
 }
