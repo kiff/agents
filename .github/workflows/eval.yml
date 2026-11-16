@@ -312,13 +312,12 @@ jobs:
         # (cmd/e2e -plan, planwords.go; kiff/tafs#1229): the owner asks for a
         # job that only reads their sheet, and the run stops at the first
         # approval or sign-in card, never answered, with no taf after; the
-        # grant waiting for it is withdrawn. Google Sheets' sign-in can't be
-        # narrowed to reading rows, so planque's grant is wide. Nothing Coach
-        # writes (step titles, cards, messages) calls the connection or its
-        # sign-in read-only or says it changes nothing, by the words in
-        # English and French and by the judges in any language; Coach says the
-        # sign-in asks for more access than the taf uses before the card, and
-        # never before planque's grant said so.
+        # grant waiting for it is withdrawn. The checks are the same for any
+        # app: nothing Coach writes (step titles, cards, messages) calls the
+        # connection or its sign-in read-only or says it changes nothing, by
+        # the words in English and French and by the judges in any language,
+        # and Coach never calls it wider than planque's grant says. Telling the
+        # owner a wide sign-in is wide is the card's, from the grant.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         timeout-minutes: 10
         env:
@@ -339,11 +338,10 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan sheets -owner fr -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-sheets-fr.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
-      - name: Plan words, Notion in English
-        # The other half: planque narrows Notion's sign-in, so Coach never
-        # says it asks for more. A rule that always warns fails here. If
-        # planque marks it wide one day, the step says so and measures
-        # nothing of that half.
+      - name: Plan words, Gmail in English
+        # Today's sign-in planque narrows (Gmail's, for reading mail): a rule
+        # that always says "wider" fails here. Which app is wide or narrowed is
+        # planque's to say, and the report shows it; the checks don't change.
         if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         timeout-minutes: 10
         env:
@@ -352,7 +350,7 @@ jobs:
           E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
-        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan notion -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-notion.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+        run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan gmail -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-gmail.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: The sweep, the test account's leftover tafs
         # The teardown, after every run above whatever they did (sweep.go):
         # archive the tafs this job's runs made (E2E_MADE), so a run cut off
