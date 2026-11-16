@@ -25,8 +25,11 @@ import (
 //
 //	sheets    Google Sheets: its sign-in can't be narrowed to reading rows,
 //	          so planque's grant is wide
-//	typeform  Typeform: planque narrows its sign-in, so Coach never says
-//	          it's wider
+//	notion    Notion: planque narrows its sign-in, so Coach never says
+//	          it's wider. Checked on planque's grants: Notion's of 13 Nov
+//	          were all usual_access false. Typeform's of 16 Nov was true,
+//	          and Gmail's goes both ways with the day's set-up allowance, so
+//	          neither is a stable negative
 //
 // The owner asks for a job that only reads. The run stops at the first
 // approval or sign-in card: nobody signs in, nothing is approved, no taf is
@@ -59,17 +62,17 @@ var plans = map[string]plan{
 			yes: "Oui, vas-y.",
 		},
 	}},
-	"typeform": {app: "Typeform", wide: false, words: map[string]planWords{
+	"notion": {app: "Notion", wide: false, words: map[string]planWords{
 		"en": {
-			ask: "Tell me about each new answer to my Typeform contact form, as it comes in: who sent it and what they asked. " +
-				"Only tell me: nothing else. Call the taf New form answers.",
-			facts: "The form is called Contact us. Yes, you can connect my Typeform.",
+			ask: "Each Friday, read my Notion page Weekly notes and tell me in three lines what was added that week. " +
+				"Only tell me: nothing else. Call the taf Weekly notes digest.",
+			facts: "The page is called Weekly notes. Yes, you can connect my Notion.",
 			yes:   "Yes, go ahead.",
 		},
 		"fr": {
-			ask: "Préviens-moi de chaque nouvelle réponse à mon formulaire de contact Typeform, dès qu'elle arrive : qui l'a " +
-				"envoyée et ce qu'il demande. Dis-le-moi seulement : rien d'autre. Appelle le taf Nouvelles réponses.",
-			facts: "Le formulaire s'appelle Contactez-nous. Oui, tu peux connecter mon Typeform.",
+			ask: "Chaque vendredi, lis ma page Notion Notes de la semaine et dis-moi en trois lignes ce qui a été ajouté " +
+				"cette semaine. Dis-le-moi seulement : rien d'autre. Appelle le taf Résumé des notes.",
+			facts: "La page s'appelle Notes de la semaine. Oui, tu peux connecter mon Notion.",
 			yes:   "Oui, vas-y.",
 		},
 	}},
@@ -460,7 +463,7 @@ func planFlag(name string, cfg config, graded bool) (*plan, error) {
 	p, ok := plans[name]
 	switch {
 	case !ok:
-		return nil, fmt.Errorf("-plan %q: sheets or typeform", name)
+		return nil, fmt.Errorf("-plan %q: sheets or notion", name)
 	case cfg.desk || cfg.invoices || cfg.people || cfg.improve || cfg.replay != nil || cfg.recipe != nil:
 		return nil, errors.New("-plan is a case of its own: no -desk, -invoices, -replay, -recipe, -people or -improve")
 	case cfg.stripeKey != "":

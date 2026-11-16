@@ -185,15 +185,15 @@ func TestWiderBeforePlanqueAnsweredFails(t *testing.T) {
 	wantPlan(t, got, planWiderOnlyAfter, false, false)
 }
 
-// Typeform, narrowed: wider is never said, before or after planque answered.
+// Notion, narrowed: wider is never said, before or after planque answered.
 func TestWiderForANarrowedSignInFails(t *testing.T) {
-	p := plans["typeform"]
-	ok := graded(t, p, conversation(steps("Connect Typeform"), asked("grt_1", false), wrote("Approve it to go on."), approvalFor("grt_1")), false)
+	p := plans["notion"]
+	ok := graded(t, p, conversation(steps("Connect Notion"), asked("grt_1", false), wrote("Approve it to go on."), approvalFor("grt_1")), false)
 	wantPlan(t, ok, planSaysWider, false, true)
 	wantPlan(t, ok, planWiderOnlyAfter, true, false)
 
-	got := graded(t, p, conversation(steps("Connect Typeform"), asked("grt_1", false),
-		wrote("Typeform's sign-in asks for more access than the taf uses."), approvalFor("grt_1")), false)
+	got := graded(t, p, conversation(steps("Connect Notion"), asked("grt_1", false),
+		wrote("Notion's sign-in asks for more access than the taf uses."), approvalFor("grt_1")), false)
 	wantPlan(t, got, planWiderOnlyAfter, false, false)
 	if !strings.Contains(got[planWiderOnlyAfter].Why, "for a sign-in planque narrowed") {
 		t.Errorf("why: %s", got[planWiderOnlyAfter].Why)
@@ -257,8 +257,8 @@ func TestThePlanFlag(t *testing.T) {
 		{"nope", config{owner: "en"}, true},
 		{"sheets", config{owner: "es"}, true},
 		{"sheets", config{owner: "en"}, false},
-		{"typeform", config{owner: "en", desk: true}, true},
-		{"typeform", config{owner: "en", stripeKey: "sk"}, true},
+		{"notion", config{owner: "en", desk: true}, true},
+		{"notion", config{owner: "en", stripeKey: "sk"}, true},
 	} {
 		if _, err := planFlag(c.name, c.cfg, c.grad); err == nil {
 			t.Errorf("%s %+v graded %t: no error", c.name, c.cfg, c.grad)

@@ -191,7 +191,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	replayName := fs.String("replay", "", "a setup that failed an owner, run again on the fake vendor with their words (replay.go): intros. "+
 		"Needs E2E_DESK_KEY; graded with the bar for connecting an app, through to the result, with no taf after")
 	planName := fs.String("plan", "", "what Coach says about an app before the owner signs in to it (planwords.go): sheets, whose "+
-		"sign-in planque can't narrow, or typeform, whose it can. The owner asks for a job that only reads, in -owner en or fr; the run "+
+		"sign-in planque can't narrow, or notion, whose it can. The owner asks for a job that only reads, in -owner en or fr; the run "+
 		"stops at the first approval or sign-in card, never answered, with no taf after. Needs -grade")
 	recipeFile := fs.String("recipe", "", "a recipe from kiff/tafs (recipes/<id>.md), with -desk: the owner says its words alone, unchanged, "+
 		"then only where the desk is and that Setup may connect; the run goes on to the taf, whose Card -grade checks against the recipe's card")
