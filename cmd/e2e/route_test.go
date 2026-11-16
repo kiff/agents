@@ -200,3 +200,31 @@ func TestTheRouteFlag(t *testing.T) {
 		t.Fatalf("%d tafs", len(routeTafs))
 	}
 }
+
+// tafs_state answers as tafs cloud does in a watch conversation: tafs and
+// reading only, each taf its id, name and can, and nothing else.
+func TestTheRouteTafsStateHasTafsCloudsShape(t *testing.T) {
+	res, err := routeState{}.Call(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(res.Text), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["reading"] != routeReading {
+		t.Fatalf("top level: %v", got)
+	}
+	tafs, _ := got["tafs"].([]any)
+	if len(tafs) != 10 {
+		t.Fatalf("%d tafs", len(tafs))
+	}
+	for _, x := range tafs {
+		m := x.(map[string]any)
+		can, _ := m["can"].(map[string]any)
+		tools, _ := can["tools"].([]any)
+		if len(m) != 3 || m["id"] == "" || m["name"] == "" || len(can) != 2 || can["does"] == "" || len(tools) == 0 {
+			t.Fatalf("a taf: %v", m)
+		}
+	}
+}
