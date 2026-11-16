@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -252,5 +253,37 @@ func TestASweepStopsSendingReportsKIFFDoesntTake(t *testing.T) {
 	k.fail, sends = false, 0
 	if n, err := sw.Sweep(ctx, later.Add(run.UsageWaits[1]+time.Second), 10); err != nil || sends != 3 || n != 3 {
 		t.Fatalf("with KIFF back: %d handled, %d sent, %v; want 3", n, sends, err)
+	}
+}
+
+// unreadable is a Runs whose reads fail.
+type unreadable struct{ run.Runs }
+
+func (unreadable) Get(context.Context, string, string) (run.Run, error) {
+	return run.Run{}, errors.New("store: throttled")
+}
+
+// A report not taken whose run can't be read again is still kept, from the
+// run as it was put, and the failed read is logged, as a failed note is.
+func TestAReportKeptWhenItsRunCantBeReadAgainIsLogged(t *testing.T) {
+	ctx := context.Background()
+	k := &reports{fail: true}
+	now := time.Now().UTC().Truncate(time.Second)
+	store := memory.NewRuns()
+	var logged []string
+	runs := run.Reporting{Runs: unreadable{store}, Report: k.send, Now: func() time.Time { return now },
+		Log: func(msg string, _ error) { logged = append(logged, msg) }}
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "go", now)
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r = moveTo(t, runs, r, now, run.Running, 0)
+	r = moveTo(t, runs, r, now, run.Completed, 9_000)
+	if got, _ := store.Get(ctx, "t1", r.ID); got.UsageTries != 1 || got.UsageRetry.IsZero() {
+		t.Fatalf("kept: tries %d, retry %v", got.UsageTries, got.UsageRetry)
+	}
+	if want := []string{"run: a usage report was not sent; it's kept and sent again",
+		"run: a run was not read again to keep its usage report; it's kept as it was put"}; !slices.Equal(logged, want) {
+		t.Fatalf("logged %q, want %q", logged, want)
 	}
 }

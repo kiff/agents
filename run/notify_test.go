@@ -52,13 +52,21 @@ func TestARunIsAnnouncedAtEachPauseAndAtItsEnd(t *testing.T) {
 		}
 	}
 	for _, s := range []run.Status{run.Running, run.Running, run.Paused, run.Paused, run.Running, run.Completed} {
-		var err error
-		if r, err = run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = s; return nil }); err != nil {
+		// A noted move is followed by its note's own write (owed, then
+		// taken): the run is read again before it's changed.
+		stored, err := runs.Get(ctx, "t1", r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = run.Change(ctx, runs, stored, now, func(x *run.Run) error { x.Status = s; return nil }); err != nil {
 			t.Fatal(err)
 		}
 		if quiet, err = run.Change(ctx, runs, quiet, now, func(x *run.Run) error { x.Status = s; return nil }); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if got, err := runs.Get(ctx, "t1", r.ID); err != nil || !got.Due().IsZero() || got.NoteTries != 0 {
+		t.Fatalf("still owes a note once each was taken: due %v, tries %d (%v)", got.Due(), got.NoteTries, err)
 	}
 	want := []run.Note{
 		{Run: r.ID, Agent: "refunds", Status: run.Paused, Ref: "ref-0123456789abcdef"},
@@ -143,6 +151,9 @@ func TestAPausedRunsNoteNamesTheCardsItWaitsOn(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err = runs.Get(ctx, "t1", r.ID); err != nil { // the pause's note was taken since
 		t.Fatal(err)
 	}
 	if _, err := run.Change(ctx, runs, r, now, func(x *run.Run) error { x.Status = run.Cancelled; return nil }); err != nil {

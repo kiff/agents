@@ -82,15 +82,20 @@ func waitingCards(r Run) []NoteCard {
 	return out
 }
 
-// NotifyWait bounds one note: a note that can't be sent in it is dropped, and
-// the caller reads the run as it would without one.
+// NotifyWait bounds one send of a note: one that can't be sent in it is kept
+// and sent again (NoteWaits).
 var NotifyWait = 3 * time.Second
 
 // Notifying is runs, announcing each run that has a Notify once per pause and
 // once at its end: on the Put that moves it to PAUSED or a final status, from
-// whichever path (the run itself, a cancel, the sweep). A note that fails
-// never fails the Put: it's kept on the run (NoteTries, NoteRetry), and the
-// sweep sends it again (Again) after each of NoteWaits, until Notify takes it.
+// whichever path (the run itself, a cancel, the sweep). The note is owed in
+// that same write, before it's sent (NoteRetry, NoteGrace ahead), so an
+// invocation that stops once the move is stored never loses it: the sweep
+// sends it (Again). Taken, it's no longer owed. A note that fails never fails
+// the Put: it's kept on the run (NoteTries, NoteRetry), and the sweep sends
+// it again after each of NoteWaits, until Notify takes it. A note can so
+// reach Notify more than once, the same each time (its run, ref and status):
+// the caller reads the run back, and acts on what it says once.
 type Notifying struct {
 	Runs
 	// Client sends the notes; nil is one that follows no redirect, so a note
@@ -107,18 +112,32 @@ type Notifying struct {
 // the caller reads the run as it would without one.
 var NoteWaits = [...]time.Duration{5 * time.Minute, 20 * time.Minute, time.Hour}
 
-// Put is Runs.Put, then the note when next is a new pause or the end.
+// NoteGrace is how long a note's first send has before the sweep takes it
+// as lost: its invocation stopped once the move was stored, before it sent
+// the note or stored what came of it. A send takes NotifyWait at most.
+const NoteGrace = time.Minute
+
+// Put is Runs.Put, then the note when next is a new pause or the end. The
+// note is owed in the same write as the move, and no longer once taken: a
+// second write, so a caller that changes the run after such a move reads it
+// again first, as after any write that conflicts.
 func (n Notifying) Put(ctx context.Context, prev, next Run) error {
+	if next.Notify.URL == "" || next.Status == prev.Status || !noted(next.Status) {
+		return n.Runs.Put(ctx, prev, next)
+	}
+	next.NoteTries, next.NoteRetry = 0, n.clock().UTC().Add(NoteGrace)
 	if err := n.Runs.Put(ctx, prev, next); err != nil {
 		return err
 	}
-	if next.Notify.URL == "" || next.Status == prev.Status || !noted(next.Status) {
-		return nil
-	}
 	ctx = context.WithoutCancel(ctx)
+	tries := 0
 	if err := n.send(ctx, next); err != nil {
 		n.log("run: a note was not sent; it's kept and sent again", err)
-		n.keep(ctx, next, 1)
+		tries = 1
+	}
+	if err := n.keep(ctx, next, tries); err != nil {
+		// Still owed from the move: the sweep sends it after NoteGrace.
+		n.log("run: what came of a note was not stored; the sweep sends it", err)
 	}
 	return nil
 }
@@ -145,28 +164,41 @@ func (n Notifying) Again(ctx context.Context, r Run) error {
 func noted(s Status) bool { return s == Paused || s.Final() }
 
 // keep stores r's note as owed for its tries-th time (0: not owed), as r was
-// read. A run that moved on since is left as it is: its own Put noted it.
+// read. A run changed since (an answer recorded on it, its usage report
+// kept) is read again and kept as it is now, while it still owes the same
+// note: the same status, owed at the same time. A run that moved on since is
+// left as it is: its own Put noted it.
 func (n Notifying) keep(ctx context.Context, r Run, tries int) error {
-	now := time.Now
-	if n.Now != nil {
-		now = n.Now
+	status, owed := r.Status, r.NoteRetry
+	for range keepTries {
+		next := r.clone()
+		next.NoteTries, next.NoteRetry = tries, time.Time{}
+		if tries > 0 {
+			next.NoteRetry = n.clock().UTC().Add(NoteWaits[tries-1])
+		}
+		if next.NoteTries == r.NoteTries && next.NoteRetry.Equal(r.NoteRetry) {
+			return nil
+		}
+		next.Version, next.Updated = r.Version+1, n.clock().UTC()
+		err := n.Runs.Put(ctx, r, next)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			return nil
+		case !errors.Is(err, ErrConflict):
+			return err
+		}
+		fresh, err := n.Runs.Get(ctx, r.Tenant, r.ID)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			return nil
+		case err != nil:
+			return err
+		case fresh.Status != status || !fresh.NoteRetry.Equal(owed):
+			return nil // moved on, or its note settled meanwhile
+		}
+		r = fresh
 	}
-	next := r.clone()
-	next.NoteTries, next.NoteRetry = tries, time.Time{}
-	if tries > 0 {
-		next.NoteRetry = now().UTC().Add(NoteWaits[tries-1])
-	} else {
-		next.NoteTries = 0
-	}
-	if next.NoteTries == r.NoteTries && next.NoteRetry.Equal(r.NoteRetry) {
-		return nil
-	}
-	next.Version, next.Updated = r.Version+1, now().UTC()
-	err := n.Runs.Put(ctx, r, next)
-	if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	return err
+	return nil
 }
 
 func (n Notifying) log(msg string, err error) {
