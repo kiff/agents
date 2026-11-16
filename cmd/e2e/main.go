@@ -196,6 +196,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.StringVar(&cfg.made, "made", env("E2E_MADE"), "a file each taf this run makes is added to (default $E2E_MADE), for -sweep after it; empty: none")
 	disconnect := fs.String("disconnect", "", "only this: disconnect the test account's one grant whose id starts with this (grt_ and at least 4 more), as the owner's phone "+
 		"(disconnect.go), a one-off for a grant an earlier run left. Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
+	archive := fs.String("archive", "", "only this: archive the test account's one taf whose id starts with this (agt_ and at least 4 more), as the owner's phone "+
+		"(archive.go), a one-off for a taf a run made but never recorded for the sweep. Never Setup's agent. Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	sweepMode := fs.Bool("sweep", false, "only the teardown: archive the tafs -made names that are still there, as the owner's phone "+
 		"(sweep.go). Needs E2E_KIFF_SESSION and E2E_PHONE_KEY")
 	fs.StringVar(&cfg.signInFile, "stripe-signin", "/tmp/e2e-signin", "with E2E_STRIPE_KEY: the file a person writes the tafs:// link to after signing in at Stripe")
@@ -284,6 +286,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	if *sweepMode {
 		return runSweep(ctx, kiff.APIURL, cfg, stdout)
+	}
+	if *archive != "" {
+		return runArchive(ctx, kiff.APIURL, cfg, *archive, stdout)
 	}
 	if *disconnect != "" {
 		return runDisconnect(ctx, kiff.APIURL, cmp.Or(env("E2E_PLANQUE"), "https://planque.kiff.dev"), cfg, *disconnect, stdout)

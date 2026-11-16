@@ -1,0 +1,41 @@
+name: E2E archive
+# A one-off beside the sweep: archive one taf of the test account that a run
+# made but never recorded for the sweep (cmd/e2e -archive, archive.go), such
+# as a run cut off between making the taf and recording it. It runs as the
+# owner's phone, with the call KIFF takes from a phone's session, and reads
+# the account's access back: done only when the taf has left it. Setup's
+# agent is never archived here.
+#
+# By hand only. The log is public, inputs included, so the input is the
+# taf's first characters (agt_ and at least 4 more), never the whole id:
+# the one taf of the test account they start is the one archived.
+on:
+  workflow_dispatch:
+    inputs:
+      taf:
+        description: "8 characters of the taf, e.g. agt_qwBr. NEVER the whole id: this log is public, inputs included"
+        type: string
+        required: true
+permissions:
+  contents: read
+# The test account's group: it never runs beside an Eval or E2E run.
+concurrency:
+  group: test-account
+  cancel-in-progress: false
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Archive the taf, as the owner's phone
+        env:
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+          TAF: ${{ inputs.taf }}
+        run: |
+          case "$TAF" in agt_*) ;; *) echo "not a taf id"; exit 1 ;; esac
+          go run ./cmd/e2e -archive "$TAF"
