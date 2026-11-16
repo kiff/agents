@@ -51,8 +51,14 @@ func (rp Reporting) Put(ctx context.Context, prev, next Run) error {
 		r := next
 		if stored, err := rp.Runs.Get(ctx, next.Tenant, next.ID); err == nil {
 			r = stored
+		} else {
+			// Kept from next: if the run changed under it, the write conflicts and
+			// keep reads it again; if it can't, the report isn't kept.
+			rp.log("run: a run was not read again to keep its usage report; it's kept as it was put", err)
 		}
-		_ = rp.keep(ctx, r, 1)
+		if err := rp.keep(ctx, r, 1); err != nil {
+			rp.log("run: a usage report was not kept; it isn't sent again", err)
+		}
 	}
 	return nil
 }
