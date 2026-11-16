@@ -420,6 +420,10 @@ type test struct {
 	// draftRefusals are tafs cloud's reason codes for the drafts its check
 	// refused this run (checkRoute), in order: each was handed back to Coach.
 	draftRefusals []string
+	// splitUnchecked counts the draftless approvals tafs cloud's check didn't
+	// take yet (checkSplit): above 0, "one approval for the key and the Card"
+	// wasn't measured against tafs cloud's guard on those cards.
+	splitUnchecked int
 	// unconfirmedResults counts the results answered back to Coach over a
 	// draft this run never confirmed, as tafs cloud answers them.
 	unconfirmedResults int
@@ -561,6 +565,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	// a draft not confirmed, said whatever came of the chat: one that stopped
 	// early counted none (Eval 13's Refunds: one refusal, and no line).
 	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
+	fmt.Fprintf(t.cfg.log, "draftless approvals tafs cloud's check didn't take: %d\n", t.splitUnchecked)
 	fmt.Fprintln(t.cfg.log, unconfirmedLine(t.unconfirmedResults))
 	if err != nil {
 		return err
@@ -1361,6 +1366,21 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 				return false, checked.Answer, nil
 			}
 			read = &checked
+		}
+	}
+	// An approval with no draft is asked about too, as the app reads the chat:
+	// after other_app_first, the waiting app's approval shown without the
+	// waiting Card draft is answered to Coach before it's drawn, so its key is
+	// never approved apart from the Card (Eval 20b, intros run 1; checkSplit).
+	if c.Draft == "" && g.Status != "connected" && g.Status != "listed" {
+		split, err := t.checkSplit(ctx, c.Grant)
+		if err != nil {
+			return false, "", err
+		}
+		if split != "" {
+			t.draftRefusals = append(t.draftRefusals, "split_approval")
+			t.logf("approval with no draft refused by tafs cloud's check as the chat was read (%s, split_approval): Coach hears its answer", checkRoute)
+			return false, split, nil
 		}
 	}
 	t.logf("the owner reads: %s", oneLine(g.Text))

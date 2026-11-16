@@ -232,3 +232,55 @@ func readWords(c component) string {
 	}
 	return text
 }
+
+// checkSplit asks tafs cloud's check about an approval card that carries no
+// draft, as the owner's app reads the chat before drawing it: after
+// other_app_first, the waiting app's approval shown without the waiting Card
+// draft is refused (kiff/tafs approval.ts splitApproval), so its key is never
+// approved apart from the Card (Eval 20b, intros run 1). It returns that
+// refusal's answer for Coach, or "" when the card may be drawn. A tafs cloud
+// that doesn't take a draftless check yet answers its own 400 for a missing
+// draft (notTakenYet): the card is drawn as before, the log says so, and the
+// closing lines count it. Any other refusal (a proof planque won't take, a
+// grant that isn't the account's) fails the step: it's never read as "not
+// taken yet".
+func (t *test) checkSplit(ctx context.Context, grant string) (string, error) {
+	proof, err := t.phone.GrantsProof(ctx)
+	if err != nil {
+		return "", err
+	}
+	cloud := &client{Base: strings.TrimRight(t.cfg.cloud, "/"), HTTP: t.hc, Auth: bearerAuth(t.cfg.session)}
+	a, err := cloud.DoWith(ctx, http.MethodPost, "/v1/connect/grants/"+url.PathEscape(grant)+"/check",
+		map[string]any{"draft": "", "can": appCan}, http.Header{"Planque-Device-Signature": {proof}})
+	if err != nil {
+		return "", fmt.Errorf("tafs cloud's check of a draftless approval: %w", err)
+	}
+	if notTakenYet(a.Status, a.Body) {
+		t.splitUnchecked++
+		t.logf("tafs cloud's check takes no draftless approval yet: the card is drawn as before")
+		return "", nil
+	}
+	if err := a.Err(); err != nil {
+		return "", fmt.Errorf("tafs cloud's check of a draftless approval: %w", err)
+	}
+	// Only a refusal tafs cloud hands Coach on the read counts; anything else
+	// (no waiting draft for this app) draws the card, as before.
+	outcome, _ := a.Body["outcome"].(string)
+	answer, _ := a.Body["answer"].(string)
+	onRead, _ := a.Body["checked_on_read"].(bool)
+	redraft, _ := a.Body["redraft"].(bool)
+	if outcome == "answered" && onRead && redraft && strings.HasPrefix(answer, "failed: ") {
+		return answer, nil
+	}
+	return "", nil
+}
+
+// notTakenYet is tafs cloud's answer, before kiff/tafs#1187, to a check sent
+// with no draft: its 400 asking for the Card draft. Only that one.
+func notTakenYet(status int, body map[string]any) bool {
+	msg, _ := body["error"].(string)
+	if m, _ := body["message"].(string); m != "" {
+		msg = m
+	}
+	return status == http.StatusBadRequest && strings.Contains(msg, "its Card draft")
+}
