@@ -32,8 +32,9 @@ import (
 // one item, with room for its keys: DynamoDB's limit is 400 KB.
 const MaxSize = 300_000
 
-// MaxDeferred bounds a definition's DeferredTools.
-const MaxDeferred = 16
+// MaxDeferred bounds a definition's DeferredTools: a sanity bound on prefixes
+// matched here, not a provider limit. Coach defers 18 (kiff/tafs#1029).
+const MaxDeferred = 32
 
 // maxID bounds an agent's ID, and maxTenant a tenant.
 const (
