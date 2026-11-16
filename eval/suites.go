@@ -114,3 +114,57 @@ func (s Suites) Asked(asked string) (string, error) {
 	slices.Sort(names)
 	return "," + strings.Join(names, ",") + ",", nil
 }
+
+// EarlierRun is a completed Eval run on main, newest first, as a run of some
+// suites reads it: how each of its steps ended, and the suites the changes
+// since it touch (For over kiff/tafs' definition sources from its
+// eval/tafs.ref to this run's, and over kiff/agents from its commit to this
+// one's).
+type EarlierRun struct {
+	ID      int64             `json:"id"`
+	Steps   map[string]string `json:"steps"`
+	Touched []string          `json:"touched"`
+}
+
+// Carry decides a run of some suites (measured) for the Upgrade gate: each
+// other suite counts when the newest earlier run that measured it passed
+// every one of its steps, and nothing since touched it. A suite that ran
+// there and failed stays red; a change since sends it back to be run. It
+// returns the run each suite was carried from, and why the ones that
+// weren't fell short, so a run that counts names where each verdict came
+// from.
+func (s Suites) Carry(measured []string, runs []EarlierRun) (from map[string]int64, short map[string]string) {
+	from, short = map[string]int64{}, map[string]string{}
+	for _, name := range s.Names() {
+		if slices.Contains(measured, name) {
+			continue
+		}
+		short[name] = "no earlier run on main measured it"
+		for _, r := range runs {
+			ran, passed := false, true
+			for _, step := range s.Suites[name].Steps {
+				switch r.Steps[step] {
+				case "", "skipped":
+				case "success":
+					ran = true
+				default:
+					ran, passed = true, false
+				}
+			}
+			if !ran {
+				continue
+			}
+			switch {
+			case slices.Contains(r.Touched, All) || slices.Contains(r.Touched, name):
+				short[name] = fmt.Sprintf("changed since run %d measured it", r.ID)
+			case !passed:
+				short[name] = fmt.Sprintf("it failed in run %d", r.ID)
+			default:
+				delete(short, name)
+				from[name] = r.ID
+			}
+			break
+		}
+	}
+	return from, short
+}

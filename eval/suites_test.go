@@ -41,3 +41,50 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		t.Error("an unknown suite was taken")
 	}
 }
+
+// A run of some suites counts only when every other suite's newest earlier
+// measure passed and nothing since touched it: Eval 19's intros failure stays
+// red until connect is run again, and a change to a suite sends it back.
+func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
+	s, err := LoadSuites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := func(id int64, connect string, touched ...string) EarlierRun {
+		steps := map[string]string{}
+		for _, n := range s.Names() {
+			for _, step := range s.Suites[n].Steps {
+				steps[step] = "success"
+			}
+		}
+		steps["Replay, introductions from a list"] = connect
+		return EarlierRun{ID: id, Steps: steps, Touched: touched}
+	}
+	skipped := EarlierRun{ID: 30, Steps: map[string]string{"Chargebacks, two seeded runs": "skipped"}}
+
+	// Eval 19: everything held but intros; a run of connect now carries the rest.
+	from, short := s.Carry([]string{"connect"}, []EarlierRun{skipped, full(19, "failure")})
+	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || len(from) != 4 {
+		t.Errorf("connect after Eval 19: from %v, short %v", from, short)
+	}
+	// A run of setup alone can't carry connect: it failed there.
+	if _, short := s.Carry([]string{"setup"}, []EarlierRun{full(19, "failure")}); short["connect"] != "it failed in run 19" {
+		t.Errorf("connect carried from a failure: %v", short)
+	}
+	// A change since that touches setup sends setup back; one that touches all sends them all.
+	if _, short := s.Carry([]string{"connect"}, []EarlierRun{full(19, "failure", "connect", "setup")}); short["setup"] == "" || short["cards"] != "" {
+		t.Errorf("setup changed since: %v", short)
+	}
+	if from, _ := s.Carry([]string{"connect"}, []EarlierRun{full(19, "failure", All)}); len(from) != 0 {
+		t.Errorf("carried across a change to everything: %v", from)
+	}
+	// The newest run that measured a suite decides it: an older pass doesn't
+	// outvote a newer failure, and no earlier run is no verdict.
+	partial := EarlierRun{ID: 20, Steps: map[string]string{"Hand-offs between tafs, a sender and a receiver": "failure"}}
+	if _, short := s.Carry([]string{"connect"}, []EarlierRun{partial, full(19, "success")}); short["handoffs"] != "it failed in run 20" {
+		t.Errorf("an older pass outvoted a newer failure: %v", short)
+	}
+	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 4 {
+		t.Errorf("no earlier run: %v", short)
+	}
+}

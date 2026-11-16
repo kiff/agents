@@ -1,7 +1,9 @@
 name: Eval
-# A run with a model or effort override, or of some suites only, says so in its
-# name, so it reads apart from the shipped definitions' full runs in the list.
-run-name: ${{ inputs.suites != '' && inputs.suites != 'all' && format('Eval, suites {0}', inputs.suites) || (inputs.model != '' || inputs.effort != '') && format('Eval, override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || 'Eval' }}
+# A run of some suites, with a model or effort override, or at another repeat
+# than the bar's 3, says so in its name, so it reads apart from the shipped
+# definitions' full runs in the list, and infra/eval-carry.sh leaves the last
+# two out.
+run-name: ${{ format('Eval{0}{1}{2}', inputs.suites != '' && inputs.suites != 'all' && format(', suites {0}', inputs.suites) || '', (inputs.model != '' || inputs.effort != '') && format(', override {0}', inputs.label != '' && inputs.label || format('{0} {1}', inputs.model, inputs.effort)) || '', inputs.repeat != '' && inputs.repeat != '3' && format(', repeat {0}', inputs.repeat) || '') }}
 # The eval loop (#78): each night, the Chargebacks case runs on this commit's
 # runtime as kiff/tafs defines its job (eval/tafs.ref), twice on a
 # fresh Stripe test-mode seed each, is graded, and fails on a mean below
@@ -346,15 +348,27 @@ jobs:
         run: |
           echo "::error::Override $LABEL: Coach and the tafs ran on ${MODEL:-their own model}, effort ${EFFORT:-their own}. Its checks are in the report; this run doesn't count for the Upgrade gate."
           exit 1
-      - name: A run of some suites doesn't count for the Upgrade gate
-        # As an override: the Upgrade gate and the nightly's skip take the
-        # latest completed run on main, when it succeeded, as a full pass of
-        # the shipped definitions. Some suites aren't one, so the run ends red
-        # whatever its checks said: each suite's steps above give its verdict,
-        # and the report has each check.
+      - name: A run of some suites counts only on earlier passes
+        # The Upgrade gate and the nightly's skip take the latest completed
+        # run on main, when it succeeded, as a full pass of the shipped
+        # definitions. A run of some suites is one only when every other
+        # suite passed in the newest earlier run on main that measured it,
+        # and nothing since touched it (infra/eval-carry.sh, eval/suites.json):
+        # then a red suite is rerun alone, and the rest of the verdict stands.
+        # Otherwise it ends red, whatever its own checks said, and names each
+        # suite with no pass to carry. A run below the bar's repeat never
+        # counts.
         if: always() && steps.suites.outputs.list != '' && steps.suites.outputs.list != ',all,'
         env:
+          GH_TOKEN: ${{ github.token }}
           LIST: ${{ steps.suites.outputs.list }}
+          REPEAT: ${{ inputs.repeat || '3' }}
         run: |
-          echo "::error::Suites ${LIST:1:-1} only: their verdicts are their steps above and the report; this run doesn't count for the Upgrade gate."
-          exit 1
+          if [ "$REPEAT" != 3 ]; then
+            echo "::error::Suites ${LIST:1:-1} at repeat $REPEAT: below the bar's 3, so this run doesn't count for the Upgrade gate."
+            exit 1
+          fi
+          if ! infra/eval-carry.sh "$LIST"; then
+            echo "::error::Suites ${LIST:1:-1} only, and the others have no pass to carry (above): this run doesn't count for the Upgrade gate."
+            exit 1
+          fi
