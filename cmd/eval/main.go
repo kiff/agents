@@ -910,7 +910,7 @@ func gateFailures(results []eval.Result) []string {
 	}
 	for _, k := range order {
 		if t := quality[k]; !eval.HoldsOnMost(t.passed, t.graded) {
-			if _, ok := eval.KnownMiss(known, k[1], time.Now()); ok {
+			if _, ok := eval.KnownMiss(known, k[1], k[0], time.Now()); ok {
 				continue
 			}
 			out = append(out, fmt.Sprintf("%s: %s, in %d of %d runs", k[0], k[1], t.passed, t.graded))

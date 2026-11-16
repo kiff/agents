@@ -213,7 +213,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		return err
 	}
 	if *repeat > 1 {
-		return repeatRuns(ctx, *repeat, args, *transcript, stdout, func(ctx context.Context, a []string) error {
+		return repeatRuns(ctx, *repeat, args, *transcript, e2eCase(cfg.desk, cfg.invoices, *replayName), stdout, func(ctx context.Context, a []string) error {
 			return run(ctx, a, stdout, env)
 		})
 	}

@@ -16,7 +16,7 @@ func Layer(why string) string {
 		return "tafs cloud runtime"
 	case strings.Contains(w, "kiff refused"), strings.Contains(w, "kiff answered"):
 		return "KIFF"
-	case strings.Contains(w, "the harness"), strings.Contains(w, "the fake "):
+	case strings.Contains(w, "the harness"), strings.Contains(w, "the fake vendor answered"):
 		return "harness"
 	}
 	// show's refusals, Coach's words, the judge's reading: the definitions.

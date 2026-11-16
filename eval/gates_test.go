@@ -39,36 +39,41 @@ func TestMostRunsIsMoreThanHalf(t *testing.T) {
 	}
 }
 
-// A known miss is an experience gate only, for at most three days, with a fix
-// and a repro, and covers its check only between its dates.
+// A known miss is an experience gate only, for at most three days counted
+// both ends, with its case, fix and repro, and covers its check only in its
+// case and between its dates.
 func TestAKnownMissIsBoundedAndNeverBlocking(t *testing.T) {
 	if _, err := LoadKnown(); err != nil {
 		t.Fatal(err)
 	}
-	ok := Known{Check: "no loop", Since: "2026-11-16", Until: "2026-11-19", Fix: "kiff/tafs#1", Repro: "TestX"}
+	ok := Known{Check: "no loop", Case: "replay-intros", Since: "2026-11-16", Until: "2026-11-18", Fix: "kiff/tafs#1", Repro: "TestX"}
 	if err := ok.check(); err != nil {
 		t.Fatal(err)
 	}
 	for name, k := range map[string]Known{
-		"a blocking gate":  {Check: "signs what was agreed", Since: ok.Since, Until: ok.Until, Fix: ok.Fix, Repro: ok.Repro},
-		"an unnamed check": {Check: "a check named nowhere", Since: ok.Since, Until: ok.Until, Fix: ok.Fix, Repro: ok.Repro},
-		"four days":        {Check: ok.Check, Since: ok.Since, Until: "2026-11-20", Fix: ok.Fix, Repro: ok.Repro},
-		"backwards":        {Check: ok.Check, Since: ok.Since, Until: "2026-11-15", Fix: ok.Fix, Repro: ok.Repro},
-		"no fix":           {Check: ok.Check, Since: ok.Since, Until: ok.Until, Repro: ok.Repro},
-		"no repro":         {Check: ok.Check, Since: ok.Since, Until: ok.Until, Fix: ok.Fix},
+		"a blocking gate":  {Check: "signs what was agreed", Case: ok.Case, Since: ok.Since, Until: ok.Until, Fix: ok.Fix, Repro: ok.Repro},
+		"an unnamed check": {Check: "a check named nowhere", Case: ok.Case, Since: ok.Since, Until: ok.Until, Fix: ok.Fix, Repro: ok.Repro},
+		"four days":        {Check: ok.Check, Case: ok.Case, Since: ok.Since, Until: "2026-11-19", Fix: ok.Fix, Repro: ok.Repro},
+		"no case":          {Check: ok.Check, Since: ok.Since, Until: ok.Until, Fix: ok.Fix, Repro: ok.Repro},
+		"backwards":        {Check: ok.Check, Case: ok.Case, Since: ok.Since, Until: "2026-11-15", Fix: ok.Fix, Repro: ok.Repro},
+		"no fix":           {Check: ok.Check, Case: ok.Case, Since: ok.Since, Until: ok.Until, Repro: ok.Repro},
+		"no repro":         {Check: ok.Check, Case: ok.Case, Since: ok.Since, Until: ok.Until, Fix: ok.Fix},
 	} {
 		if k.check() == nil {
 			t.Errorf("%s was taken as known", name)
 		}
 	}
 	at := func(s string) time.Time { d, _ := time.Parse(time.DateOnly, s); return d.Add(12 * time.Hour) }
-	for day, want := range map[string]bool{"2026-11-15": false, "2026-11-16": true, "2026-11-19": true, "2026-11-20": false} {
-		if _, got := KnownMiss([]Known{ok}, "no loop", at(day)); got != want {
+	for day, want := range map[string]bool{"2026-11-15": false, "2026-11-16": true, "2026-11-18": true, "2026-11-19": false} {
+		if _, got := KnownMiss([]Known{ok}, "no loop", "replay-intros", at(day)); got != want {
 			t.Errorf("%s: known %v, want %v", day, got, want)
 		}
 	}
-	if _, got := KnownMiss([]Known{ok}, "concise", at("2026-11-17")); got {
+	if _, got := KnownMiss([]Known{ok}, "concise", "replay-intros", at("2026-11-17")); got {
 		t.Error("another check was covered")
+	}
+	if _, got := KnownMiss([]Known{ok}, "no loop", "desk", at("2026-11-17")); got {
+		t.Error("the same check in another case was covered")
 	}
 }
 

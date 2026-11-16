@@ -16,13 +16,17 @@ import (
 //go:embed known.json
 var knownJSON []byte
 
-// MaxKnownDays is how long a miss can stay known.
+// MaxKnownDays is how many days a miss can stay known, both its first and
+// last day counted: since 16 Nov, until 18 Nov at the latest.
 const MaxKnownDays = 3
 
-// Known is one known miss. It holds for the check in every suite, so keep
-// one only as long as its fix takes.
+// Known is one known miss: one check in one case, so the same check missing
+// in another case still fails.
 type Known struct {
 	Check string `json:"check"`
+	// Case is where it missed: cmd/eval's case (chargebacks) or cmd/e2e's
+	// (setup, desk, invoices, replay-intros), as the tallies name it.
+	Case  string `json:"case"`
 	Since string `json:"since"` // YYYY-MM-DD
 	Until string `json:"until"` // YYYY-MM-DD, its last day
 	Fix   string `json:"fix"`   // the fix's PR, as owner/repo#N
@@ -57,21 +61,21 @@ func (k Known) check() error {
 	if err != nil {
 		return fmt.Errorf("until: %w", err)
 	}
-	if until.Before(since) || until.Sub(since) > MaxKnownDays*24*time.Hour {
-		return fmt.Errorf("until is more than %d days after since, or before it", MaxKnownDays)
+	if until.Before(since) || until.Sub(since) > (MaxKnownDays-1)*24*time.Hour {
+		return fmt.Errorf("since to until is more than %d days, both counted, or backwards", MaxKnownDays)
 	}
-	if k.Fix == "" || k.Repro == "" {
-		return fmt.Errorf("names no fix or no repro test")
+	if k.Case == "" || k.Fix == "" || k.Repro == "" {
+		return fmt.Errorf("names no case, no fix or no repro test")
 	}
 	return nil
 }
 
-// KnownMiss is the known entry that covers check on day now, if any: from
-// since to until, both days included, in UTC.
-func KnownMiss(known []Known, check string, now time.Time) (Known, bool) {
+// KnownMiss is the known entry that covers check in case on day now, if
+// any: from since to until, both days included, in UTC.
+func KnownMiss(known []Known, check, caseName string, now time.Time) (Known, bool) {
 	day := now.UTC().Format(time.DateOnly)
 	for _, k := range known {
-		if k.Check == check && k.Since <= day && day <= k.Until {
+		if k.Check == check && k.Case == caseName && k.Since <= day && day <= k.Until {
 			return k, true
 		}
 	}
