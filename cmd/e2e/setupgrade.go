@@ -953,6 +953,11 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Why: "the rules keep the taf's writes to " + strings.Join(loose, ", ") +
 			", but the connection doesn't fix it and the rules don't say it's in the taf's instructions: the notice promises what nothing holds"}}, nil
 	}
+	// A limit no agreed figure names is a fact too (unagreedFigures): the judge alone caught an hour's €50 in 1 run of 3.
+	if extra := unagreedFigures(s, cards); len(extra) > 0 {
+		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Why: "the Cards hold a limit the owner never agreed: " + strings.Join(extra, ", ") +
+			" (the agreed rules name no such figure)"}}, nil
+	}
 	g, err := j.AskMajority(ctx, agreedRule, agreedPrompt(rules)+"\nThe taf's Cards, as KIFF holds them:\n"+string(b)+"\n"+kept)
 	if err != nil {
 		return eval.CheckResult{}, err
