@@ -415,10 +415,7 @@ func (t Tool) Spec() model.ToolSpec {
 			`"window":{"type":"string","enum":["call","calendar_day","rolling_1h","rolling_24h","rolling_7d","lifetime"],"description":"call or calendar_day; with per, the window of the Card's aggregate"},` +
 			`"per":{"type":"string","description":"a total for each item: the argument the Card's aggregate counts it by (its per)"},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
 			`"over":{"type":"string","enum":["ask","refuse"],"description":"what happens past this figure, when it isn't the rule's over"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
-			`"lines":{"type":"array","maxItems":32,"description":"a rules notice's lines, beside its rules: show writes the notice's text from them, with each line's ending","items":{"type":"object","properties":{"text":{"type":"string","description":"the rule in the owner's words, plain, one line, without where it's kept"},` +
-			`"kept":{"type":"string","enum":["card","connection","kiff","instructions"]},"tools":{"type":"array","items":{"type":"string"},"description":"card and connection: the tools of this notice's rules it's about"},` +
-			`"what":{"type":"string","enum":["disclosure","reads_total","held_approval"],"description":"kiff only: what KIFF does"}},"required":["text","kept"]}},` +
-			`"lang":{"type":"string","description":"a rules notice with lines: the owner's language, as a two-letter code"},` +
+			linesSchema(t) +
 			`"agrees":{"type":"string","description":"a confirm that agrees to a rules notice: the notice's id; it has an option with value agree"},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +
 			`"call":{"type":"string","description":"the tool the step waits on, by name: done only once that call went through"}},"required":["label","status"]}},` +
@@ -846,4 +843,18 @@ func stepsDone(c Component, outcomes tool.Outcomes) error {
 		return fmt.Errorf("steps %s: %q can't be done: its call %s was %s. Mark it failed or skipped, or make the call again and show the plan once it went through", c.ID, s.Label, s.Call, oc)
 	}
 	return nil
+}
+
+// linesSchema is the notice's lines and lang in show's schema, offered only
+// when the definition carries kept words (WithKeptWords): a Coach whose
+// definition has none (written before them, until its next Upgrade) is never
+// offered fields show would refuse, and sends a notice's own text instead.
+func linesSchema(t Tool) string {
+	if len(t.keptWords) == 0 {
+		return ""
+	}
+	return `"lines":{"type":"array","maxItems":32,"description":"a rules notice's lines, beside its rules: show writes the notice's text from them, with each line's ending","items":{"type":"object","properties":{"text":{"type":"string","description":"the rule in the owner's words, plain, one line, without where it's kept"},` +
+		`"kept":{"type":"string","enum":["card","connection","kiff","instructions"]},"tools":{"type":"array","items":{"type":"string"},"description":"card and connection: the tools of this notice's rules it's about"},` +
+		`"what":{"type":"string","enum":["disclosure","reads_total","held_approval"],"description":"kiff only: what KIFF does"}},"required":["text","kept"]}},` +
+		`"lang":{"type":"string","description":"a rules notice with lines: the owner's language, as a two-letter code"},`
 }
