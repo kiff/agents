@@ -751,7 +751,7 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 	}
 	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "list_invoices"}}}}
 	v := &verdicts{}
-	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards)
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards, "en")
 	if err != nil || r.Name != signsWhatWasAgreed || !r.Grade.Pass || r.Advisory {
 		t.Fatalf("a Card that keeps the rules: %+v %v", r, err)
 	}
@@ -776,7 +776,7 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 		t.Fatalf("the connection's pins: %q", pinnedS.pinned)
 	}
 	v = &verdicts{}
-	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, pinnedS, cards); err != nil {
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, pinnedS, cards, "en"); err != nil {
 		t.Fatal(err)
 	}
 	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "Kept on the connection") || !strings.Contains(asked, "reply_ticket_k3f9: workspace = ws_demo") {
@@ -808,13 +808,13 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 		return m
 	}
 	// A taf whose reply tool isn't in its disclose fails, whatever the judges say.
-	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, withTaf(), cards)
+	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, withTaf(), cards, "en")
 	if r.Grade.Pass || r.Grade.Skipped || !strings.Contains(r.Grade.Why, "reply_ticket_k3f9") {
 		t.Fatalf("a reply tool left out of disclose passed: %+v", r)
 	}
 	// Listed with a text field: the judge reads it as disclosed. A read (list_tickets) is never asked for.
 	v = &verdicts{}
-	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, withTaf("reply_ticket_k3f9"), cards)
+	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, withTaf("reply_ticket_k3f9"), cards, "en")
 	if !r.Grade.Pass || !strings.Contains(strings.Join(v.asked, "\n"), "reply_ticket_k3f9 (body)") {
 		t.Fatalf("a disclosed reply tool: %+v", r)
 	}
@@ -832,7 +832,7 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 		}
 	}
 	// A judge that finds a merged limit fails the gate.
-	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"merged with another"}}, ModelID: "judge"}, s, cards)
+	r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{fail: []string{"merged with another"}}, ModelID: "judge"}, s, cards, "en")
 	if r.Grade.Pass || r.Grade.Skipped || r.Advisory {
 		t.Fatalf("a merged limit passed: %+v", r)
 	}
@@ -841,7 +841,7 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 		s     said
 		cards []map[string]any
 	}{{said{}, cards}, {s, nil}} {
-		r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, c.s, c.cards)
+		r, _ = gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, c.s, c.cards, "en")
 		if !r.Grade.Skipped || r.Grade.Pass {
 			t.Fatalf("with nothing to compare: %+v", r)
 		}
@@ -867,7 +867,7 @@ func TestTheRulesBeforeTheCardsApprovalAreTheAgreedOnes(t *testing.T) {
 		t.Fatalf("the rules shown before the Card's approval weren't counted: %q", got)
 	}
 	v := &verdicts{}
-	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, refunds, cards); err != nil {
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, refunds, cards, "en"); err != nil {
 		t.Fatal(err)
 	}
 	asked := strings.Join(v.asked, "\n")
@@ -881,13 +881,13 @@ func TestTheRulesBeforeTheCardsApprovalAreTheAgreedOnes(t *testing.T) {
 		"rules":   {Type: "notice", Title: "The rules", Text: "Runs weekday mornings at 8:00. Reads the sheet, up to 1,000 reads a day. Writes drafts only."},
 		"tools":   {Type: "approval", Grant: "grt_s", Draft: "drf_s", Title: "Approve its tools and Card"},
 	}, order: []string{"connect", "rules", "tools"}}
-	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, intros, cards)
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, intros, cards, "en")
 	if err != nil || r.Grade.Skipped || !r.Grade.Pass {
 		t.Fatalf("the intros order skipped or failed: %+v %v", r, err)
 	}
 	// One set of rules: shown as the last agreed, with no earlier ones.
 	v = &verdicts{}
-	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, intros, cards); err != nil {
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, intros, cards, "en"); err != nil {
 		t.Fatal(err)
 	}
 	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "The rules agreed last") || strings.Contains(asked, "Earlier rules shown") {
@@ -967,7 +967,7 @@ func TestTheAgreedJudgeIsShownTheTafsOwnTools(t *testing.T) {
 	}
 	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "list_rows_zkg9"}}}}
 	v := &verdicts{}
-	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards); err != nil {
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards, "en"); err != nil {
 		t.Fatal(err)
 	}
 	asked := strings.Join(v.asked, "\n")
@@ -982,7 +982,7 @@ func TestTheAgreedJudgeIsShownTheTafsOwnTools(t *testing.T) {
 	// With no connection read, nothing is listed: the judge isn't told the taf has no tools.
 	v = &verdicts{}
 	s.connected = nil
-	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards); err != nil {
+	if _, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards, "en"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(strings.Join(v.asked, "\n"), "The taf's tools") {
@@ -1008,7 +1008,7 @@ func TestAColumnTheRulesKeepIsFixedOrSaidToBeInItsInstructions(t *testing.T) {
 	cards := []map[string]any{{"domain": "gateway", "on_exceed": "owner", "grants": []map[string]any{{"action": "update_row_k3f9"}}}}
 	grade := func(s said) (eval.CheckResult, *verdicts) {
 		v := &verdicts{}
-		r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards)
+		r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards, "en")
 		if err != nil {
 			t.Fatal(err)
 		}
