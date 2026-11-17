@@ -208,6 +208,16 @@ func (rec *Recording) Flush(ctx context.Context) error {
 	return rec.flush(ctx)
 }
 
+// Events is what the session holds now, this run's queued events stored
+// first (Flush): what an earlier run showed, and what this one has so far.
+func (rec *Recording) Events(ctx context.Context) ([]Event, error) {
+	if err := rec.Flush(ctx); err != nil {
+		return nil, err
+	}
+	_, events, err := rec.r.store.Read(ctx, rec.s.Tenant, rec.s.ID)
+	return events, err
+}
+
 // Pause stores what's queued and holds the run: its session doesn't expire
 // until the run ends, and what it recorded stays as it is. The run carries on
 // in a Recording from Resume. After an error nothing more can be recorded

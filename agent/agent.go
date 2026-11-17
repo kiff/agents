@@ -1707,6 +1707,18 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 	}
 	wg.Wait()
 	for i, r := range results {
+		// A confirm that agrees to rules is shown only once their notice was:
+		// the owner never sees "Agree?" for rules they weren't shown.
+		if shows(byName[r.Tool]) && !r.IsError && len(r.Component) > 0 {
+			why, err := unshownAgrees(ctx, rec, r.Component)
+			if err != nil {
+				return nil, err
+			}
+			if why != "" {
+				results[i].Result = tool.Result{Text: why, IsError: true}
+				r = results[i]
+			}
+		}
 		if err := rec.Record(session.ToolResult, r); err != nil {
 			return nil, err
 		}
@@ -1889,4 +1901,48 @@ func Summarize(ctx context.Context, a Agent, rec *session.Recording, prior strin
 		return "", cost, errors.New("agent: the model wrote no summary")
 	}
 	return out, cost, nil
+}
+
+// UnshownNotice is what a confirm that agrees to a rules notice the
+// conversation hasn't shown gets back, unshown.
+const UnshownNotice = "show the rules notice first; it wasn't shown: agrees names a rules notice shown in this conversation"
+
+// unshownAgrees is why component, a confirm that agrees to a rules notice
+// (its agrees), can't be shown: the notice by that id isn't the latest
+// component of that id this conversation showed, with its rules (in an earlier
+// run, or earlier in this run, its own batch included, since each is recorded
+// before the next is read). "" for any other component, or once it was.
+func unshownAgrees(ctx context.Context, rec *session.Recording, component json.RawMessage) (string, error) {
+	var c struct {
+		Type   string `json:"type"`
+		Agrees string `json:"agrees"`
+	}
+	if json.Unmarshal(component, &c) != nil || c.Type != "confirm" || c.Agrees == "" {
+		return "", nil
+	}
+	events, err := rec.Events(ctx)
+	if err != nil {
+		return "", err
+	}
+	shown := false
+	for _, e := range events {
+		if e.Kind != session.Component {
+			continue
+		}
+		var n struct {
+			Type  string            `json:"type"`
+			ID    string            `json:"id"`
+			Rules []json.RawMessage `json:"rules"`
+		}
+		if json.Unmarshal(e.Body, &n) != nil || n.ID != c.Agrees {
+			continue
+		}
+		// The latest by that id counts: a notice shown again without its rules, or
+		// another card by its id, replaced it.
+		shown = n.Type == "notice" && len(n.Rules) > 0
+	}
+	if shown {
+		return "", nil
+	}
+	return UnshownNotice, nil
 }
