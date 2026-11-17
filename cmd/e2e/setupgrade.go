@@ -915,10 +915,15 @@ func agreedPrompt(rules []string) string {
 // gradeAgreed grades signsWhatWasAgreed: the notices Setup showed against the
 // Cards KIFF holds. Skipped when Setup showed no rules, or KIFF holds no Card:
 // another check says so.
-func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]any) (eval.CheckResult, error) {
+func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]any, ownerLang string) (eval.CheckResult, error) {
 	rules := agreedRules(s)
 	if len(rules) == 0 || len(cards) == 0 {
 		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Skipped: true, Why: agreedSkip(s, len(rules), len(cards))}}, nil
+	}
+	// Where each agreed line says it's kept is data, read here, never a vote: the notice in the
+	// owner's language, an instructions line in the taf's instructions, a connection line pinned.
+	if why := unkeptLines(s, ownerLang); why != "" {
+		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Why: why}}, nil
 	}
 	b, _ := json.MarshalIndent(cards, "", "  ")
 	kept := ""

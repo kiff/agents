@@ -981,6 +981,10 @@ type component struct {
 	Rules []shownRule `json:"rules"`
 	// A confirm that agrees to a rules notice: the notice's id.
 	Agrees string `json:"agrees"`
+	// A rules notice's lines, each with where it's kept, and their language
+	// (show's kept.go): what each line claims is checked as data (unkeptLines).
+	Lines []show.Line `json:"lines"`
+	Lang  string      `json:"lang"`
 }
 
 // shownRule is one tool's rule on a rules notice: its tool by planque's name,
@@ -1844,7 +1848,7 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		t.logf("the taf's Cards couldn't be read to compare with the rules: %v", err)
 		held = nil
 	}
-	agreed, err := gradeAgreed(ctx, t.cfg.judge, t.said, held)
+	agreed, err := gradeAgreed(ctx, t.cfg.judge, t.said, held, t.cfg.owner)
 	if err != nil {
 		return fmt.Errorf("grading the Card against the agreed rules: %w", err)
 	}

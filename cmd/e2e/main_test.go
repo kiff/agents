@@ -648,7 +648,7 @@ func TestTheAgreedGatesSkipSaysWhyAndItsFailStaysPrivate(t *testing.T) {
 		"mail":    {Type: "approval", Grant: "grt_m", Title: "Connect the mailbox"},
 		"tools":   {Type: "approval", Grant: "grt_m", Draft: "drf_s", Title: "Approve its tools and Card"},
 	}, order: []string{"connect", "rules", "mail", "tools"}}
-	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, intros, []map[string]any{{"id": "c1"}})
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, intros, []map[string]any{{"id": "c1"}}, "en")
 	if err != nil || !r.Grade.Skipped {
 		t.Fatalf("a notice before a draftless approval was compared: %+v %v", r, err)
 	}
@@ -656,7 +656,7 @@ func TestTheAgreedGatesSkipSaysWhyAndItsFailStaysPrivate(t *testing.T) {
 	if r.Grade.Why != want {
 		t.Fatalf("the skip says %q", r.Grade.Why)
 	}
-	if none, _ := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, said{}, nil); none.Grade.Why != "nothing to compare: 0 rules shown, 0 Cards held on the taf; cards shown: none" {
+	if none, _ := gradeAgreed(context.Background(), &eval.Judge{Model: &verdicts{}, ModelID: "judge"}, said{}, nil, "en"); none.Grade.Why != "nothing to compare: 0 rules shown, 0 Cards held on the taf; cards shown: none" {
 		t.Fatalf("with no cards: %q", none.Grade.Why)
 	}
 	var log, transcript bytes.Buffer

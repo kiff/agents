@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kiff/agents/tool/show"
 	"regexp"
 	"sort"
 	"strconv"
@@ -242,4 +243,66 @@ func numbersIn(text string) map[float64]bool {
 		add(strings.NewReplacer(".", "", ",", "").Replace(raw))
 	}
 	return out
+}
+
+// unkeptLines says what the agreed rules notice's lines claim that this run
+// doesn't hold, or "". A line says where it's kept (show's kept.go), so each
+// claim is a fact read here: the notice is in the owner's language (its
+// endings are); an instructions line is, word for word, in the instructions
+// of the taf the result made; and a connection line's tools are each pinned
+// on a connection the owner approved. A notice with no lines, from before
+// them, says nothing here and is graded as it was; a run that made no taf, or
+// approved no connection, leaves those lines to the judge.
+func unkeptLines(s said, ownerLang string) string {
+	n, _, ok := agreedNotice(s)
+	if !ok || len(n.Lines) == 0 {
+		return ""
+	}
+	if n.Lang != ownerLang {
+		return fmt.Sprintf("the agreed rules notice is in %q, but the owner writes %q: its endings aren't in the owner's language", n.Lang, ownerLang)
+	}
+	instructions, made := "", false
+	for _, id := range s.order {
+		if c := s.cards[id]; c.Type == "result" && c.Taf != nil && c.Taf.Instructions != "" {
+			instructions, made = c.Taf.Instructions, true
+		}
+	}
+	for _, l := range n.Lines {
+		switch l.Kept {
+		case show.KeptInstructions:
+			if made && !strings.Contains(plainWords(instructions), plainWords(l.Text)) {
+				return fmt.Sprintf("the agreed line %q says it's in the taf's instructions, but the instructions the result made don't carry it", l.Text)
+			}
+		case show.KeptConnection:
+			if len(s.connected) == 0 {
+				continue
+			}
+			for _, tl := range l.Tools {
+				if !pinnedTool(s, tl) {
+					return fmt.Sprintf("the agreed line %q says the connection keeps it, but no approved connection pins %s", l.Text, tl)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// pinnedTool says an approved connection pins tool (planque's name, or KIFF's
+// with its suffix): s.pinned is "tool: path = value" lines.
+func pinnedTool(s said, tool string) bool {
+	for _, p := range s.pinned {
+		name, _, _ := strings.Cut(p, ":")
+		name = foldTool(name)
+		if name == foldTool(tool) || strings.HasPrefix(name, foldTool(tool)+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+// plainWords is text lowercased, its runs of spaces one space, and its ends'
+// punctuation gone, so a line copied into the instructions matches them
+// whatever their line breaks or a closing full stop.
+func plainWords(text string) string {
+	return strings.Trim(strings.Join(strings.Fields(strings.ToLower(text)), " "), ".;:!,")
 }
