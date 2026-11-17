@@ -2,6 +2,7 @@ package eval
 
 import (
 	"cmp"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"slices"
@@ -114,6 +115,8 @@ func WriteReport(w io.Writer, cfgs []Config, results []Result, lower []string) e
 			{"Definition", cfg.Source}, {"Runs on", cmp.Or(cfg.RunsOn, "Claude API")}, {"Model", cfg.Model}, {"Effort", effort},
 			{"Max tokens", fmt.Sprint(cfg.MaxTokens)}, {"Price", cfg.Price},
 			{"Instructions", cfg.Instructions}, {"Tools", strings.Join(tools, ", ")}, {"Skills", strings.Join(cfg.Skills, ", ")},
+			// The words-against-the-record judge's rule, by digest: a run graded under another rule says so.
+			{"Record's judge", ruleDigest(Recorded)},
 		} {
 			fmt.Fprintf(&b, "| %s | %s |\n", row[0], cell(row[1]))
 		}
@@ -173,4 +176,11 @@ func cell(s string) string {
 		return "–"
 	}
 	return s
+}
+
+// ruleDigest names a judge's rule by its size and digest, as a job's
+// instructions are named.
+func ruleDigest(rule string) string {
+	sum := sha256.Sum256([]byte(rule))
+	return fmt.Sprintf("%d bytes, sha256 %x", len(rule), sum[:6])
 }
