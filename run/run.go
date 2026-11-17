@@ -418,6 +418,10 @@ type Requirement struct {
 	// owner wrote a message instead; or, for an event's requirement, the
 	// event's payload as it came.
 	Result json.RawMessage `json:"result,omitempty"`
+	// Key is the client's id (dedup_key) for the message the owner wrote
+	// that answered this card, if it gave one: the same key sent again is
+	// that answer, never a second message.
+	Key string `json:"key,omitempty"`
 	// Wait is what an event's requirement (KindEvent) waits for: the grant
 	// and event the outcome comes on, and the key that event carries. The
 	// event is matched to the run by (tenant, grant, event, key) and
@@ -528,6 +532,9 @@ type Steering struct {
 	// Requester is who wrote it, if the caller said (#219): their flood
 	// guard counts it.
 	Requester Requester `json:"requester,omitzero"`
+	// Key is the client's id for this message (dedup_key), if it gave one:
+	// the same key sent again to the run is the same message, kept once.
+	Key string `json:"key,omitempty"`
 }
 
 // Taken is the text of each message the run has taken, in order.

@@ -438,6 +438,11 @@ type steerBody struct {
 	// Requester is who wrote the message (#219): it counts toward their
 	// flood guard, and a run another person asked for isn't theirs to steer.
 	Requester *run.Requester `json:"requester,omitempty"`
+	// DedupKey is the client's id for this message: the same key sent again
+	// to the run is the message it already holds (202, nothing added), and
+	// the same key with another text is 409 dedup_key_conflict. A key is
+	// the run's: another run, or another tenant's, never sees it.
+	DedupKey string `json:"dedup_key,omitempty"`
 }
 
 // steerRun gives a run that hasn't ended a message the owner wrote while it
@@ -454,6 +459,9 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	if strings.TrimSpace(body.Text) == "" || len(body.Text) > MaxInput {
 		return 0, nil, bad("the text is 1 to %d bytes", MaxInput)
+	}
+	if len(body.DedupKey) > MaxEventKey {
+		return 0, nil, bad("dedup_key is 1 to %d bytes", MaxEventKey)
 	}
 	q, err := requesterOf(body.Requester)
 	if err != nil {
@@ -479,13 +487,23 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 			return 0, nil, err
 		}
 	}
+	// Sent again (an app's retry): the message the run holds, answered as
+	// the first send was, and not counted again by the flood guard.
+	if m, ok := rn.SteeredWith(body.DedupKey); ok {
+		if m.Text != body.Text || m.Requester != q {
+			return 0, nil, dedupConflict()
+		}
+		return http.StatusAccepted, s.viewRun(rn), nil
+	}
 	if q.Key() != "" {
 		if err := s.flood(ctx, c.Tenant, rn.Agent, q); err != nil {
 			return 0, nil, err
 		}
 	}
-	next, err := run.SteerBy(ctx, s.Runs, c.Tenant, rn.ID, body.Text, q, s.now())
+	next, _, err := run.SteerKeyed(ctx, s.Runs, c.Tenant, rn.ID, body.Text, body.DedupKey, q, s.now())
 	switch {
+	case errors.Is(err, run.ErrDedupConflict):
+		return 0, nil, dedupConflict()
 	case errors.Is(err, run.ErrTransition):
 		return 0, nil, conflict("run_ended", "the run has ended, or was asked to stop: send the message as a new run")
 	case errors.Is(err, run.ErrFull):
@@ -949,6 +967,30 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.DedupKey != "" && body.SessionID != "" && q.Kind == run.ByMember && len(body.Attachments) == 0 {
+		// Sent again after it answered a waiting card in the owner's words
+		// (wroteInstead): that answer, never a second message or run.
+		rn, card, ok, err := s.wroteBefore(ctx, c.Tenant, id, body.SessionID, body.DedupKey)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if ok {
+			var was show.Answered
+			_ = json.Unmarshal(card.Result, &was)
+			switch {
+			case was.Wrote != body.Input || !own(rn, q):
+				s.fail(w, r, dedupConflict())
+			case body.Background:
+				writeJSON(w, http.StatusAccepted, s.viewRun(rn))
+			default:
+				sse := newStream(w)
+				sse.send("run", s.viewRun(rn))
+				s.follow(r, sse, c, rn, 0)
+			}
+			return
+		}
+	}
 	if body.SessionID != "" && q.Key() == "" {
 		// Going on in a session with no person: only as the service, by name.
 		if err := asService(r); err != nil {
@@ -997,7 +1039,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	// second line of thought starts beside the one waiting. Only their own
 	// message does: a door's, or one with files, starts a run as before.
 	if body.SessionID != "" && q.Kind == run.ByMember && len(body.Attachments) == 0 {
-		if done := s.wroteInstead(w, r, c, body.SessionID, q, body.Input, body.Background); done {
+		if done := s.wroteInstead(w, r, c, body.SessionID, q, body.Input, body.DedupKey, body.Background); done {
 			return
 		}
 	}
@@ -1433,7 +1475,7 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 // followed as it goes on, and one that has stopped is replayed to its end.
 func (s *Server) repeatStream(w http.ResponseWriter, r *http.Request, c Caller, rn run.Run, input string, q run.Requester) {
 	if rn.Input != input || rn.Requester.Key() != q.Key() {
-		s.fail(w, r, conflict("dedup_key_conflict", "this dedup_key already started a run with another message or requester"))
+		s.fail(w, r, dedupConflict())
 		return
 	}
 	if rn.Status == run.Pending && rn.After == "" {
@@ -1443,6 +1485,32 @@ func (s *Server) repeatStream(w http.ResponseWriter, r *http.Request, c Caller, 
 	sse := newStream(w)
 	sse.send("run", s.viewRun(rn))
 	s.follow(r, sse, c, rn, 0)
+}
+
+// dedupConflict refuses a message whose dedup_key already names another one.
+func dedupConflict() error {
+	return conflict("dedup_key_conflict", "this dedup_key already names another message or requester")
+}
+
+// wroteBefore is the run whose card the requester already answered by
+// writing, in the session, with this dedup_key: found among the agent's
+// latest runs, as the flood guard reads them. ok is false if there is none.
+func (s *Server) wroteBefore(ctx context.Context, tenant, agent, sessionID, key string) (run.Run, run.Requirement, bool, error) {
+	runs, err := s.Runs.List(ctx, tenant, agent, floodScan)
+	if err != nil {
+		return run.Run{}, run.Requirement{}, false, err
+	}
+	for _, rn := range runs {
+		if rn.Session != sessionID {
+			continue
+		}
+		for _, q := range rn.Requirements {
+			if q.Card() && q.Key == key {
+				return rn, q, true, nil
+			}
+		}
+	}
+	return run.Run{}, run.Requirement{}, false, nil
 }
 
 // follow sends a run's recorded events after the index after, then the rest
@@ -1893,7 +1961,7 @@ func (s *Server) granted(ctx context.Context, tenant, agent string, q run.Reques
 // owner wrote, and goes on with that run; it reports whether it answered the
 // request. With no card waiting, or one answered meanwhile, it does nothing,
 // and the message starts a run as any other.
-func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, sessionID string, q run.Requester, text string, background bool) bool {
+func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, sessionID string, q run.Requester, text, key string, background bool) bool {
 	ctx := r.Context()
 	sess, _, err := s.Sessions.Read(ctx, c.Tenant, sessionID)
 	if err != nil {
@@ -1909,7 +1977,7 @@ func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, 
 			continue
 		}
 		result, _ := json.Marshal(show.Answered{Answer: json.RawMessage("null"), Words: "In your words: “" + text + "”", Wrote: text})
-		next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
+		next, err := run.AnswerCardKeyed(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, key, s.now())
 		if err != nil {
 			continue // answered meanwhile, or the run went on
 		}

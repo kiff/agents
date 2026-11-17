@@ -70,6 +70,9 @@ var (
 	// ErrFull means a run holds as many messages as it takes while it goes
 	// (MaxSteering, or MaxSteeringBytes of text).
 	ErrFull = errors.New("run: no room for another message")
+	// ErrDedupConflict means a message's key (dedup_key) was already given to
+	// another text on this run: a client's mistake, never a second message.
+	ErrDedupConflict = errors.New("run: that key already names another message")
 )
 
 // MaxSteering and MaxSteeringBytes bound what one run takes while it goes:
@@ -473,10 +476,40 @@ func Steer(ctx context.Context, runs Runs, tenant, id, text string, now time.Tim
 
 // SteerBy is Steer, the message written by q (#219).
 func SteerBy(ctx context.Context, runs Runs, tenant, id, text string, q Requester, now time.Time) (Run, error) {
+	next, _, err := SteerKeyed(ctx, runs, tenant, id, text, "", q, now)
+	return next, err
+}
+
+// SteeredWith is the message the run already holds under the client's key,
+// if any.
+func (r Run) SteeredWith(key string) (Steering, bool) {
+	if key == "" {
+		return Steering{}, false
+	}
+	for _, m := range r.Steering {
+		if m.Key == key {
+			return m, true
+		}
+	}
+	return Steering{}, false
+}
+
+// SteerKeyed is SteerBy with the client's id for the message (key, its
+// dedup_key; empty: none). The same key sent again with the same text is
+// the message the run already holds: nothing is added, and repeat is true.
+// The same key with another text is ErrDedupConflict. A key is the run's:
+// another run never sees it.
+func SteerKeyed(ctx context.Context, runs Runs, tenant, id, text, key string, q Requester, now time.Time) (next Run, repeat bool, err error) {
 	for try := 1; ; try++ {
 		r, err := runs.Get(ctx, tenant, id)
 		if err != nil {
-			return r, err
+			return r, false, err
+		}
+		if m, ok := r.SteeredWith(key); ok {
+			if m.Text != text || m.Requester != q {
+				return r, false, ErrDedupConflict
+			}
+			return r, true, nil
 		}
 		next, err := Change(ctx, runs, r, now, func(n *Run) error {
 			switch {
@@ -485,13 +518,13 @@ func SteerBy(ctx context.Context, runs Runs, tenant, id, text string, q Requeste
 			case len(n.Steering) >= MaxSteering || steeringBytes(n.Steering)+len(text) > MaxSteeringBytes:
 				return ErrFull
 			}
-			n.Steering = append(n.Steering, Steering{Text: text, At: now.UTC(), Requester: q})
+			n.Steering = append(n.Steering, Steering{Text: text, At: now.UTC(), Requester: q, Key: key})
 			return nil
 		})
 		if errors.Is(err, ErrConflict) && try < SaveTries {
 			continue
 		}
-		return next, err
+		return next, false, err
 	}
 }
 
@@ -883,6 +916,12 @@ var ErrNotOpen = errors.New("run: no card waits for that answer")
 // once: the card's requirement is answered, and the run, paused, can go on.
 // A card already answered, or a run no longer paused, is ErrNotOpen.
 func AnswerCard(ctx context.Context, runs Runs, tenant, id, call string, result json.RawMessage, now time.Time) (Run, error) {
+	return AnswerCardKeyed(ctx, runs, tenant, id, call, result, "", now)
+}
+
+// AnswerCardKeyed is AnswerCard for an answer the owner wrote as a message
+// with the client's id for it (key, its dedup_key), kept on the card.
+func AnswerCardKeyed(ctx context.Context, runs Runs, tenant, id, call string, result json.RawMessage, key string, now time.Time) (Run, error) {
 	for try := 1; ; try++ {
 		r, err := runs.Get(ctx, tenant, id)
 		if err != nil {
@@ -893,7 +932,7 @@ func AnswerCard(ctx context.Context, runs Runs, tenant, id, call string, result 
 			return r, ErrNotOpen
 		}
 		next, err := Change(ctx, runs, r, now, func(n *Run) error {
-			n.Requirements[i].Answered, n.Requirements[i].Answer, n.Requirements[i].Result = now.UTC(), "answered", result
+			n.Requirements[i].Answered, n.Requirements[i].Answer, n.Requirements[i].Result, n.Requirements[i].Key = now.UTC(), "answered", result, key
 			return nil
 		})
 		if !errors.Is(err, ErrConflict) || try == SaveTries {

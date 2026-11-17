@@ -653,6 +653,22 @@ what the run recorded. The same key with another `input` or another
 requester is refused: `409 dedup_key_conflict`. With no `dedup_key`, nothing
 changes.
 
+A key is scoped by tenant and agent (`RequestRunID` hashes all three): the
+same id sent to another tenant's agent, or to another agent, starts that
+agent's own run.
+
+A message for a run that's going (`POST …/runs/{run}/messages`) may carry
+`dedup_key` too. It's kept with the message (`Steering.Key`): the same key
+sent again to that run with the same text is the message it already holds
+(202, nothing added, not counted again by the flood guard); with another
+text or requester, `409 dedup_key_conflict`. The key is the run's: another
+run never sees it. A person's message that answers a card waiting in their
+chat (a start with `session_id`, answered in their words) keeps its key on
+the card (`Requirement.Key`); the same key sent again is that answer (202
+with the run in the background, or the run's stream from event 0), never a
+second message or run, and another text is 409. It's looked for among the
+agent's latest runs, as the flood guard reads them.
+
 ### One run at a time per door thread
 
 Such a request with a `session_id` whose run from the same `source` is still
