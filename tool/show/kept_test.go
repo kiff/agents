@@ -137,3 +137,36 @@ func TestADefinitionsKeptWordsHaveEveryEndingInEachLanguage(t *testing.T) {
 		}
 	}
 }
+
+// A definition with no kept words (one written before them, until its next
+// Upgrade) is never offered lines or lang, and a notice sent with them anyway
+// is refused with a fix that names the form it takes: its own text, as
+// before lines. The text form still shows, rules and all.
+func TestADefinitionWithoutKeptWordsTakesTheNoticesOwnText(t *testing.T) {
+	plain := New()
+	schema := string(plain.Spec().InputSchema)
+	if strings.Contains(schema, `"lines"`) || strings.Contains(schema, `"lang"`) {
+		t.Fatal("lines or lang offered to a definition with no kept words")
+	}
+	if !json.Valid(plain.Spec().InputSchema) {
+		t.Fatal("the schema without lines isn't JSON")
+	}
+	with := New().WithKeptWords(keptWordsForTest)
+	if s := string(with.Spec().InputSchema); !strings.Contains(s, `"lines"`) || !strings.Contains(s, `"lang"`) || !json.Valid(with.Spec().InputSchema) {
+		t.Fatal("lines and lang not offered with kept words")
+	}
+	call := func(input string) (string, bool) {
+		r, err := plain.Call(context.Background(), json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Text, r.IsError
+	}
+	why, refused := call(`{"type":"notice","id":"rules","tone":"info","lang":"en",` + lineRules + `,"lines":[{"text":"Skips anyone","kept":"instructions"}]}`)
+	if !refused || !strings.Contains(why, "send its text and its rules, with no lines and no lang") {
+		t.Fatalf("lines without kept words: %v %q", refused, why)
+	}
+	if why, refused := call(`{"type":"notice","id":"rules","tone":"info","text":"Adds at most 50 rows a day",` + lineRules + `}`); refused {
+		t.Fatalf("the text form, refused: %q", why)
+	}
+}

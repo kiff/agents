@@ -115,6 +115,12 @@ func (t Tool) drawLines(c *Component, ownText bool) error {
 		}
 		return nil
 	}
+	// A definition with no endings (written before them, until its next
+	// Upgrade) takes a rules notice's own text, as before lines: the fix says
+	// so, so the notice is sent again in that form, never left unshown.
+	if len(t.keptWords) == 0 {
+		return fmt.Errorf("this Coach writes a rules notice's own text: send its text and its rules, with no lines and no lang")
+	}
 	if ownText {
 		return fmt.Errorf("a notice with lines has no text of its own: show writes it from the lines, with each line's ending")
 	}
