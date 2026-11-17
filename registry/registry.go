@@ -108,6 +108,9 @@ type Definition struct {
 	// own (show.TafTypes: ask_coach, to send a setting to Coach;
 	// kiff/tafs#476, gap 15). It needs Show.
 	ShowTypes []string `json:"show_types,omitempty"`
+	// Wording are rules on what the agent's cards may say, as data (show.Wording): a card that
+	// breaks one is refused with the rule's fix, so the agent redraws it, and it's never recorded.
+	Wording []show.Wording `json:"wording,omitempty"`
 	// Drafts gives the agent the kiff_draft tool: submit a taf's KIFF draft,
 	// whose claim secret the model never sees (kiff/agents#91). Off unless
 	// set; the server must offer drafts.
@@ -446,6 +449,12 @@ func (d Definition) Check() error {
 		if !slices.Contains(show.TafTypes, t) || slices.Contains(d.ShowTypes[:i], t) {
 			return fmt.Errorf("registry: show_types names each of %s at most once, not %q", strings.Join(show.TafTypes, ", "), t)
 		}
+	}
+	if len(d.Wording) > 0 && !d.Show {
+		return errors.New("registry: wording needs show")
+	}
+	if err := show.CheckWording(d.Wording); err != nil {
+		return fmt.Errorf("registry: %w", err)
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
 	// several times longer (a control character becomes six bytes).
@@ -832,7 +841,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, b.Own(tenant, id, d.Version)...)
 	}
 	if d.Show {
-		tools = append(tools, show.New(d.ShowTypes...))
+		tools = append(tools, show.New(d.ShowTypes...).WithWording(d.Wording))
 	}
 	if d.FollowUps {
 		if b.FollowUp == nil {

@@ -411,11 +411,13 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 
 // test is one run of the scenario, and what it must clean up.
 type test struct {
-	cfg    config
-	out    *redacting
-	hc     *http.Client
-	run    string // names this run's agents and keys
-	tenant string
+	cfg config
+	// setupWording are the setup definition's wording rules, read by the plan gate.
+	setupWording []show.Wording
+	out          *redacting
+	hc           *http.Client
+	run          string // names this run's agents and keys
+	tenant       string
 
 	kiff  *client
 	phone *phone
@@ -579,6 +581,8 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if t.words != nil {
 		t.words.setup = setup.Instructions // Setup's progress notes are graded as its lines
 	}
+	// The plan gate reads the same wording rules show refuses a card by (readOnlyWordsIn).
+	t.setupWording = setup.Wording
 	if err := t.agents.Put(ctx, setup); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/kiff/agents/tool/show"
 	"strings"
 	"testing"
 
@@ -86,7 +87,7 @@ func conversation(parts ...any) []session.Event {
 func graded(t *testing.T, p plan, events []session.Event, wide bool, claims ...string) map[string]eval.CheckResult {
 	t.Helper()
 	j := &eval.Judge{Model: wordJudge{claims: claims}, ModelID: "judge"}
-	checks, err := gradePlan(context.Background(), j, p, planRunOf(events, "grt_1"), wide)
+	checks, err := gradePlan(context.Background(), j, p, planRunOf(events, "grt_1"), wide, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +155,7 @@ func TestReadOnlyFailsWhereverCoachWritesIt(t *testing.T) {
 	for _, fine := range []string{"The taf only reads your rows and tells you the total.", "Le taf lit seulement tes lignes.", "Read the new rows each Monday.",
 		// What the taf reads, after "read only" (Eval 22b, 16 Nov): the job, not the sign-in.
 		"It will read only the rows added since its last run, add up the Amount column, and post just that total."} {
-		if found := readOnlyWordsIn([]planText{{where: "message", text: fine}}); len(found) > 0 {
+		if found := readOnlyWordsIn([]planText{{where: "message", text: fine}}, nil); len(found) > 0 {
 			t.Errorf("%q read as %v", fine, found)
 		}
 	}
@@ -268,7 +269,7 @@ func TestThePlanFlag(t *testing.T) {
 	for name, p := range plans {
 		for lang, w := range p.words {
 			// The owner's own words never call it read-only: the case would grade its own ask.
-			if found := readOnlyWordsIn([]planText{{where: "ask", text: w.ask + " " + w.facts + " " + w.yes}}); len(found) > 0 {
+			if found := readOnlyWordsIn([]planText{{where: "ask", text: w.ask + " " + w.facts + " " + w.yes}}, nil); len(found) > 0 {
 				t.Errorf("%s %s: the owner says %v", name, lang, found)
 			}
 		}
@@ -292,4 +293,31 @@ func TestAReadOnlyStepTitleAfterAWideGrantFails(t *testing.T) {
 	// Named by what it does, the same plan passes (planque's request is two events: its call and its answer).
 	events[4] = steps("Connect Google Sheets", "Agree the rules: search your rows", "Start the taf")
 	wantPlan(t, graded(t, plans["sheets"], events, true), planNoReadOnlyWords, true, false)
+}
+
+// The setup definition's wording rules, as kiff/tafs sends en's and fr's, judge
+// the same as the gate's own list: a tafs ref with them grades as one without.
+func TestTheDefinitionsWordingJudgesAsTheGatesList(t *testing.T) {
+	jobWords := make([]string, 0, len(readsOnly))
+	for w := range readsOnly {
+		jobWords = append(jobWords, w)
+	}
+	wording := []show.Wording{
+		{Patterns: []string{`read-only|read only(\s+\pL+)?`, `(?:changes?|modif(?:y|ies)|touch(?:es)?) nothing`,
+			`(?:won'?t|will not|doesn'?t|does not|can'?t|cannot|can not) (?:change|modify|touch) anything`},
+			UnlessNext: jobWords, Fix: "say what the job does"},
+		{Patterns: []string{`lecture seule`, `ne (?:change|modifie|touche)(?:ra)? rien`, `ne peut rien (?:changer|modifier)`, `aucune modification`},
+			Fix: "dites ce que fait le taf"},
+	}
+	for _, text := range []string{
+		"Connect Google Sheets, read-only", "It will read only the rows added since its last run.", "It can read only what it needs.",
+		"Connecting it changes nothing.", "If you decline, nothing changes.", "It won't change anything in your account.",
+		"Connexion en lecture seule.", "Elle ne changera rien.", "Aucune modification de votre compte.", "Read the new rows each morning.",
+	} {
+		own := readOnlyWordsIn([]planText{{where: "message", text: text}}, nil)
+		def := readOnlyWordsIn([]planText{{where: "message", text: text}}, wording)
+		if (len(own) > 0) != (len(def) > 0) {
+			t.Errorf("%q: the gate's list says %v, the definition's rules %v", text, own, def)
+		}
+	}
 }

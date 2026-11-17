@@ -123,6 +123,17 @@ of its eight kinds):
   button that opens Coach on the taf with the owner's request written in.
   A taf shows it for a setting only Coach changes (a connection or its key,
   its Card, tools or schedule). It waits for nothing.
+- `wording` (optional, with `show`): rules on what the agent's cards may say,
+  as data: `[{patterns, unless_next?, fix}]`. Each pattern is RE2, matched
+  without case on whole words, an edge being anything but a letter or a digit
+  in any script (`show.Claim`). A pattern's first group, when it has one, is the
+  word after the phrase: one of `unless_next` lets that match through, as
+  "read only the new rows" names the job, not a sign-in's access. `show` refuses
+  a card whose own words match (title, text, yes, no, note, steps, options,
+  questions and theirs) with the rule's `fix`, so the agent redraws it, and it's
+  never recorded or drawn. At most 32 rules of 32 patterns. Coach's come from
+  kiff/tafs (`contracts/coach-wording.json`), and the Eval's plan gate reads the
+  same rules from the setup definition.
 - `credit` (optional): `{line, after, in: [{tool, fields}]}`, checked as
   `disclose` is and kept, and **never put in a call**. Since 7 Nov no message
   carries a credit line ("Built with tafs."), on WhatsApp, SMS or email: the
