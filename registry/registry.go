@@ -111,6 +111,9 @@ type Definition struct {
 	// Wording are rules on what the agent's cards may say, as data (show.Wording): a card that
 	// breaks one is refused with the rule's fix, so the agent redraws it, and it's never recorded.
 	Wording []show.Wording `json:"wording,omitempty"`
+	// KeptWords are a rules notice's line endings, by language and where the
+	// line is kept (show.KeptWords): show writes them, never the agent.
+	KeptWords show.KeptWords `json:"kept_words,omitempty"`
 	// Drafts gives the agent the kiff_draft tool: submit a taf's KIFF draft,
 	// whose claim secret the model never sees (kiff/agents#91). Off unless
 	// set; the server must offer drafts.
@@ -454,6 +457,12 @@ func (d Definition) Check() error {
 		return errors.New("registry: wording needs show")
 	}
 	if err := show.CheckWording(d.Wording); err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	if len(d.KeptWords) > 0 && !d.Show {
+		return errors.New("registry: kept_words needs show")
+	}
+	if err := show.CheckKeptWords(d.KeptWords); err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
 	// Bound what is stored, not the raw text: encoding can make a string
@@ -841,7 +850,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		tools = append(tools, b.Own(tenant, id, d.Version)...)
 	}
 	if d.Show {
-		tools = append(tools, show.New(d.ShowTypes...).WithWording(d.Wording))
+		tools = append(tools, show.New(d.ShowTypes...).WithWording(d.Wording).WithKeptWords(d.KeptWords))
 	}
 	if d.FollowUps {
 		if b.FollowUp == nil {

@@ -308,6 +308,11 @@ type Component struct {
 	// that agrees to them: the notice's id.
 	Rules  []Rule `json:"rules,omitempty"`
 	Agrees string `json:"agrees,omitempty"`
+	// Lines are a rules notice's, each with where it's kept (kept.go), and
+	// Lang the owner's language they're written in: show writes Text from
+	// them, each line's ending from the definition's KeptWords.
+	Lines []Line `json:"lines,omitempty"`
+	Lang  string `json:"lang,omitempty"`
 	// Waits says the run pauses on this card until it's answered, and who
 	// answers it: WaitsOwner (Answerable: the person) or WaitsService
 	// (ByService: the service that hands the owner over). The show tool sets
@@ -338,7 +343,7 @@ func waitsOn(t string) string {
 // fields lists the fields each type may carry, besides type and id.
 var fields = map[string][]string{
 	"steps":     {"title", "steps"},
-	"notice":    {"tone", "title", "text", "rules"},
+	"notice":    {"tone", "title", "text", "rules", "lines", "lang"},
 	"confirm":   {"text", "options", "agrees"},
 	"questions": {"text", "questions"},
 	"approval":  {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
@@ -354,6 +359,8 @@ type Tool struct {
 	types []string
 	// wording: what the definition says its cards may not say (WithWording).
 	wording []Wording
+	// keptWords: a rules notice's endings, by language (WithKeptWords).
+	keptWords KeptWords
 }
 
 // New returns the show tool, for types alone when given (a taf's
@@ -382,7 +389,7 @@ func (t Tool) Spec() model.ToolSpec {
 	return model.ToolSpec{
 		Name: Name,
 		Description: "Show the owner a component in the chat; the app draws it. Showing an id again replaces that component in place (to advance steps). " +
-			"steps {title, steps:[{label, status: pending|active|done|failed|skipped, call?}]}, where call names the tool a step waits on, and the step is done only once that call went through; notice {tone: info|success|warning|error, title?, text}; " +
+			"steps {title, steps:[{label, status: pending|active|done|failed|skipped, call?}]}, where call names the tool a step waits on, and the step is done only once that call went through; notice {tone: info|success|warning|error, title?, text}, and a rules notice {tone, title?, rules, lang, lines:[{text, kept, tools?, what?}]} with no text: each line one rule in plain words, kept card (tools: the rules' tools it is), connection (tools it holds for), kiff (what: disclosure, reads_total or held_approval) or instructions, and never its ending, which show adds; " +
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
 			"questions {text, questions:[{id, text, options:[{value, label, description?}], 2 to 5, multi?, note?}], 1 to 4}: several questions the owner answers together, when none depends on another's answer; " +
 			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
@@ -408,6 +415,10 @@ func (t Tool) Spec() model.ToolSpec {
 			`"window":{"type":"string","enum":["call","calendar_day","rolling_1h","rolling_24h","rolling_7d","lifetime"],"description":"call or calendar_day; with per, the window of the Card's aggregate"},` +
 			`"per":{"type":"string","description":"a total for each item: the argument the Card's aggregate counts it by (its per)"},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
 			`"over":{"type":"string","enum":["ask","refuse"],"description":"what happens past this figure, when it isn't the rule's over"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
+			`"lines":{"type":"array","maxItems":32,"description":"a rules notice's lines, beside its rules: show writes the notice's text from them, with each line's ending","items":{"type":"object","properties":{"text":{"type":"string","description":"the rule in the owner's words, plain, one line, without where it's kept"},` +
+			`"kept":{"type":"string","enum":["card","connection","kiff","instructions"]},"tools":{"type":"array","items":{"type":"string"},"description":"card and connection: the tools of this notice's rules it's about"},` +
+			`"what":{"type":"string","enum":["disclosure","reads_total","held_approval"],"description":"kiff only: what KIFF does"}},"required":["text","kept"]}},` +
+			`"lang":{"type":"string","description":"a rules notice with lines: the owner's language, as a two-letter code"},` +
 			`"agrees":{"type":"string","description":"a confirm that agrees to a rules notice: the notice's id; it has an option with value agree"},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +
 			`"call":{"type":"string","description":"the tool the step waits on, by name: done only once that call went through"}},"required":["label","status"]}},` +
@@ -457,6 +468,10 @@ func (t Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, err
 		return tool.Result{Text: "type must be one of " + strings.Join(t.allowed(), ", "), IsError: true}, nil
 	}
 	if err := stepsDone(c, tool.OutcomesFrom(ctx)); err != nil {
+		return tool.Result{Text: err.Error(), IsError: true}, nil
+	}
+	// A rules notice's lines: checked, and its text written from them with each line's ending.
+	if err := t.drawLines(&c, c.Text != ""); err != nil {
 		return tool.Result{Text: err.Error(), IsError: true}, nil
 	}
 	// The definition's wording rules: a card that breaks one is redrawn, never recorded or drawn.
@@ -615,7 +630,8 @@ func (c Component) check() error {
 		if err := checkRules(c.Rules); err != nil {
 			return err
 		}
-		return text("text", c.Text, true, MaxText)
+		// A notice with lines gets its text from show (kept.go), so it may come without one.
+		return text("text", c.Text, len(c.Lines) == 0, MaxText)
 	case "confirm":
 		if err := text("text", c.Text, true, MaxText); err != nil {
 			return err
