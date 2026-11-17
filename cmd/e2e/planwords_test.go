@@ -144,6 +144,11 @@ func TestReadOnlyFailsWhereverCoachWritesIt(t *testing.T) {
 		{"an option, in French", showed(`{"type":"questions","id":"q1","questions":[{"id":"x","text":"Connecter Google Sheets ?","options":[{"value":"oui","label":"Oui, en lecture seule"}]}]}`), `a option says "lecture seule"`},
 		{"a message, in French", wrote("La connexion ne modifie rien dans ton tableur."), `a message says "ne modifie rien"`},
 		{"a message, won't change", wrote("It won't change anything."), `a message says "won't change anything"`},
+		// The words after "read only" that can follow the label stay caught (Eval 44128040350).
+		{"a message, read only from", wrote("Gmail stays read only from now on."), `a message says "read only"`},
+		{"a message, read only mail", wrote("It uses a read only mail connection."), `a message says "read only"`},
+		{"a message, read only whatever", wrote("It's read only whatever you approve."), `a message says "read only"`},
+		{"a message, read only what X sends", wrote("I'll set Accountant emails to read only what accounts@example.com sends you."), `a message says "read only"`},
 	} {
 		got := graded(t, plans["sheets"], conversation(c.event, asked("grt_1", true), wrote("Its sign-in asks for more access than the taf uses."), approvalFor("grt_1")), true)
 		wantPlan(t, got, planNoReadOnlyWords, false, false)
@@ -154,7 +159,9 @@ func TestReadOnlyFailsWhereverCoachWritesIt(t *testing.T) {
 	// What the taf does is fine to say: it reads, it only tells.
 	for _, fine := range []string{"The taf only reads your rows and tells you the total.", "Le taf lit seulement tes lignes.", "Read the new rows each Monday.",
 		// What the taf reads, after "read only" (Eval 22b, 16 Nov): the job, not the sign-in.
-		"It will read only the rows added since its last run, add up the Amount column, and post just that total."} {
+		"It will read only the rows added since its last run, add up the Amount column, and post just that total.",
+		// Which mail it reads.
+		"The taf will read only incoming replies.", "It will read only unread replies."} {
 		if found := readOnlyWordsIn([]planText{{where: "message", text: fine}}, nil); len(found) > 0 {
 			t.Errorf("%q read as %v", fine, found)
 		}

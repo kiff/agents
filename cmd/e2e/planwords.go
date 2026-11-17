@@ -276,7 +276,10 @@ func readOnlyWordsIn(texts []planText, wording []show.Wording) []string {
 // claim about access.
 var readsOnly = map[string]bool{"the": true, "a": true, "an": true, "its": true, "your": true, "my": true, "their": true,
 	"this": true, "that": true, "these": true, "those": true, "new": true, "each": true, "every": true,
-	"rows": true, "lines": true, "emails": true, "messages": true, "pages": true}
+	"rows": true, "lines": true, "emails": true, "messages": true, "pages": true,
+	// Which mail the job reads (Eval 44128040350, with kiff/tafs' contract): neither
+	// follows the label. "from", "mail", "whatever" and "what" can, so they stay out.
+	"unread": true, "incoming": true}
 
 // claimIn is the first match of re in text that claims a connection, a
 // sign-in or a step is harmless, as it reads: one where "read only" names
