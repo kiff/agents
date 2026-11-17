@@ -267,6 +267,73 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 	return http.StatusOK, s.viewRun(rn), nil
 }
 
+// byKey is what GET /agents/{id}/runs/by-key answers: the run a client's
+// message id (dedup_key) names, without the rest of the run. InputSHA256 is
+// the hex SHA-256 of the message under that key: the run's input for a
+// start, the message itself for a steer or a written answer. Steered says
+// the key names a message steered into the run or one that answered its
+// card, not the message that started it.
+type byKey struct {
+	ID          string     `json:"id"`
+	Status      run.Status `json:"status"`
+	SessionID   string     `json:"session_id"`
+	InputSHA256 string     `json:"input_sha256"`
+	Steered     bool       `json:"steered"`
+}
+
+func keyed(rn run.Run, text string, steered bool) byKey {
+	h := sha256.Sum256([]byte(text))
+	return byKey{ID: rn.ID, Status: rn.Status, SessionID: rn.Session, InputSHA256: hex.EncodeToString(h[:]), Steered: steered}
+}
+
+// runByKey answers the run a client's message id (dedup_key) names, scoped
+// by tenant and agent as RequestRunID is: the run that key started, or one
+// holding a message steered into it, or answering its card, under that key
+// (found among the agent's latest runs, as the flood guard reads them). A
+// caller asks before it spends anything on a message it may have sent
+// already. Read as the service or as one requester, as an agent's runs are:
+// another person's run is not found. Nothing: 404 run_not_found.
+func (s *Server) runByKey(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	key := r.URL.Query().Get("dedup_key")
+	if key == "" || len(key) > MaxEventKey {
+		return 0, nil, bad("dedup_key is 1 to %d bytes", MaxEventKey)
+	}
+	q, err := readerOf(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, key)); {
+	case err == nil && readBy(rn, q):
+		return http.StatusOK, keyed(rn, rn.Input, false), nil
+	case err != nil && !errors.Is(err, run.ErrNotFound):
+		return 0, nil, err
+	}
+	runs, err := s.Runs.List(ctx, c.Tenant, id, floodScan)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, rn := range runs {
+		if !readBy(rn, q) {
+			continue
+		}
+		if m, ok := rn.SteeredWith(key); ok {
+			return http.StatusOK, keyed(rn, m.Text, true), nil
+		}
+		for _, card := range rn.Requirements {
+			if card.Card() && card.Key == key {
+				var was show.Answered
+				_ = json.Unmarshal(card.Result, &was)
+				return http.StatusOK, keyed(rn, was.Wrote, true), nil
+			}
+		}
+	}
+	return 0, nil, notFoundError{"run_not_found", "no run of this agent has that dedup_key"}
+}
+
 // pausedRuns lists the caller tenant's PAUSED runs across its agents, newest
 // first, from the tenant's own paused list: one read for a whole account,
 // whatever its agents' histories (tafs cloud's sweep of the steps handed to
@@ -438,6 +505,11 @@ type steerBody struct {
 	// Requester is who wrote the message (#219): it counts toward their
 	// flood guard, and a run another person asked for isn't theirs to steer.
 	Requester *run.Requester `json:"requester,omitempty"`
+	// DedupKey is the client's id for this message: the same key sent again
+	// to the run is the message it already holds (202, nothing added), and
+	// the same key with another text is 409 dedup_key_conflict. A key is
+	// the run's: another run, or another tenant's, never sees it.
+	DedupKey string `json:"dedup_key,omitempty"`
 }
 
 // steerRun gives a run that hasn't ended a message the owner wrote while it
@@ -454,6 +526,9 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 	}
 	if strings.TrimSpace(body.Text) == "" || len(body.Text) > MaxInput {
 		return 0, nil, bad("the text is 1 to %d bytes", MaxInput)
+	}
+	if len(body.DedupKey) > MaxEventKey {
+		return 0, nil, bad("dedup_key is 1 to %d bytes", MaxEventKey)
 	}
 	q, err := requesterOf(body.Requester)
 	if err != nil {
@@ -479,13 +554,23 @@ func (s *Server) steerRun(ctx context.Context, c Caller, r *http.Request) (int, 
 			return 0, nil, err
 		}
 	}
+	// Sent again (an app's retry): the message the run holds, answered as
+	// the first send was, and not counted again by the flood guard.
+	if m, ok := rn.SteeredWith(body.DedupKey); ok {
+		if m.Text != body.Text || m.Requester != q {
+			return 0, nil, dedupConflict()
+		}
+		return http.StatusAccepted, s.viewRun(rn), nil
+	}
 	if q.Key() != "" {
 		if err := s.flood(ctx, c.Tenant, rn.Agent, q); err != nil {
 			return 0, nil, err
 		}
 	}
-	next, err := run.SteerBy(ctx, s.Runs, c.Tenant, rn.ID, body.Text, q, s.now())
+	next, _, err := run.SteerKeyed(ctx, s.Runs, c.Tenant, rn.ID, body.Text, body.DedupKey, q, s.now())
 	switch {
+	case errors.Is(err, run.ErrDedupConflict):
+		return 0, nil, dedupConflict()
 	case errors.Is(err, run.ErrTransition):
 		return 0, nil, conflict("run_ended", "the run has ended, or was asked to stop: send the message as a new run")
 	case errors.Is(err, run.ErrFull):
@@ -688,9 +773,11 @@ type startBody struct {
 	// its tools by name, and with skills, its skills to the ones it names.
 	// Only with no session_id and no chat: 400 otherwise.
 	Only *session.Only `json:"only,omitempty"`
-	// DedupKey names the request at its origin (a door message's id): one
-	// key starts one run of the agent, however often it is sent, and a
-	// second send gets the first run (RequestRunID). Background only.
+	// DedupKey names the request at its origin (a door message's id, or an
+	// app's id for one message): one key starts one run of the agent,
+	// however often it is sent, and a second send gets the first run
+	// (RequestRunID). In the background, the run as JSON; streamed, the
+	// first run's stream from its start (repeatStream).
 	DedupKey string `json:"dedup_key,omitempty"`
 	// Source is where the request came from ("email", "whatsapp"): the
 	// run's Source. Only with DedupKey.
@@ -864,8 +951,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("source goes with a dedup_key"))
 		return
 	case body.DedupKey == "":
-	case len(body.DedupKey) > MaxEventKey || !body.Background:
-		s.fail(w, r, bad("dedup_key is 1 to %d bytes, with background: true", MaxEventKey))
+	case len(body.DedupKey) > MaxEventKey:
+		s.fail(w, r, bad("dedup_key is 1 to %d bytes", MaxEventKey))
 		return
 	case body.Source != "" && !sourceName(body.Source):
 		s.fail(w, r, bad("the source is 1 to %d of a-z, 0-9, '.', '_' and '-'", MaxEventSource))
@@ -910,6 +997,19 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	if body.DedupKey != "" && !body.Background {
+		// Streamed and sent before (an app sending again after a stream that
+		// failed before its answer): never a second run. The first run's
+		// stream, from its start, as it was or as it goes on.
+		switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, body.DedupKey)); {
+		case err == nil:
+			s.repeatStream(w, r, c, rn, body.Input, q)
+			return
+		case !errors.Is(err, run.ErrNotFound):
+			s.fail(w, r, err)
+			return
+		}
+	}
 	if body.DedupKey != "" {
 		// Sent before: the run it started, never a second one (its calls'
 		// operation IDs are that run's). One still PENDING, whose hand-off
@@ -931,6 +1031,30 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		case !errors.Is(err, run.ErrNotFound):
 			s.fail(w, r, err)
+			return
+		}
+	}
+	if body.DedupKey != "" && body.SessionID != "" && q.Kind == run.ByMember && len(body.Attachments) == 0 {
+		// Sent again after it answered a waiting card in the owner's words
+		// (wroteInstead): that answer, never a second message or run.
+		rn, card, ok, err := s.wroteBefore(ctx, c.Tenant, id, body.SessionID, body.DedupKey)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if ok {
+			var was show.Answered
+			_ = json.Unmarshal(card.Result, &was)
+			switch {
+			case was.Wrote != body.Input || !own(rn, q):
+				s.fail(w, r, dedupConflict())
+			case body.Background:
+				writeJSON(w, http.StatusAccepted, s.viewRun(rn))
+			default:
+				sse := newStream(w)
+				sse.send("run", s.viewRun(rn))
+				s.follow(r, sse, c, rn, 0)
+			}
 			return
 		}
 	}
@@ -982,7 +1106,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	// second line of thought starts beside the one waiting. Only their own
 	// message does: a door's, or one with files, starts a run as before.
 	if body.SessionID != "" && q.Kind == run.ByMember && len(body.Attachments) == 0 {
-		if done := s.wroteInstead(w, r, c, body.SessionID, q, body.Input, body.Background); done {
+		if done := s.wroteInstead(w, r, c, body.SessionID, q, body.Input, body.DedupKey, body.Background); done {
 			return
 		}
 	}
@@ -1027,6 +1151,11 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rn, err := s.start(ctx, st)
+	if errors.Is(err, run.ErrExists) && !body.Background {
+		// Sent twice at once, streamed: the other send started it.
+		s.repeatStream(w, r, c, rn, body.Input, q)
+		return
+	}
 	if errors.Is(err, run.ErrExists) {
 		// Sent twice at once: the other send started it.
 		writeJSON(w, http.StatusOK, s.viewRun(rn))
@@ -1401,10 +1530,65 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	f := &follower{s: s, sse: newStream(w), tenant: c.Tenant, rn: rn, after: after}
+	s.follow(r, newStream(w), c, rn, after)
+}
+
+// repeatStream answers a streamed start sent again with the same dedup key:
+// the run that key started, streamed from its start as a start's is (the run,
+// its recorded events, the end), and never a second run. The same key with
+// another input or requester is a client's mistake, refused with 409: it is
+// never taken as the first message. A run no invocation has claimed yet (the
+// first send went away before it began) is executed here; one at work is
+// followed as it goes on, and one that has stopped is replayed to its end.
+func (s *Server) repeatStream(w http.ResponseWriter, r *http.Request, c Caller, rn run.Run, input string, q run.Requester) {
+	if rn.Input != input || rn.Requester.Key() != q.Key() {
+		s.fail(w, r, dedupConflict())
+		return
+	}
+	if rn.Status == run.Pending && rn.After == "" {
+		s.execute(w, r, c, rn, 0)
+		return
+	}
+	sse := newStream(w)
+	sse.send("run", s.viewRun(rn))
+	s.follow(r, sse, c, rn, 0)
+}
+
+// dedupConflict refuses a message whose dedup_key already names another one.
+func dedupConflict() error {
+	return conflict("dedup_key_conflict", "this dedup_key already names another message or requester")
+}
+
+// wroteBefore is the run whose card the requester already answered by
+// writing, in the session, with this dedup_key: found among the agent's
+// latest runs, as the flood guard reads them. ok is false if there is none.
+func (s *Server) wroteBefore(ctx context.Context, tenant, agent, sessionID, key string) (run.Run, run.Requirement, bool, error) {
+	runs, err := s.Runs.List(ctx, tenant, agent, floodScan)
+	if err != nil {
+		return run.Run{}, run.Requirement{}, false, err
+	}
+	for _, rn := range runs {
+		if rn.Session != sessionID {
+			continue
+		}
+		for _, q := range rn.Requirements {
+			if q.Card() && q.Key == key {
+				return rn, q, true, nil
+			}
+		}
+	}
+	return run.Run{}, run.Requirement{}, false, nil
+}
+
+// follow sends a run's recorded events after the index after, then the rest
+// as the run goes on, until it stops, and then the end.
+func (s *Server) follow(r *http.Request, sse *stream, c Caller, rn run.Run, after int64) {
+	ctx := r.Context()
+	f := &follower{s: s, sse: sse, tenant: c.Tenant, rn: rn, after: after}
 	tick := time.NewTicker(followEvery)
 	defer tick.Stop()
 	handedOff := time.Now().Add(handOffWait) // a wait in real time, not the run's clock
+	var err error
 	for {
 		if err := f.catchUp(ctx); err != nil {
 			s.logError(r, "resume", err)
@@ -1844,7 +2028,7 @@ func (s *Server) granted(ctx context.Context, tenant, agent string, q run.Reques
 // owner wrote, and goes on with that run; it reports whether it answered the
 // request. With no card waiting, or one answered meanwhile, it does nothing,
 // and the message starts a run as any other.
-func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, sessionID string, q run.Requester, text string, background bool) bool {
+func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, sessionID string, q run.Requester, text, key string, background bool) bool {
 	ctx := r.Context()
 	sess, _, err := s.Sessions.Read(ctx, c.Tenant, sessionID)
 	if err != nil {
@@ -1860,7 +2044,7 @@ func (s *Server) wroteInstead(w http.ResponseWriter, r *http.Request, c Caller, 
 			continue
 		}
 		result, _ := json.Marshal(show.Answered{Answer: json.RawMessage("null"), Words: "In your words: “" + text + "”", Wrote: text})
-		next, err := run.AnswerCard(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, s.now())
+		next, err := run.AnswerCardKeyed(ctx, s.Runs, c.Tenant, rn.ID, card.CallID, result, key, s.now())
 		if err != nil {
 			continue // answered meanwhile, or the run went on
 		}

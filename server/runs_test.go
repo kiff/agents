@@ -3,6 +3,8 @@ package server_test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2049,10 +2051,10 @@ func TestARequestSentTwiceStartsOneRun(t *testing.T) {
 		t.Fatal("a request's run ID isn't its own")
 	}
 	for name, body := range map[string]map[string]any{
-		"not background": {"input": "x", "dedup_key": "k"},
-		"a long key":     {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1), "background": true},
-		"a bad source":   {"input": "x", "dedup_key": "k", "source": "E Mail", "background": true},
-		"source, no key": {"input": "x", "source": "email", "background": true},
+		"a long key":           {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1), "background": true},
+		"a long key, streamed": {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1)},
+		"a bad source":         {"input": "x", "dedup_key": "k", "source": "E Mail", "background": true},
+		"source, no key":       {"input": "x", "source": "email", "background": true},
 	} {
 		code, got := f.do("t1", "POST", "/agents/payouts/runs?as=service", body)
 		f.want(400, code, got, name)
@@ -2493,5 +2495,359 @@ func TestTriggerAScheduleThatChecksFirstSaysWhyNoRunStarted(t *testing.T) {
 		if !strings.Contains(got, tc.want) || len(f.background) != 0 {
 			t.Fatalf("%s: %v, background %v", tc.name, body, f.background)
 		}
+	}
+}
+
+// A streamed message with a dedup key (an app's id for one message) starts one
+// run, however often it is sent: an app that sends it again after a stream
+// that failed before its answer gets the first run's stream from its start,
+// never a second run. Once ended, it's replayed to its end; while at work,
+// it's followed as it goes on. The same key with another message is refused.
+func TestAStreamedMessageSentAgainStartsOneRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	body := func(input, key string) string {
+		return fmt.Sprintf(`{"input":%q,"dedup_key":%q}`, input, key)
+	}
+	recorded := func(events []sse) string {
+		_, ids := kinds(t, events)
+		return strings.Join(ids, ",")
+	}
+
+	// Ended: the second send replays the first run, and starts nothing.
+	code, first := f.stream("t1", "POST", "/agents/payouts/runs", body("Pay the vendors", "app-msg-1"))
+	if code != 200 || first[0].name != "run" || first[len(first)-1].data["status"] != string(run.Completed) {
+		t.Fatalf("first send: %d %s", code, names(first))
+	}
+	id := first[0].data["id"]
+	if id != server.RequestRunID("t1", "payouts", "app-msg-1") {
+		t.Fatalf("the run's id %v isn't the key's", id)
+	}
+	code, again := f.stream("t1", "POST", "/agents/payouts/runs", body("Pay the vendors", "app-msg-1"))
+	end := again[len(again)-1]
+	if code != 200 || again[0].name != "run" || again[0].data["id"] != id || recorded(again) != "1,2" ||
+		end.name != "end" || end.data["id"] != id || end.data["status"] != string(run.Completed) || end.data["output"] != "done" {
+		t.Fatalf("sent again after the end: %d %s, recorded %s, end %v", code, names(again), recorded(again), end.data)
+	}
+	if len(f.runner.starts) != 1 || len(f.runner.execs) != 1 {
+		t.Fatalf("starts %d, executions %d: want one each", len(f.runner.starts), len(f.runner.execs))
+	}
+
+	// Another message under the same key: refused, nothing started.
+	code, refused := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay someone else", "dedup_key": "app-msg-1"})
+	f.want(409, code, refused, "another message, the same key")
+	if refused["error"] != "dedup_key_conflict" || len(f.runner.starts) != 1 {
+		t.Fatalf("refused %v, starts %d", refused, len(f.runner.starts))
+	}
+	// Another requester under the same key: refused too.
+	code, refused = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay the vendors", "dedup_key": "app-msg-1",
+		"requester": map[string]any{"kind": "member", "id": "p-2"}})
+	if code != 409 || refused["error"] != "dedup_key_conflict" {
+		t.Fatalf("another requester: %d %v", code, refused)
+	}
+
+	// At work: the second send follows the first run as it goes on.
+	f.runner.hold = make(chan struct{})
+	release := sync.OnceFunc(func() { close(f.runner.hold) })
+	t.Cleanup(release)
+	firstDone := make(chan []sse, 1)
+	go func() {
+		_, ev := f.stream("t1", "POST", "/agents/payouts/runs", body("Book the van", "app-msg-2"))
+		firstDone <- ev
+	}()
+	busy := server.RequestRunID("t1", "payouts", "app-msg-2")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := f.runs.Get(ctx, "t1", busy)
+		if err == nil && got.Status == run.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the first send's run is %s (%v)", got.Status, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	secondDone := make(chan []sse, 1)
+	go func() {
+		_, ev := f.stream("t1", "POST", "/agents/payouts/runs", body("Book the van", "app-msg-2"))
+		secondDone <- ev
+	}()
+	time.Sleep(50 * time.Millisecond) // the second send is following before the run goes on
+	release()
+	for _, done := range []chan []sse{firstDone, secondDone} {
+		select {
+		case ev := <-done:
+			last := ev[len(ev)-1]
+			if ev[0].data["id"] != busy || recorded(ev) != "1,2" || last.name != "end" || last.data["status"] != string(run.Completed) {
+				t.Fatalf("a send of the busy run: %s, recorded %s, end %v", names(ev), recorded(ev), last.data)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a stream never ended")
+		}
+	}
+	if len(f.runner.starts) != 2 || len(f.runner.execs) != 2 {
+		t.Fatalf("starts %d, executions %d: want one more each, for the second key", len(f.runner.starts), len(f.runner.execs))
+	}
+}
+
+// A streamed send whose first try stored the run but went away before any
+// invocation took it (the run still PENDING) is executed by the send that
+// comes again: once, and as that run.
+func TestAStreamedMessageSentAgainRunsTheRunNobodyTook(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	id := server.RequestRunID("t1", "payouts", "app-msg-9")
+	pending := run.New("t1", "payouts", "s-9", run.ByOwner, "Pay the vendors", now)
+	pending.ID = id
+	if err := f.runs.Create(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"Pay the vendors","dedup_key":"app-msg-9"}`)
+	end := events[len(events)-1]
+	if code != 200 || events[0].data["id"] != id || end.data["status"] != string(run.Completed) {
+		t.Fatalf("sent again: %d %s, end %v", code, names(events), end.data)
+	}
+	if len(f.runner.starts) != 0 || strings.Join(f.runner.execs, ",") != id {
+		t.Fatalf("starts %d, executions %v: want none started, that one executed", len(f.runner.starts), f.runner.execs)
+	}
+}
+
+// A dedup key is scoped by tenant and agent, never by the key alone: the same
+// app id sent to another tenant's agent, or to another agent, starts that
+// agent's own run, never a 409 and never the first run.
+func TestADedupKeyIsScopedByTenantAndAgent(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "refunds")
+	f.putAgent("t2", "payouts")
+	const key = "0b6f3a52-7d1e-4c8a-9f2b-5e1d4c3b2a10"
+	seen := map[any]bool{}
+	for _, at := range []struct{ tenant, agent string }{{"t1", "payouts"}, {"t2", "payouts"}, {"t1", "refunds"}} {
+		code, events := f.stream(at.tenant, "POST", "/agents/"+at.agent+"/runs", fmt.Sprintf(`{"input":"Pay the vendors","dedup_key":%q}`, key))
+		if code != 200 || events[0].name != "run" {
+			t.Fatalf("%s/%s: %d %s", at.tenant, at.agent, code, names(events))
+		}
+		id := events[0].data["id"]
+		if id != server.RequestRunID(at.tenant, at.agent, key) || seen[id] {
+			t.Fatalf("%s/%s got run %v, already seen %v", at.tenant, at.agent, id, seen[id])
+		}
+		seen[id] = true
+		if end := events[len(events)-1]; end.data["status"] != string(run.Completed) {
+			t.Fatalf("%s/%s ended %v", at.tenant, at.agent, end.data)
+		}
+	}
+	if len(f.runner.starts) != 3 || len(f.runner.execs) != 3 {
+		t.Fatalf("starts %d, executions %d: want three of each, one per tenant and agent", len(f.runner.starts), len(f.runner.execs))
+	}
+}
+
+// An ended run sent again with its dedup key is replayed from event 0, and
+// nothing new is started or executed.
+func TestAnEndedRunSentAgainIsReplayedFromEventZero(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	send := `{"input":"Pay the vendors","dedup_key":"app-msg-r"}`
+	if code, first := f.stream("t1", "POST", "/agents/payouts/runs", send); code != 200 || first[len(first)-1].data["status"] != string(run.Completed) {
+		t.Fatalf("first: %d %s", code, names(first))
+	}
+	code, again := f.stream("t1", "POST", "/agents/payouts/runs", send)
+	_, ids := kinds(t, again)
+	if code != 200 || again[0].name != "run" || strings.Join(ids, ",") != "1,2" || again[len(again)-1].name != "end" {
+		t.Fatalf("replay: %d %s, ids %v; want run, 1, 2, end", code, names(again), ids)
+	}
+	if len(f.runner.starts) != 1 || len(f.runner.execs) != 1 {
+		t.Fatalf("starts %d, executions %d", len(f.runner.starts), len(f.runner.execs))
+	}
+}
+
+// The same dedup key with another text is 409 dedup_key_conflict, and starts
+// nothing: never taken as the first message, nor as a new one.
+func TestTheSameDedupKeyWithAnotherTextIsAConflict(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	if code, _ := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"Pay the vendors","dedup_key":"app-msg-c"}`); code != 200 {
+		t.Fatalf("first: %d", code)
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay the landlord", "dedup_key": "app-msg-c"})
+	f.want(409, code, body, "another text, the same key")
+	if body["error"] != "dedup_key_conflict" || len(f.runner.starts) != 1 {
+		t.Fatalf("got %v, starts %d", body, len(f.runner.starts))
+	}
+}
+
+// A message steered into a run with a dedup key is kept once: sent again with
+// the same text, it's the message the run holds (202, nothing added); with
+// another text, 409. The key is the run's: the same key on another run is
+// that run's own message. A message with no key is kept each time, as before.
+func TestASteeredMessageSentAgainIsKeptOnce(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r, other := f.stored(run.Running), f.stored(run.Running)
+	steer := func(id, text, key string) (int, map[string]any) {
+		b := map[string]any{"text": text}
+		if key != "" {
+			b["dedup_key"] = key
+		}
+		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages?as=service", b)
+	}
+	untaken := func(id string) []string {
+		got, _ := f.runs.Get(ctx, "t1", id)
+		return got.Untaken()
+	}
+	code, body := steer(r.ID, "only the €20 one", "steer-1")
+	f.want(202, code, body, "the first send")
+	code, body = steer(r.ID, "only the €20 one", "steer-1")
+	f.want(202, code, body, "sent again")
+	if got := untaken(r.ID); !slices.Equal(got, []string{"only the €20 one"}) {
+		t.Fatalf("sent again: the run holds %v; want the message once", got)
+	}
+	if steering, _ := body["steering"].([]any); len(steering) != 1 {
+		t.Fatalf("the repeat's answer shows steering %v", body["steering"])
+	}
+	code, body = steer(r.ID, "all of them", "steer-1")
+	f.want(409, code, body, "another text, the same key")
+	if body["error"] != "dedup_key_conflict" || len(untaken(r.ID)) != 1 {
+		t.Fatalf("conflict: %v, the run holds %v", body, untaken(r.ID))
+	}
+	// Another run: the same key is its own message.
+	code, body = steer(other.ID, "all of them", "steer-1")
+	f.want(202, code, body, "the same key on another run")
+	if got := untaken(other.ID); !slices.Equal(got, []string{"all of them"}) {
+		t.Fatalf("another run holds %v", got)
+	}
+	// No key: each send is kept, as before.
+	steer(other.ID, "and the fee", "")
+	steer(other.ID, "and the fee", "")
+	if got := untaken(other.ID); len(got) != 3 {
+		t.Fatalf("without a key: the run holds %v; want each send kept", got)
+	}
+}
+
+// The owner's message that answers a waiting card (in their words), sent
+// again with its dedup key, is that answer: the same run answered, nothing
+// started, no second message. Another text under the key is 409.
+func TestWritingWhileACardWaitsSentAgainAnswersOnce(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.waitingOnCard()
+	msg := func(text string) map[string]any {
+		return map[string]any{"input": text, "session_id": "s-card", "background": true, "dedup_key": "write-1",
+			"requester": map[string]any{"kind": "member", "id": "ana"}}
+	}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", msg("Use the live account, please"))
+	f.want(202, code, body, "ana writes instead")
+	if body["id"] != r.ID {
+		t.Fatalf("the first send answered %v; want %s", body["id"], r.ID)
+	}
+	got, _ := f.runs.Get(ctx, "t1", r.ID)
+	if got.Requirements[0].Key != "write-1" {
+		t.Fatalf("the card keeps key %q", got.Requirements[0].Key)
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("Use the live account, please"))
+	f.want(202, code, body, "sent again")
+	if body["id"] != r.ID || len(f.runner.starts) != 0 {
+		t.Fatalf("sent again: run %v, starts %d; want the same run and nothing started", body["id"], len(f.runner.starts))
+	}
+	code, body = f.do("t1", "POST", "/agents/payouts/runs", msg("Use the test account"))
+	f.want(409, code, body, "another text, the same key")
+	if body["error"] != "dedup_key_conflict" || len(f.runner.starts) != 0 {
+		t.Fatalf("conflict: %v, starts %d", body, len(f.runner.starts))
+	}
+}
+
+// A steered message sent again with its key isn't counted again by its
+// writer's flood guard: the retry of one message is one message.
+func TestASteeredMessageSentAgainIsntCountedTwice(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.server.FloodMessages = 2
+	ana := map[string]any{"kind": "member", "id": "ana"}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": ana})
+	f.want(202, code, body, "ana's run")
+	id, _ := body["id"].(string)
+	steer := func() (int, map[string]any) {
+		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages", map[string]any{"text": "only the €20 one", "dedup_key": "steer-f", "requester": ana})
+	}
+	code, body = steer()
+	f.want(202, code, body, "ana's steer: her second message")
+	// Her guard is full now; the same message sent again is still answered.
+	for i := range 2 {
+		code, body = steer()
+		f.want(202, code, body, fmt.Sprintf("the same steer sent again, %d", i+1))
+	}
+}
+
+// GET …/runs/by-key answers the run a client's message id names, scoped by
+// tenant and agent as RequestRunID is: the run that key started, or one
+// holding a message steered into it or answering its card under that key
+// (steered: true). Another tenant, another agent, another person: 404
+// run_not_found, as for a key nobody sent.
+func TestARunIsFoundByItsDedupKey(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "refunds")
+	f.putAgent("t2", "payouts")
+	digest := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	byKey := func(tenant, agent, key, reader string) (int, map[string]any) {
+		return f.do(tenant, "GET", "/agents/"+agent+"/runs/by-key?dedup_key="+key+"&"+reader, nil)
+	}
+	const key = "5d0c9e1a-2b3f-4a6d-8e7c-1f2a3b4c5d6e"
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay the vendors", "dedup_key": key, "background": true,
+		"requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "the start")
+	started := body["id"]
+
+	code, got := byKey("t1", "payouts", key, "as=service")
+	f.want(200, code, got, "found")
+	if got["id"] != started || got["status"] != string(run.Pending) || got["steered"] != false || got["input_sha256"] != digest("Pay the vendors") || got["session_id"] == "" {
+		t.Fatalf("found %v", got)
+	}
+	if len(got) != 5 {
+		t.Fatalf("the answer carries %v; want id, status, session_id, input_sha256, steered", got)
+	}
+	code, got = byKey("t1", "payouts", key, "requester=member:ana")
+	f.want(200, code, got, "found by its requester")
+	for name, call := range map[string][4]string{
+		"a key nobody sent": {"t1", "payouts", "no-such-key", "as=service"},
+		"another tenant":    {"t2", "payouts", key, "as=service"},
+		"another agent":     {"t1", "refunds", key, "as=service"},
+		"another person":    {"t1", "payouts", key, "requester=member:luis"},
+	} {
+		code, got := byKey(call[0], call[1], call[2], call[3])
+		f.want(404, code, got, name)
+		if got["error"] != "run_not_found" {
+			t.Fatalf("%s: %v", name, got)
+		}
+	}
+	code, got = byKey("t1", "payouts", "", "as=service")
+	f.want(400, code, got, "no key")
+
+	// A steer under a key: that run, steered.
+	r := f.stored(run.Running)
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/messages?as=service", map[string]any{"text": "only the €20 one", "dedup_key": "steer-k"})
+	f.want(202, code, body, "the steer")
+	code, got = byKey("t1", "payouts", "steer-k", "as=service")
+	f.want(200, code, got, "a steer's key")
+	if got["id"] != r.ID || got["steered"] != true || got["input_sha256"] != digest("only the €20 one") {
+		t.Fatalf("a steer's key found %v", got)
+	}
+	code, got = byKey("t2", "payouts", "steer-k", "as=service")
+	f.want(404, code, got, "a steer's key, another tenant")
+}
+
+// A written answer to a waiting card, under a key, is found by that key as
+// the run whose card it answered, steered.
+func TestAWrittenAnswerIsFoundByItsDedupKey(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.waitingOnCard()
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Use the live account, please", "session_id": "s-card", "background": true,
+		"dedup_key": "write-k", "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "ana writes instead")
+	code, got := f.do("t1", "GET", "/agents/payouts/runs/by-key?dedup_key=write-k&requester=member:ana", nil)
+	f.want(200, code, got, "found")
+	h := sha256.Sum256([]byte("Use the live account, please"))
+	if got["id"] != r.ID || got["steered"] != true || got["input_sha256"] != hex.EncodeToString(h[:]) || got["session_id"] != "s-card" {
+		t.Fatalf("found %v", got)
 	}
 }
