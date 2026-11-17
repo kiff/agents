@@ -142,6 +142,16 @@ jobs:
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
+      - name: What's deployed, at the start
+        # tafs cloud, planque and agents as deployed when the suites start
+        # (infra/eval-deployed.sh: each one's newest successful deploy on
+        # main, from GitHub's API), for the end's comparison below. A read
+        # that fails leaves nothing, which the end counts as mixed.
+        if: steps.unchanged.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: infra/eval-deployed.sh | tee deployed-start.txt
       - name: The model and effort to compare
         if: steps.unchanged.outputs.skip != 'true' && (inputs.model != '' || inputs.effort != '')
         env:
@@ -387,6 +397,21 @@ jobs:
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
         run: go run ./cmd/e2e -sweep
+      - name: What's deployed, at the end
+        # The same read as at the start. A deploy that finished between the
+        # two, one still under way, or a side that couldn't be read makes the
+        # run mixed: it may have measured more than one version. The block
+        # goes into the report (deployed.md) and the run's summary.
+        id: deployed
+        if: steps.unchanged.outputs.skip != 'true' && (always())
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          infra/eval-deployed.sh > deployed-end.txt || echo "the end's read failed: the run counts as mixed"
+          if infra/eval-deployed.sh compare deployed-start.txt deployed-end.txt > deployed.md; then mixed=false; else mixed=true; fi
+          cat deployed.md
+          cat deployed.md >> "$GITHUB_STEP_SUMMARY"
+          echo "mixed=$mixed" >> "$GITHUB_OUTPUT"
       # Main's role writes under reports/; a branch's (an eval/tafs-<sha>
       # measure, a PR's branch) only under reports/branches/<branch>/, so a
       # check that fails there can be read too (infra/aws.sh). Only a pushed
@@ -411,7 +436,7 @@ jobs:
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md deployed.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"
@@ -423,6 +448,17 @@ jobs:
         if: always() && (inputs.model != '' || inputs.effort != '')
         run: |
           echo "::error::Override $LABEL: Coach and the tafs ran on ${MODEL:-their own model}, effort ${EFFORT:-their own}. Its checks are in the report; this run doesn't count for the Upgrade gate."
+          exit 1
+      - name: A run with a deploy in the middle counts only once judged
+        # kiff/tafs' Upgrade gate takes a run as measuring one version of
+        # tafs cloud, planque and agents. A mixed run ("What's deployed, at the end") ends
+        # red, whatever its checks said, and the gate's rule-B check takes it
+        # only when it's told this run was judged: whether the deploy could
+        # touch the suites it measured (its mixed_judged input, naming this
+        # run).
+        if: always() && steps.deployed.outputs.mixed == 'true'
+        run: |
+          echo "::error::Mixed: a deploy landed during this run, or a side couldn't be read (\"What's deployed, at the end\"). It counts for the Upgrade gate only once judged."
           exit 1
       - name: A run of some suites counts only on earlier passes
         # The Upgrade gate and the nightly's skip take the latest completed
