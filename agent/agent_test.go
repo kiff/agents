@@ -2353,7 +2353,7 @@ func TestAFailedCallKeepsWhyAfterTheRun(t *testing.T) {
 }
 
 // A kept reason never keeps a credential a vendor echoed: each shape is
-// hidden before the reason is cut (and #358).
+// hidden before the reason is cut (#358).
 func TestAFailedCallsReasonHidesSecrets(t *testing.T) {
 	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.c2lnbmF0dXJl"
 	for _, echo := range []string{
