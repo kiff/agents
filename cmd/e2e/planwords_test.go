@@ -321,3 +321,22 @@ func TestTheDefinitionsWordingJudgesAsTheGatesList(t *testing.T) {
 		}
 	}
 }
+
+// The gate keeps its own list whatever the definition's rules say: a contract
+// that leaves "read-only" out can't loosen the gate that judges it.
+func TestTheGatesOwnListStaysBesideTheDefinitionsRules(t *testing.T) {
+	loose := []show.Wording{{Patterns: []string{`lecture seule`}, Fix: "dites ce que fait le taf"}}
+	for _, text := range []string{"Connect Google Sheets, read-only", "It won't change anything in your account.", "Connexion en lecture seule."} {
+		if found := readOnlyWordsIn([]planText{{where: "message", text: text}}, loose); len(found) == 0 {
+			t.Errorf("%q passed the gate with a looser definition", text)
+		}
+	}
+	// And the definition's rules add to it: a phrase only they name fails too.
+	stricter := []show.Wording{{Patterns: []string{`somente leitura`}, Fix: "diga o que o taf faz"}}
+	if found := readOnlyWordsIn([]planText{{where: "message", text: "Google Sheets: somente leitura"}}, stricter); len(found) == 0 {
+		t.Error("the definition's own phrase passed")
+	}
+	if found := readOnlyWordsIn([]planText{{where: "message", text: "It will read only the rows added since its last run."}}, stricter); len(found) != 0 {
+		t.Errorf("the job's own words failed: %v", found)
+	}
+}

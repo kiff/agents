@@ -239,25 +239,29 @@ func (r planRun) from(at int) []string {
 // are the list's, never Coach's, so the line is safe in a public log.
 //
 // With the setup definition's wording rules (kiff/tafs' contracts/coach-wording.json, in its
-// `wording`), the gate reads those, the same rules show refuses a card by, so the check and the
-// gate can't drift; a definition without them (a tafs ref from before) keeps the list above.
+// `wording`), the gate reads those too, the same rules show refuses a card by: a match in either
+// fails. The gate's own list stays, so the definition under test can make it stricter, never
+// looser.
 func readOnlyWordsIn(texts []planText, wording []show.Wording) []string {
 	var out []string
 	for _, t := range texts {
-		if len(wording) > 0 {
-			for _, w := range wording {
-				if m := show.Claim(t.text, w); m != "" {
-					out = append(out, fmt.Sprintf("a %s says %q", t.where, m))
-					break
-				}
-			}
-			continue
-		}
+		// The gate's own list always counts; the definition's rules only add to it (de, es, it…), so a
+		// tafs ref whose contract left a phrase out can't loosen the gate that judges it.
+		found := ""
 		for _, w := range readOnlyWords {
 			if m := claimIn(w.re, t.text); m != "" {
-				out = append(out, fmt.Sprintf("a %s says %q", t.where, strings.ToLower(m)))
+				found = strings.ToLower(m)
 				break
 			}
+		}
+		for _, w := range wording {
+			if found != "" {
+				break
+			}
+			found = show.Claim(t.text, w)
+		}
+		if found != "" {
+			out = append(out, fmt.Sprintf("a %s says %q", t.where, found))
 		}
 	}
 	return out

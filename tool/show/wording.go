@@ -88,17 +88,30 @@ func Claim(text string, w Wording) string {
 		if err != nil {
 			continue
 		}
-		for _, m := range re.FindAllStringSubmatch(text, -1) {
-			next := ""
-			if len(m) > 1 {
-				next = strings.TrimSpace(m[1])
+		// One match at a time: a match takes its edges with it, so after one that's let through, the
+		// scan goes on from where its next word starts, or "read only the read-only tab" would hide
+		// "read-only" behind the space "read only the" used up (qa-kiff on agents#551).
+		for at := 0; at <= len(text); {
+			loc := re.FindStringSubmatchIndex(text[at:])
+			if loc == nil {
+				break
 			}
-			if next != "" && unless(next, w.UnlessNext) {
+			group := ""
+			if len(loc) > 3 && loc[2] >= 0 {
+				group = text[at+loc[2] : at+loc[3]]
+			}
+			if next := strings.TrimSpace(group); next != "" && unless(next, w.UnlessNext) {
+				// From the next word's edge on, never inside a word (^ would make a start there).
+				step := loc[1]
+				if r, _ := utf8.DecodeRuneInString(group); edge(r) && loc[2] > 0 {
+					step = loc[2]
+				}
+				at += max(step, 1)
 				continue
 			}
-			phrase := m[0]
-			if len(m) > 1 && m[1] != "" {
-				phrase = strings.TrimSuffix(strings.TrimRightFunc(phrase, edge), m[1])
+			phrase := text[at+loc[0] : at+loc[1]]
+			if group != "" {
+				phrase = strings.TrimSuffix(strings.TrimRightFunc(phrase, edge), group)
 			}
 			return strings.ToLower(strings.TrimFunc(phrase, edge))
 		}
