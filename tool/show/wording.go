@@ -133,6 +133,18 @@ func unless(next string, words []string) bool {
 
 // worded is the first rule c's own words break, as an error naming where, the
 // rule's phrase and its fix; "" when none.
+// Said is why text, a message the agent is about to say, breaks one of
+// rules: the phrase and the rule's fix, as a refused card's answer has them.
+// "" when it breaks none.
+func Said(text string, rules []Wording) string {
+	for _, w := range rules {
+		if p := Claim(text, w); p != "" {
+			return fmt.Sprintf("your message says %q: %s", p, w.Fix)
+		}
+	}
+	return ""
+}
+
 func worded(c Component, rules []Wording) string {
 	if len(rules) == 0 {
 		return ""
