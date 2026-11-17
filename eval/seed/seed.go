@@ -156,9 +156,11 @@ type Error struct {
 func (e *Error) Error() string { return fmt.Sprintf("seed: %s: %d %s", e.Path, e.Status, e.Message) }
 
 // dropped reports whether err is the connection going away under a call:
-// HTTP/2's GOAWAY, or a reset. Those are worth one more try; nothing else is.
+// HTTP/2's GOAWAY, a reset, or an answer cut off before its end (an EOF).
+// Those are worth one more try; nothing else is.
 func dropped(err error) bool {
-	return errors.Is(err, syscall.ECONNRESET) || strings.Contains(err.Error(), "server sent GOAWAY")
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+		strings.Contains(err.Error(), "server sent GOAWAY")
 }
 
 func (c *Client) do(ctx context.Context, method, path string, form url.Values, out any) error {
@@ -174,44 +176,46 @@ func (c *Client) do(ctx context.Context, method, path string, form url.Values, o
 		_, _ = rand.Read(b[:])
 		key = Tag + "-" + hex.EncodeToString(b[:])
 	}
-	send := func() (*http.Response, error) {
+	send := func() (int, []byte, error) {
 		var body io.Reader
 		if method != http.MethodGet {
 			body = strings.NewReader(form.Encode())
 		}
 		req, err := http.NewRequestWithContext(ctx, method, u, body)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+c.key)
 		if body != nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Set("Idempotency-Key", key)
 		}
-		return c.http.Do(req)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		return resp.StatusCode, raw, err
 	}
-	resp, err := send()
-	// The connection dropped under the call (a GOAWAY, a reset): tried once
-	// more, never on anything else (Eval 44005248914, the hand-offs seed).
+	status, raw, err := send()
+	// The connection dropped under the call (a GOAWAY, a reset, an answer cut
+	// off): tried once more, never on anything else (Evals 44005248914 and
+	// 44023858161, the hand-offs seed).
 	if err != nil && dropped(err) && ctx.Err() == nil {
-		resp, err = send()
+		status, raw, err = send()
 	}
 	if err != nil {
 		return fmt.Errorf("seed: %s: %w", path, err)
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return fmt.Errorf("seed: %s: %w", path, err)
-	}
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		var e struct {
 			Error struct {
 				Message string `json:"message"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &e)
-		return &Error{Status: resp.StatusCode, Path: path, Message: e.Error.Message}
+		return &Error{Status: status, Path: path, Message: e.Error.Message}
 	}
 	if out == nil {
 		return nil

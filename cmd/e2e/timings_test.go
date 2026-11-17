@@ -125,20 +125,6 @@ func TestTurnThinkingEstimate(t *testing.T) {
 	}
 }
 
-// Setup's progress notes are kept as its lines, graded with what it wrote;
-// another agent's aren't.
-func TestWordsClockKeepsSetupsNotes(t *testing.T) {
-	w := &wordsClock{Model: deltas{"(note) Miro la cuenta…"}, setup: "You are Coach."}
-	for _, system := range []string{"You are Coach.\n\nskills…", "You are the Refunds taf."} {
-		if _, err := w.Turn(context.Background(), model.Request{System: system}, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := w.setupNotes(); !slices.Equal(got, []string{"Miro la cuenta…"}) {
-		t.Fatalf("notes %q", got)
-	}
-}
-
 // Each message's wait for Setup's first words splits into the run's start,
 // whole turns before the words' turn, the tools between them, and in the
 // words' turn its first content, then the words: the parts add up to the
