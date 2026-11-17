@@ -70,6 +70,14 @@ func TestTheCardsReadIsKeptWholeInTheRecord(t *testing.T) {
 	if !strings.Contains(Recorded, "A limit of the agent's Card is checked against the record's read of its Card (a kiff_card call) when it has one") {
 		t.Error("the rule doesn't check a limit against the Card read when the record has one")
 	}
+	// Eval 44076575553's chargebacks run 2: a held update_dispute's $500 was
+	// taken for close_dispute's limit. A limit is its tool's alone.
+	if !strings.Contains(Recorded, "A Card limit is one tool's and of one kind (the most for one call, a day's total, or asking first): a limit the record shows for one tool or kind") {
+		t.Error("the rule doesn't keep a Card's limit to its own tool and kind")
+	}
+	if !strings.Contains(Recorded, "A figure the record shows for a tool, given by the text as another kind of that tool's limit (a day's total as the most for one call), contradicts it.") {
+		t.Error("the rule doesn't fail a figure given as another kind of the same tool's limit")
+	}
 }
 
 // Eval 21's chargebacks run 1 and tickets run 2: a taf that named the message

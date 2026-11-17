@@ -1,6 +1,7 @@
 package eval_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -63,6 +64,10 @@ func TestWriteReport(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("no %q in\n%s", want, b.String())
 		}
+	}
+	// The record's judge is named by its rule's digest, so a run graded under another rule says so.
+	if !strings.Contains(b.String(), "| Record's judge | "+strconv.Itoa(len(eval.Recorded))+" bytes, sha256 ") {
+		t.Errorf("the report doesn't name the record's judge rule:\n%s", b.String())
 	}
 }
 

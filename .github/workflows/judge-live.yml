@@ -1,0 +1,38 @@
+name: Judge, live
+# The record's judge on the Claude API, on a pull request that changes its
+# rule: the live cases that pin how it reads a limit (cmd/e2e,
+# TestTheRecordJudgeKeepsALimitToItsToolAndKind), with the repository's key,
+# so no one's session handles it. GitHub gives no secret to a fork's pull
+# request, so there the cases skip. It reads synthetic records only, and
+# deploys nothing. By hand (workflow_dispatch) on any branch too.
+on:
+  pull_request:
+    paths:
+      - eval/recorded.go
+      - eval/judge.go
+      - cmd/e2e/asrecorded_test.go
+      - .github/workflows/judge-live.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: The record's judge keeps a limit to its tool and kind
+        env:
+          E2E_REGRADE: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No key here (a fork's pull request): the live cases skip."
+          fi
+          go test -count=1 -v -run '^TestTheRecordJudgeKeepsALimitToItsToolAndKind$' ./cmd/e2e/ 2>&1 | grep -E -- "^ *(--- |PASS|FAIL|ok|panic)|_test.go"
+          exit ${PIPESTATUS[0]}
