@@ -10,6 +10,8 @@ package seed
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -152,25 +155,47 @@ type Error struct {
 
 func (e *Error) Error() string { return fmt.Sprintf("seed: %s: %d %s", e.Path, e.Status, e.Message) }
 
+// dropped reports whether err is the connection going away under a call:
+// HTTP/2's GOAWAY, or a reset. Those are worth one more try; nothing else is.
+func dropped(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) || strings.Contains(err.Error(), "server sent GOAWAY")
+}
+
 func (c *Client) do(ctx context.Context, method, path string, form url.Values, out any) error {
 	u := c.url + path
-	var body io.Reader
-	if method == http.MethodGet {
-		if len(form) > 0 {
-			u += "?" + form.Encode()
+	if method == http.MethodGet && len(form) > 0 {
+		u += "?" + form.Encode()
+	}
+	// A POST carries an idempotency key, the same on its retry, so Stripe
+	// never makes twice what one call asked for.
+	key := ""
+	if method != http.MethodGet {
+		var b [16]byte
+		_, _ = rand.Read(b[:])
+		key = Tag + "-" + hex.EncodeToString(b[:])
+	}
+	send := func() (*http.Response, error) {
+		var body io.Reader
+		if method != http.MethodGet {
+			body = strings.NewReader(form.Encode())
 		}
-	} else {
-		body = strings.NewReader(form.Encode())
+		req, err := http.NewRequestWithContext(ctx, method, u, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.key)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Idempotency-Key", key)
+		}
+		return c.http.Do(req)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, body)
-	if err != nil {
-		return err
+	resp, err := send()
+	// The connection dropped under the call (a GOAWAY, a reset): tried once
+	// more, never on anything else (Eval 44005248914, the hand-offs seed).
+	if err != nil && dropped(err) && ctx.Err() == nil {
+		resp, err = send()
 	}
-	req.Header.Set("Authorization", "Bearer "+c.key)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("seed: %s: %w", path, err)
 	}

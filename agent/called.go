@@ -162,6 +162,9 @@ type OwnRefusedBody struct {
 	Tool  string          `json:"tool"`
 	Input json.RawMessage `json:"input,omitempty"`
 	Error string          `json:"error"`
+	// Said: the message was said anyway, as written (past Agent.Reworded, or
+	// a closing turn): a wording miss, kept so it never passes silently.
+	Said bool `json:"said,omitempty"`
 }
 
 // recordOwnRefused records a call to one of the agent's own tools that came

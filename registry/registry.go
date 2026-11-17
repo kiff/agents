@@ -892,7 +892,7 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 	mark("tools and skills")
 	a := agent.Agent{Tenant: tenant, ID: id, Model: b.Model, ModelID: d.Model, Price: d.Price, PriceFast: d.PriceFast, StartSpans: spans,
 		MaxTokens: d.MaxTokens, Effort: d.Effort, Thinking: d.Thinking, System: system, Tools: tools, Deferred: d.DeferredTools, DeferVendor: d.DeferVendorTools,
-		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose}
+		MaxCost: d.MaxCost, MaxTurns: d.MaxTurns, MaxToolResult: d.MaxToolResult, CloseInText: d.CloseInText, Disclose: d.Disclose, Wording: d.Wording}
 	if err := a.Check(); err != nil {
 		return agent.Agent{}, d, err
 	}
