@@ -23,6 +23,11 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		{"kiff/tafs", []string{"android/app/src/Main.kt", "docs/coach.md"}, nil},
 		{"kiff/tafs", []string{"runtime/skills/kiff/SKILL.md", "ios/Tafs/App.swift"}, []string{"cards", "handoffs", "recipe-tickets"}},
 		{"kiff/tafs", []string{"runtime/src/cloud/tafdef.ts"}, []string{All}},
+		// The apps' words and tafs cloud's tests: nothing deployed reads either, so they touch no suite
+		// (an Eval's carry was lost to app/strings/*/error.json and runtime/test/message-id.test.ts).
+		{"kiff/tafs", []string{"app/strings/en/error.json", "runtime/test/message-id.test.ts"}, nil},
+		// The runtime beside its tests still touches them all.
+		{"kiff/tafs", []string{"runtime/test/home.test.ts", "runtime/src/cloud/home.ts"}, []string{All}},
 		// tafs cloud's runtime, which every setup calls live: eval-carry.sh diffs the whole tree.
 		{"kiff/tafs", []string{"runtime/src/cloud/approval.ts"}, []string{All}},
 		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "route", "setup"}},

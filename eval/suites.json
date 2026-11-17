@@ -37,6 +37,8 @@
       {"prefix": "runtime/skills/kiff/", "suites": ["cards", "handoffs", "recipe-tickets"]},
       {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "route", "setup"]},
       {"prefix": "runtime/src/recipes.ts", "suites": ["recipe-tickets"]},
+      {"prefix": "app/strings/", "suites": []},
+      {"prefix": "runtime/test/", "suites": []},
       {"prefix": "android/", "suites": []},
       {"prefix": "ios/", "suites": []},
       {"prefix": "docs/", "suites": []},
