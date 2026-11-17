@@ -2049,10 +2049,10 @@ func TestARequestSentTwiceStartsOneRun(t *testing.T) {
 		t.Fatal("a request's run ID isn't its own")
 	}
 	for name, body := range map[string]map[string]any{
-		"not background": {"input": "x", "dedup_key": "k"},
-		"a long key":     {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1), "background": true},
-		"a bad source":   {"input": "x", "dedup_key": "k", "source": "E Mail", "background": true},
-		"source, no key": {"input": "x", "source": "email", "background": true},
+		"a long key":           {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1), "background": true},
+		"a long key, streamed": {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1)},
+		"a bad source":         {"input": "x", "dedup_key": "k", "source": "E Mail", "background": true},
+		"source, no key":       {"input": "x", "source": "email", "background": true},
 	} {
 		code, got := f.do("t1", "POST", "/agents/payouts/runs?as=service", body)
 		f.want(400, code, got, name)
@@ -2493,5 +2493,119 @@ func TestTriggerAScheduleThatChecksFirstSaysWhyNoRunStarted(t *testing.T) {
 		if !strings.Contains(got, tc.want) || len(f.background) != 0 {
 			t.Fatalf("%s: %v, background %v", tc.name, body, f.background)
 		}
+	}
+}
+
+// A streamed message with a dedup key (an app's id for one message) starts one
+// run, however often it is sent: an app that sends it again after a stream
+// that failed before its answer gets the first run's stream from its start,
+// never a second run. Once ended, it's replayed to its end; while at work,
+// it's followed as it goes on. The same key with another message is refused.
+func TestAStreamedMessageSentAgainStartsOneRun(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	body := func(input, key string) string {
+		return fmt.Sprintf(`{"input":%q,"dedup_key":%q}`, input, key)
+	}
+	recorded := func(events []sse) string {
+		_, ids := kinds(t, events)
+		return strings.Join(ids, ",")
+	}
+
+	// Ended: the second send replays the first run, and starts nothing.
+	code, first := f.stream("t1", "POST", "/agents/payouts/runs", body("Pay the vendors", "app-msg-1"))
+	if code != 200 || first[0].name != "run" || first[len(first)-1].data["status"] != string(run.Completed) {
+		t.Fatalf("first send: %d %s", code, names(first))
+	}
+	id := first[0].data["id"]
+	if id != server.RequestRunID("t1", "payouts", "app-msg-1") {
+		t.Fatalf("the run's id %v isn't the key's", id)
+	}
+	code, again := f.stream("t1", "POST", "/agents/payouts/runs", body("Pay the vendors", "app-msg-1"))
+	end := again[len(again)-1]
+	if code != 200 || again[0].name != "run" || again[0].data["id"] != id || recorded(again) != "1,2" ||
+		end.name != "end" || end.data["id"] != id || end.data["status"] != string(run.Completed) || end.data["output"] != "done" {
+		t.Fatalf("sent again after the end: %d %s, recorded %s, end %v", code, names(again), recorded(again), end.data)
+	}
+	if len(f.runner.starts) != 1 || len(f.runner.execs) != 1 {
+		t.Fatalf("starts %d, executions %d: want one each", len(f.runner.starts), len(f.runner.execs))
+	}
+
+	// Another message under the same key: refused, nothing started.
+	code, refused := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay someone else", "dedup_key": "app-msg-1"})
+	f.want(409, code, refused, "another message, the same key")
+	if refused["error"] != "dedup_key_conflict" || len(f.runner.starts) != 1 {
+		t.Fatalf("refused %v, starts %d", refused, len(f.runner.starts))
+	}
+	// Another requester under the same key: refused too.
+	code, refused = f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay the vendors", "dedup_key": "app-msg-1",
+		"requester": map[string]any{"kind": "member", "id": "p-2"}})
+	if code != 409 || refused["error"] != "dedup_key_conflict" {
+		t.Fatalf("another requester: %d %v", code, refused)
+	}
+
+	// At work: the second send follows the first run as it goes on.
+	f.runner.hold = make(chan struct{})
+	release := sync.OnceFunc(func() { close(f.runner.hold) })
+	t.Cleanup(release)
+	firstDone := make(chan []sse, 1)
+	go func() {
+		_, ev := f.stream("t1", "POST", "/agents/payouts/runs", body("Book the van", "app-msg-2"))
+		firstDone <- ev
+	}()
+	busy := server.RequestRunID("t1", "payouts", "app-msg-2")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := f.runs.Get(ctx, "t1", busy)
+		if err == nil && got.Status == run.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the first send's run is %s (%v)", got.Status, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	secondDone := make(chan []sse, 1)
+	go func() {
+		_, ev := f.stream("t1", "POST", "/agents/payouts/runs", body("Book the van", "app-msg-2"))
+		secondDone <- ev
+	}()
+	time.Sleep(50 * time.Millisecond) // the second send is following before the run goes on
+	release()
+	for _, done := range []chan []sse{firstDone, secondDone} {
+		select {
+		case ev := <-done:
+			last := ev[len(ev)-1]
+			if ev[0].data["id"] != busy || recorded(ev) != "1,2" || last.name != "end" || last.data["status"] != string(run.Completed) {
+				t.Fatalf("a send of the busy run: %s, recorded %s, end %v", names(ev), recorded(ev), last.data)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a stream never ended")
+		}
+	}
+	if len(f.runner.starts) != 2 || len(f.runner.execs) != 2 {
+		t.Fatalf("starts %d, executions %d: want one more each, for the second key", len(f.runner.starts), len(f.runner.execs))
+	}
+}
+
+// A streamed send whose first try stored the run but went away before any
+// invocation took it (the run still PENDING) is executed by the send that
+// comes again: once, and as that run.
+func TestAStreamedMessageSentAgainRunsTheRunNobodyTook(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	id := server.RequestRunID("t1", "payouts", "app-msg-9")
+	pending := run.New("t1", "payouts", "s-9", run.ByOwner, "Pay the vendors", now)
+	pending.ID = id
+	if err := f.runs.Create(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	code, events := f.stream("t1", "POST", "/agents/payouts/runs", `{"input":"Pay the vendors","dedup_key":"app-msg-9"}`)
+	end := events[len(events)-1]
+	if code != 200 || events[0].data["id"] != id || end.data["status"] != string(run.Completed) {
+		t.Fatalf("sent again: %d %s, end %v", code, names(events), end.data)
+	}
+	if len(f.runner.starts) != 0 || strings.Join(f.runner.execs, ",") != id {
+		t.Fatalf("starts %d, executions %v: want none started, that one executed", len(f.runner.starts), f.runner.execs)
 	}
 }

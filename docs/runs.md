@@ -641,6 +641,18 @@ with `run.NeedsYou`. Its note, `GET …/runs/{run}` and the runs list
 same key sent again gets that run, never a second one (200; 202 and handed on
 again if it is still PENDING).
 
+Streamed (no `background`), `dedup_key` is an app's id for one message, so a
+client that falls back to sending again after a stream that failed before its
+answer never starts a second run. The same key sent again is answered with
+that run's stream from its start, as a start's is: `run`, its recorded
+events from index 0 (`event`), then `end`. A run that has stopped is replayed
+to its end; one at work is followed as it goes on (as `…/resume?after=0`);
+one still PENDING that no invocation took (the first send went away before it
+began) is executed by this send. The live text (`delta`) isn't replayed, only
+what the run recorded. The same key with another `input` or another
+requester is refused: `409 dedup_key_conflict`. With no `dedup_key`, nothing
+changes.
+
 ### One run at a time per door thread
 
 Such a request with a `session_id` whose run from the same `source` is still

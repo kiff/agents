@@ -688,9 +688,11 @@ type startBody struct {
 	// its tools by name, and with skills, its skills to the ones it names.
 	// Only with no session_id and no chat: 400 otherwise.
 	Only *session.Only `json:"only,omitempty"`
-	// DedupKey names the request at its origin (a door message's id): one
-	// key starts one run of the agent, however often it is sent, and a
-	// second send gets the first run (RequestRunID). Background only.
+	// DedupKey names the request at its origin (a door message's id, or an
+	// app's id for one message): one key starts one run of the agent,
+	// however often it is sent, and a second send gets the first run
+	// (RequestRunID). In the background, the run as JSON; streamed, the
+	// first run's stream from its start (repeatStream).
 	DedupKey string `json:"dedup_key,omitempty"`
 	// Source is where the request came from ("email", "whatsapp"): the
 	// run's Source. Only with DedupKey.
@@ -864,8 +866,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("source goes with a dedup_key"))
 		return
 	case body.DedupKey == "":
-	case len(body.DedupKey) > MaxEventKey || !body.Background:
-		s.fail(w, r, bad("dedup_key is 1 to %d bytes, with background: true", MaxEventKey))
+	case len(body.DedupKey) > MaxEventKey:
+		s.fail(w, r, bad("dedup_key is 1 to %d bytes", MaxEventKey))
 		return
 	case body.Source != "" && !sourceName(body.Source):
 		s.fail(w, r, bad("the source is 1 to %d of a-z, 0-9, '.', '_' and '-'", MaxEventSource))
@@ -909,6 +911,19 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
 		s.fail(w, r, err)
 		return
+	}
+	if body.DedupKey != "" && !body.Background {
+		// Streamed and sent before (an app sending again after a stream that
+		// failed before its answer): never a second run. The first run's
+		// stream, from its start, as it was or as it goes on.
+		switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, body.DedupKey)); {
+		case err == nil:
+			s.repeatStream(w, r, c, rn, body.Input, q)
+			return
+		case !errors.Is(err, run.ErrNotFound):
+			s.fail(w, r, err)
+			return
+		}
 	}
 	if body.DedupKey != "" {
 		// Sent before: the run it started, never a second one (its calls'
@@ -1027,6 +1042,11 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rn, err := s.start(ctx, st)
+	if errors.Is(err, run.ErrExists) && !body.Background {
+		// Sent twice at once, streamed: the other send started it.
+		s.repeatStream(w, r, c, rn, body.Input, q)
+		return
+	}
 	if errors.Is(err, run.ErrExists) {
 		// Sent twice at once: the other send started it.
 		writeJSON(w, http.StatusOK, s.viewRun(rn))
@@ -1401,10 +1421,39 @@ func (s *Server) resumeRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
-	f := &follower{s: s, sse: newStream(w), tenant: c.Tenant, rn: rn, after: after}
+	s.follow(r, newStream(w), c, rn, after)
+}
+
+// repeatStream answers a streamed start sent again with the same dedup key:
+// the run that key started, streamed from its start as a start's is (the run,
+// its recorded events, the end), and never a second run. The same key with
+// another input or requester is a client's mistake, refused with 409: it is
+// never taken as the first message. A run no invocation has claimed yet (the
+// first send went away before it began) is executed here; one at work is
+// followed as it goes on, and one that has stopped is replayed to its end.
+func (s *Server) repeatStream(w http.ResponseWriter, r *http.Request, c Caller, rn run.Run, input string, q run.Requester) {
+	if rn.Input != input || rn.Requester.Key() != q.Key() {
+		s.fail(w, r, conflict("dedup_key_conflict", "this dedup_key already started a run with another message or requester"))
+		return
+	}
+	if rn.Status == run.Pending && rn.After == "" {
+		s.execute(w, r, c, rn, 0)
+		return
+	}
+	sse := newStream(w)
+	sse.send("run", s.viewRun(rn))
+	s.follow(r, sse, c, rn, 0)
+}
+
+// follow sends a run's recorded events after the index after, then the rest
+// as the run goes on, until it stops, and then the end.
+func (s *Server) follow(r *http.Request, sse *stream, c Caller, rn run.Run, after int64) {
+	ctx := r.Context()
+	f := &follower{s: s, sse: sse, tenant: c.Tenant, rn: rn, after: after}
 	tick := time.NewTicker(followEvery)
 	defer tick.Stop()
 	handedOff := time.Now().Add(handOffWait) // a wait in real time, not the run's clock
+	var err error
 	for {
 		if err := f.catchUp(ctx); err != nil {
 			s.logError(r, "resume", err)
