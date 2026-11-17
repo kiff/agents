@@ -17,6 +17,7 @@ import (
 const (
 	rulesNotice  = `{"type":"notice","id":"n1","tone":"info","text":"Refunds up to 50 a call","rules":[{"tool":"refund_charge","over":"ask"}]}`
 	refusedRules = `{"type":"notice","id":"n1","tone":"loud","text":"Refunds up to 50 a call","rules":[{"tool":"refund_charge","over":"ask"}]}`
+	otherNotice  = `{"type":"notice","id":"n2","tone":"info","text":"Refunds up to 50 a call","rules":[{"tool":"refund_charge","over":"ask"}]}`
 	plainNotice  = `{"type":"notice","id":"n1","tone":"info","text":"Asking planque."}`
 	agreeToN1    = `{"type":"confirm","id":"c1","text":"Agree to these rules?","options":[{"value":"agree","label":"Agree"},{"value":"change","label":"Change something"}],"agrees":"n1"}`
 	plainConfirm = `{"type":"confirm","id":"c2","text":"Go on?","options":[{"value":"yes","label":"Yes"},{"value":"no","label":"No"}]}`
@@ -32,8 +33,9 @@ func calls(inputs ...string) model.Reply {
 }
 
 // shownIn is what one run, from replies, left shown in the session (each
-// component's id and type), and what each show call answered.
-func shownIn(t *testing.T, store *memory.Store, r *session.Recording, replies ...model.Reply) (shown []string, answers []string) {
+// component's id and type), what each show call answered, and the own_refused
+// records the session kept for a confirm refused as unshown.
+func shownIn(t *testing.T, store *memory.Store, r *session.Recording, replies ...model.Reply) (shown []string, answers []string, unshown int) {
 	t.Helper()
 	m := &script{replies: append(replies, say("Done."))}
 	var streamed []agent.Event
@@ -53,13 +55,19 @@ func shownIn(t *testing.T, store *memory.Store, r *session.Recording, replies ..
 			_ = json.Unmarshal(e.Body, &c)
 			shown = append(shown, c.Type+":"+c.ID)
 		}
+		if e.Kind == session.OwnRefused {
+			var b agent.OwnRefusedBody
+			if json.Unmarshal(e.Body, &b) == nil && b.Error == agent.UnshownNotice {
+				unshown++
+			}
+		}
 	}
 	for _, e := range streamed {
 		if e.Kind == agent.CallResult && e.Result != nil {
 			answers = append(answers, e.Result.Text)
 		}
 	}
-	return shown, answers
+	return shown, answers, unshown
 }
 
 func refusedUnshown(answers []string) bool {
@@ -88,15 +96,22 @@ func TestAConfirmAgreesOnlyToARulesNoticeTheConversationShowed(t *testing.T) {
 		"no notice by that id":                  {[]model.Reply{calls(agreeToN1)}, nil, true},
 		"the notice shown again without rules":  {[]model.Reply{calls(rulesNotice), calls(plainNotice, agreeToN1)}, []string{"notice:n1", "notice:n1"}, true},
 		"a confirm that agrees to nothing":      {[]model.Reply{calls(plainConfirm)}, []string{"confirm:c2"}, false},
+		"another notice's id":                   {[]model.Reply{calls(otherNotice), calls(agreeToN1)}, []string{"notice:n2"}, true},
+		// The batch is checked in call order: a confirm before its notice is refused, and the notice still shows.
+		"the confirm before its notice, in the same batch": {[]model.Reply{calls(agreeToN1, rulesNotice)}, []string{"notice:n1"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store, r := start(t, session.KindChat)
-			shown, answers := shownIn(t, store, r, tc.replies...)
+			shown, answers, unshown := shownIn(t, store, r, tc.replies...)
 			if strings.Join(shown, ",") != strings.Join(tc.want, ",") {
 				t.Fatalf("shown %v, want %v", shown, tc.want)
 			}
 			if refusedUnshown(answers) != tc.refused {
 				t.Fatalf("refused %v, want %v: %q", refusedUnshown(answers), tc.refused, answers)
+			}
+			// A refused confirm leaves the record of why it didn't show.
+			if (unshown == 1) != tc.refused {
+				t.Fatalf("%d own_refused records for an unshown notice, refused %v", unshown, tc.refused)
 			}
 		})
 	}
@@ -117,14 +132,14 @@ func TestAConfirmAgreesToANoticeAnEarlierRunShowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shown, _ := shownIn(t, store, r1, calls(rulesNotice)); len(shown) != 1 {
+	if shown, _, _ := shownIn(t, store, r1, calls(rulesNotice)); len(shown) != 1 {
 		t.Fatalf("first run shown %v", shown)
 	}
 	r2, err := rec.Start(context.Background(), s, "r2", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	shown, answers := shownIn(t, store, r2, calls(agreeToN1))
+	shown, answers, _ := shownIn(t, store, r2, calls(agreeToN1))
 	if strings.Join(shown, ",") != "notice:n1,confirm:c1" || refusedUnshown(answers) {
 		t.Fatalf("second run: shown %v, answers %q", shown, answers)
 	}
@@ -137,7 +152,7 @@ func TestAConfirmAgreesToANoticeAnEarlierRunShowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shown, answers := shownIn(t, store, r3, calls(agreeToN1)); len(shown) != 0 || !refusedUnshown(answers) {
+	if shown, answers, unshown := shownIn(t, store, r3, calls(agreeToN1)); len(shown) != 0 || !refusedUnshown(answers) || unshown != 1 {
 		t.Fatalf("another conversation: shown %v, answers %q", shown, answers)
 	}
 }
