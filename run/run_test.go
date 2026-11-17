@@ -326,3 +326,53 @@ func TestDoneKeepsEveryCallWithinItsBytes(t *testing.T) {
 		t.Fatalf("a small input after the bound: %+v", done[3])
 	}
 }
+
+// A message with the client's key is kept once on its run: the same key and
+// text again adds nothing (repeat), even once the run has taken it; another
+// text or writer under the key is ErrDedupConflict; another run never sees
+// the key; and with no key every message is kept, as before.
+func TestSteerKeyedKeepsAKeyedMessageOnce(t *testing.T) {
+	ctx := context.Background()
+	runs := memory.NewRuns()
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	ana := run.Requester{Kind: run.ByMember, ID: "ana"}
+	r := run.New("t1", "refunds", "s1", run.ByOwner, "refund order 12", at)
+	other := run.New("t1", "refunds", "s1", run.ByOwner, "refund order 13", at)
+	for _, x := range []run.Run{r, other} {
+		if err := runs.Create(ctx, x); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := run.Claim(ctx, runs, "t1", r.ID, "i1", at.Add(time.Minute), at); err != nil {
+		t.Fatal(err)
+	}
+	got, repeat, err := run.SteerKeyed(ctx, runs, "t1", r.ID, "only the €20 one", "k1", ana, at)
+	if err != nil || repeat || len(got.Steering) != 1 || got.Steering[0].Key != "k1" {
+		t.Fatalf("first: %+v, repeat %v, %v", got.Steering, repeat, err)
+	}
+	// Taken by the run, then sent again: still the same message, kept once.
+	if _, err := run.Save(ctx, runs, got, at, func(n *run.Run) error { n.Steering[0].Taken = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got, repeat, err = run.SteerKeyed(ctx, runs, "t1", r.ID, "only the €20 one", "k1", ana, at)
+	if err != nil || !repeat || len(got.Steering) != 1 {
+		t.Fatalf("again: %+v, repeat %v, %v", got.Steering, repeat, err)
+	}
+	if _, _, err := run.SteerKeyed(ctx, runs, "t1", r.ID, "all of them", "k1", ana, at); !errors.Is(err, run.ErrDedupConflict) {
+		t.Fatalf("another text: %v, want ErrDedupConflict", err)
+	}
+	if _, _, err := run.SteerKeyed(ctx, runs, "t1", r.ID, "only the €20 one", "k1", run.Requester{Kind: run.ByMember, ID: "luis"}, at); !errors.Is(err, run.ErrDedupConflict) {
+		t.Fatalf("another writer: %v, want ErrDedupConflict", err)
+	}
+	if got, repeat, err := run.SteerKeyed(ctx, runs, "t1", other.ID, "all of them", "k1", ana, at); err != nil || repeat || len(got.Steering) != 1 {
+		t.Fatalf("another run: %+v, repeat %v, %v", got.Steering, repeat, err)
+	}
+	for range 2 {
+		if _, _, err := run.SteerKeyed(ctx, runs, "t1", other.ID, "and the fee", "", ana, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := runs.Get(ctx, "t1", other.ID); len(got.Steering) != 3 {
+		t.Fatalf("without a key: %d messages, want 3", len(got.Steering))
+	}
+}

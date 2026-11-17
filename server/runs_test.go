@@ -2752,3 +2752,25 @@ func TestWritingWhileACardWaitsSentAgainAnswersOnce(t *testing.T) {
 		t.Fatalf("conflict: %v, starts %d", body, len(f.runner.starts))
 	}
 }
+
+// A steered message sent again with its key isn't counted again by its
+// writer's flood guard: the retry of one message is one message.
+func TestASteeredMessageSentAgainIsntCountedTwice(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.server.FloodMessages = 2
+	ana := map[string]any{"kind": "member", "id": "ana"}
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "hi", "background": true, "requester": ana})
+	f.want(202, code, body, "ana's run")
+	id, _ := body["id"].(string)
+	steer := func() (int, map[string]any) {
+		return f.do("t1", "POST", "/agents/payouts/runs/"+id+"/messages", map[string]any{"text": "only the €20 one", "dedup_key": "steer-f", "requester": ana})
+	}
+	code, body = steer()
+	f.want(202, code, body, "ana's steer: her second message")
+	// Her guard is full now; the same message sent again is still answered.
+	for i := range 2 {
+		code, body = steer()
+		f.want(202, code, body, fmt.Sprintf("the same steer sent again, %d", i+1))
+	}
+}
