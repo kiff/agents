@@ -20,16 +20,53 @@ func heldRefunds(t *testing.T, cards string) (said, []map[string]any) {
 }
 
 const agreedSplit = `[
-	{"id": "each", "on_exceed": "owner", "grants": [{"action": "refund_charge_k3", "per_action_max": [{"quantity": "sum(amount)", "max": 500}]}], "aggregates": []},
+	{"id": "each", "on_exceed": "owner", "grants": [{"action": "refund_charge_k3", "per_action_max": [{"quantity": "sum(amount)", "max": 500}]}], "aggregates": [{"quantity": "count", "limit": 10000, "window": "calendar_day"}]},
 	{"id": "day", "on_exceed": "refuse", "grants": [{"action": "refund_charge_k3"}], "aggregates": [{"quantity": "sum(amount)", "limit": 5000, "window": "calendar_day"}]},
 	{"id": "reads", "on_exceed": "refuse", "grants": [{"action": "list_charges_k3"}], "aggregates": [{"quantity": "count", "limit": 10000, "window": "calendar_day"}]}]`
+
+// Eval 43975057022, Setup run 3: KIFF refuses a Card with no total, so the
+// held per-refund Card carries KIFF's own count, beside the refused Card with
+// the day's total. That's the agreed rule as KIFF takes it, never an extra
+// figure; the same count anywhere else is one.
+func TestKIFFsOwnCountOnTheHeldCardIsNoFigureOfTheOwners(t *testing.T) {
+	if got := unagreedFigures(heldRefunds(t, agreedSplit)); len(got) != 0 {
+		t.Fatalf("the two Cards as KIFF takes them: %v", got)
+	}
+	kiffs := `{"quantity": "count", "limit": 10000, "window": "calendar_day"}`
+	for name, cards := range map[string]string{
+		// Alone: nothing bounds the refunds' amount, so 10,000 a day under the cap would pass unasked.
+		"alone": `[{"id": "each", "on_exceed": "owner", "grants": [{"action": "refund_charge_k3", "per_action_max": [{"quantity": "sum(amount)", "max": 500}]}], "aggregates": [` + kiffs + `]}]`,
+		// Beside a total for each customer only: one item's, so nothing bounds the day.
+		"per item": strings.Replace(agreedSplit, `"aggregates": [{"quantity": "sum(amount)", "limit": 5000, "window": "calendar_day"}]`,
+			`"aggregates": [{"quantity": "sum(amount)", "limit": 5000, "window": "calendar_day", "per": "customer"}]`, 1),
+		// On the refused Card, beside its day's total.
+		"refused": strings.Replace(agreedSplit, `"window": "calendar_day"}]},
+	{"id": "reads"`, `"window": "calendar_day"}, `+kiffs+`]},
+	{"id": "reads"`, 1),
+		// Beside another total on the held Card.
+		"beside": strings.Replace(agreedSplit, kiffs+`]},
+	{"id": "day"`, kiffs+`, {"quantity": "sum(amount)", "limit": 1, "window": "rolling_1h"}]},
+	{"id": "day"`, 1),
+		// Another figure or window.
+		"9999": strings.Replace(agreedSplit, `"limit": 10000, "window": "calendar_day"}]},
+	{"id": "day"`, `"limit": 9999, "window": "calendar_day"}]},
+	{"id": "day"`, 1),
+		"24h": strings.Replace(agreedSplit, `"limit": 10000, "window": "calendar_day"}]},
+	{"id": "day"`, `"limit": 10000, "window": "rolling_24h"}]},
+	{"id": "day"`, 1),
+	} {
+		if got := unagreedFigures(heldRefunds(t, cards)); len(got) == 0 {
+			t.Errorf("%s: KIFF's count let through: %s", name, cards)
+		}
+	}
+}
 
 func TestTheCardsHoldOnlyTheAgreedFigures(t *testing.T) {
 	if got := unagreedFigures(heldRefunds(t, agreedSplit)); len(got) != 0 {
 		t.Fatalf("as agreed, the reads' count of KIFF's included: %v", got)
 	}
 	// Eval 43927756622, Setup run 1: an hour's €50 held on the per-refund Card.
-	hour := strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": []`, `"max": 500}]}], "aggregates": [{"quantity": "sum(amount)", "limit": 5000, "window": "rolling_1h"}]`, 1)
+	hour := strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": [{"quantity": "count", "limit": 10000, "window": "calendar_day"}]`, `"max": 500}]}], "aggregates": [{"quantity": "sum(amount)", "limit": 5000, "window": "rolling_1h"}]`, 1)
 	if got := unagreedFigures(heldRefunds(t, hour)); len(got) != 1 || got[0] != "refund_charge_k3 sum(amount) per rolling_1h 5000" {
 		t.Fatalf("the Eval's hour: %v", got)
 	}
@@ -50,7 +87,7 @@ func TestTheCardsHoldOnlyTheAgreedFigures(t *testing.T) {
 		`{"quantity": "count", "limit": 1, "window": "lifetime", "per": "charge"}`,
 		`{"quantity": "count", "limit": 0, "window": "calendar_day"}`,
 	} {
-		cards := strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": []`, `"max": 500}]}], "aggregates": [`+kept+`]`, 1)
+		cards := strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": [{"quantity": "count", "limit": 10000, "window": "calendar_day"}]`, `"max": 500}]}], "aggregates": [`+kept+`]`, 1)
 		if got := unagreedFigures(heldRefunds(t, cards)); len(got) != 0 {
 			t.Errorf("%s: %v", kept, got)
 		}
@@ -65,7 +102,7 @@ func TestTheCardsHoldOnlyTheAgreedFigures(t *testing.T) {
 		return unagreedFigures(s, held)
 	}
 	withPer := func(agg string) string {
-		return strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": []`, `"max": 500}]}], "aggregates": [`+agg+`]`, 1)
+		return strings.Replace(agreedSplit, `"max": 500}]}], "aggregates": [{"quantity": "count", "limit": 10000, "window": "calendar_day"}]`, `"max": 500}]}], "aggregates": [`+agg+`]`, 1)
 	}
 	if got := perRule(withPer(`{"quantity": "count", "limit": 1, "window": "lifetime", "per": " Charge"}`)); len(got) != 0 {
 		t.Errorf("the agreed per total: %v", got)
