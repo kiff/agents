@@ -267,6 +267,73 @@ func (s *Server) getRun(ctx context.Context, c Caller, r *http.Request) (int, an
 	return http.StatusOK, s.viewRun(rn), nil
 }
 
+// byKey is what GET /agents/{id}/runs/by-key answers: the run a client's
+// message id (dedup_key) names, without the rest of the run. InputSHA256 is
+// the hex SHA-256 of the message under that key: the run's input for a
+// start, the message itself for a steer or a written answer. Steered says
+// the key names a message steered into the run or one that answered its
+// card, not the message that started it.
+type byKey struct {
+	ID          string     `json:"id"`
+	Status      run.Status `json:"status"`
+	SessionID   string     `json:"session_id"`
+	InputSHA256 string     `json:"input_sha256"`
+	Steered     bool       `json:"steered"`
+}
+
+func keyed(rn run.Run, text string, steered bool) byKey {
+	h := sha256.Sum256([]byte(text))
+	return byKey{ID: rn.ID, Status: rn.Status, SessionID: rn.Session, InputSHA256: hex.EncodeToString(h[:]), Steered: steered}
+}
+
+// runByKey answers the run a client's message id (dedup_key) names, scoped
+// by tenant and agent as RequestRunID is: the run that key started, or one
+// holding a message steered into it, or answering its card, under that key
+// (found among the agent's latest runs, as the flood guard reads them). A
+// caller asks before it spends anything on a message it may have sent
+// already. Read as the service or as one requester, as an agent's runs are:
+// another person's run is not found. Nothing: 404 run_not_found.
+func (s *Server) runByKey(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	key := r.URL.Query().Get("dedup_key")
+	if key == "" || len(key) > MaxEventKey {
+		return 0, nil, bad("dedup_key is 1 to %d bytes", MaxEventKey)
+	}
+	q, err := readerOf(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	switch rn, err := s.Runs.Get(ctx, c.Tenant, RequestRunID(c.Tenant, id, key)); {
+	case err == nil && readBy(rn, q):
+		return http.StatusOK, keyed(rn, rn.Input, false), nil
+	case err != nil && !errors.Is(err, run.ErrNotFound):
+		return 0, nil, err
+	}
+	runs, err := s.Runs.List(ctx, c.Tenant, id, floodScan)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, rn := range runs {
+		if !readBy(rn, q) {
+			continue
+		}
+		if m, ok := rn.SteeredWith(key); ok {
+			return http.StatusOK, keyed(rn, m.Text, true), nil
+		}
+		for _, card := range rn.Requirements {
+			if card.Card() && card.Key == key {
+				var was show.Answered
+				_ = json.Unmarshal(card.Result, &was)
+				return http.StatusOK, keyed(rn, was.Wrote, true), nil
+			}
+		}
+	}
+	return 0, nil, notFoundError{"run_not_found", "no run of this agent has that dedup_key"}
+}
+
 // pausedRuns lists the caller tenant's PAUSED runs across its agents, newest
 // first, from the tenant's own paused list: one read for a whole account,
 // whatever its agents' histories (tafs cloud's sweep of the steps handed to

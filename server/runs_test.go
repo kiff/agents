@@ -3,6 +3,8 @@ package server_test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2772,5 +2774,80 @@ func TestASteeredMessageSentAgainIsntCountedTwice(t *testing.T) {
 	for i := range 2 {
 		code, body = steer()
 		f.want(202, code, body, fmt.Sprintf("the same steer sent again, %d", i+1))
+	}
+}
+
+// GET …/runs/by-key answers the run a client's message id names, scoped by
+// tenant and agent as RequestRunID is: the run that key started, or one
+// holding a message steered into it or answering its card under that key
+// (steered: true). Another tenant, another agent, another person: 404
+// run_not_found, as for a key nobody sent.
+func TestARunIsFoundByItsDedupKey(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	f.putAgent("t1", "refunds")
+	f.putAgent("t2", "payouts")
+	digest := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	byKey := func(tenant, agent, key, reader string) (int, map[string]any) {
+		return f.do(tenant, "GET", "/agents/"+agent+"/runs/by-key?dedup_key="+key+"&"+reader, nil)
+	}
+	const key = "5d0c9e1a-2b3f-4a6d-8e7c-1f2a3b4c5d6e"
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Pay the vendors", "dedup_key": key, "background": true,
+		"requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "the start")
+	started := body["id"]
+
+	code, got := byKey("t1", "payouts", key, "as=service")
+	f.want(200, code, got, "found")
+	if got["id"] != started || got["status"] != string(run.Pending) || got["steered"] != false || got["input_sha256"] != digest("Pay the vendors") || got["session_id"] == "" {
+		t.Fatalf("found %v", got)
+	}
+	if len(got) != 5 {
+		t.Fatalf("the answer carries %v; want id, status, session_id, input_sha256, steered", got)
+	}
+	code, got = byKey("t1", "payouts", key, "requester=member:ana")
+	f.want(200, code, got, "found by its requester")
+	for name, call := range map[string][4]string{
+		"a key nobody sent": {"t1", "payouts", "no-such-key", "as=service"},
+		"another tenant":    {"t2", "payouts", key, "as=service"},
+		"another agent":     {"t1", "refunds", key, "as=service"},
+		"another person":    {"t1", "payouts", key, "requester=member:luis"},
+	} {
+		code, got := byKey(call[0], call[1], call[2], call[3])
+		f.want(404, code, got, name)
+		if got["error"] != "run_not_found" {
+			t.Fatalf("%s: %v", name, got)
+		}
+	}
+	code, got = byKey("t1", "payouts", "", "as=service")
+	f.want(400, code, got, "no key")
+
+	// A steer under a key: that run, steered.
+	r := f.stored(run.Running)
+	code, body = f.do("t1", "POST", "/agents/payouts/runs/"+r.ID+"/messages?as=service", map[string]any{"text": "only the €20 one", "dedup_key": "steer-k"})
+	f.want(202, code, body, "the steer")
+	code, got = byKey("t1", "payouts", "steer-k", "as=service")
+	f.want(200, code, got, "a steer's key")
+	if got["id"] != r.ID || got["steered"] != true || got["input_sha256"] != digest("only the €20 one") {
+		t.Fatalf("a steer's key found %v", got)
+	}
+	code, got = byKey("t2", "payouts", "steer-k", "as=service")
+	f.want(404, code, got, "a steer's key, another tenant")
+}
+
+// A written answer to a waiting card, under a key, is found by that key as
+// the run whose card it answered, steered.
+func TestAWrittenAnswerIsFoundByItsDedupKey(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	r := f.waitingOnCard()
+	code, body := f.do("t1", "POST", "/agents/payouts/runs", map[string]any{"input": "Use the live account, please", "session_id": "s-card", "background": true,
+		"dedup_key": "write-k", "requester": map[string]any{"kind": "member", "id": "ana"}})
+	f.want(202, code, body, "ana writes instead")
+	code, got := f.do("t1", "GET", "/agents/payouts/runs/by-key?dedup_key=write-k&requester=member:ana", nil)
+	f.want(200, code, got, "found")
+	h := sha256.Sum256([]byte("Use the live account, please"))
+	if got["id"] != r.ID || got["steered"] != true || got["input_sha256"] != hex.EncodeToString(h[:]) || got["session_id"] != "s-card" {
+		t.Fatalf("found %v", got)
 	}
 }

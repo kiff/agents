@@ -669,6 +669,25 @@ with the run in the background, or the run's stream from event 0), never a
 second message or run, and another text is 409. It's looked for among the
 agent's latest runs, as the flood guard reads them.
 
+`GET /agents/{id}/runs/by-key?dedup_key=<key>` tells a caller whether a key
+was already used, before it spends anything on the message (a Coach line, a
+flood slot). It reads as the other run reads do (`requester=member:<id>` or
+`as=service`; another person's run is not found) and is scoped by tenant and
+agent exactly as `RequestRunID` is. It answers:
+
+```json
+{"id": "<run id>", "status": "PENDING|RUNNING|PAUSED|COMPLETED|…",
+ "session_id": "<session id>", "input_sha256": "<hex>", "steered": false}
+```
+
+`input_sha256` is the hex SHA-256 of the message under the key: the run's
+input for a start, the message itself for a steer or a written answer. With
+`steered: true`, the key named a message steered into that run, or one that
+answered its card (found among the agent's latest runs, as the flood guard
+reads them), not the start. No run for the key in this tenant and agent, or
+not the reader's: `404 run_not_found`. No key, or a longer one than a key
+may be: 400.
+
 ### One run at a time per door thread
 
 Such a request with a `session_id` whose run from the same `source` is still

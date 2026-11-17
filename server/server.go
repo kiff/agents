@@ -239,6 +239,7 @@ func (s *Server) Handler() http.Handler {
 		route("GET /drafts/{draft_id}", s.getDraft)
 	}
 	route("GET /agents/{id}/runs", s.listRuns)
+	route("GET /agents/{id}/runs/by-key", s.runByKey)
 	route("GET /agents/{id}/runs/{run_id}", s.getRun)
 	route("GET /agents/{id}/runs/{run_id}/requester/access", s.requesterAccess)
 	route("POST /agents/{id}/runs/{run_id}/cancel", s.cancelRun)
@@ -333,6 +334,12 @@ func (c conflictError) Error() string { return c.msg }
 
 func conflict(code, msg string) error { return conflictError{code, msg} }
 
+// notFoundError is a lookup that found nothing, with a code the caller
+// switches on (run_not_found).
+type notFoundError struct{ code, msg string }
+
+func (e notFoundError) Error() string { return e.msg }
+
 // tooManyError is a request over the tenant's cap on active runs.
 type tooManyError struct{ n, max int }
 
@@ -379,6 +386,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var tm tooManyError
 	var fl floodError
 	var ku kiffUnanswered
+	var nf notFoundError
 	var credits *CreditsRefusal
 	var tooBig *http.MaxBytesError
 	status, code, msg := http.StatusInternalServerError, "internal", "internal error"
@@ -437,6 +445,8 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusServiceUnavailable, "unavailable", un.Error()
 	case errors.As(err, &cf):
 		status, code, msg = http.StatusConflict, cf.code, cf.Error()
+	case errors.As(err, &nf):
+		status, code, msg = http.StatusNotFound, nf.code, nf.Error()
 	case errors.As(err, &br):
 		status, code, msg = http.StatusBadRequest, "invalid", br.Error()
 	case errors.Is(err, schedule.ErrNoAgent):
