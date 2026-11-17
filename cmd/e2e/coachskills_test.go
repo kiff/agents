@@ -62,7 +62,7 @@ func TestStartSkillsFollowTafsCloudsTable(t *testing.T) {
 
 // A test mode said before any tool result reported it is a claim; after a
 // read that returned livemode false, it's what the connection reports
-// (agentgabo on #319: the same sentence, before and after).
+// (#319: the same sentence, before and after).
 func TestModeCountsAsReportedOnlyAfterAToolSaidSo(t *testing.T) {
 	ev := func(kind session.EventKind, body any) session.Event {
 		b, _ := json.Marshal(body)

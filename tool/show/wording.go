@@ -90,7 +90,7 @@ func Claim(text string, w Wording) string {
 		}
 		// One match at a time: a match takes its edges with it, so after one that's let through, the
 		// scan goes on from where its next word starts, or "read only the read-only tab" would hide
-		// "read-only" behind the space "read only the" used up (qa-kiff on agents#551).
+		// "read-only" behind the space "read only the" used up (agents#551).
 		for at := 0; at <= len(text); {
 			loc := re.FindStringSubmatchIndex(text[at:])
 			if loc == nil {

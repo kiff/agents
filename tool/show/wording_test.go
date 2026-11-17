@@ -121,7 +121,7 @@ func TestWordingRulesAreChecked(t *testing.T) {
 	}
 }
 
-// qa-kiff on agents#551: a match let through by its next word takes its edge
+// On agents#551: a match let through by its next word takes its edge
 // with it, and the claim right after it is still found.
 func TestAClaimRightAfterALetThroughIsFound(t *testing.T) {
 	w := show.Wording{Patterns: []string{`read-only`, `read only(\s+\pL+)?`}, UnlessNext: []string{"the", "rows"}, Fix: "say what the job does"}

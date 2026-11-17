@@ -283,11 +283,11 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	// The chat the call comes from, for a tool that asked for it: the run's own
 	// session, never the model's word for it. On every other tool it's taken out,
 	// so a model never names a chat to a tool whose stored schema predates the
-	// argument (qa-kiff on #342). Set before the operation ID, so a model's value
+	// argument (#342). Set before the operation ID, so a model's value
 	// never makes two operations of one action.
 	{
 		// Decoded, never matched as bytes: a key written with JSON escapes
-		// ("agent\u005fsession") is the same key (agentgabo on #342).
+		// ("agent\u005fsession") is the same key (#342).
 		session := ""
 		if ref, ok := run.RefFrom(ctx); ok && t.session {
 			session = ref.Session
@@ -346,7 +346,7 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 			format := ""
 			if err == nil && len(b) > 0 && len(b) <= MaxImageBytes {
 				// Decoded as what it says it is before it's kept: an image the model can't read
-				// would fail this turn and every later one that carries it (qa-kiff on #339). The
+				// would fail this turn and every later one that carries it (#339). The
 				// header first, which bounds its size, then the whole of it, so one cut short is
 				// caught too.
 				cfg, format, err = image.DecodeConfig(bytes.NewReader(b))
@@ -376,7 +376,7 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 	}
 	if len(images) > 0 {
 		// The record keeps the text alone: said, so a run resumed from it knows an image was
-		// there and is no longer in view (qa-kiff on #339).
+		// there and is no longer in view (#339).
 		text = append(text, fmt.Sprintf("[%d image(s) with this answer, for this run only: not kept once it pauses]", len(images)))
 	}
 	out := tool.Result{Text: strings.Join(text, "\n"), IsError: res.IsError, State: m.State, Invocation: str(m.Invocation), Images: images}

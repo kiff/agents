@@ -38,7 +38,7 @@ func encoded(t *testing.T, format string, w, h int) []byte {
 // A tool's images (a screenshot of the app Coach drives, kiff/tafs#544) come
 // with its text for the model, each kept only once it decodes as the type it
 // says, within the bounds: one the model couldn't read would fail every later
-// turn that carries it (qa-kiff on #339). Anything else is a line saying so,
+// turn that carries it (#339). Anything else is a line saying so,
 // never dropped silently. The recorded form keeps the text, and a line saying
 // the images were there.
 func TestAToolsImagesComeWithItsText(t *testing.T) {

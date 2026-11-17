@@ -579,7 +579,7 @@ func SessionSkillText(ctx context.Context, store skill.Store, tenant string, d D
 // AddedSkillText is SessionSkillText for skills added mid-conversation: in
 // the order they were added (the session's), never the definition's, so
 // each addition is appended after the last and the cached prefix holds
-// (agentgabo's note on #312). Only skills the definition names are read.
+// (#312). Only skills the definition names are read.
 func AddedSkillText(ctx context.Context, store skill.Store, tenant string, d Definition, added []string) (string, error) {
 	var refs []skill.Ref
 	for _, s := range added {

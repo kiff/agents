@@ -243,7 +243,7 @@ func TestRunsAtOnceShareTheirAgentsSession(t *testing.T) {
 }
 
 // Two starts of one agent at once, whose handshake the gateway holds and then
-// fails, never lock each other or anyone else (qa-kiff on #360: the failed
+// fails, never lock each other or anyone else (#360: the failed
 // handshake's drop waited on the sessions' lock while a second start, holding
 // it, waited on the handshake). Another agent's start meanwhile never waits
 // on that handshake either. The failed session isn't reused.

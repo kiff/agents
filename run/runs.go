@@ -803,7 +803,7 @@ const (
 )
 
 // WorkAt is where r's work stands as of now (see Work); every caller passes
-// its clock, so none reads the wall clock by mistake (agentgabo's note on
+// its clock, so none reads the wall clock by mistake (a review's note on
 // #309). A RUNNING run whose lease ran out stopped (its
 // invocation is gone), and reads as retrying from the moment it did, not
 // from the sweep that carries it on; one past its restarts says nothing,

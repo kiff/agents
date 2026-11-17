@@ -239,7 +239,7 @@ func TestAResultNamesWhereItsDisclosureGoes(t *testing.T) {
 			t.Errorf("%s: %+v", name, r)
 		}
 	}
-	// An improvement may add one: for a tool it adds, or a taf from before (agentgabo on #354).
+	// An improvement may add one: for a tool it adds, or a taf from before (#354).
 	more := call(t, `{"type":"result","id":"better","taf":{"agent":"invoices","name":"Invoices","improves":"taf-1","job":"custom","note":"Also replies",`+
 		`"disclose":[{"tool":"reply_k3f9","fields":["body"]}]},"text":"t"}`)
 	if more.IsError || !strings.Contains(string(more.Component), `"disclose":[{"tool":"reply_k3f9","fields":["body"]}]`) {

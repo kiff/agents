@@ -1093,7 +1093,7 @@ const ClearAfter = 48 << 10
 // the owner's answer to a card (the show tool's result) is their decision,
 // small, and nothing the agent wrote since restates it (Eval 42141761407:
 // Coach lost the owner's "modo: test" to a clearing, then told them they
-// never chose it; agentgabo).
+// never chose it).
 func clearRead(msgs []model.Message, after int, keep func(tool string) bool) []model.Message {
 	if len(msgs) < 2 {
 		return msgs

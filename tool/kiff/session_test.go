@@ -89,7 +89,7 @@ func TestAToolThatAsksForTheSessionGetsTheRunsOwn(t *testing.T) {
 		t.Fatalf("outside a run, sent %v", sent["app_look"])
 	}
 
-	// A tool that didn't ask never gets it, not even the model's own (qa-kiff on #342):
+	// A tool that didn't ask never gets it, not even the model's own (#342):
 	// a tool whose stored schema predates the argument must never be told a chat by the model.
 	if _, err := refund.Call(inRun, json.RawMessage(`{"charge":"ch_1","`+kiff.SessionArg+`":"s_chat_a"}`)); err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestAToolThatAsksForTheSessionGetsTheRunsOwn(t *testing.T) {
 	if _, has := sent["stripe_refund"][kiff.SessionArg]; has || sent["stripe_refund"]["charge"] != "ch_1" {
 		t.Fatalf("a tool that didn't ask got it: %v", sent["stripe_refund"])
 	}
-	// Nor written with JSON escapes, which decode to the same key (agentgabo on #342).
+	// Nor written with JSON escapes, which decode to the same key (#342).
 	if _, err := refund.Call(inRun, json.RawMessage(`{"charge":"ch_2","agent\u005fsession":"s_chat_a"}`)); err != nil {
 		t.Fatal(err)
 	}

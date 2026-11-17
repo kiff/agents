@@ -146,8 +146,8 @@ func reasonOf(r ToolResultBody) string {
 // secretShapes are what a vendor's error can echo of a credential, which a
 // Called event, kept for good, never keeps: a key by its known prefix, a
 // Bearer token, a JWT whole or in part, and any run of 24 or more base64 or
-// hex characters ("Invalid API key provided: sk_test_…"; agentgabo and
-// qa-kiff on #358).
+// hex characters ("Invalid API key provided: sk_test_…";
+// #358).
 var secretShapes = regexp.MustCompile(`(?i)\bbearer\s+\S+|\b(?:sk|rk|pk|whsec|am|ghp|gho|ghu|ghs|ghr|xox[abeoprs])[_-][A-Za-z0-9_\-]*|\beyJ[A-Za-z0-9_.=\-]*|[A-Za-z0-9+/]{24,}={0,2}`)
 
 // withoutSecrets is text with each credential-shaped part as "[hidden]".
@@ -241,7 +241,7 @@ func AnsweredLine(b AnsweredBody) string {
 // CalledLine is a Called event as the model reads it: the only text that
 // carries CalledMark. The outcome is the record's; a failed call's reason is
 // the tool's words (a vendor's, or a customer's through it), quoted and
-// marked as data, never as what was done (qa-kiff on #358). The record note
+// marked as data, never as what was done (#358). The record note
 // (NoteLine) leaves it out.
 func CalledLine(b CalledBody) string {
 	line := CalledMark + " " + Unforged(b.Tool)

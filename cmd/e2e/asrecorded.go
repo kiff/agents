@@ -19,7 +19,7 @@ import (
 // about them): no answer says something was done, or not done, that its
 // record contradicts (eval.Recorded), by majority. An answer's record is its
 // chat's calls up to its run's: a look-up one message before counts, marked
-// "earlier" (qa-kiff). A number an answer gives of its calls is checked too,
+// "earlier". A number an answer gives of its calls is checked too,
 // against the record's counts by tool (eval.RecordedCall.Count). The judges'
 // reasons may quote the chat, so they go to the transcript, after the taf's
 // answers; the log counts them.

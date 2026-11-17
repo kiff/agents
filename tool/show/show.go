@@ -479,7 +479,7 @@ func (t Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, err
 // clean takes any tag of the model's format out of the words the owner reads on
 // the card, before it's checked, recorded and shown: its title, text, note,
 // buttons, steps, options, questions and a result's taf words (Eval
-// 42141761407; qa-kiff on #345). Values, ids and references are left as they
+// 42141761407; #345). Values, ids and references are left as they
 // are. Parse does it, so the words recorded with the owner's answer, which the
 // server takes from the card it parses again, are the ones the owner saw.
 func (c *Component) clean() {
@@ -748,7 +748,7 @@ func (c Component) check() error {
 			}
 			// An improvement may add a disclosure, for a tool it adds or one a taf
 			// from before never had; tafs adds it to the taf's, never taking one
-			// away (agentgabo on #354).
+			// away (#354).
 			if err := checkDisclose(c.Taf.Disclose); err != nil {
 				return err
 			}

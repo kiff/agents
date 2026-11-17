@@ -98,7 +98,7 @@ func (d *Disclosure) Check() error {
 // none: a tool named as given, or with one word of KIFF's for a connection
 // after it or a vendor's before it ("update_dispute_k3f9",
 // "stripe_update_dispute"); never another tool whose name only starts the
-// same ("send_test_mode_off" for "send", agentgabo on #352).
+// same ("send_test_mode_off" for "send", #352).
 func (d *Disclosure) fields(tool string) []string {
 	if d == nil {
 		return nil
@@ -206,7 +206,7 @@ func (d *Disclosure) First(tool string, input json.RawMessage) json.RawMessage {
 	if !changed {
 		return input
 	}
-	// As the model wrote it: no HTML escapes, which change the text sent but not its value (agentgabo on #352).
+	// As the model wrote it: no HTML escapes, which change the text sent but not its value (#352).
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
 	enc.SetEscapeHTML(false)

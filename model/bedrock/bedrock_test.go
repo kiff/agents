@@ -43,7 +43,7 @@ func TestATurnRunsOnTheEUProfile(t *testing.T) {
 }
 
 // No AWS credential reaches a log line or a run record through an error's
-// text: key ids, a session token, a SigV4 Authorization (qa-kiff's list).
+// text: key ids, a session token, a SigV4 Authorization (list).
 func TestAnErrorCarriesNoAWSCredential(t *testing.T) {
 	cause := errors.New(`POST "https://bedrock-runtime.eu-west-1.amazonaws.com/model/x/invoke": 403 Forbidden ` +
 		`Authorization: AWS4-HMAC-SHA256 Credential=ASIAABCDEFGHIJKLMNOP/20261107/eu-west-1/bedrock/aws4_request, SignedHeaders=host;x-amz-date, Signature=0123456789abcdef ` +
