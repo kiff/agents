@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -505,4 +506,23 @@ func planFlag(name string, cfg config, graded bool) (*plan, error) {
 		return nil, fmt.Errorf("-plan %s: -owner en or fr", name)
 	}
 	return &p, nil
+}
+
+// rulesLine names, by size and digest, the rules a run is held to: Coach's
+// wording rules as Setup's definition carries them (kiff/tafs's
+// contracts/coach-wording.json, as JSON), and the plan judges' texts. Two runs
+// with the same line ran under the same rules.
+func rulesLine(wording []show.Wording) string {
+	raw, err := json.Marshal(wording)
+	if err != nil {
+		raw = nil
+	}
+	return fmt.Sprintf("rules: Coach's wording %d rules, %s; judge %q %s; judge %q %s",
+		len(wording), digestOf(raw), planNoHarmlessClaim, digestOf([]byte(HarmlessClaim)), planWiderOnlyAfter, digestOf([]byte(SaysWider)))
+}
+
+// digestOf is a text's size and the start of its SHA-256.
+func digestOf(b []byte) string {
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%d bytes, sha256 %x", len(b), sum[:6])
 }

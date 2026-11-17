@@ -585,6 +585,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	}
 	// The plan gate reads the same wording rules show refuses a card by (readOnlyWordsIn).
 	t.setupWording = setup.Wording
+	// The rules this run was held to, by digest, so a later miss can be traced to them: Coach's
+	// wording rules as Setup's definition carries them, and the plan judges' texts.
+	fmt.Fprintln(t.cfg.log, rulesLine(setup.Wording))
 	if err := t.agents.Put(ctx, setup); err != nil {
 		return err
 	}
