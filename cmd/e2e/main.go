@@ -1549,8 +1549,23 @@ func (t *test) readCard(c component, g grant) (seen approvalSeen, newDraft, rere
 	return approvalSeen{Grant: c.Grant, Draft: c.Draft, Key: g.Request.Kind == "api_key", Again: again}, newDraft, false
 }
 
+// errAPIReadsCapped stops a suite whose Setup can't read a key app's API
+// description: the test tenant used planque's reads for the day (planque's
+// apiReadsADay, per account and UTC day). Nothing of Coach's is judged then.
+// Eval 44162956815 ran three suites into it, 14 turns of "can't connect" each,
+// 0 of 3 runs to a result, read as Coach's failure until the transcripts were.
+var errAPIReadsCapped = errors.New("harness: the test tenant has used planque's API description reads for today (its cap per UTC day): Setup can't read a key app's API, so nothing of Coach's is judged in this suite; run it again after 00:00 UTC")
+
+// apiReadsCapped is planque's refusal of an API description read for the
+// day's cap, as Setup's planque tool hands it back ("This account has read 100
+// API descriptions today").
+func apiReadsCapped(b agent.ToolResultBody) bool {
+	return b.IsError && b.Tool == "planque" && strings.Contains(b.Text, "API descriptions today")
+}
+
 // latest is what the run shows and says: its components, the latest of
-// each id, and its last message.
+// each id, and its last message. A run planque refused an API description
+// read for the day's cap stops the suite (errAPIReadsCapped).
 func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component, string, error) {
 	_, events, err := t.sessions.Read(ctx, t.tenant, sessionID)
 	if err != nil {
@@ -1586,6 +1601,9 @@ func (t *test) latest(ctx context.Context, sessionID, runID string) ([]component
 			var b agent.ToolResultBody
 			if json.Unmarshal(e.Body, &b) == nil && b.IsError {
 				t.logf("  %s refused: %s", b.Tool, oneLine(b.Text))
+				if apiReadsCapped(b) {
+					return nil, "", errAPIReadsCapped
+				}
 			}
 		}
 	}
