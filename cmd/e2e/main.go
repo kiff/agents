@@ -418,6 +418,8 @@ type test struct {
 	hc           *http.Client
 	run          string // names this run's agents and keys
 	tenant       string
+	// notes are Setup's progress notes as the agent emitted them.
+	notes shownNotes
 
 	kiff  *client
 	phone *phone
@@ -605,6 +607,11 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 	fmt.Fprintf(t.cfg.log, "draftless approvals tafs cloud's check didn't take: %d\n", t.splitUnchecked)
 	fmt.Fprintln(t.cfg.log, unconfirmedLine(t.unconfirmedResults))
+	if t.setupSession != "" {
+		if _, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession); err == nil {
+			fmt.Fprintln(t.cfg.log, wordingLine(events))
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -1100,10 +1107,10 @@ func (t *test) reply(ctx context.Context, ch *chat.Chat, last runs.Run, msg stri
 			answeredAny = true
 		}
 		if answeredAny {
-			return t.rn.Execute(ctx, t.tenant, last.ID, nil)
+			return t.rn.Execute(ctx, t.tenant, last.ID, t.notes.emit)
 		}
 	}
-	return ch.Send(ctx, msg, nil)
+	return ch.Send(ctx, msg, t.notes.emit)
 }
 
 // cardAnswer is msg as the answer to c: its answer as data when msg is the
@@ -1817,9 +1824,9 @@ func (t *test) grade(ctx context.Context, tafAgent string) error {
 		}
 		t.said.afterFacts = textsAfter(events, t.said.factsAt)
 	}
-	if t.words != nil {
-		t.said.lines = append(t.said.lines, t.words.setupNotes()...) // a line that came as a note, graded the same
-	}
+	// A line that came as a note, graded the same: only those the owner saw,
+	// never one the wording rules dropped.
+	t.said.lines = append(t.said.lines, t.notes.all()...)
 	// What every connection this run approved fixes, and its tools, once
 	// connected: a rule kept there is kept, whatever the case (the refunds
 	// setup showed the judge none, and its EUR rule read as held nowhere).
@@ -2882,7 +2889,7 @@ func (t *test) answerResult(ctx context.Context, outcome string) error {
 		return fmt.Errorf("answering the result: %w", err)
 	}
 	answeredAt := time.Now()
-	end, err := t.rn.Execute(ctx, t.tenant, w.run, nil)
+	end, err := t.rn.Execute(ctx, t.tenant, w.run, t.notes.emit)
 	if err != nil {
 		return fmt.Errorf("Setup going on after the hand-over: %w", err)
 	}

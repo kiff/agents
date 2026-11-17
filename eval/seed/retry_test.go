@@ -2,6 +2,7 @@ package seed
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,40 @@ func TestADroppedConnectionIsTriedOnceWithTheSameKey(t *testing.T) {
 	}
 }
 
+// A GET whose answer is cut off before its end is tried once more (Eval
+// 44023858161: the hand-offs seed died on "unexpected EOF" listing disputes).
+func TestAnAnswerCutOffIsTriedOnce(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			// The answer says 100 bytes and the connection ends after a few.
+			w.Header().Set("Content-Length", "100")
+			_, _ = w.Write([]byte(`{"data":`))
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"dp_1"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL, "sk_test_x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out object
+	if err := c.do(context.Background(), http.MethodGet, "/v1/disputes", url.Values{"limit": {"100"}}, &out); err != nil {
+		t.Fatalf("a cut-off answer isn't tried again: %v", err)
+	}
+	if out.ID != "dp_1" || calls != 2 {
+		t.Fatalf("got %q after %d calls, want dp_1 after 2", out.ID, calls)
+	}
+}
+
 func TestARefusalIsNotTriedAgain(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +118,12 @@ func TestOnlyADroppedConnectionCounts(t *testing.T) {
 	} {
 		if got := dropped(errString(tc.err)); got != tc.want {
 			t.Errorf("dropped(%q) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+	// An answer cut off, as net/http says it: the error wraps the EOF.
+	for _, cut := range []error{io.ErrUnexpectedEOF, io.EOF} {
+		if err := (&url.Error{Op: "Get", URL: "https://api.stripe.com/v1/disputes", Err: cut}); !dropped(err) {
+			t.Errorf("dropped(%v) = false, want true", err)
 		}
 	}
 }

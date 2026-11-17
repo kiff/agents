@@ -103,9 +103,8 @@ type wordsClock struct {
 	// last is Setup's previous request, to tell where a turn's prefix broke.
 	last *model.Request
 	// setup is Setup's instructions, which its turns' system prompt starts
-	// with, and notes its progress notes: lines, graded with what it wrote.
+	// with.
 	setup string
-	notes []string
 	// turns are Setup's turns as the clock saw them, for where each wait
 	// for its first words went (splitWaits).
 	turns []clockTurn
@@ -141,13 +140,6 @@ func (w *wordsClock) setupTurns() []clockTurn {
 	return slices.Clone(w.turns)
 }
 
-// setupNotes is every progress note Setup wrote, in order.
-func (w *wordsClock) setupNotes() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return slices.Clone(w.notes)
-}
-
 func (w *wordsClock) Turn(ctx context.Context, req model.Request, onText func(string)) (model.Reply, error) {
 	began := time.Now()
 	var wordsAt time.Time
@@ -163,11 +155,6 @@ func (w *wordsClock) Turn(ctx context.Context, req model.Request, onText func(st
 	setup := w.setup != "" && strings.HasPrefix(req.System, w.setup)
 	req.OnUpdate = func(note string) {
 		words(note)
-		if setup {
-			w.mu.Lock()
-			w.notes = append(w.notes, note)
-			w.mu.Unlock()
-		}
 		if onUpdate != nil {
 			onUpdate(note)
 		}
