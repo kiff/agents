@@ -52,7 +52,7 @@ const AfterRefusedRead = "Not made: a read in this run was refused, so what's th
 // AfterTwoFailures is what the same call, already failed twice in the run
 // by the app, gets back, unmade. It says the call, not the tool: other calls
 // to the tool still go, and a taf told "this tool" stopped would say so to
-// its owner, and be judged against it (dev-android, on this rule's move to
+// its owner, and be judged against it (on this rule's move to
 // counting per call).
 const AfterTwoFailures = "Not made: this call already failed twice in this run, and it isn't tried again in it. " +
 	"Don't try it another way: tell the person in plain words what failed and what they can do about it."

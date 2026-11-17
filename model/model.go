@@ -103,7 +103,7 @@ type Image struct {
 
 // ImageTypes are the media types a tool's image may have: the ones the model
 // reads that the standard library can check (a tool's image is decoded before
-// it's kept, so a bad one never reaches the model; qa-kiff on #339).
+// it's kept, so a bad one never reaches the model; #339).
 var ImageTypes = []string{"image/jpeg", "image/png", "image/gif"}
 
 // Message is one turn of the conversation.

@@ -550,7 +550,7 @@ func TestARunReadAgainCountsOnce(t *testing.T) {
 	}
 
 	// Read first as a message, then, once the run wrote again, as a line: it counts once, as the
-	// message it was taken as, and no line check reads it (Eval 42177781403, agentgabo). A text
+	// message it was taken as, and no line check reads it (Eval 42177781403). A text
 	// the run wrote twice still counts twice.
 	waited := "Falta que apruebes la conexión con tu proveedor de pagos y que inicies sesión en su página."
 	tt = &test{}
@@ -568,7 +568,7 @@ func TestARunReadAgainCountsOnce(t *testing.T) {
 // The one short line Setup writes before it works reaches the chat as text when
 // a card, a pause or the end comes before it writes again. Where it sits decides
 // it, however it ends, so the concise judge never reads it as a message's
-// opening (Eval 42136777522's "…" and Eval 42141761407's ".", the desk; qa-kiff).
+// opening (Eval 42136777522's "…" and Eval 42141761407's ".", the desk).
 // A short message that ends a turn with no call after it stays judged.
 func TestAProgressLineIsNoMessageForTheConciseJudge(t *testing.T) {
 	ev := func(kind session.EventKind, body any) session.Event {
@@ -633,7 +633,7 @@ func TestThePinIsTheModeTheOwnerChose(t *testing.T) {
 
 // The judged mode check is told what the connection reported and what the
 // owner chose, and which texts came before the report: without them a judge
-// can't tell a claim from a report (qa-kiff). It's a gate; the wording checks
+// can't tell a claim from a report. It's a gate; the wording checks
 // around it are advice.
 func TestTheModeJudgeIsToldTheFacts(t *testing.T) {
 	ask := func(chose string, m modes, s said) string {
@@ -786,7 +786,7 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "isn't graded here") {
 		t.Fatal("the judge wasn't told the disclosure isn't set before the taf is made")
 	}
-	// Once the taf is made, the disclosure is read from it, never voted on (qa-kiff on agents#452).
+	// Once the taf is made, the disclosure is read from it, never voted on (agents#452).
 	withTaf := func(disclose ...string) said {
 		m := pinnedS
 		m.connected = desk.Request.Tools

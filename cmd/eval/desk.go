@@ -17,7 +17,7 @@ import (
 )
 
 // A desk case (cases.Scenario.Desk, the tickets case) runs as a fresh agent
-// for each run, on the test account's fake desk, as agentgabo and kiff-admin
+// for each run, on the test account's fake desk, as was
 // agreed: its Cards' counts start at zero, and the standing agent's Stripe
 // Cards and room are untouched. Setup's key asks for the agent's API-key grant
 // to the desk, the test phone gives the desk's key and confirms the agent's

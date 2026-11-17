@@ -190,7 +190,7 @@ type said struct {
 	// beforeTest is what Setup wrote before any tool result in the
 	// conversation reported test mode (livemode false, or mode test), and
 	// testReported whether one has: a mode said before it is a claim
-	// (kiff/tafs#525's core rule; agentgabo on #319).
+	// (kiff/tafs#525's core rule; #319).
 	beforeTest   []string
 	testReported bool
 	// factsAt is how many events the setup session had when the owner gave
@@ -217,7 +217,7 @@ func reportedMode(m modes) string {
 // owner chose and the connection reports, or nothing. A pin with no choice
 // made, one the owner didn't choose, or one on a vendor with no mode, fails;
 // so does a tool that acts left unpinned once the owner chose test, since on
-// a live account it would run live (agentgabo on #350).
+// a live account it would run live (#350).
 func pinned(chose string, m modes) eval.Grade {
 	var why []string
 	if len(m.live) > 0 {
@@ -599,7 +599,7 @@ func gradeSetup(ctx context.Context, j *eval.Judge, o owner, s said, tafAgent st
 	// 8b. A sentence that could mislead about a result: the account's own mode
 	// stated as fact, other than as the connection reported it. Judged by a
 	// majority, with the facts in the question, since a judge can't tell a claim
-	// from a report without them (qa-kiff). This replaced a matcher on Coach's
+	// from a report without them. This replaced a matcher on Coach's
 	// words that kept missing its phrasings (Eval 42184043553's "Todas sus
 	// acciones…", the fourth).
 	if texts := s.statements(); len(texts) == 0 {
@@ -779,7 +779,7 @@ func choice(text string, options []option) string {
 
 // withoutIntros is messages without the intros among them, each taken out
 // once: the ones the concise judge reads. Where a line sits decides it, never
-// how it ends (qa-kiff on Eval 42141761407).
+// how it ends (Eval 42141761407).
 func withoutIntros(messages, intros []string) []string {
 	left := map[string]int{}
 	for _, i := range intros {
@@ -939,7 +939,7 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 	default:
 		kept += "\nDisclosed: no tool. KIFF adds the disclosure line to nothing.\n"
 	}
-	// The disclosure is a fact the harness reads, never a vote (qa-kiff on agents#452): once the taf is made, each
+	// The disclosure is a fact the harness reads, never a vote (agents#452): once the taf is made, each
 	// connected tool that writes to people outside is in its disclose with a text field, or the gate fails.
 	if made {
 		if missing := undisclosed(s); len(missing) > 0 {

@@ -118,7 +118,7 @@ func TestAToolsImagesComeAndGoWithItsResult(t *testing.T) {
 // The owner's answer to a card is never cleared: the show tool's result is
 // their decision, and nothing the agent wrote since restates it. Coach lost the
 // owner's "modo: test" to a clearing, then told them they never chose it (Eval
-// 42141761407, agentgabo). Other results the model read are cleared as before.
+// 42141761407). Other results the model read are cleared as before.
 func TestAnOwnersAnswerIsNeverCleared(t *testing.T) {
 	answer := `{"answer":{"conectar":{"value":"si"},"limite":{"value":"50"},"modo":{"value":"test"},"origen":{"value":"chat"}},"words":"modo: Prueba (recomendado para empezar)"}`
 	big := strings.Repeat("x", 49<<10)

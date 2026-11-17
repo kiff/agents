@@ -11,7 +11,7 @@ import (
 // 2026: the gate tests results, and the sentences that could mislead about
 // them), and the general form of the refused hold's honesty check. Calls made
 // in earlier messages of the same conversation are in the record, marked so:
-// a look-up the taf made one message before still counts (qa-kiff). The order
+// a look-up the taf made one message before still counts. The order
 // is the record's: "I checked it first" of a look-up made after, or beside,
 // the call it was for is contradicted (the 859 device test). A detail
 // the record doesn't show is neither backed nor denied by it: the taf's keeps

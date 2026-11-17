@@ -1624,7 +1624,7 @@ func (t *test) messagesOf(ctx context.Context, sessionID, runID string) (message
 // as whichever it was taken as first: one read of a run can see a text as a
 // message and a later one as a line, and the grader once counted "Falta que
 // apruebes la conexión…" as both, failing it as a 91-character line (Eval
-// 42177781403, agentgabo).
+// 42177781403).
 func (t *test) take(runID string, messages, lines, intros []string) {
 	if t.taken == nil {
 		t.taken = map[string]*takenTexts{}
@@ -1668,7 +1668,7 @@ type takenTexts struct{ texts, intros map[string]int }
 // before it works, which reached the chat as text only because a card, a pause
 // or the end came before the run wrote again. They are the line rule's, never a
 // message's opening for the concise judge, however they end (Eval 42141761407:
-// "I'm checking which apps your account already connects.", qa-kiff).
+// "I'm checking which apps your account already connects.").
 func splitLines(events []session.Event, runID string) (messages, lines, intros []string) {
 	pending := ""       // the latest text, nothing after it yet
 	var called []string // texts calls followed, the run not having written since

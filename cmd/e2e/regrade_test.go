@@ -13,8 +13,7 @@ import (
 	"github.com/kiff/agents/model"
 )
 
-// The two transcripts the taf failed in, as the bucket keeps them (agentgabo,
-// 6 Nov). The morning's rewrite changes only its narrated look-ups, every other
+// The two transcripts the taf failed in, as the bucket keeps them (6 Nov). The morning's rewrite changes only its narrated look-ups, every other
 // word the bucket's, cut endings and all: passing, it shows they were its only
 // concise fault. The night's is the answers the rules ask for, msg 8 with the
 // one clause a judge may pass after a hold.
@@ -25,7 +24,7 @@ const (
 	nightRewrite   = "testdata/regrade/42146041790-one-clause.md"
 	// nightMsg8 is the night's transcript with msg 8 completed by the words its
 	// judge quoted, named as reconstructed in its first line: the bucket cut the
-	// answer before them, and the run's sessions are gone (qa-kiff on #347).
+	// answer before them, and the run's sessions are gone (#347).
 	nightMsg8 = "testdata/regrade/42146041790-msg8-reconstructed.md"
 )
 
@@ -166,7 +165,7 @@ func TestTheRulesAgreeOnOneShape(t *testing.T) {
 		{"AfterApproval", AfterApproval, []string{"leaving the check out passes", "one short clause of the sentence that says the refund went through"}},
 		{"AfterRefusal", AfterRefusal, []string{"leaving it out passes", "one short clause of the sentence that says the refund wasn't made"}},
 		// After a hold the owner answered, the check gets no word, as kiff/tafs#560's chat rule says;
-		// the judges stay no stricter than the rule and pass a clause (qa-kiff on #347).
+		// the judges stay no stricter than the rule and pass a clause (#347).
 		{"RecordNote", agent.RecordNote, []string{"Neither gets a word in your answer: it was made before the owner answered."}},
 	} {
 		for _, s := range c.says {
@@ -184,7 +183,7 @@ func TestTheRulesAgreeOnOneShape(t *testing.T) {
 
 // The Eval's own concise check asks TafConcise, each answer beside the owner's
 // message it answers: put back Concise over the answers alone, and this fails
-// (qa-kiff on #347).
+// (#347).
 func TestTheTafsAnswersAreJudgedBesideTheOwnersMessages(t *testing.T) {
 	v := &verdicts{}
 	var log, transcript strings.Builder

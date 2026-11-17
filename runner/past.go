@@ -304,7 +304,7 @@ func (p past) preface(ctx context.Context, tools []tool.Tool, now time.Time) []m
 const SinceNote = "Since this run paused, as things stand now:"
 
 // GoneNote opens what a continued run's first preface said that nothing says
-// now: a state that went away, with no line in its place (qa-kiff on #360).
+// now: a state that went away, with no line in its place (#360).
 const GoneNote = "No longer said, as it was when this run began:"
 
 // since is what a continuation's fresh preface says that the one its run

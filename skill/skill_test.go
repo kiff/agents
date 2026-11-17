@@ -74,7 +74,7 @@ func TestCheckBoundsAPackage(t *testing.T) {
 		t.Fatalf("eleven skills: %v", err)
 	}
 	// The cap itself, with refs that pass every other check: one over it is refused for its count
-	// alone (agentgabo on #316: empty refs would fail on the name first).
+	// alone (#316: empty refs would fail on the name first).
 	over := make([]skill.Ref, skill.MaxPerAgent+1)
 	for i := range over {
 		over[i] = skill.Ref{Name: fmt.Sprintf("skill-%d", i), Version: "1"}

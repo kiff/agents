@@ -603,8 +603,8 @@ func fromMessage(msg sdk.Message) model.Reply {
 // (dropping one each turn would rewrite the cache every turn, which costs
 // more than reading the images again; kiff/tafs#544). At 20, a request never
 // holds more than 20 images, past which the model applies a stricter bound to
-// every image's size, and a turn uploads about half as much (agentgabo and
-// qa-kiff on #339).
+// every image's size, and a turn uploads about half as much
+// (#339).
 const (
 	ImagesKept     = 20
 	ImagesDropStep = 10

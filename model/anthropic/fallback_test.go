@@ -17,7 +17,7 @@ import (
 // The backup takes a new run only for the credit refusal, matched on its
 // status, type and words, or for the API unavailable once its retries are
 // spent: never for a request it would refuse too, a refused key, or a rate
-// limit (qa-kiff's list).
+// limit (list).
 func TestOnlyTheCreditRefusalAndAnOutageFallBack(t *testing.T) {
 	credit := `{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}`
 	for _, c := range []struct {

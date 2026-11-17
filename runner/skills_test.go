@@ -74,7 +74,7 @@ func TestARunsSkillsFollowTheInstructionsInTheDefinitionsOrder(t *testing.T) {
 
 // Naming skills never lets a run into a session that isn't its own: another
 // person's chat, or another agent's session, is not found with skills as
-// without (#219), and the session gains none (qa-kiff's probe on #312).
+// without (#219), and the session gains none (a review's probe on #312).
 func TestSkillsNeverOpenAnotherPersonsOrAgentsSession(t *testing.T) {
 	f := newFixture(t, say("Hello."))
 	withSkills(t, f)
@@ -143,7 +143,7 @@ func TestASkillAddedMidConversationTakesEffectFromTheNextTurn(t *testing.T) {
 
 // Skills added at different times come in the order they were added, not
 // the definition's, so each addition is appended after the last and the
-// cached prefix holds (agentgabo's note on #312). Here the definition
+// cached prefix holds (#312). Here the definition
 // orders cards before wakes; wakes is added first.
 func TestSkillsAddedMidConversationKeepTheOrderTheyWereAddedIn(t *testing.T) {
 	f := newFixture(t, use("c1", "stripe_refund", `{}`), use("c2", "stripe_refund", `{}`), say("Done."))

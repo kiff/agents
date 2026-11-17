@@ -98,7 +98,7 @@ func TestTheCoachBatchsGates(t *testing.T) {
 		t.Errorf("a managed app with no uses: %+v", r)
 	}
 
-	// The key grant decides, not how the case ended (qa-kiff on #434). A key
+	// The key grant decides, not how the case ended (#434). A key
 	// grant planque declared, asked for with the key alone: failed, even in a
 	// case that ends at "connected" (desk, billing), since that's the very
 	// flow the gate exists for.

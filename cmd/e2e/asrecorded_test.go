@@ -181,7 +181,7 @@ func TestEachAnswerIsJudgedAgainstItsRecord(t *testing.T) {
 // message before, marked earlier, then the refund, held and approved), the
 // answer that puts the look-up outside "this run's record" fails, and the
 // answer the rules ask for, with what the look-up found in one clause, passes
-// (qa-kiff). It costs a few cents, so it runs only when asked: E2E_REGRADE=1
+//. It costs a few cents, so it runs only when asked: E2E_REGRADE=1
 // with ANTHROPIC_API_KEY.
 func TestTheRecordJudgeOnLastNightsMsg8(t *testing.T) {
 	if os.Getenv("E2E_REGRADE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {

@@ -8,7 +8,7 @@ import (
 
 // What changed since a continued run's preface was first sent: new lines,
 // then lines that went away with nothing in their place, never the old date
-// (qa-kiff on #360: a state note that went away was still read as standing).
+// (#360: a state note that went away was still read as standing).
 func TestSinceSaysWhatIsNewAndWhatWentAway(t *testing.T) {
 	text := func(s string) model.Block { return model.Block{Kind: model.Text, Text: s} }
 	state := StateNote + "\n\nDrafts in this conversation, as kept now:\n- drf_1, for agent refunds-a1: submitted; not claimed yet\n"

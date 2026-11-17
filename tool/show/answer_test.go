@@ -163,7 +163,7 @@ func TestADriveCardWaitsForTheOwnersApproval(t *testing.T) {
 
 // A tag of the model's format never reaches the owner on a card: Coach's own
 // words on it (its text, a question, an option) are cleaned before it's recorded
-// and shown, and its values are left alone (Eval 42141761407; qa-kiff on #345).
+// and shown, and its values are left alone (Eval 42141761407; #345).
 func TestACardCarriesNoLeakedTag(t *testing.T) {
 	tag := "antml:final_answer_dialog "
 	raw := `{"type":"questions","id":"setup","text":"` + tag + `Para preparar Reembolsos necesito saber esto:","questions":[` +

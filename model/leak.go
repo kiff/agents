@@ -15,7 +15,7 @@ import (
 // LeakedTag is one tag, whole: bracketed, opening or closing, the prefix and a
 // name with anything up to its ">"; or bare, with any emphasis around it and
 // one space after it ("antml:final_answer_dialog ", "**antml:foo** "). A name
-// may hold a hyphen ("antml:final-answer", qa-kiff).
+// may hold a hyphen ("antml:final-answer").
 var LeakedTag = regexp.MustCompile(`(?i)</?antml:[a-z_][a-z0-9_-]*[^<>]*>|[*_]*\bantml:[a-z_][a-z0-9_-]*\b[*_]*[ \t]?`)
 
 // StripLeakedTags is s without the leaked tags in it.
