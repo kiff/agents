@@ -98,7 +98,10 @@ func figuresHeld(cards []map[string]any, name string) []heldFigure {
 		if !covers {
 			continue
 		}
-		for _, a := range asList(c["aggregates"]) {
+		for i, a := range asList(c["aggregates"]) {
+			if kiffsOwnCount(cards, c, i) {
+				continue
+			}
 			q, _ := a["quantity"].(string)
 			w, _ := a["window"].(string)
 			per, _ := a["per"].(string)
@@ -106,6 +109,73 @@ func figuresHeld(cards []map[string]any, name string) []heldFigure {
 		}
 	}
 	return out
+}
+
+// kiffCountADay is KIFF's own count, never the owner's: KIFF refuses a Card
+// with no total, so a Card the owner gave none carries 10,000 calls a day,
+// "KIFF adds it". The reads' Card has it, and so does a held Card whose only
+// figure is each call's cap, beside a refused Card with the day's total on the
+// same tool ("ask past €5 a refund, refuse past €50 a day"; Eval 43975057022,
+// Setup run 3). The same as tafs cloud's kiffsOwnCount.
+const kiffCountADay = 10000
+
+// kiffsOwnCount reports whether card's aggregate i is KIFF's own count: a
+// count of kiffCountADay a calendar day, for no item, as the only total of a
+// Card that holds (not one that refuses), with every tool the Card covers also
+// on another Card with a total on an amount over all items (never one item's).
+// Alone, or beside €50 for each customer, it would let 10,000 calls under the
+// cap through a day unasked, so it's a figure like any other.
+func kiffsOwnCount(cards []map[string]any, card map[string]any, i int) bool {
+	aggs := asList(card["aggregates"])
+	if onExceed, _ := card["on_exceed"].(string); onExceed == "refuse" || len(aggs) != 1 || i != 0 {
+		return false
+	}
+	a := aggs[0]
+	q, _ := a["quantity"].(string)
+	w, _ := a["window"].(string)
+	per, _ := a["per"].(string)
+	if foldTool(q) != "count" || foldTool(w) != "calendar_day" || foldTool(per) != "" || number(a["limit"]) != any(int64(kiffCountADay)) {
+		return false
+	}
+	var actions []string
+	for _, g := range asList(card["grants"]) {
+		if action, _ := g["action"].(string); foldTool(action) != "" {
+			actions = append(actions, foldTool(action))
+		}
+	}
+	if len(actions) == 0 {
+		return false
+	}
+	for _, action := range actions {
+		bounded := false
+		for _, o := range cards {
+			if sameCard(o, card) {
+				continue
+			}
+			covers := false
+			for _, g := range asList(o["grants"]) {
+				if a, _ := g["action"].(string); foldTool(a) == action {
+					covers = true
+				}
+			}
+			for _, t := range asList(o["aggregates"]) {
+				q, _ := t["quantity"].(string)
+				per, _ := t["per"].(string)
+				if covers && strings.HasPrefix(foldTool(q), "sum(") && foldTool(per) == "" {
+					bounded = true
+				}
+			}
+		}
+		if !bounded {
+			return false
+		}
+	}
+	return true
+}
+
+// sameCard is whether a and b are the same Card of the draft (the same map).
+func sameCard(a, b map[string]any) bool {
+	return fmt.Sprintf("%p", a) == fmt.Sprintf("%p", b)
 }
 
 // number is a JSON number as an int64 when it's whole, else as read.
