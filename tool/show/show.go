@@ -350,7 +350,11 @@ var fields = map[string][]string{
 }
 
 // Tool shows components: those of types, or Types when it names none.
-type Tool struct{ types []string }
+type Tool struct {
+	types []string
+	// wording: what the definition says its cards may not say (WithWording).
+	wording []Wording
+}
 
 // New returns the show tool, for types alone when given (a taf's
 // ask_coach); with none, for Types, as Coach has it.
@@ -454,6 +458,10 @@ func (t Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, err
 	}
 	if err := stepsDone(c, tool.OutcomesFrom(ctx)); err != nil {
 		return tool.Result{Text: err.Error(), IsError: true}, nil
+	}
+	// The definition's wording rules: a card that breaks one is redrawn, never recorded or drawn.
+	if msg := worded(c, t.wording); msg != "" {
+		return tool.Result{Text: msg, IsError: true}, nil
 	}
 	c.Waits = waitsOn(c.Type)
 	b, _ := json.Marshal(c)

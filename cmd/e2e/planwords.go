@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kiff/agents/tool/show"
 	"regexp"
 	"strings"
 
@@ -236,14 +237,31 @@ func (r planRun) from(at int) []string {
 // readOnlyWordsIn names, by where it was written and the word from the list,
 // each text that calls something read-only; empty when none does. The words
 // are the list's, never Coach's, so the line is safe in a public log.
-func readOnlyWordsIn(texts []planText) []string {
+//
+// With the setup definition's wording rules (kiff/tafs' contracts/coach-wording.json, in its
+// `wording`), the gate reads those too, the same rules show refuses a card by: a match in either
+// fails. The gate's own list stays, so the definition under test can make it stricter, never
+// looser.
+func readOnlyWordsIn(texts []planText, wording []show.Wording) []string {
 	var out []string
 	for _, t := range texts {
+		// The gate's own list always counts; the definition's rules only add to it (de, es, it…), so a
+		// tafs ref whose contract left a phrase out can't loosen the gate that judges it.
+		found := ""
 		for _, w := range readOnlyWords {
 			if m := claimIn(w.re, t.text); m != "" {
-				out = append(out, fmt.Sprintf("a %s says %q", t.where, strings.ToLower(m)))
+				found = strings.ToLower(m)
 				break
 			}
+		}
+		for _, w := range wording {
+			if found != "" {
+				break
+			}
+			found = show.Claim(t.text, w)
+		}
+		if found != "" {
+			out = append(out, fmt.Sprintf("a %s says %q", t.where, found))
 		}
 	}
 	return out
@@ -277,7 +295,7 @@ func claimIn(re *regexp.Regexp, text string) string {
 
 // gradePlan grades a plan run. wide is what planque's grant says of its
 // sign-in (request.connector.usual_access), and p what the case expects.
-func gradePlan(ctx context.Context, j *eval.Judge, p plan, r planRun, wide bool) ([]eval.CheckResult, error) {
+func gradePlan(ctx context.Context, j *eval.Judge, p plan, r planRun, wide bool, wording []show.Wording) ([]eval.CheckResult, error) {
 	var out []eval.CheckResult
 	check := func(name string, g eval.Grade) { out = append(out, eval.CheckResult{Name: name, Grade: g}) }
 	all := r.before(-1)
@@ -289,7 +307,7 @@ func gradePlan(ctx context.Context, j *eval.Judge, p plan, r planRun, wide bool)
 	}
 
 	// 2. The words, deterministic, in English and French.
-	if found := readOnlyWordsIn(r.texts); len(found) > 0 {
+	if found := readOnlyWordsIn(r.texts, wording); len(found) > 0 {
 		check(planNoReadOnlyWords, eval.Grade{Why: strings.Join(found, "; ")})
 	} else {
 		check(planNoReadOnlyWords, eval.Grade{Pass: true})
@@ -430,7 +448,7 @@ func (t *test) planChat(ctx context.Context) error {
 	for _, x := range run.texts {
 		t.logf("  %s: %s", x.where, oneLine(x.text))
 	}
-	checks, err := gradePlan(ctx, t.cfg.judge, p, run, wide)
+	checks, err := gradePlan(ctx, t.cfg.judge, p, run, wide, t.setupWording)
 	if err != nil {
 		return err
 	}
