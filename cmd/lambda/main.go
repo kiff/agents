@@ -229,7 +229,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		// only read, for records written before.
 		if kk := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_KMS_KEY")); kk != "" {
 			draftRecords = dynamodb.NewDrafts(db, table, kms.NewFromConfig(cfg), kk)
-			store = drafts.Moving{New: draftRecords, Old: secretsmanager.NewDrafts(secrets, dp)}
+			store = drafts.Moving{New: draftRecords, Old: secretsmanager.NewDrafts(secrets, dp), Log: func(msg string, err error) { log.Warn(msg, "err", err) }}
 		}
 		claims = &drafts.Service{Store: store, Keys: secretsmanager.NewKeys(keys, secrets),
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}

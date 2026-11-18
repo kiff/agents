@@ -3,6 +3,7 @@ package secretsmanager_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -111,12 +112,21 @@ func TestARefBeingDeletedIsTaken(t *testing.T) {
 // new store, nothing creates or updates a draft's secret any more.
 type trap struct {
 	*fake
-	t *testing.T
+	t          *testing.T
+	deleteFail error
 }
 
 func (w trap) CreateSecret(_ context.Context, in *sm.CreateSecretInput, _ ...func(*sm.Options)) (*sm.CreateSecretOutput, error) {
 	w.t.Errorf("CreateSecret %q: no draft secret is created any more", aws.ToString(in.Name))
 	return nil, errors.New("trap")
+}
+
+func (w trap) DeleteSecret(_ context.Context, in *sm.DeleteSecretInput, _ ...func(*sm.Options)) (*sm.DeleteSecretOutput, error) {
+	if w.deleteFail != nil {
+		return nil, w.deleteFail
+	}
+	delete(w.secrets, aws.ToString(in.SecretId))
+	return &sm.DeleteSecretOutput{}, nil
 }
 
 func (w trap) PutSecretValue(_ context.Context, in *sm.PutSecretValueInput, _ ...func(*sm.Options)) (*sm.PutSecretValueOutput, error) {
@@ -131,7 +141,7 @@ func TestMovingNeverWritesADraftSecret(t *testing.T) {
 	f := newFake()
 	f.secrets["agent-drafts/t1/drf_old"] = secret("agent-drafts/t1/drf_old", `{"agent_id":"agt","secret":"kiff_claim_old"}`)
 	now := memory.NewDrafts()
-	m := drafts.Moving{New: now, Old: secretsmanager.NewDrafts(trap{f, t}, "agent-drafts/")}
+	m := drafts.Moving{New: now, Old: secretsmanager.NewDrafts(trap{fake: f, t: t}, "agent-drafts/")}
 	if err := m.Put(ctx, "t1", "drf_new", drafts.Record{AgentID: "agt", Secret: "kiff_claim_new"}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,9 +175,49 @@ func (gone) Get(context.Context, string, string) (drafts.Record, error) {
 func TestMovingDoesNotReadAnOldSecretForAnExpiredRecord(t *testing.T) {
 	f := newFake()
 	f.secrets["agent-drafts/t1/drf_old"] = secret("agent-drafts/t1/drf_old", `{"agent_id":"agt","secret":"kiff_claim_old"}`)
-	m := drafts.Moving{New: gone{memory.NewDrafts()}, Old: secretsmanager.NewDrafts(trap{f, t}, "agent-drafts/")}
+	m := drafts.Moving{New: gone{memory.NewDrafts()}, Old: secretsmanager.NewDrafts(trap{fake: f, t: t}, "agent-drafts/")}
 	r, err := m.Get(ctx, "t1", "drf_old")
 	if !errors.Is(err, drafts.ErrNotFound) || r.Secret != "" {
 		t.Fatalf("an expired record read back from the old secret: %+v %v", r, err)
+	}
+}
+
+// Once the new store holds a draft, its old secret is deleted: with the new
+// item later removed (as TTL would), the old record never reads back, and
+// the claim secret has left Secrets Manager at the claim.
+func TestMovingDeletesTheOldSecretOnceTheNewStoreHoldsTheDraft(t *testing.T) {
+	f := newFake()
+	f.secrets["agent-drafts/t1/drf_old"] = secret("agent-drafts/t1/drf_old", `{"agent_id":"agt","secret":"kiff_claim_old"}`)
+	now := memory.NewDrafts()
+	m := drafts.Moving{New: now, Old: secretsmanager.NewDrafts(trap{fake: f, t: t}, "agent-drafts/")}
+	if err := m.Put(ctx, "t1", "drf_old", drafts.Record{AgentID: "agt", KeyRef: "kiff/taf-1", Claimed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.secrets["agent-drafts/t1/drf_old"]; ok {
+		t.Fatal("the old secret is still there after the new store took the draft")
+	}
+	m.New = memory.NewDrafts() // the new item removed, as TTL would
+	if r, err := m.Get(ctx, "t1", "drf_old"); !errors.Is(err, drafts.ErrNotFound) || r.Secret != "" {
+		t.Fatalf("the old record read back: %+v %v", r, err)
+	}
+}
+
+// A delete that fails is logged and doesn't fail the write: the new record
+// is the draft's.
+func TestMovingKeepsTheWriteWhenTheOldDeleteFails(t *testing.T) {
+	f := newFake()
+	f.secrets["agent-drafts/t1/drf_old"] = secret("agent-drafts/t1/drf_old", `{"agent_id":"agt","secret":"kiff_claim_old"}`)
+	var logged []string
+	now := memory.NewDrafts()
+	m := drafts.Moving{New: now, Old: secretsmanager.NewDrafts(trap{fake: f, t: t, deleteFail: errors.New("throttled")}, "agent-drafts/"),
+		Log: func(msg string, err error) { logged = append(logged, msg+": "+err.Error()) }}
+	if err := m.Put(ctx, "t1", "drf_old", drafts.Record{AgentID: "agt", KeyRef: "kiff/taf-1", Claimed: true}); err != nil {
+		t.Fatalf("a failed old delete failed the write: %v", err)
+	}
+	if r, err := now.Get(ctx, "t1", "drf_old"); err != nil || !r.Claimed {
+		t.Fatalf("the new record wasn't kept: %+v %v", r, err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "throttled") {
+		t.Fatalf("logged %q", logged)
 	}
 }

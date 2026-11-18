@@ -64,6 +64,31 @@ func (d *Drafts) Put(ctx context.Context, tenant, draft string, r drafts.Record)
 	return nil
 }
 
+// DeleteAPI is the part of the Secrets Manager client Drafts deletes with.
+type DeleteAPI interface {
+	DeleteSecret(context.Context, *sm.DeleteSecretInput, ...func(*sm.Options)) (*sm.DeleteSecretOutput, error)
+}
+
+// Delete removes the draft's record at once, with no recovery window: it is
+// only deleted once the draft's record is kept elsewhere. One that isn't
+// there is no error.
+func (d *Drafts) Delete(ctx context.Context, tenant, draft string) error {
+	name, err := d.name(tenant, draft)
+	if err != nil {
+		return nil
+	}
+	del, ok := d.api.(DeleteAPI)
+	if !ok {
+		return errors.New("secretsmanager: this client can't delete a draft's record")
+	}
+	_, err = del.DeleteSecret(ctx, &sm.DeleteSecretInput{SecretId: aws.String(name), ForceDeleteWithoutRecovery: aws.Bool(true)})
+	var missing *types.ResourceNotFoundException
+	if err != nil && !errors.As(err, &missing) {
+		return fmt.Errorf("secretsmanager: deleting the draft's record: %w", err)
+	}
+	return nil
+}
+
 // Get reads the draft's record; drafts.ErrNotFound if this tenant has none.
 func (d *Drafts) Get(ctx context.Context, tenant, draft string) (drafts.Record, error) {
 	name, err := d.name(tenant, draft)
