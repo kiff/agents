@@ -305,7 +305,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	}
 	cfg.session, cfg.setupKey = env("E2E_KIFF_SESSION"), env("E2E_SETUP_KEY")
 	if *sweepMode {
-		return runSweep(ctx, kiff.APIURL, cfg, stdout)
+		return runSweep(ctx, kiff.APIURL, cmp.Or(env("E2E_PLANQUE"), "https://planque.kiff.dev"), cfg, stdout)
 	}
 	if *archive != "" {
 		return runArchive(ctx, kiff.APIURL, cfg, *archive, stdout)
