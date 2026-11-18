@@ -170,7 +170,7 @@ func TestDraftRecordPastItsTimeIsGone(t *testing.T) {
 		t.Fatalf("a second before its time: %v", err)
 	}
 	*now = draftT0.Add(48 * time.Hour)
-	if _, err := d.Get(ctx, "t1", "drf_1"); !errors.Is(err, drafts.ErrNotFound) {
+	if _, err := d.Get(ctx, "t1", "drf_1"); !errors.Is(err, drafts.ErrNotFound) || !errors.Is(err, drafts.ErrGone) {
 		t.Fatalf("at its time: %v", err)
 	}
 	if rawItem(t, db, name, "t1", "drf_1") == nil {

@@ -152,3 +152,22 @@ func TestMovingNeverWritesADraftSecret(t *testing.T) {
 		t.Fatalf("another tenant: %v", err)
 	}
 }
+
+// gone is a new store whose record of every draft is past its time.
+type gone struct{ drafts.Store }
+
+func (gone) Get(context.Context, string, string) (drafts.Record, error) {
+	return drafts.Record{}, drafts.ErrGone
+}
+
+// A record the new store had, past its time, isn't read back from the old
+// secret: a draft claimed after the move never reads as unclaimed again.
+func TestMovingDoesNotReadAnOldSecretForAnExpiredRecord(t *testing.T) {
+	f := newFake()
+	f.secrets["agent-drafts/t1/drf_old"] = secret("agent-drafts/t1/drf_old", `{"agent_id":"agt","secret":"kiff_claim_old"}`)
+	m := drafts.Moving{New: gone{memory.NewDrafts()}, Old: secretsmanager.NewDrafts(trap{f, t}, "agent-drafts/")}
+	r, err := m.Get(ctx, "t1", "drf_old")
+	if !errors.Is(err, drafts.ErrNotFound) || r.Secret != "" {
+		t.Fatalf("an expired record read back from the old secret: %+v %v", r, err)
+	}
+}

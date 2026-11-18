@@ -117,7 +117,7 @@ func (d *Drafts) Put(ctx context.Context, tenant, draft string, r drafts.Record)
 }
 
 // Get opens the draft's record; drafts.ErrNotFound if this tenant has none,
-// or its time is up.
+// and drafts.ErrGone, which is ErrNotFound too, if its time is up.
 func (d *Drafts) Get(ctx context.Context, tenant, draft string) (drafts.Record, error) {
 	if tenant == "" || draft == "" {
 		return drafts.Record{}, drafts.ErrNotFound
@@ -130,7 +130,7 @@ func (d *Drafts) Get(ctx context.Context, tenant, draft string) (drafts.Record, 
 		return drafts.Record{}, drafts.ErrNotFound
 	}
 	if until := getN(out.Item, "until"); until != 0 && !d.now().Before(time.Unix(until, 0)) {
-		return drafts.Record{}, drafts.ErrNotFound
+		return drafts.Record{}, drafts.ErrGone
 	}
 	sealed, _ := out.Item["sealed"].(*types.AttributeValueMemberB)
 	if sealed == nil || len(sealed.Value) == 0 {
