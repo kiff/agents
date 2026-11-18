@@ -26,12 +26,15 @@ name: Proofs
 # token: only the claims, which name this repository and this run, and a
 # fingerprint, which names a public key.
 on:
+  # The weekly proof: Mondays at 05:00 UTC (PM 05:32).
+  schedule:
+    - cron: "0 5 * * 1"
   workflow_dispatch:
     inputs:
       run:
         description: "What to run"
         type: choice
-        options: [claims, proof]
+        options: [claims, proof, weekly]
         default: proof
       app:
         description: "The app to prove, or all"
@@ -142,6 +145,32 @@ jobs:
             echo "failed:$failed"
             exit 1
           fi
+  weekly:
+    # A real Coach chat per family on tafs cloud, its approval through the
+    # component route alone (cmd/e2e -weekly, weekly_main.go). Main only, in
+    # kiff-test, in the Eval's group: one run on the test account at a time.
+    if: ${{ (github.event_name == 'schedule' || inputs.run == 'weekly') && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: kiff-test
+    concurrency:
+      group: test-account
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: The weekly proof, key family
+        env:
+          PROOF_TENANT: ${{ secrets.PROOF_TENANT }}
+          PROOF_PHONE_KEY: ${{ secrets.PROOF_PHONE_KEY }}
+          PROOF_KIFF_SESSION: ${{ secrets.PROOF_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          PROOF_PIPEDRIVE_KEY: ${{ secrets.PROOF_PIPEDRIVE_KEY }}
+        run: go run ./cmd/e2e -weekly key
   claims:
     if: inputs.run == 'claims'
     runs-on: ubuntu-latest
