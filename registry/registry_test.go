@@ -536,6 +536,19 @@ func TestBuildGivesTheSkillsItNames(t *testing.T) {
 		t.Fatalf("read %+v, %v; want the named version", r, err)
 	}
 
+	// Instructions that map the skills already (Coach's core) get no second
+	// map, and keep the tool.
+	mapped := d
+	mapped.ID, mapped.Instructions = "mapped", d.Instructions+"\nYour skills, loaded already:\n  - kiff: What KIFF's results mean."
+	_ = f.agents.Put(ctx, mapped)
+	a, _, err = f.b.Build(ctx, "t1", "mapped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.System != mapped.Instructions || !slices.ContainsFunc(a.Tools, func(tl tool.Tool) bool { return tl.Spec().Name == skill.ToolName }) {
+		t.Fatalf("a mapped definition: system:\n%s", a.System)
+	}
+
 	// Another tenant's skill of that name isn't the agent's.
 	d.Skills = []skill.Ref{{Name: "refunds", Version: "v1"}}
 	_ = f.agents.Put(ctx, d)

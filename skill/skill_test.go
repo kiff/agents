@@ -141,3 +141,24 @@ func TestTheCatalogAndTheToolReadOnlyTheAgentsSkills(t *testing.T) {
 		}
 	}
 }
+
+func TestInstructionsThatMapEverySkillAreMapped(t *testing.T) {
+	ps := []skill.Package{{Name: "kiff"}, {Name: "draft-the-card"}}
+	core := "Your know-how is in skills. Each says when it applies:\n  - kiff: What KIFF's results mean.\n  - draft-the-card: When a taf's Card is drafted.\n- Ask each thing once."
+	if !skill.Mapped(core, ps) {
+		t.Fatal("a core that maps every skill isn't mapped")
+	}
+	for _, instr := range []string{
+		"  - kiff: What KIFF's results mean.",   // one missing
+		"Read kiff: it says what results mean.", // named, not a map line
+		"  - kiffy: x\n  - draft-the-card-2: y", // other names
+		"",
+	} {
+		if skill.Mapped(instr, ps) {
+			t.Errorf("skill.Mapped(%q) = true", instr)
+		}
+	}
+	if skill.Mapped(core, nil) {
+		t.Error("no skills: nothing to map")
+	}
+}
