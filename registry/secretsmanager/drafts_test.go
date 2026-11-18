@@ -11,6 +11,7 @@ import (
 
 	"github.com/kiff/agents/drafts"
 	"github.com/kiff/agents/registry/secretsmanager"
+	"github.com/kiff/agents/store/memory"
 )
 
 // writable is the fake that also creates and updates secrets, as Secrets
@@ -103,5 +104,51 @@ func TestARefBeingDeletedIsTaken(t *testing.T) {
 	w.createFail = &types.InvalidRequestException{Message: aws.String("something else")}
 	if err := k.Create(ctx, "t1", "kiff/old-taf", "kiff_key_new"); err == nil || errors.Is(err, drafts.ErrTaken) {
 		t.Fatalf("another invalid request is not taken: %v", err)
+	}
+}
+
+// trap is a Secrets Manager that fails the test on any write: moving to the
+// new store, nothing creates or updates a draft's secret any more.
+type trap struct {
+	*fake
+	t *testing.T
+}
+
+func (w trap) CreateSecret(_ context.Context, in *sm.CreateSecretInput, _ ...func(*sm.Options)) (*sm.CreateSecretOutput, error) {
+	w.t.Errorf("CreateSecret %q: no draft secret is created any more", aws.ToString(in.Name))
+	return nil, errors.New("trap")
+}
+
+func (w trap) PutSecretValue(_ context.Context, in *sm.PutSecretValueInput, _ ...func(*sm.Options)) (*sm.PutSecretValueOutput, error) {
+	w.t.Errorf("PutSecretValue %q: no draft secret is written any more", aws.ToString(in.SecretId))
+	return nil, errors.New("trap")
+}
+
+// Moving writes only to the new store and reads a record written before the
+// move from the old one; a claim of that record lands in the new store, and
+// no draft secret is created or written on the way.
+func TestMovingNeverWritesADraftSecret(t *testing.T) {
+	f := newFake()
+	f.secrets["agent-drafts/t1/drf_old"] = secret("agent-drafts/t1/drf_old", `{"agent_id":"agt","secret":"kiff_claim_old"}`)
+	now := memory.NewDrafts()
+	m := drafts.Moving{New: now, Old: secretsmanager.NewDrafts(trap{f, t}, "agent-drafts/")}
+	if err := m.Put(ctx, "t1", "drf_new", drafts.Record{AgentID: "agt", Secret: "kiff_claim_new"}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := now.Get(ctx, "t1", "drf_new"); err != nil || r.Secret != "kiff_claim_new" {
+		t.Fatalf("new record not in the new store: %+v %v", r, err)
+	}
+	r, err := m.Get(ctx, "t1", "drf_old")
+	if err != nil || r.Secret != "kiff_claim_old" {
+		t.Fatalf("old record not read from the old store: %+v %v", r, err)
+	}
+	if err := m.Put(ctx, "t1", "drf_old", drafts.Record{AgentID: "agt", KeyRef: "kiff/taf-1", Claimed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := m.Get(ctx, "t1", "drf_old"); err != nil || !r.Claimed || r.Secret != "" {
+		t.Fatalf("after the claim, the new store's record wins: %+v %v", r, err)
+	}
+	if _, err := m.Get(ctx, "t2", "drf_old"); !errors.Is(err, drafts.ErrNotFound) {
+		t.Fatalf("another tenant: %v", err)
 	}
 }

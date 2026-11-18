@@ -20,6 +20,9 @@
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
 //	AGENTS_DRAFTS_PREFIX     the name prefix of taf drafts' claim secrets (#91); not under AGENTS_SECRETS_PREFIX.
 //	                         Unset: no agent gets the draft tool, and POST /drafts/{id}/claim isn't served
+//	AGENTS_DRAFTS_KMS_KEY    the KMS key draft records are sealed with, in the table (store/dynamodb Drafts).
+//	                         Set: records are written there only, and the secrets under AGENTS_DRAFTS_PREFIX
+//	                         are only read, for records written before. Unset: records stay secrets, as before
 //	AGENTS_ATTACHMENTS_BUCKET the private S3 bucket of the files people attach to chat messages
 //	                         (kiff/tafs#209). Unset: no file is attached, and a message naming one is refused
 //
@@ -72,6 +75,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	sch "github.com/aws/aws-sdk-go-v2/service/scheduler"
@@ -214,11 +218,20 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Log:    func(msg string, err error) { log.Warn(msg, "err", err) },
 	}
 	var claims *drafts.Service
+	var draftRecords *dynamodb.Drafts
 	if dp := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); dp != "" {
 		if strings.HasPrefix(dp, prefix) || strings.HasPrefix(prefix, dp) {
 			return nil, fmt.Errorf("lambda: AGENTS_DRAFTS_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap: a key reference could name a claim secret", dp, prefix)
 		}
-		claims = &drafts.Service{Store: secretsmanager.NewDrafts(secrets, dp), Keys: secretsmanager.NewKeys(keys, secrets),
+		var store drafts.Store = secretsmanager.NewDrafts(secrets, dp)
+		// A secret per draft costs as long as it's kept: with a key, records
+		// go to the table, sealed, and leave on their own; the secrets are
+		// only read, for records written before.
+		if kk := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_KMS_KEY")); kk != "" {
+			draftRecords = dynamodb.NewDrafts(db, table, kms.NewFromConfig(cfg), kk)
+			store = drafts.Moving{New: draftRecords, Old: secretsmanager.NewDrafts(secrets, dp)}
+		}
+		claims = &drafts.Service{Store: store, Keys: secretsmanager.NewKeys(keys, secrets),
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
 	warm := &kiff.Sessions{}
@@ -340,6 +353,18 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// cloud's to delete.
 	if sp, dp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); sp != "" || dp != "" {
 		f.api.Erase = secretsmanager.NewEraser(secrets, sp, dp).Erase
+	}
+	if draftRecords != nil {
+		erase := f.api.Erase
+		f.api.Erase = func(ctx context.Context, tenant string) error {
+			if err := draftRecords.Erase(ctx, tenant); err != nil {
+				return err
+			}
+			if erase == nil {
+				return nil
+			}
+			return erase(ctx, tenant)
+		}
 	}
 	// The sweep ends a trial idle for a week in KIFF first, with the agent's
 	// own key, which may end only its own trials (kiff/tafs#173).

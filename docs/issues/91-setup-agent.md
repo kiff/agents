@@ -68,7 +68,7 @@ Turning off each guard fails its test: the allowlist, the URL check, the agent's
 
 1. **Submit (`kiff_draft`, `submit {agent_id, label, cards}`):**
    - the tool posts `POST /v1/me/agent-drafts` with the setup agent's own key;
-   - it keeps the claim secret sealed under the tenant (`drafts.Store`, on Secrets Manager under `AGENTS_DRAFTS_PREFIX`);
+   - it keeps the claim secret sealed under the tenant (`drafts.Store`): in the table, sealed with one KMS key under the encryption context `{purpose, tenant, draft}` taken from the call, when `AGENTS_DRAFTS_KMS_KEY` is set (`store/dynamodb` `Drafts`). A record is kept 48 hours unclaimed (past KIFF's one-day claim window) and 14 days once claimed, and with no end while it holds a live key (a claim halfway, or a mismatch, until the owner revokes it). One past its time reads as gone before DynamoDB removes it. Records written earlier as secrets under `AGENTS_DRAFTS_PREFIX` are only read (`drafts.Moving`), never written, until they've outlived their use. Without the key, records stay secrets, as before;
    - the model reads only the draft's `id`, `agent_id`, `status` and `card_ids`, and KIFF's refusals.
 2. **Confirm:** the phone confirms the draft behind the approval's Face ID (contract 4, in the app).
 3. **Claim (`POST /drafts/{draft_id}/claim {"key_ref"}`):** tafs cloud asks, with its verified tenant call. kiff/agents, in this order:
@@ -84,7 +84,7 @@ Turning off each guard fails its test: the allowlist, the URL check, the agent's
    A claim that stopped anywhere after the mint (before storing the key, or after storing it but before recording itself) is finished by its retry, without a second claim.
 4. **Store:** tafs cloud stores the taf's definition with that `key_ref`.
 
-**Opt-in:** `"drafts": true` on a definition. The server offers drafts only with `AGENTS_DRAFTS_PREFIX` set. That prefix must not overlap the agents' key prefix, so no key reference can name a claim secret. The function's role needs `secretsmanager:CreateSecret` and `PutSecretValue` on both prefixes.
+**Opt-in:** `"drafts": true` on a definition. The server offers drafts only with `AGENTS_DRAFTS_PREFIX` set. That prefix must not overlap the agents' key prefix, so no key reference can name a claim secret. The function's role needs `secretsmanager:CreateSecret` on the agents' key prefix, `GetSecretValue` and `DeleteSecret` on the drafts' prefix, and `kms:Encrypt` and `Decrypt` on the drafts' key, only with a draft's encryption context (`infra/aws.sh`).
 
 **Tests:**
 - `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestARetryFinishesAfterTheKeyWasMinted`, `TestAKeyForAnotherAgentIsNotStored`, `TestAMismatchedKeyIsKeptForRevoking`, `TestKIFFFailingAfterTheClaimIsNotAMismatch`, `TestKIFFFailingOnAHeldRefIsNotTaken`;
