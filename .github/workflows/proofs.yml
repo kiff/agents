@@ -5,16 +5,45 @@ name: Proofs
 # token: its audience, this repository (name, id and owner id), the ref and
 # this file's workflow_ref.
 #
-# For now it only has its dry run, by hand: it prints the claims KIFF pins
-# and the test phone key's fingerprint, so KIFF can be set to take this
-# workflow's runs. It reads no vendor and no account, sends nothing, and
-# prints no token: only the claims, which name this repository and this run,
-# and a fingerprint, which names a public key.
+# The proofs (cmd/e2e -proof, proof.go) run by hand for now, one app or all,
+# one at a time: the test account is the Eval's, so they share eval.yml's
+# concurrency group and never run during an Eval. A proof uses no model. Its
+# keys come only from the kiff-test environment (main only) and are masked;
+# the log says each check and nothing of the account or the vendor. With dry,
+# a proof asks, signs and posts nothing, and needs no key.
+#
+# A real proof's credentials, all in kiff-test: PROOF_TENANT (the Eval
+# account; a proof anywhere else does nothing), PROOF_PHONE_KEY (the proof
+# key, paired to that account as a phone) and PROOF_KIFF_SESSION (that
+# phone's KIFF session, from the e2e sign-in for the Eval account, 90 days),
+# E2E_SETUP_KEY, and each app's sandbox key. When the session ends or the key
+# is unpaired, every proof ends as the runner's error, never counted against
+# an app; KIFF alerts after three, and the session is signed in again.
+#
+# The claims job is the first setup's: it prints the claims KIFF pins and the
+# test phone key's fingerprint, so KIFF can be set to take this workflow's
+# runs. It reads no vendor and no account, sends nothing, and prints no
+# token: only the claims, which name this repository and this run, and a
+# fingerprint, which names a public key.
 on:
   workflow_dispatch:
     inputs:
+      run:
+        description: "What to run"
+        type: choice
+        options: [claims, proof]
+        default: proof
+      app:
+        description: "The app to prove, or all"
+        type: choice
+        options: [all, moneybird, pipedrive, typeform]
+        default: all
+      dry:
+        description: "Dry: ask, sign and post nothing"
+        type: boolean
+        default: true
       audience:
-        description: "The audience KIFF will take the runs' tokens for"
+        description: "claims: the audience KIFF will take the runs' tokens for"
         type: string
         required: false
         default: "kiff-proofs"
@@ -22,7 +51,99 @@ permissions:
   contents: read
   id-token: write
 jobs:
-  dry-run:
+  apps:
+    if: inputs.run == 'proof'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      apps: ${{ steps.apps.outputs.apps }}
+    steps:
+      - id: apps
+        env:
+          APP: ${{ inputs.app }}
+        run: |
+          case "$APP" in
+            all) echo 'apps=["moneybird","pipedrive","typeform"]' >> "$GITHUB_OUTPUT" ;;
+            moneybird|pipedrive|typeform) echo "apps=[\"$APP\"]" >> "$GITHUB_OUTPUT" ;;
+            *) echo "no such app"; exit 1 ;;
+          esac
+  dry:
+    # What each proof would ask for, its Cards and its checks: no key, no
+    # environment, nothing asked, signed or posted.
+    needs: apps
+    if: inputs.dry
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.apps.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: The proof of ${{ matrix.app }}, dry
+        env:
+          APP: ${{ matrix.app }}
+        run: go run ./cmd/e2e -proof "$APP" -proof-dry
+  proof:
+    needs: apps
+    # Main only: kiff-test lets only main read its keys, and KIFF takes a run
+    # only from this workflow on main.
+    if: ${{ !inputs.dry && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    # A few minutes per app; this stops a stuck run well before the next
+    # Eval would wait on it.
+    timeout-minutes: 40
+    environment: kiff-test
+    # The Eval's: one run on the test account at a time. One job runs every
+    # app in turn, so a proof never takes a waiting Eval's place in the group
+    # (it holds one pending job).
+    concurrency:
+      group: test-account
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: The proofs, one app at a time
+        env:
+          APPS: ${{ join(fromJSON(needs.apps.outputs.apps), ' ') }}
+          PROOF_TENANT: ${{ secrets.PROOF_TENANT }}
+          PROOF_PHONE_KEY: ${{ secrets.PROOF_PHONE_KEY }}
+          PROOF_KIFF_SESSION: ${{ secrets.PROOF_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          KEY_MONEYBIRD: ${{ secrets.PROOF_MONEYBIRD_KEY }}
+          KEY_PIPEDRIVE: ${{ secrets.PROOF_PIPEDRIVE_KEY }}
+          KEY_TYPEFORM: ${{ secrets.PROOF_TYPEFORM_KEY }}
+        run: |
+          go build -o "$RUNNER_TEMP/e2e" ./cmd/e2e
+          failed=""
+          for app in $APPS; do
+            case "$app" in
+              moneybird) key="$KEY_MONEYBIRD" ;;
+              pipedrive) key="$KEY_PIPEDRIVE" ;;
+              typeform) key="$KEY_TYPEFORM" ;;
+              *) echo "no such app"; exit 1 ;;
+            esac
+            # Each proof gets its own app's key and no other.
+            upper=$(printf '%s' "$app" | tr a-z A-Z)
+            if ! env -u KEY_MONEYBIRD -u KEY_PIPEDRIVE -u KEY_TYPEFORM "PROOF_${upper}_KEY=$key" "$RUNNER_TEMP/e2e" -proof "$app"; then
+              failed="$failed $app"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "failed:$failed"
+            exit 1
+          fi
+  claims:
+    if: inputs.run == 'claims'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

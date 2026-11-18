@@ -588,3 +588,6 @@ func MadeFrom(r io.Reader) ([]string, error) {
 	}
 	return made, s.Err()
 }
+
+// Left is how many of the swept tafs are still there after the sweep.
+func (c SweepCounts) Left() int { return c.left }
