@@ -62,19 +62,26 @@ func exactly(names ...string) weeklyJob {
 	return func(tools []weeklyTool) bool { return sameTools(toolNames(tools), names, names) }
 }
 
-// within is a raw request's job (the own-key family, kiff-qa 08:47): each
-// tool calls an operation the vendor's own description has, and there's at
-// least one.
-func within(ops ...string) weeklyJob {
+// operations is a raw request's job (the own-key family, kiff-qa 08:47 and
+// 09:13): its tools call exactly the job's operations, and each of them is
+// one the vendor's own description has. A grant asking for more than the job,
+// a write for a reading job included, is refused.
+func operations(described []string, job ...string) weeklyJob {
 	return func(tools []weeklyTool) bool {
-		for _, t := range tools {
-			if !slices.Contains(ops, t.Op) {
+		ops := make([]string, len(tools))
+		for i, t := range tools {
+			if !slices.Contains(described, t.Op) {
 				return false
 			}
+			ops[i] = t.Op
 		}
-		return len(tools) > 0
+		return sameTools(ops, job, job)
 	}
 }
+
+// deskOperations are the operations the fake vendor's desk describes
+// (planque internal/fakes/desk.go).
+var deskOperations = []string{"searchTickets", "fetchTicket", "postReply", "applyLabel"}
 
 func toolNames(tools []weeklyTool) []string {
 	out := make([]string, len(tools))

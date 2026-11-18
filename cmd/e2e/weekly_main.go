@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kiff/agents/cmd/internal/testaccount"
@@ -30,11 +32,13 @@ var weeklyFamilies = map[string]weeklyFamily{
 	// operations held to the desk's own description.
 	"own-key": {
 		Name: "own-key",
-		Ask: "Our support team answers customers in our help desk. I want a taf that replies to customers' tickets and labels them, " +
-			"in our workspace ws_demo only. The desk has no MCP server: its API is described at %[2]s/openapi.json, its operations start at %[2]s/v1, " +
+		Ask: "Our support team answers customers in our help desk. I want a taf that reads our open tickets each morning and tells me which ones wait longest, " +
+			"in our workspace ws_demo only. It only reads: it searches the tickets and fetches one to read it, and it never replies, labels or changes anything. " +
+			"The desk has no MCP server: its API is described at %[2]s/openapi.json, its operations start at %[2]s/v1, " +
 			"and its key goes in the X-Desk-Key header. Name the taf %[1]s.",
-		Fact:    "Up to 20 replies a day and 50 labels a day, nothing over that. It never touches another workspace, and never closes or deletes tickets.",
-		Job:     within("searchTickets", "fetchTicket", "postReply", "applyLabel"),
+		Fact: "Only our workspace ws_demo, and it only reads tickets: searching them and fetching one. Up to 50 reads a day.",
+		// The reading job's own operations, nothing more (kiff-qa 09:13).
+		Job:     operations(deskOperations, "searchTickets", "fetchTicket"),
 		CapUSD:  3,
 		MaxTurn: 8,
 	},
@@ -48,7 +52,7 @@ var weeklyKeyEnv = map[string]string{"key": "PROOF_PIPEDRIVE_KEY", "own-key": "E
 // approval through the component route alone, and after the hand-over the
 // taf's kept tools checked both ways. Whatever happens, what this run made is
 // cleaned up, and earlier runs' proof-weekly-<family>- tafs and grants with it.
-func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env func(string) string) error {
+func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env func(string) string) (retErr error) {
 	f, ok := weeklyFamilies[family]
 	if !ok {
 		return fmt.Errorf("-weekly %q: no such family set up", family)
@@ -112,7 +116,11 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	}()
 
 	fmt.Fprintf(stdout, "== weekly proof, %s family\n", f.Name)
-	r, err := driveCoach(ctx, chat, &liveWeeklyCloud{t: t, coach: chat.coach}, liveWeeklyPhone{t: t}, f, t.tenant, pollWait(5*time.Second))
+	var r weeklyResult
+	// The weekly results go to the job's summary, never to KIFF's proof ingest
+	// (kiff-qa 09:13): a weekly failure can be Coach's wording, not the app's.
+	defer func() { writeSummary(env("GITHUB_STEP_SUMMARY"), weeklySummary(f, r, retErr)) }()
+	r, err = driveCoach(ctx, chat, &liveWeeklyCloud{t: t, coach: chat.coach}, liveWeeklyPhone{t: t}, f, t.tenant, pollWait(5*time.Second))
 	fmt.Fprintf(stdout, "  turns %d, spent US$%.2f of US$%.2f, approvals %d, taps %d\n", r.Turns, float64(r.Spent)/1e6, f.CapUSD, len(r.Approvals), len(r.Taps))
 	for _, tap := range r.Taps {
 		fmt.Fprintf(stdout, "  tapped %q (agrees to %q)\n", tap.Words, tap.Agrees)
@@ -163,4 +171,36 @@ func weeklyFamilyNames() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// weeklySummary is a family's weekly result for the job's summary: the
+// outcome, the turns and the spend, and every tap with what it agreed to. No
+// id, key or vendor data.
+func weeklySummary(f weeklyFamily, r weeklyResult, err error) string {
+	var b strings.Builder
+	outcome := "PASS"
+	if err != nil {
+		outcome = "FAIL: " + scrubWhy(err.Error())
+	}
+	fmt.Fprintf(&b, "### Weekly proof, %s family: %s\n\n", f.Name, outcome)
+	fmt.Fprintf(&b, "- %d turns, US$%.2f of US$%.2f\n- %d approvals through the component route\n", r.Turns, float64(r.Spent)/1e6, f.CapUSD, len(r.Approvals))
+	for _, t := range r.Taps {
+		if t.Agrees != "" {
+			fmt.Fprintf(&b, "- tapped %q, agreeing to a rules notice shown in the chat\n", t.Words)
+		} else {
+			fmt.Fprintf(&b, "- tapped %q\n", t.Words)
+		}
+	}
+	return b.String()
+}
+
+// writeSummary appends to the job's summary file, when there is one.
+func writeSummary(path, text string) {
+	if path == "" {
+		return
+	}
+	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		defer f.Close()
+		_, _ = f.WriteString(text + "\n")
+	}
 }

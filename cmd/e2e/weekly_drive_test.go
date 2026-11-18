@@ -203,3 +203,20 @@ func TestTheWeeklyModeNeedsItsFamilyAndItsKeys(t *testing.T) {
 		t.Fatal("the key family's request doesn't name the taf for the sweep")
 	}
 }
+
+func TestTheWeeklySummaryNamesTheOutcomeAndTheTaps(t *testing.T) {
+	r := weeklyResult{Turns: 4, Spent: 1_200_000, Approvals: []string{"approved"}, Taps: []weeklyTap{{Card: "c1", Words: "Yes, these rules", Agrees: "n1"}, {Card: "c2", Words: "Change them"}}}
+	s := weeklySummary(weeklyFamilies["key"], r, nil)
+	for _, want := range []string{"key family: PASS", "4 turns, US$1.20 of US$3.00", "1 approvals", `tapped "Yes, these rules", agreeing to a rules notice`, `tapped "Change them"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "n1") || strings.Contains(s, "c1") {
+		t.Errorf("the summary names an id:\n%s", s)
+	}
+	failed := weeklySummary(weeklyFamilies["key"], r, errMoreThanTheJob)
+	if !strings.Contains(failed, "FAIL: asked for more than the job") {
+		t.Errorf("a failure:\n%s", failed)
+	}
+}

@@ -143,18 +143,31 @@ func TestEveryOutcomeButApprovedFailsTheRun(t *testing.T) {
 	}
 }
 
-func TestAnOwnKeyGrantIsHeldToTheVendorsOwnOperations(t *testing.T) {
-	desk := within("searchTickets", "fetchTicket", "postReply", "applyLabel")
-	if !desk([]weeklyTool{{Name: "desk_search", Op: "searchTickets"}, {Name: "desk_reply", Op: "postReply"}}) {
-		t.Fatal("a grant within the desk's operations isn't the job's")
+func TestAnOwnKeyGrantIsExactlyTheJobsOwnOperations(t *testing.T) {
+	read := operations(deskOperations, "searchTickets", "fetchTicket")
+	search, fetch := weeklyTool{Name: "desk_search", Op: "searchTickets"}, weeklyTool{Name: "desk_fetch", Op: "fetchTicket"}
+	if !read([]weeklyTool{fetch, search}) {
+		t.Fatal("the reading job's own two operations aren't the job's")
 	}
-	if desk([]weeklyTool{{Name: "desk_reply", Op: "postReply"}, {Name: "desk_close", Op: "closeTicket"}}) || desk(nil) {
-		t.Fatal("an operation the desk doesn't describe, or none, is the job's")
+	for name, tools := range map[string][]weeklyTool{
+		"a write for a reading job (kiff-qa 09:13)": {search, fetch, {Name: "desk_reply", Op: "postReply"}},
+		"one short":                              {search},
+		"an operation the desk doesn't describe": {search, fetch, {Name: "desk_close", Op: "closeTicket"}},
+		"none":                                   nil,
+	} {
+		if read(tools) {
+			t.Errorf("%s: the job's", name)
+		}
+	}
+	// Refused on the phone before any ask, as "asked for more than the job".
+	cloud := &fakeTafsCloud{}
+	phone := &fakeWeeklyPhone{digest: "d1", tools: []weeklyTool{search, fetch, {Name: "desk_reply", Op: "postReply"}}}
+	if _, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", read); !errors.Is(err, errMoreThanTheJob) || cloud.asked != nil {
+		t.Fatalf("a grant with a write for a reading job: %v", err)
 	}
 	// The card must show exactly the grant's tools, whatever the family.
-	cloud := &fakeTafsCloud{}
-	phone := &fakeWeeklyPhone{digest: "d1", tools: []weeklyTool{{Name: "desk_reply", Op: "postReply"}}}
-	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1", Tools: []string{"desk_reply", "desk_label"}}, "t1", desk)
+	phone = &fakeWeeklyPhone{digest: "d1", tools: []weeklyTool{search, fetch}}
+	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1", Tools: []string{"desk_search", "desk_fetch", "desk_label"}}, "t1", read)
 	if !errors.Is(err, errMoreThanTheJob) || cloud.asked != nil {
 		t.Fatalf("a card showing other tools than its grant: %v", err)
 	}
