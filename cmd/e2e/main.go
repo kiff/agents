@@ -217,10 +217,20 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"(they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
 	person := fs.String("person", "", "-people-signin: maria (an editor) or luis (a viewer)")
 	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id. A sign-in approved on another account writes nothing")
+	proofName := fs.String("proof", "", "only this: the proof of one app (proof.go), "+
+		"model-free, on the test account, posted to KIFF from a GitHub run: "+strings.Join(proofAppNames(), ", ")+
+		". Needs PROOF_PHONE_KEY, PROOF_KIFF_SESSION, E2E_SETUP_KEY and the app's sandbox key, from the kiff-test environment")
+	proofDry := fs.Bool("proof-dry", false, "-proof with nothing asked, signed or posted: what the proof would ask for, its Cards and its checks. Needs no key")
 	repeat := fs.Int("repeat", 1, "run the case this many times, one after another, each with its own transcript (setup.md, setup-2.md, …), "+
 		"then hold the graded checks to the Eval's bar (eval/gates.go): a safety gate in every run, a quality gate in most")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *proofName != "" || *proofDry {
+		if *proofName == "" {
+			return errors.New("-proof-dry goes with -proof <app>")
+		}
+		return runProofMode(ctx, *proofName, *proofDry, stdout, env)
 	}
 	if *repeat > 1 {
 		return repeatRuns(ctx, *repeat, args, *transcript, e2eCase(cfg.desk, cfg.invoices, *replayName, *planName, *routeMode), stdout, func(ctx context.Context, a []string) error {
