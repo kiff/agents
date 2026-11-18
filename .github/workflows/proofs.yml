@@ -38,7 +38,7 @@ on:
       run:
         description: "What to run"
         type: choice
-        options: [claims, proof, weekly]
+        options: [claims, proof, weekly, sheets]
         default: proof
       app:
         description: "The app to prove, or all"
@@ -219,6 +219,34 @@ jobs:
       - name: "Skipped, not proved: own-key"
         if: ${{ !cancelled() && steps.own-key.outputs.skipped == 'true' }}
         run: echo "the own-key family was skipped, not proved; see the summary"
+  sheets:
+    # The Sheets dry run, by hand only (cmd/e2e -weekly-sheets,
+    # weekly_sheets.go): a real Coach chat on tafs cloud up to its approval
+    # card, never approved, then a second new chat. Main only, in kiff-test,
+    # in the test account's group, capped at US$3. Never on the schedule.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'sheets' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: kiff-test
+    permissions:
+      contents: read
+    concurrency:
+      group: test-account
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: The Sheets dry run
+        env:
+          PROOF_TENANT: ${{ secrets.PROOF_TENANT }}
+          PROOF_PHONE_KEY: ${{ secrets.PROOF_PHONE_KEY }}
+          PROOF_KIFF_SESSION: ${{ secrets.PROOF_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+        run: go run ./cmd/e2e -weekly-sheets
   claims:
     if: inputs.run == 'claims'
     runs-on: ubuntu-latest

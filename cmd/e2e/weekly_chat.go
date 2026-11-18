@@ -101,11 +101,35 @@ func threadOf(raw []byte) (weeklyThread, error) {
 			Component json.RawMessage `json:"component"`
 			Answer    json.RawMessage `json:"answer"`
 		} `json:"components"`
+		Messages []struct {
+			Work *struct {
+				Steps []struct {
+					Tool   string `json:"tool"`
+					Words  string `json:"words"`
+					Error  bool   `json:"error"`
+					Failed bool   `json:"failed"`
+				} `json:"steps"`
+			} `json:"work"`
+			Refused json.RawMessage `json:"refused"`
+		} `json:"messages"`
 	}
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return weeklyThread{}, fmt.Errorf("tafs cloud's thread: %w", err)
 	}
 	th := weeklyThread{Working: w.Working != nil && *w.Working != "", Spent: w.Usage.Cost}
+	for _, m := range w.Messages {
+		if len(m.Refused) > 0 && string(m.Refused) != "null" {
+			th.Refused++
+		}
+		if m.Work == nil {
+			continue
+		}
+		for _, st := range m.Work.Steps {
+			if st.Failed || st.Error {
+				th.Failed = append(th.Failed, firstOf(st.Words, st.Tool))
+			}
+		}
+	}
 	for _, s := range w.Components {
 		var c weeklyThreadCard
 		c.Session = s.Session

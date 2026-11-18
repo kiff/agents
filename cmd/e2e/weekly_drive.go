@@ -29,6 +29,12 @@ type weeklyThread struct {
 	// Spent is what the chat's model turns cost so far, in millionths of a
 	// US dollar (the thread's usage.cost_micro_usd, from kiff/agents' runs).
 	Spent int64
+	// Failed are the chat's steps the app shows as failed (a step's failed or
+	// error), by the words it shows; Refused counts the messages that carry a
+	// connection the server refused (refused). A step not made (not_made) is
+	// neither: nothing was sent, and the app shows it as not made.
+	Failed  []string
+	Refused int
 }
 
 // weeklyThreadCard is one card in the chat, and whether it's answered.

@@ -104,46 +104,8 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	// the next family still starts. The cleanup runs past it.
 	ctx, cancel := context.WithTimeout(ctx, weeklyFamilyDeadline)
 	defer cancel()
-	cfg := config{log: stdout, phone: env("PROOF_PHONE_KEY"), session: env("PROOF_KIFF_SESSION"), setupKey: env("E2E_SETUP_KEY")}
-	cfg.planque = firstOf(env("E2E_PLANQUE"), "https://planque.kiff.dev")
-	cfg.cloud = firstOf(env("E2E_TAFS_CLOUD"), "https://cloud.tafs.kiff.dev")
-	tenant, vendorKey := env("PROOF_TENANT"), env(weeklyKeyEnv[family])
-	for k, v := range map[string]string{"PROOF_TENANT": tenant, "PROOF_PHONE_KEY": cfg.phone, "PROOF_KIFF_SESSION": cfg.session, weeklyKeyEnv[family]: vendorKey} {
-		if v == "" {
-			return fmt.Errorf("%s is required (from the kiff-test environment)", k)
-		}
-	}
-	stdout.hide(vendorKey, "<the sandbox's key>")
-	stdout.hide(cfg.session, "<the session>")
-	hc := &http.Client{Timeout: 60 * time.Second}
-	t := &test{cfg: cfg, out: stdout, hc: hc, run: time.Now().UTC().Format("0102-150405") + "-" + firstOf(env("GITHUB_RUN_ATTEMPT"), "1")}
-	pk, err := testaccount.ParsePhone(cfg.phone)
+	t, chat, err := weeklyAccount(ctx, stdout, env, weeklyKeyEnv[family])
 	if err != nil {
-		return err
-	}
-	t.pk = pk
-	me, err := testaccount.KIFFSession(kiff.APIURL, cfg.session, "", pk, hc).Do(ctx, http.MethodGet, "/v1/me", nil)
-	if err != nil || me.Err() != nil {
-		return fmt.Errorf("KIFF didn't take the proof phone's session: %v %v", err, me.Err())
-	}
-	t.tenant, _ = me.Body["tenant_id"].(string)
-	stdout.hide(t.tenant, "<the account>")
-	fp, err := keyFingerprint(&pk.PublicKey)
-	if err != nil {
-		return err
-	}
-	if err := proofPin(t.tenant, tenant, fp); err != nil {
-		return fmt.Errorf("the weekly proof did nothing: %w", err)
-	}
-	t.kiff = testaccount.KIFFSession(kiff.APIURL, cfg.session, t.tenant, pk, hc)
-	t.phone = testaccount.NewPhone(pk, cfg.planque, t.tenant, hc)
-	t.phone.VendorKey = vendorKey
-	if t.phone.Device, err = testaccount.ThisDevice(ctx, t.kiff); err != nil {
-		return err
-	}
-	chat := &liveWeeklyChat{t: t}
-	if chat.coach, err = coachOf(ctx, chat.cloud()); err != nil {
-		// Never start a Coach from the proof.
 		return err
 	}
 	name := "proof-weekly-" + f.Name + "-" + t.run
@@ -218,6 +180,63 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	}
 	fmt.Fprintln(stdout, "  the taf kept exactly the approved connection's tools: PASS")
 	return nil
+}
+
+// weeklyAccount is the test account as a weekly run reaches it: the owner's
+// phone and session from the kiff-test environment, pinned to the proof's
+// account (the daily proof's pin), and Coach's chat on tafs cloud. keyEnv is
+// the sandbox key the run's app takes, or "" for an app connected by a
+// sign-in.
+func weeklyAccount(ctx context.Context, stdout *redacting, env func(string) string, keyEnv string) (*test, *liveWeeklyChat, error) {
+	cfg := config{log: stdout, phone: env("PROOF_PHONE_KEY"), session: env("PROOF_KIFF_SESSION"), setupKey: env("E2E_SETUP_KEY")}
+	cfg.planque = firstOf(env("E2E_PLANQUE"), "https://planque.kiff.dev")
+	cfg.cloud = firstOf(env("E2E_TAFS_CLOUD"), "https://cloud.tafs.kiff.dev")
+	tenant := env("PROOF_TENANT")
+	need := map[string]string{"PROOF_TENANT": tenant, "PROOF_PHONE_KEY": cfg.phone, "PROOF_KIFF_SESSION": cfg.session}
+	vendorKey := ""
+	if keyEnv != "" {
+		vendorKey = env(keyEnv)
+		need[keyEnv] = vendorKey
+	}
+	for k, v := range need {
+		if v == "" {
+			return nil, nil, fmt.Errorf("%s is required (from the kiff-test environment)", k)
+		}
+	}
+	stdout.hide(vendorKey, "<the sandbox's key>")
+	stdout.hide(cfg.session, "<the session>")
+	hc := &http.Client{Timeout: 60 * time.Second}
+	t := &test{cfg: cfg, out: stdout, hc: hc, run: time.Now().UTC().Format("0102-150405") + "-" + firstOf(env("GITHUB_RUN_ATTEMPT"), "1")}
+	pk, err := testaccount.ParsePhone(cfg.phone)
+	if err != nil {
+		return nil, nil, err
+	}
+	t.pk = pk
+	me, err := testaccount.KIFFSession(kiff.APIURL, cfg.session, "", pk, hc).Do(ctx, http.MethodGet, "/v1/me", nil)
+	if err != nil || me.Err() != nil {
+		return nil, nil, fmt.Errorf("KIFF didn't take the proof phone's session: %v %v", err, me.Err())
+	}
+	t.tenant, _ = me.Body["tenant_id"].(string)
+	stdout.hide(t.tenant, "<the account>")
+	fp, err := keyFingerprint(&pk.PublicKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := proofPin(t.tenant, tenant, fp); err != nil {
+		return nil, nil, fmt.Errorf("the weekly proof did nothing: %w", err)
+	}
+	t.kiff = testaccount.KIFFSession(kiff.APIURL, cfg.session, t.tenant, pk, hc)
+	t.phone = testaccount.NewPhone(pk, cfg.planque, t.tenant, hc)
+	t.phone.VendorKey = vendorKey
+	if t.phone.Device, err = testaccount.ThisDevice(ctx, t.kiff); err != nil {
+		return nil, nil, err
+	}
+	chat := &liveWeeklyChat{t: t}
+	if chat.coach, err = coachOf(ctx, chat.cloud()); err != nil {
+		// Never start a Coach from the proof.
+		return nil, nil, err
+	}
+	return t, chat, nil
 }
 
 // weeklyCleanup takes away what the run recorded: each grant it approved
