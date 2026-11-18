@@ -1,0 +1,47 @@
+name: Proofs
+# The integration proofs: each app that connects today is run as a user would,
+# on the test account, and the run is posted to KIFF, which keeps each app's
+# state. KIFF takes a run only from this workflow on main, by its GitHub OIDC
+# token: its audience, this repository (name, id and owner id), the ref and
+# this file's workflow_ref.
+#
+# For now it only has its dry run, by hand: it prints the claims KIFF pins
+# and the test phone key's fingerprint, so KIFF can be set to take this
+# workflow's runs. It reads no vendor and no account, sends nothing, and
+# prints no token: only the claims, which name this repository and this run,
+# and a fingerprint, which names a public key.
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: "The audience KIFF will take the runs' tokens for"
+        type: string
+        required: false
+        default: "kiff-proofs"
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The claims KIFF pins, from this run's own token
+        env:
+          AUDIENCE: ${{ inputs.audience }}
+        run: |
+          case "$AUDIENCE" in *[!A-Za-z0-9._:/-]*|"") echo "the audience is letters, digits and . _ : / -"; exit 1 ;; esac
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)
+          echo "::add-mask::$token"
+          # The payload alone, as JSON; the token itself never reaches the log.
+          payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
+          printf '%s' "$payload" | base64 -d | jq '{aud, iss, repository, repository_id, repository_owner, repository_owner_id, ref, workflow_ref, sub, event_name}'
+      - name: The test phone key's fingerprint, as KIFF shows it
+        env:
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+        run: |
+          # The first 16 hex characters of the SHA-256 of its DER public key.
+          if [ -z "$E2E_PHONE_KEY" ]; then echo "E2E_PHONE_KEY isn't set here"; exit 1; fi
+          printf '%s' "$E2E_PHONE_KEY" | base64 -d | openssl pkey -inform DER -pubout -outform DER | sha256sum | cut -c1-16
