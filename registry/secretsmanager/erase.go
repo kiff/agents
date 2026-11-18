@@ -14,13 +14,15 @@ import (
 type EraseAPI interface {
 	ListSecrets(context.Context, *sm.ListSecretsInput, ...func(*sm.Options)) (*sm.ListSecretsOutput, error)
 	DeleteSecret(context.Context, *sm.DeleteSecretInput, ...func(*sm.Options)) (*sm.DeleteSecretOutput, error)
+	RestoreSecret(context.Context, *sm.RestoreSecretInput, ...func(*sm.Options)) (*sm.RestoreSecretOutput, error)
 }
 
 // Eraser deletes what a tenant keeps in Secrets Manager under kiff/agents'
 // own prefixes, when its account is deleted (kiff/tafs#185): its sealing
 // key, which leaves every read sealed under it unreadable, and its drafts'
 // claim records, and the tafs' KIFF keys' old secrets while keys move to
-// the table. Each is deleted at once, with no recovery window. The
+// the table. Each is deleted at once, with no recovery window, a key's old
+// secret retired after its move too (package keys). The
 // account's alert secret is tafs cloud's, which writes it and deletes it.
 type Eraser struct {
 	api           EraseAPI
@@ -46,16 +48,26 @@ func (e *Eraser) Erase(ctx context.Context, tenant string) error {
 	if e.SealingPrefix != "" {
 		names = append(names, e.SealingPrefix+tenant)
 	}
-	for _, p := range []string{e.DraftsPrefix, e.KeysPrefix} {
-		if p == "" {
-			continue
-		}
+	if e.DraftsPrefix != "" {
 		// A tenant is one segment, so this prefix names its own only.
-		found, err := e.under(ctx, p+tenant+"/")
+		found, _, err := e.under(ctx, e.DraftsPrefix+tenant+"/")
 		if err != nil {
 			return err
 		}
 		names = append(names, found...)
+	}
+	if e.KeysPrefix != "" {
+		found, retired, err := e.under(ctx, e.KeysPrefix+tenant+"/")
+		if err != nil {
+			return err
+		}
+		for i, n := range found {
+			if !retired[i] {
+				names = append(names, n)
+			} else if err := purge(ctx, e.api, n); err != nil {
+				return fmt.Errorf("secretsmanager: %w", err)
+			}
+		}
 	}
 	for _, n := range names {
 		_, err := e.api.DeleteSecret(ctx, &sm.DeleteSecretInput{SecretId: aws.String(n), ForceDeleteWithoutRecovery: aws.Bool(true)})
@@ -67,24 +79,28 @@ func (e *Eraser) Erase(ctx context.Context, tenant string) error {
 	return nil
 }
 
-// under lists the secrets whose names start with prefix.
-func (e *Eraser) under(ctx context.Context, prefix string) ([]string, error) {
-	var names []string
-	in := &sm.ListSecretsInput{Filters: []types.Filter{{Key: types.FilterNameStringTypeName, Values: []string{prefix}}}}
+// under lists the secrets whose names start with prefix, those scheduled
+// for deletion too, and which of them are.
+func (e *Eraser) under(ctx context.Context, prefix string) (names []string, retired []bool, err error) {
+	in := &sm.ListSecretsInput{
+		Filters:                []types.Filter{{Key: types.FilterNameStringTypeName, Values: []string{prefix}}},
+		IncludePlannedDeletion: aws.Bool(true),
+	}
 	for {
 		out, err := e.api.ListSecrets(ctx, in)
 		if err != nil {
-			return nil, fmt.Errorf("secretsmanager: listing the tenant's secrets: %w", err)
+			return nil, nil, fmt.Errorf("secretsmanager: listing the tenant's secrets: %w", err)
 		}
 		for _, s := range out.SecretList {
 			// The name filter matches a prefix; check it, so nothing
 			// outside the tenant's own is ever deleted.
 			if n := aws.ToString(s.Name); len(n) > len(prefix) && n[:len(prefix)] == prefix {
 				names = append(names, n)
+				retired = append(retired, s.DeletedDate != nil)
 			}
 		}
 		if out.NextToken == nil {
-			return names, nil
+			return names, retired, nil
 		}
 		in.NextToken = out.NextToken
 	}

@@ -256,6 +256,9 @@ ITEMS='"dynamodb:GetItem","dynamodb:BatchGetItem","dynamodb:Query","dynamodb:Put
 # It makes and reads each tenant's sealing key (#172), never replacing one.
 # It reads, writes and deletes attached files, and lists them to remove an
 # agent's or a tenant's (kiff/tafs#209).
+# The tafs' keys' old secrets, moved to the table, are deleted with a
+# recovery window; it restores one only to delete it at once, when its key is
+# removed or its account erased.
 aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-document "$(cat <<EOF
 {"Version":"2012-10-17","Statement":[
  $LOGS,
@@ -271,6 +274,7 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
    "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant","ref"]},
    "Null":{"kms:EncryptionContext:tenant":"false","kms:EncryptionContext:ref":"false"}}},
  {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*","$ARN_SECRET:${SECRETS_PREFIX}*"]},
+ {"Effect":"Allow","Action":"secretsmanager:RestoreSecret","Resource":"$ARN_SECRET:${SECRETS_PREFIX}*"},
  {"Effect":"Allow","Action":"secretsmanager:ListSecrets","Resource":"*"},
  {"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"$ARN_FN"},
  {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::$ATTACHMENTS/*"},
