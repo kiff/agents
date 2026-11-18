@@ -1,8 +1,12 @@
 {
   "suites": {
     "connect": {
-      "about": "Coach connects an app by its key, with its tools and Card in one approval: the desk and billing setup chats, the replays of setups that failed an owner, and what Coach says of an app's sign-in before it (plan words).",
-      "steps": ["Setup on the second vendor, a desk by its key", "Setup on billing, invoices that stay drafts", "Replay, introductions from a list", "Plan words, Google Sheets in English", "Plan words, Google Sheets in French", "Plan words, Gmail in English"]
+      "about": "Coach connects an app by its key, with its tools and Card in one approval: the desk and billing setup chats, and the replays of setups that failed an owner.",
+      "steps": ["Setup on the second vendor, a desk by its key", "Setup on billing, invoices that stay drafts", "Replay, introductions from a list"]
+    },
+    "plan-words": {
+      "about": "What Coach says of an app's sign-in before it, as planque's grant has it: never narrower or wider than planque told it (Google Sheets in English and French, Gmail in English).",
+      "steps": ["Plan words, Google Sheets in English", "Plan words, Google Sheets in French", "Plan words, Gmail in English"]
     },
     "setup": {
       "about": "Coach sets up a taf from the owner's words, graded: the refunds setup chat.",
@@ -27,15 +31,15 @@
   },
   "paths": {
     "kiff/tafs": [
-      {"prefix": "runtime/skills/coach/connect-an-app/", "suites": ["connect", "setup"]},
-      {"prefix": "runtime/skills/coach/name-the-tools/", "suites": ["connect", "setup"]},
-      {"prefix": "runtime/skills/coach/draft-the-card/", "suites": ["connect", "setup"]},
-      {"prefix": "runtime/skills/coach/set-up-a-taf/", "suites": ["connect", "setup"]},
+      {"prefix": "runtime/skills/coach/connect-an-app/", "suites": ["connect", "plan-words", "setup"]},
+      {"prefix": "runtime/skills/coach/name-the-tools/", "suites": ["connect", "plan-words", "setup"]},
+      {"prefix": "runtime/skills/coach/draft-the-card/", "suites": ["connect", "plan-words", "setup"]},
+      {"prefix": "runtime/skills/coach/set-up-a-taf/", "suites": ["connect", "plan-words", "setup"]},
       {"prefix": "runtime/skills/coach/ask-a-taf/", "suites": ["route"]},
-      {"prefix": "runtime/skills/coach/lock.json", "suites": ["connect", "route", "setup"]},
+      {"prefix": "runtime/skills/coach/lock.json", "suites": ["connect", "plan-words", "route", "setup"]},
       {"prefix": "runtime/skills/coach/", "suites": ["setup"]},
       {"prefix": "runtime/skills/kiff/", "suites": ["cards", "handoffs", "recipe-tickets"]},
-      {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "route", "setup"]},
+      {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "plan-words", "route", "setup"]},
       {"prefix": "runtime/src/recipes.ts", "suites": ["recipe-tickets"]},
       {"prefix": "app/strings/", "suites": []},
       {"prefix": "runtime/test/", "suites": []},
@@ -45,15 +49,15 @@
       {"prefix": "changes/", "suites": []}
     ],
     "kiff/agents": [
-      {"prefix": "tool/planque/", "suites": ["connect", "setup"]},
+      {"prefix": "tool/planque/", "suites": ["connect", "plan-words", "setup"]},
       {"prefix": "eval/cases/handoff", "suites": ["handoffs"]},
       {"prefix": "eval/cases/tickets", "suites": ["recipe-tickets"]},
       {"prefix": "cmd/e2e/route", "suites": ["route"]},
-      {"prefix": "cmd/e2e/", "suites": ["connect", "route", "setup"]},
+      {"prefix": "cmd/e2e/", "suites": ["connect", "plan-words", "route", "setup"]},
       {"prefix": "docs/", "suites": []}
     ],
     "kiff/planque": [
-      {"prefix": "", "suites": ["connect", "recipe-tickets", "setup"]}
+      {"prefix": "", "suites": ["connect", "plan-words", "recipe-tickets", "setup"]}
     ]
   }
 }

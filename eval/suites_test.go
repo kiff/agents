@@ -18,7 +18,7 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		paths []string
 		want  []string
 	}{
-		{"kiff/tafs", []string{"runtime/skills/coach/connect-an-app/17/SKILL.md"}, []string{"connect", "setup"}},
+		{"kiff/tafs", []string{"runtime/skills/coach/connect-an-app/17/SKILL.md"}, []string{"connect", "plan-words", "setup"}},
 		{"kiff/tafs", []string{"runtime/skills/coach/the-dial/3/SKILL.md"}, []string{"setup"}},
 		{"kiff/tafs", []string{"android/app/src/Main.kt", "docs/coach.md"}, nil},
 		{"kiff/tafs", []string{"runtime/skills/kiff/SKILL.md", "ios/Tafs/App.swift"}, []string{"cards", "handoffs", "recipe-tickets"}},
@@ -30,15 +30,15 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		{"kiff/tafs", []string{"runtime/test/home.test.ts", "runtime/src/cloud/home.ts"}, []string{All}},
 		// tafs cloud's runtime, which every setup calls live: eval-carry.sh diffs the whole tree.
 		{"kiff/tafs", []string{"runtime/src/cloud/approval.ts"}, []string{All}},
-		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "route", "setup"}},
+		{"kiff/tafs", []string{"runtime/skills/coach/lock.json"}, []string{"connect", "plan-words", "route", "setup"}},
 		// The watch's skill is the route suite's alone; the agents' e2e runs it too.
 		{"kiff/tafs", []string{"runtime/skills/coach/ask-a-taf/1/SKILL.md"}, []string{"route"}},
 		{"kiff/agents", []string{"cmd/e2e/route.go"}, []string{"route"}},
-		{"kiff/agents", []string{"cmd/e2e/planwords.go"}, []string{"connect", "route", "setup"}},
+		{"kiff/agents", []string{"cmd/e2e/planwords.go"}, []string{"connect", "plan-words", "route", "setup"}},
 		// The tickets recipe's taf calls through the connection server at run time, not only at setup.
-		{"kiff/planque", []string{"internal/gateway/proxy.go"}, []string{"connect", "recipe-tickets", "setup"}},
+		{"kiff/planque", []string{"internal/gateway/proxy.go"}, []string{"connect", "plan-words", "recipe-tickets", "setup"}},
 		// eval-carry.sh's stand-in for "a planque commit since": any path maps the same.
-		{"kiff/planque", []string{"main"}, []string{"connect", "recipe-tickets", "setup"}},
+		{"kiff/planque", []string{"main"}, []string{"connect", "plan-words", "recipe-tickets", "setup"}},
 		{"kiff/elsewhere", []string{"main.go"}, []string{All}},
 	} {
 		if got := s.For(c.repo, c.paths); !slices.Equal(got, c.want) {
@@ -77,7 +77,7 @@ func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
 
 	// Eval 19: everything held but intros; a run of connect now carries the rest.
 	from, short := s.Carry([]string{"connect"}, []EarlierRun{skipped, full(19, "failure")})
-	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || len(from) != 5 {
+	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || from["plan-words"] != 19 || len(from) != 6 {
 		t.Errorf("connect after Eval 19: from %v, short %v", from, short)
 	}
 	// A run of setup alone can't carry connect: it failed there.
@@ -97,7 +97,7 @@ func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
 	if _, short := s.Carry([]string{"connect"}, []EarlierRun{partial, full(19, "success")}); short["handoffs"] != "it failed in run 20" {
 		t.Errorf("an older pass outvoted a newer failure: %v", short)
 	}
-	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 5 {
+	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 6 {
 		t.Errorf("no earlier run: %v", short)
 	}
 }

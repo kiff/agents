@@ -33,7 +33,7 @@ on:
       # counts for the Upgrade gate or the nightly's skip: it ends red,
       # whatever its checks said, and its steps give each suite's verdict.
       suites:
-        description: "The suites to run: all, or some of connect, setup, cards, handoffs, recipe-tickets, route (eval/suites.json); some never count for the Upgrade"
+        description: "The suites to run: all, or some of connect, plan-words, setup, cards, handoffs, recipe-tickets, route (eval/suites.json); some never count for the Upgrade"
         type: string
         default: "all"
       repeat:
@@ -328,7 +328,7 @@ jobs:
         # the words in English and French and by the judges in any language,
         # and Coach never calls it wider than planque's grant says. Telling the
         # owner a wide sign-in is wide is the card's, from the grant.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -339,7 +339,7 @@ jobs:
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan sheets -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-sheets.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Plan words, Google Sheets in French
         # The same in French: the words checked are French too.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -352,7 +352,7 @@ jobs:
         # Today's sign-in planque narrows (Gmail's, for reading mail): a rule
         # that always says "wider" fails here. Which app is wide or narrowed is
         # planque's to say, and the report shows it; the checks don't change.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
