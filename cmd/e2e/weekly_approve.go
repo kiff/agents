@@ -39,6 +39,9 @@ type weeklyPhone interface {
 	// ApproveConnect sends planque's approve body as tafs cloud built it, and
 	// returns the grant's status after.
 	ApproveConnect(ctx context.Context, grant string, body json.RawMessage) (string, error)
+	// Asked is whether the account's setup agent asked for the grant (planque's
+	// asked-grants): only such a grant is this run's to approve and take away.
+	Asked(ctx context.Context, grant string) (bool, error)
 }
 
 // weeklyShown is an approval card as the thread shows it.

@@ -313,3 +313,46 @@ func TestASkipThatCantBeKeptFailsTheJob(t *testing.T) {
 		t.Fatalf("skipped %v, %v", skipped, err)
 	}
 }
+
+// A card that names a grant the setup agent didn't ask for is someone else's:
+// the run stops before the phone acts, and the grant isn't recorded, so the
+// cleanup never disconnects it.
+func TestAGrantTheSetupAgentDidntAskForIsNeitherApprovedNorTakenAway(t *testing.T) {
+	approval := card("approval", "a1")
+	approval.Card.Grant = "g_theirs"
+	chat := &fakeChat{threads: []weeklyThread{{Cards: []weeklyThreadCard{approval}}}}
+	cloud := &fakeTafsCloud{approval: weeklyDecision{Outcome: "sign", Ask: signAsk("connect", "tafs.connect.v1|t1|g_theirs|d1")}}
+	phone := &fakeWeeklyPhone{digest: "d1", tools: jobTools, status: "connected", notAsked: map[string]bool{"g_theirs": true}}
+	r, err := driveCoach(context.Background(), chat, cloud, phone, pipedriveFamily, "t1", noWait)
+	if !errors.Is(err, errNotAsked) {
+		t.Fatalf("got %v", err)
+	}
+	if len(r.Grants) != 0 || len(r.Approvals) != 0 || cloud.asked != nil || phone.approved != nil || phone.confirmed != "" {
+		t.Fatalf("the phone acted: grants %v, approvals %v, cloud asked %v, approved %s", r.Grants, r.Approvals, cloud.asked, phone.approved)
+	}
+}
+
+// The cleanup takes away what the run recorded: its grants, and its taf only
+// if the run made it. A taf Coach installed into, there before the run, is
+// left as it is.
+func TestTheCleanupArchivesOnlyATafTheRunMade(t *testing.T) {
+	before := map[string]bool{"agt_old": true}
+	for _, c := range []struct {
+		taf      string
+		archived []string
+		mine     int
+	}{
+		{"agt_new", []string{"agt_new"}, 3},
+		{"agt_old", nil, 2},
+		{"", nil, 2},
+	} {
+		var gone, archived []string
+		r := weeklyResult{Grants: []string{"g1", "g2"}, Taf: c.taf}
+		mine := weeklyCleanup(r, before, io.Discard,
+			func(g string) error { gone = append(gone, g); return nil },
+			func(taf string) error { archived = append(archived, taf); return nil })
+		if !slices.Equal(gone, []string{"g1", "g2"}) || !slices.Equal(archived, c.archived) || mine != c.mine {
+			t.Errorf("taf %q: disconnected %v, archived %v, %d taken away", c.taf, gone, archived, mine)
+		}
+	}
+}

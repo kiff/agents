@@ -28,12 +28,11 @@ name: Proofs
 # token: only the claims, which name this repository and this run, and a
 # fingerprint, which names a public key.
 on:
-  # The weekly proof, Mondays at 05:00 UTC, is off until its spend is
-  # approved: each run is two real Coach chats, capped at US$3 each. Whoever
-  # approves that spend uncomments these two lines; until then it runs only by
-  # hand (run: weekly).
-  # schedule:
-  #   - cron: "0 5 * * 1"
+  # The weekly proof, Mondays at 05:00 UTC: two real Coach chats, capped at
+  # US$3 each. Its spend is approved; each run's actual cost is in the job's
+  # summary. To stop it, comment these two lines out again.
+  schedule:
+    - cron: "0 5 * * 1"
   workflow_dispatch:
     inputs:
       run:

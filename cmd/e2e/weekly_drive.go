@@ -72,6 +72,7 @@ var (
 	errNoCard   = errors.New("no approval card in the turns allowed")
 	errCostCap  = errors.New("cost cap")
 	errInWords  = errors.New("a card asks for agreement with no notice shown")
+	errNotAsked = errors.New("a card names a grant the setup agent didn't ask for")
 	approvalish = regexp.MustCompile(`(?i)^\s*(yes|ok|okay|approve[ds]?|agree[ds]?|confirm(ed)?|accept(ed)?|go ahead|sure)\b`)
 )
 
@@ -110,9 +111,18 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 			}
 			switch c.Card.Type {
 			case "approval", "sign_in":
-				// Recorded before the phone acts on it, so a connect that fails
-				// half-way is still taken away by the run's cleanup.
+				// Only a grant the setup agent asked for is approved, and so taken
+				// away after: any other is someone else's, and the run stops
+				// before the phone acts. It's recorded before the phone acts on
+				// it, so a connect that fails half-way is still taken away.
 				if c.Card.Grant != "" {
+					asked, err := phone.Asked(ctx, c.Card.Grant)
+					if err != nil {
+						return r, fmt.Errorf("reading the setup agent's asked grants: %w", err)
+					}
+					if !asked {
+						return r, errNotAsked
+					}
 					r.Grants = append(r.Grants, c.Card.Grant)
 				}
 				answer, err := approveCard(ctx, cloud, phone, weeklyShown{ID: c.Card.ID, Session: session, Grant: c.Card.Grant, Draft: c.Card.Draft, Tools: c.Tools, SignsCard: c.Signs}, tenant, f.Job)

@@ -90,6 +90,23 @@ func (c *liveWeeklyCloud) Report(ctx context.Context, component, ask string, bod
 // KIFF's draft, and the calls an ask names.
 type liveWeeklyPhone struct{ t *test }
 
+// Asked reads planque's asked-grants with the setup agent's key.
+func (p liveWeeklyPhone) Asked(ctx context.Context, grant string) (bool, error) {
+	if p.t.cfg.setupKey == "" {
+		return false, errors.New("no setup key to list the asked grants")
+	}
+	gs, err := p.t.askedGrants(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, g := range gs {
+		if g.ID == grant {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (p liveWeeklyPhone) Grant(ctx context.Context, id string) (string, []weeklyTool, error) {
 	g, err := p.t.phone.Grant(ctx, id)
 	if err != nil {

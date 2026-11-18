@@ -33,6 +33,12 @@ type fakeWeeklyPhone struct {
 	confirmed string
 	approved  json.RawMessage
 	status    string
+	// notAsked are grants the setup agent didn't ask for; any other was.
+	notAsked map[string]bool
+}
+
+func (f *fakeWeeklyPhone) Asked(_ context.Context, grant string) (bool, error) {
+	return !f.notAsked[grant], nil
 }
 
 func (f *fakeWeeklyPhone) Grant(context.Context, string) (string, []weeklyTool, error) {

@@ -157,28 +157,30 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	} else {
 		f.Ask = fmt.Sprintf(f.Ask, name)
 	}
+	// The tafs on the account before the run: a taf Coach hands over that was
+	// already there (Coach installed into it) isn't this run's to archive.
+	before, _, err := testaccount.PhoneAccess(ctx, t.kiff)
+	if err != nil {
+		return err
+	}
 	var r weeklyResult
 	defer func() {
 		// What this run recorded first, whatever Coach named it: its grants
 		// disconnected, its taf archived. Then the name sweep, for what an
 		// earlier run left.
 		cleanCtx := context.WithoutCancel(ctx)
-		mine := 0
 		for _, g := range r.Grants {
 			stdout.hide(g, "<a grant>")
-			if err := t.phone.Disconnect(cleanCtx, g); err != nil {
-				fmt.Fprintf(stdout, "  cleanup: a grant this run asked for wasn't disconnected (%v)\n", err)
-				continue
-			}
-			mine++
 		}
-		if r.Taf != "" {
-			if c, err := testaccount.Sweep(cleanCtx, t.kiff, []string{r.Taf}); err != nil || c.Left() > 0 {
-				fmt.Fprintf(stdout, "  cleanup: the taf this run made wasn't archived (%v)\n", err)
-			} else {
-				mine++
-			}
-		}
+		mine := weeklyCleanup(r, before, stdout,
+			func(g string) error { return t.phone.Disconnect(cleanCtx, g) },
+			func(taf string) error {
+				c, err := testaccount.Sweep(cleanCtx, t.kiff, []string{taf})
+				if err == nil && c.Left() > 0 {
+					err = errors.New("it's still on the account")
+				}
+				return err
+			})
 		n, err := sweepWeekly(cleanCtx, t, f.Name)
 		fmt.Fprintf(stdout, "  cleanup: %d of this run's taken away; %d by name, this run's or earlier ones' (%v)\n", mine, n, err)
 	}()
@@ -216,6 +218,34 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	}
 	fmt.Fprintln(stdout, "  the taf kept exactly the approved connection's tools: PASS")
 	return nil
+}
+
+// weeklyCleanup takes away what the run recorded: each grant it approved
+// (only grants the setup agent asked for are recorded) is disconnected, and
+// the taf Coach handed over is archived only if the run made it, that is it
+// wasn't on the account (before) when the run began. It returns how many it
+// took away.
+func weeklyCleanup(r weeklyResult, before map[string]bool, log io.Writer, disconnect, archive func(string) error) int {
+	mine := 0
+	for _, g := range r.Grants {
+		if err := disconnect(g); err != nil {
+			fmt.Fprintf(log, "  cleanup: a grant this run asked for wasn't disconnected (%v)\n", err)
+			continue
+		}
+		mine++
+	}
+	switch {
+	case r.Taf == "":
+	case before[r.Taf]:
+		fmt.Fprintln(log, "  cleanup: the taf Coach handed over was on the account before this run, so it's left as it is")
+	default:
+		if err := archive(r.Taf); err != nil {
+			fmt.Fprintf(log, "  cleanup: the taf this run made wasn't archived (%v)\n", err)
+		} else {
+			mine++
+		}
+	}
+	return mine
 }
 
 // sweepWeekly takes away what weekly proofs of a family made: the grants the
