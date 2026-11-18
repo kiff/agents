@@ -36,6 +36,13 @@ func calls(inputs ...string) model.Reply {
 // component's id and type), what each show call answered, and the own_refused
 // records the session kept for a confirm refused as unshown.
 func shownIn(t *testing.T, store *memory.Store, r *session.Recording, replies ...model.Reply) (shown []string, answers []string, unshown int) {
+	shown, answers, unshown, _ = shownAndMade(t, store, r, replies...)
+	return shown, answers, unshown
+}
+
+// shownAndMade is shownIn, with how each refused call streamed: "not_made"
+// for one refused back unmade, "failed" for any other error.
+func shownAndMade(t *testing.T, store *memory.Store, r *session.Recording, replies ...model.Reply) (shown []string, answers []string, unshown int, refused []string) {
 	t.Helper()
 	m := &script{replies: append(replies, say("Done."))}
 	var streamed []agent.Event
@@ -65,9 +72,15 @@ func shownIn(t *testing.T, store *memory.Store, r *session.Recording, replies ..
 	for _, e := range streamed {
 		if e.Kind == agent.CallResult && e.Result != nil {
 			answers = append(answers, e.Result.Text)
+			switch {
+			case e.NotMade:
+				refused = append(refused, "not_made")
+			case e.Result.IsError:
+				refused = append(refused, "failed")
+			}
 		}
 	}
-	return shown, answers, unshown
+	return shown, answers, unshown, refused
 }
 
 func refusedUnshown(answers []string) bool {
@@ -154,5 +167,22 @@ func TestAConfirmAgreesToANoticeAnEarlierRunShowed(t *testing.T) {
 	}
 	if shown, answers, unshown := shownIn(t, store, r3, calls(agreeToN1)); len(shown) != 0 || !refusedUnshown(answers) || unshown != 1 {
 		t.Fatalf("another conversation: shown %v, answers %q", shown, answers)
+	}
+}
+
+// A confirm refused because its notice wasn't shown was never shown either:
+// it streams as not made, so the owner's work line counts one failed step
+// (the notice), not two (the demo of 18 Nov: "2 steps, 2 failed").
+func TestAConfirmForAnUnshownNoticeIsNotMadeNotFailed(t *testing.T) {
+	store, r := start(t, session.KindChat)
+	_, _, unshown, refused := shownAndMade(t, store, r, calls(refusedRules, agreeToN1))
+	if strings.Join(refused, ",") != "failed,not_made" || unshown != 1 {
+		t.Fatalf("refused calls streamed as %v (%d unshown records), want the notice failed and its confirm not made", refused, unshown)
+	}
+	// Its notice shown, the confirm is made and shows.
+	store, r = start(t, session.KindChat)
+	shown, _, _, refused := shownAndMade(t, store, r, calls(rulesNotice, agreeToN1))
+	if len(refused) != 0 || strings.Join(shown, ",") != "notice:n1,confirm:c1" {
+		t.Fatalf("shown %v, refused %v", shown, refused)
 	}
 }
