@@ -1714,8 +1714,11 @@ func (a Agent) callTools(ctx context.Context, rec *session.Recording, byName map
 			if err != nil {
 				return nil, err
 			}
+			// Never shown, so unmade: the app shows it as not made, not as a
+			// second failed step beside its refused notice.
 			if why != "" {
 				results[i].Result = tool.Result{Text: why, IsError: true}
+				results[i].NotMade = true
 				r = results[i]
 			}
 		}
