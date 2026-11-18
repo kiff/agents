@@ -26,7 +26,8 @@
 #   agents/<tenant>/<key_ref>      an agent's KIFF key            AGENTS_SECRETS_PREFIX
 #   agents-accounts/<KIFF account> {"tenant","secret"} for alerts KIFF_ACCOUNTS_PREFIX
 #   agents-drafts/<tenant>/<draft> a taf draft's claim secret     AGENTS_DRAFTS_PREFIX
-#                                  (written by the API function, #91)
+#                                  (written by the API function before the
+#                                  drafts' key below; now only read and deleted)
 #   agents-sealing/<tenant>        the key a tenant's chats seal  AGENTS_SEALING_PREFIX
 #                                  their kept reads with (#172; made by the
 #                                  API function, the first time it's needed)
@@ -80,6 +81,10 @@ DRAFTS_PREFIX=agents-drafts/
 # Each tenant's key for what its chats keep of their reads (#172): outside the
 # agents' key prefix too.
 SEALING_PREFIX=agents-sealing/
+# The one KMS key draft records are sealed with in the table: a record costs
+# nothing of its own, where a secret per draft cost $0.40 a month for as long
+# as it was kept.
+DRAFTS_KEY_ALIAS=alias/agents-drafts
 PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
 NOTIFY_URLS=${AGENTS_NOTIFY_URLS:-}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
@@ -123,6 +128,19 @@ ACCOUNT=$(aws sts get-caller-identity --query Account)
 ARN_FN="arn:aws:lambda:$REGION:$ACCOUNT:function:$FN"
 ARN_TABLE="arn:aws:dynamodb:$REGION:$ACCOUNT:table/$TABLE"
 ARN_SECRET="arn:aws:secretsmanager:$REGION:$ACCOUNT:secret"
+
+# --- The drafts' key -------------------------------------------------------
+
+# Made once, kept: deleting it makes every draft record unreadable. Only the
+# account administers it; the API function's role may use it, through its
+# policy below, only with a draft's encryption context.
+DRAFTS_KEY=$(aws kms describe-key --key-id "$DRAFTS_KEY_ALIAS" --query KeyMetadata.Arn 2>/dev/null || true)
+if [ -z "$DRAFTS_KEY" ] || [ "$DRAFTS_KEY" = "None" ]; then
+  say "creating the drafts' KMS key"
+  DRAFTS_KEY=$(aws kms create-key --description "kiff/agents: seals taf draft records" \
+    --key-usage ENCRYPT_DECRYPT --key-spec SYMMETRIC_DEFAULT --query KeyMetadata.Arn)
+  aws kms create-alias --alias-name "$DRAFTS_KEY_ALIAS" --target-key-id "$DRAFTS_KEY"
+fi
 
 # --- The table -------------------------------------------------------------
 
@@ -216,7 +234,9 @@ ITEMS='"dynamodb:GetItem","dynamodb:BatchGetItem","dynamodb:Query","dynamodb:Put
 # agents' keys and the model key, invoking itself for background runs, and the
 # schedules of its own group, made with the scheduler's role. For taf drafts
 # (#91) it also creates an agent's key when it claims one, never over an
-# existing secret, and keeps the drafts' claim secrets under their own prefix.
+# existing secret, and seals the drafts' records with the drafts' key, only
+# under a draft's encryption context; the claim secrets kept under their own
+# prefix before are only read and deleted.
 # It makes and reads each tenant's sealing key (#172), never replacing one.
 # It reads, writes and deletes attached files, and lists them to remove an
 # agent's or a tenant's (kiff/tafs#209).
@@ -225,8 +245,11 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
  $LOGS,
  {"Effect":"Allow","Action":[$ITEMS],"Resource":"$ARN_TABLE"},
  {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${MODEL_SECRET}-??????","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
- {"Effect":"Allow","Action":"secretsmanager:CreateSecret","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
- {"Effect":"Allow","Action":"secretsmanager:PutSecretValue","Resource":"$ARN_SECRET:${DRAFTS_PREFIX}*"},
+ {"Effect":"Allow","Action":"secretsmanager:CreateSecret","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
+ {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"$DRAFTS_KEY",
+  "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents draft record v1"},
+   "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant","draft"]},
+   "Null":{"kms:EncryptionContext:tenant":"false","kms:EncryptionContext:draft":"false"}}},
  {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:ListSecrets","Resource":"*"},
  {"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"$ARN_FN"},
@@ -275,7 +298,7 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
  "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"}}
 EOF
 )
