@@ -153,6 +153,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: kiff-test
+    # actions: read, for the last weekly run's steps. No OIDC: weekly results
+    # go to the job's summary, never to KIFF.
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: test-account
       cancel-in-progress: false
@@ -163,15 +168,39 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: The families the last weekly run skipped
+        # A family skipped for a secret of its own not set is "skipped, not
+        # proved"; skipped twice in a row, it fails the job (kiff-qa 09:28).
+        # A skip shows as the step "Skipped, not proved: <family>" that ran;
+        # this reads those steps from the last run whose weekly job ran.
+        id: last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          skipped=""
+          for id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/proofs.yml/runs?branch=main&status=completed&per_page=50" \
+            --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id"); do
+            ran=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+              --jq '[.jobs[] | select(.name == "weekly" and .conclusion != "skipped")][0] | if . == null then "no" else "ran " + ([.steps[] | select(.conclusion == "success") | .name | select(startswith("Skipped, not proved: ")) | ltrimstr("Skipped, not proved: ")] | join(" ")) end')
+            if [ "$ran" != no ]; then skipped=${ran#ran}; break; fi
+          done
+          echo "the last weekly run skipped:${skipped:- nothing}"
+          echo "skipped=${skipped# }" >> "$GITHUB_OUTPUT"
       - name: The weekly proof, key family
+        id: key
         env:
           PROOF_TENANT: ${{ secrets.PROOF_TENANT }}
           PROOF_PHONE_KEY: ${{ secrets.PROOF_PHONE_KEY }}
           PROOF_KIFF_SESSION: ${{ secrets.PROOF_KIFF_SESSION }}
           E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
           PROOF_PIPEDRIVE_KEY: ${{ secrets.PROOF_PIPEDRIVE_KEY }}
+          WEEKLY_LAST_SKIPPED: ${{ steps.last.outputs.skipped }}
         run: go run ./cmd/e2e -weekly key
+      - name: "Skipped, not proved: key"
+        if: ${{ !cancelled() && steps.key.outputs.skipped == 'true' }}
+        run: echo "the key family was skipped, not proved; see the summary"
       - name: The weekly proof, own-key family (the fake vendor's desk by its key, a raw request)
+        id: own-key
         # Runs even when the key family failed: each family is its own proof.
         if: ${{ !cancelled() }}
         env:
@@ -181,7 +210,11 @@ jobs:
           E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+          WEEKLY_LAST_SKIPPED: ${{ steps.last.outputs.skipped }}
         run: go run ./cmd/e2e -weekly own-key
+      - name: "Skipped, not proved: own-key"
+        if: ${{ !cancelled() && steps.own-key.outputs.skipped == 'true' }}
+        run: echo "the own-key family was skipped, not proved; see the summary"
   claims:
     if: inputs.run == 'claims'
     runs-on: ubuntu-latest

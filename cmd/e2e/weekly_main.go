@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"slices"
@@ -47,6 +48,40 @@ var weeklyFamilies = map[string]weeklyFamily{
 // weeklyKeyEnv is the sandbox key each family's app takes, from kiff-test.
 var weeklyKeyEnv = map[string]string{"key": "PROOF_PIPEDRIVE_KEY", "own-key": "E2E_DESK_KEY"}
 
+// weeklyOwnEnv are the secrets a family alone needs. When one isn't set, the
+// family is skipped, not proved, and the other family still runs (PM 09:27);
+// a second skip in a row fails the job (kiff-qa 09:28). The account's own
+// secrets, which both families share, are never a skip: they fail the job.
+var weeklyOwnEnv = map[string][]string{"key": {"PROOF_PIPEDRIVE_KEY"}, "own-key": {"E2E_DESK_KEY", "E2E_VENDOR"}}
+
+// weeklySkip skips family when a secret of its own isn't set: a warning, a
+// "skipped, not proved" summary (never "passed") and skipped=true in the
+// step's outputs, which the workflow keeps as a step of its own for the next
+// run to read. When the last weekly run skipped the family too
+// (WEEKLY_LAST_SKIPPED, the families it skipped), the skip fails the job.
+func weeklySkip(f weeklyFamily, w io.Writer, env func(string) string) (bool, error) {
+	var missing []string
+	for _, k := range weeklyOwnEnv[f.Name] {
+		if env(k) == "" {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) == 0 {
+		return false, nil
+	}
+	why := strings.Join(missing, ", ") + " not set in kiff-test"
+	if err := appendFile(env("GITHUB_OUTPUT"), "skipped=true\n"); err != nil {
+		return true, fmt.Errorf("the %s family is skipped (%s), and its skip couldn't be kept for the next run: %w", f.Name, why, err)
+	}
+	if slices.Contains(strings.Fields(env("WEEKLY_LAST_SKIPPED")), f.Name) {
+		writeSummary(env("GITHUB_STEP_SUMMARY"), fmt.Sprintf("### Weekly proof, %s family: FAIL: skipped twice in a row, not proved\n\n- %s.\n", f.Name, why))
+		return true, fmt.Errorf("the %s family was skipped twice in a row, so it proves nothing: %s", f.Name, why)
+	}
+	fmt.Fprintf(w, "::warning title=Weekly proof, %s family::skipped, not proved: %s. A second skip in a row fails the job.\n", f.Name, why)
+	writeSummary(env("GITHUB_STEP_SUMMARY"), fmt.Sprintf("### Weekly proof, %s family: skipped, not proved\n\n- %s.\n- A second skip in a row fails the job.\n", f.Name, why))
+	return true, nil
+}
+
 // runWeeklyMode is -weekly <family>: a real Coach chat on tafs cloud, as the
 // owner's phone, on the test account only (the daily proof's pin), its
 // approval through the component route alone, and after the hand-over the
@@ -56,6 +91,9 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	f, ok := weeklyFamilies[family]
 	if !ok {
 		return fmt.Errorf("-weekly %q: no such family set up", family)
+	}
+	if skipped, err := weeklySkip(f, stdout, env); skipped {
+		return err
 	}
 	cfg := config{log: stdout, phone: env("PROOF_PHONE_KEY"), session: env("PROOF_KIFF_SESSION"), setupKey: env("E2E_SETUP_KEY")}
 	cfg.planque = firstOf(env("E2E_PLANQUE"), "https://planque.kiff.dev")
@@ -195,12 +233,21 @@ func weeklySummary(f weeklyFamily, r weeklyResult, err error) string {
 }
 
 // writeSummary appends to the job's summary file, when there is one.
-func writeSummary(path, text string) {
+func writeSummary(path, text string) { _ = appendFile(path, text+"\n") }
+
+// appendFile appends text to path, when there is one: the job's summary or
+// the step's outputs, which GitHub reads after the step.
+func appendFile(path, text string) error {
 	if path == "" {
-		return
+		return nil
 	}
-	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-		defer f.Close()
-		_, _ = f.WriteString(text + "\n")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
 	}
+	if _, err := f.WriteString(text); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

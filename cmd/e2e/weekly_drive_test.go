@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -186,18 +190,16 @@ func TestTheWeeklyModeNeedsItsFamilyAndItsKeys(t *testing.T) {
 	if err := runWeeklyMode(context.Background(), "managed", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "no such family") {
 		t.Fatalf("a family not set up: %v", err)
 	}
-	// The own-key family takes the desk's key: with everything else set, its absence is what's said.
-	all := func(k string) string {
-		if k == "E2E_DESK_KEY" {
-			return ""
+	// The account's secrets, which both families share, are never a skip:
+	// with the family's own set and the account's not, the run fails.
+	own := func(k string) string {
+		if k == "PROOF_PIPEDRIVE_KEY" {
+			return "set"
 		}
-		return "set"
+		return ""
 	}
-	if err := runWeeklyMode(context.Background(), "own-key", &redacting{w: &strings.Builder{}}, all); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY is required") {
-		t.Fatalf("own-key with no desk key: %v", err)
-	}
-	if err := runWeeklyMode(context.Background(), "key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "is required") {
-		t.Fatalf("no keys: %v", err)
+	if err := runWeeklyMode(context.Background(), "key", &redacting{w: &strings.Builder{}}, own); err == nil || !strings.Contains(err.Error(), "is required") {
+		t.Fatalf("no account secrets: %v", err)
 	}
 	if !strings.Contains(weeklyFamilies["key"].Ask, "%s") {
 		t.Fatal("the key family's request doesn't name the taf for the sweep")
@@ -218,5 +220,96 @@ func TestTheWeeklySummaryNamesTheOutcomeAndTheTaps(t *testing.T) {
 	failed := weeklySummary(weeklyFamilies["key"], r, errMoreThanTheJob)
 	if !strings.Contains(failed, "FAIL: asked for more than the job") {
 		t.Errorf("a failure:\n%s", failed)
+	}
+}
+
+// weeklyEnv is a job's environment: every secret set but those in unset, and
+// the step's summary and outputs in files of the test's own.
+func weeklyEnv(t *testing.T, lastSkipped string, unset ...string) (func(string) string, string, string) {
+	dir := t.TempDir()
+	summary, output := filepath.Join(dir, "summary"), filepath.Join(dir, "output")
+	return func(k string) string {
+		switch {
+		case slices.Contains(unset, k):
+			return ""
+		case k == "WEEKLY_LAST_SKIPPED":
+			return lastSkipped
+		case k == "GITHUB_STEP_SUMMARY":
+			return summary
+		case k == "GITHUB_OUTPUT":
+			return output
+		}
+		return "set"
+	}, summary, output
+}
+
+func TestAFamilyWithItsOwnSecretsSetIsNeverSkipped(t *testing.T) {
+	env, _, output := weeklyEnv(t, "key own-key")
+	for _, f := range weeklyFamilyNames() {
+		if skipped, err := weeklySkip(weeklyFamilies[f], io.Discard, env); skipped || err != nil {
+			t.Fatalf("%s skipped with its secrets set: %v", f, err)
+		}
+	}
+	if b, _ := os.ReadFile(output); len(b) > 0 {
+		t.Fatalf("outputs written: %s", b)
+	}
+}
+
+func TestTheFirstSkipWarnsAndSaysNotProved(t *testing.T) {
+	for _, c := range []struct{ family, unset, last string }{
+		{"key", "PROOF_PIPEDRIVE_KEY", ""},
+		{"own-key", "E2E_DESK_KEY", "key"},
+		{"own-key", "E2E_VENDOR", ""},
+		// "own-key" skipped last time isn't "key": the names are whole.
+		{"key", "PROOF_PIPEDRIVE_KEY", "own-key"},
+	} {
+		env, summary, output := weeklyEnv(t, c.last, c.unset)
+		var out strings.Builder
+		skipped, err := weeklySkip(weeklyFamilies[c.family], &out, env)
+		if !skipped || err != nil {
+			t.Fatalf("%s without %s, last skipped %q: skipped %v, %v", c.family, c.unset, c.last, skipped, err)
+		}
+		if !strings.HasPrefix(out.String(), "::warning ") || !strings.Contains(out.String(), c.unset+" not set") {
+			t.Errorf("the warning: %q", out.String())
+		}
+		s, _ := os.ReadFile(summary)
+		if !strings.Contains(string(s), c.family+" family: skipped, not proved") || strings.Contains(string(s), "PASS") {
+			t.Errorf("the summary:\n%s", s)
+		}
+		if o, _ := os.ReadFile(output); string(o) != "skipped=true\n" {
+			t.Errorf("the step's outputs: %q", o)
+		}
+	}
+}
+
+func TestASecondSkipInARowFailsTheJob(t *testing.T) {
+	env, summary, output := weeklyEnv(t, "key own-key", "E2E_DESK_KEY")
+	skipped, err := weeklySkip(weeklyFamilies["own-key"], io.Discard, env)
+	if !skipped || err == nil || !strings.Contains(err.Error(), "skipped twice in a row") {
+		t.Fatalf("skipped %v, %v", skipped, err)
+	}
+	if s, _ := os.ReadFile(summary); !strings.Contains(string(s), "own-key family: FAIL: skipped twice in a row, not proved") {
+		t.Errorf("the summary:\n%s", s)
+	}
+	// Kept skipped, so a third skip fails too.
+	if o, _ := os.ReadFile(output); string(o) != "skipped=true\n" {
+		t.Errorf("the step's outputs: %q", o)
+	}
+	// Through the mode itself: it ends there, before any account is reached.
+	if err := runWeeklyMode(context.Background(), "own-key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "skipped twice") {
+		t.Fatalf("the mode: %v", err)
+	}
+}
+
+func TestASkipThatCantBeKeptFailsTheJob(t *testing.T) {
+	env, _, _ := weeklyEnv(t, "", "PROOF_PIPEDRIVE_KEY")
+	bad := func(k string) string {
+		if k == "GITHUB_OUTPUT" {
+			return filepath.Join(t.TempDir(), "no", "such", "dir", "output")
+		}
+		return env(k)
+	}
+	if skipped, err := weeklySkip(weeklyFamilies["key"], io.Discard, bad); !skipped || err == nil {
+		t.Fatalf("skipped %v, %v", skipped, err)
 	}
 }
