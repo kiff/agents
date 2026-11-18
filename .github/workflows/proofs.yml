@@ -87,19 +87,16 @@ jobs:
     # only from this workflow on main.
     if: ${{ !inputs.dry && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    # Each proof takes a few minutes; this stops a stuck one well before the
-    # next Eval would wait on it.
-    timeout-minutes: 20
+    # A few minutes per app; this stops a stuck run well before the next
+    # Eval would wait on it.
+    timeout-minutes: 40
     environment: kiff-test
-    # The Eval's: one run on the test account at a time.
+    # The Eval's: one run on the test account at a time. One job runs every
+    # app in turn, so a proof never takes a waiting Eval's place in the group
+    # (it holds one pending job).
     concurrency:
       group: test-account
       cancel-in-progress: false
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        app: ${{ fromJSON(needs.apps.outputs.apps) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,17 +104,36 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: The proof of ${{ matrix.app }}
+      - name: The proofs, one app at a time
         env:
-          APP: ${{ matrix.app }}
+          APPS: ${{ join(fromJSON(needs.apps.outputs.apps), ' ') }}
+          PROOF_TENANT: ${{ secrets.PROOF_TENANT }}
           PROOF_PHONE_KEY: ${{ secrets.PROOF_PHONE_KEY }}
           PROOF_KIFF_SESSION: ${{ secrets.PROOF_KIFF_SESSION }}
           E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
-          # Only this app's sandbox key reaches its job.
-          PROOF_MONEYBIRD_KEY: ${{ matrix.app == 'moneybird' && secrets.PROOF_MONEYBIRD_KEY || '' }}
-          PROOF_PIPEDRIVE_KEY: ${{ matrix.app == 'pipedrive' && secrets.PROOF_PIPEDRIVE_KEY || '' }}
-          PROOF_TYPEFORM_KEY: ${{ matrix.app == 'typeform' && secrets.PROOF_TYPEFORM_KEY || '' }}
-        run: go run ./cmd/e2e -proof "$APP"
+          KEY_MONEYBIRD: ${{ secrets.PROOF_MONEYBIRD_KEY }}
+          KEY_PIPEDRIVE: ${{ secrets.PROOF_PIPEDRIVE_KEY }}
+          KEY_TYPEFORM: ${{ secrets.PROOF_TYPEFORM_KEY }}
+        run: |
+          go build -o "$RUNNER_TEMP/e2e" ./cmd/e2e
+          failed=""
+          for app in $APPS; do
+            case "$app" in
+              moneybird) key="$KEY_MONEYBIRD" ;;
+              pipedrive) key="$KEY_PIPEDRIVE" ;;
+              typeform) key="$KEY_TYPEFORM" ;;
+              *) echo "no such app"; exit 1 ;;
+            esac
+            # Each proof gets its own app's key and no other.
+            upper=$(printf '%s' "$app" | tr a-z A-Z)
+            if ! env -u KEY_MONEYBIRD -u KEY_PIPEDRIVE -u KEY_TYPEFORM "PROOF_${upper}_KEY=$key" "$RUNNER_TEMP/e2e" -proof "$app"; then
+              failed="$failed $app"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "failed:$failed"
+            exit 1
+          fi
   claims:
     if: inputs.run == 'claims'
     runs-on: ubuntu-latest

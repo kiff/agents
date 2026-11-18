@@ -31,6 +31,10 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,8 +72,9 @@ type proofApp struct {
 	Held     string
 	HeldArgs map[string]any
 	Write    bool
-	// Unchanged is a read whose count must be the same after the held write
-	// is refused (vendor_received); "" when the sandbox can't be read back.
+	// Unchanged is the read that lists what the held write would add: its
+	// count is read before the write and must be the same after the refusal
+	// (vendor_received); "" when the sandbox can't be read back.
 	Unchanged string
 	// Expires is when the sandbox account ends (a trial): past it, a failing
 	// proof says "account expired", not that the app is broken.
@@ -95,7 +100,7 @@ var proofApps = map[string]proofApp{
 		Name: "pipedrive", Entry: "pipedrive-key@1", KeyEnv: "PROOF_PIPEDRIVE_KEY",
 		Read: "pipedrive_list_persons", ReadArgs: map[string]any{}, Seeded: 0,
 		Held: "pipedrive_add_activity", HeldArgs: map[string]any{"subject": "KIFF proof: held, never sent", "type": "task"},
-		Write: true, Unchanged: "pipedrive_list_persons",
+		Write: true, Unchanged: "pipedrive_list_activities",
 		// A 14-day trial.
 		Expires: time.Date(2026, 12, 2, 0, 0, 0, 0, time.UTC),
 	},
@@ -137,6 +142,9 @@ type proofItem struct{ ID, Name string }
 // proofSteps are what a proof does to the account, the vendor's sandbox and
 // KIFF: the live ones (proof_live.go), or fakes in tests.
 type proofSteps interface {
+	// Pin stops the proof before anything else unless it runs on the test
+	// account, as the proof phone's key: never on someone's own account.
+	Pin(ctx context.Context) error
 	// Sweep disconnects the grants and archives the agents earlier proofs of
 	// the app left: those named proof-<app>-…, and nothing else.
 	Sweep(ctx context.Context, app proofApp) (int, error)
@@ -166,8 +174,12 @@ type proofResult struct {
 	Timings []time.Duration
 	// Error is the runner's own failure (outcome error), said in the log only.
 	Error string
-	// Expired: the sandbox account is past its end, so a failure is that.
+	// Expired: the sandbox account is past its end, and only what that
+	// explains failed.
 	Expired bool
+	// Unpinned: the proof wasn't on the test account as the proof key, so
+	// it did nothing and has nothing to post.
+	Unpinned bool
 }
 
 type proofCheck struct {
@@ -297,12 +309,18 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 				}
 			}
 		}
-		if r.Outcome != "pass" && !app.Expires.IsZero() && !now().Before(app.Expires) {
-			// The sandbox's trial is over: say so, never that the app broke.
+		if r.Outcome == "fail" && !app.Expires.IsZero() && !now().Before(app.Expires) {
+			// The sandbox's trial is over. Only what an ended account
+			// explains is labelled, and its reason kept: a limit that didn't
+			// hold is never put down to the account.
 			r.Expired = true
-			for i := range r.Checks {
-				if !r.Checks[i].OK {
-					r.Checks[i].Why = "account expired"
+			for i, c := range r.Checks {
+				switch {
+				case c.OK || c.Why == "not reached":
+				case c.Name == checkConnects || c.Name == checkReads:
+					r.Checks[i].Why = cmpJoin(c.Why, "account expired")
+				default:
+					r.Expired = false
 				}
 			}
 		}
@@ -314,6 +332,10 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		return finish()
 	}
 
+	if err := steps.Pin(ctx); err != nil {
+		r.Unpinned = true
+		return broke("not the test account and the proof key", err)
+	}
 	if _, err := steps.Sweep(ctx, app); err != nil {
 		return broke("the sweep of earlier proofs", err)
 	}
@@ -382,6 +404,15 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		held = withArg(app.HeldArgs, app.PickArg, read.Items[i].ID)
 	}
 
+	before := read
+	if app.Unchanged != "" && app.Unchanged != app.Read {
+		var err error
+		if before, err = steps.Call(ctx, g, g.Names[app.Unchanged], map[string]any{}); err != nil || before.State != "forwarded" {
+			check(checkVendorReceived, false, "the read-back before the write wasn't forwarded: "+stateOf(before, err))
+			return finish()
+		}
+	}
+
 	var call proofCall
 	if err := timed(func() error {
 		var err error
@@ -414,10 +445,10 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 	check(checkWrites, status == "refused", ifNot(status == "refused", "the held write ended "+status+", not refused"))
 	if app.Unchanged != "" {
 		after, err := steps.Call(ctx, g, g.Names[app.Unchanged], map[string]any{})
-		same := err == nil && after.State == "forwarded" && after.Count == read.Count
+		same := err == nil && after.State == "forwarded" && after.Count >= 0 && after.Count == before.Count
 		why := ""
 		if !same {
-			why = fmt.Sprintf("the sandbox lists %d after the refusal, %d before", after.Count, read.Count)
+			why = fmt.Sprintf("the sandbox lists %d after the refusal, %d before", after.Count, before.Count)
 		}
 		check(checkVendorReceived, same, why)
 	}
@@ -642,4 +673,34 @@ func printProof(w io.Writer, app proofApp, r proofResult) {
 	if r.Error != "" {
 		fmt.Fprintln(w, "  runner: "+scrubWhy(r.Error))
 	}
+}
+
+// proofKeys are the phone keys a proof may run as, by fingerprint (the
+// first 16 hex characters of the SHA-256 of the DER public key, as KIFF
+// shows it): the proof key, and the Eval's test phone.
+var proofKeys = []string{"68dccba567dafea9", "a98af0aa046b0fdb"}
+
+// keyFingerprint is a public key's fingerprint, as KIFF shows it.
+func keyFingerprint(pub *ecdsa.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])[:16], nil
+}
+
+// proofPin refuses a proof that isn't on the test account (want, from the
+// kiff-test environment) as one of proofKeys. Neither is said in full: the
+// log is public.
+func proofPin(tenant, want, fingerprint string) error {
+	switch {
+	case want == "":
+		return errors.New("PROOF_TENANT isn't set: a proof runs only on the test account")
+	case tenant != want:
+		return errors.New("the session isn't the test account's")
+	case !slices.Contains(proofKeys, fingerprint):
+		return errors.New("the phone key isn't the proof key")
+	}
+	return nil
 }

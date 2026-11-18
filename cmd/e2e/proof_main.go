@@ -39,7 +39,8 @@ func runProofMode(ctx context.Context, name string, dry bool, stdout *redacting,
 	cfg.planque = firstOf(env("E2E_PLANQUE"), "https://planque.kiff.dev")
 	cfg.cloud = firstOf(env("E2E_TAFS_CLOUD"), "https://cloud.tafs.kiff.dev")
 	vendorKey := env(app.KeyEnv)
-	for k, v := range map[string]string{"PROOF_PHONE_KEY": cfg.phone, "PROOF_KIFF_SESSION": cfg.session, "E2E_SETUP_KEY": cfg.setupKey, app.KeyEnv: vendorKey} {
+	tenant := env("PROOF_TENANT")
+	for k, v := range map[string]string{"PROOF_TENANT": tenant, "PROOF_PHONE_KEY": cfg.phone, "PROOF_KIFF_SESSION": cfg.session, "E2E_SETUP_KEY": cfg.setupKey, app.KeyEnv: vendorKey} {
 		if v == "" {
 			return fmt.Errorf("%s is required (from the kiff-test environment); -proof-dry needs none", k)
 		}
@@ -71,6 +72,14 @@ func runProofMode(ctx context.Context, name string, dry bool, stdout *redacting,
 	}
 	t.tenant, _ = me.Body["tenant_id"].(string)
 	stdout.hide(t.tenant, "<the account>")
+	// Before anything acts on the account, the phone's enrolment included.
+	fp, err := keyFingerprint(&pk.PublicKey)
+	if err != nil {
+		return err
+	}
+	if err := proofPin(t.tenant, tenant, fp); err != nil {
+		return fmt.Errorf("the proof did nothing: %w", err)
+	}
 	t.kiff = testaccount.KIFFSession(kiff.APIURL, cfg.session, t.tenant, pk, hc)
 	t.phone = testaccount.NewPhone(pk, cfg.planque, t.tenant, hc)
 	t.phone.VendorKey = vendorKey
@@ -86,9 +95,12 @@ func runProofMode(ctx context.Context, name string, dry bool, stdout *redacting,
 	}
 
 	started := time.Now()
-	r := runProof(ctx, app, t.run, newLiveProof(t, setup), time.Now)
+	r := runProof(ctx, app, t.run, newLiveProof(t, setup, tenant), time.Now)
 	ended := time.Now()
 	printProof(stdout, app, r)
+	if r.Unpinned {
+		return errors.New("the proof did nothing: " + scrubWhy(r.Error))
+	}
 	s := summaryOf(app, r, runID, t.tenant, trigger, version, started, ended)
 	if err := postProof(ctx, hc, kiff.APIURL, token, s); err != nil {
 		return err

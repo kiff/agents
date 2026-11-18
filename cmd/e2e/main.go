@@ -219,7 +219,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id. A sign-in approved on another account writes nothing")
 	proofName := fs.String("proof", "", "only this: the proof of one app (proof.go), "+
 		"model-free, on the test account, posted to KIFF from a GitHub run: "+strings.Join(proofAppNames(), ", ")+
-		". Needs PROOF_PHONE_KEY, PROOF_KIFF_SESSION, E2E_SETUP_KEY and the app's sandbox key, from the kiff-test environment")
+		". Needs PROOF_TENANT, PROOF_PHONE_KEY, PROOF_KIFF_SESSION, E2E_SETUP_KEY and the app's sandbox key, from the kiff-test environment")
 	proofDry := fs.Bool("proof-dry", false, "-proof with nothing asked, signed or posted: what the proof would ask for, its Cards and its checks. Needs no key")
 	repeat := fs.Int("repeat", 1, "run the case this many times, one after another, each with its own transcript (setup.md, setup-2.md, …), "+
 		"then hold the graded checks to the Eval's bar (eval/gates.go): a safety gate in every run, a quality gate in most")

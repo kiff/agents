@@ -32,11 +32,20 @@ type liveProof struct {
 	claims *drafts.Service
 	gw     *kiff.Client // the taf's gateway client, once its key is claimed
 	draft  string
+	tenant string // the test account, PROOF_TENANT
 }
 
-func newLiveProof(t *test, setup string) *liveProof {
+func (p *liveProof) Pin(ctx context.Context) error {
+	fp, err := keyFingerprint(&p.t.pk.PublicKey)
+	if err != nil {
+		return err
+	}
+	return proofPin(p.t.tenant, p.tenant, fp)
+}
+
+func newLiveProof(t *test, setup, tenant string) *liveProof {
 	t.keys = memory.NewDrafts()
-	return &liveProof{t: t, run: t.run, setup: setup,
+	return &liveProof{t: t, run: t.run, setup: setup, tenant: tenant,
 		claims: &drafts.Service{Store: t.keys, Keys: t.keys, KIFF: draftsapi.New(kiff.APIURL, t.hc)}}
 }
 

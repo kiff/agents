@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +19,7 @@ import (
 
 // fakeProof is a proof's steps on nothing: each answer is the test's.
 type fakeProof struct {
+	pinErr     error
 	connectErr error
 	draftOK    bool
 	draftCode  string
@@ -23,18 +27,25 @@ type fakeProof struct {
 	read       proofCall
 	held       proofCall
 	refused    string
-	after      proofCall
+	before     proofCall // the read-back before the held write
+	after      proofCall // and after its refusal
 	cleanupErr error
 
+	app      proofApp
 	calls    []string // the tools called, by name
+	backs    int      // the read-backs so far
+	swept    bool
 	heldArgs map[string]any
 	cleaned  bool
 	cards    []map[string]any
 }
 
-func (f *fakeProof) Sweep(context.Context, proofApp) (int, error) { return 0, nil }
+func (f *fakeProof) Pin(context.Context) error { return f.pinErr }
+
+func (f *fakeProof) Sweep(context.Context, proofApp) (int, error) { f.swept = true; return 0, nil }
 
 func (f *fakeProof) Connect(_ context.Context, app proofApp, name string, tools []string) (proofGrant, error) {
+	f.app = app
 	if f.connectErr != nil {
 		return proofGrant{}, f.connectErr
 	}
@@ -54,14 +65,17 @@ func (f *fakeProof) Approve(context.Context, proofGrant, string) error { return 
 
 func (f *fakeProof) Call(_ context.Context, g proofGrant, name string, args map[string]any) (proofCall, error) {
 	f.calls = append(f.calls, name)
-	switch len(f.calls) {
-	case 1:
-		return f.read, nil
-	case 2:
+	switch name {
+	case g.Names[f.app.Held]:
 		f.heldArgs = args
 		return f.held, nil
-	default:
+	case g.Names[f.app.Unchanged]:
+		if f.backs++; f.backs == 1 && f.app.Unchanged != f.app.Read {
+			return f.before, nil
+		}
 		return f.after, nil
+	default:
+		return f.read, nil
 	}
 }
 
@@ -143,7 +157,7 @@ func TestAReadOnlyProofFailsTheCardLimitWhenTheCallGoesThrough(t *testing.T) {
 }
 
 func TestAHeldWriteIsRefusedAndEndsRefusedWithTheSandboxUnchanged(t *testing.T) {
-	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "held", Hold: "exc_1"}, refused: "refused", after: listed(3)}
+	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "held", Hold: "exc_1"}, refused: "refused", before: listed(3), after: listed(3)}
 	r := runProof(context.Background(), proofApps["pipedrive"], "1118-0500", f, clock())
 	if r.Outcome != "pass" {
 		t.Fatalf("outcome %s, checks %+v", r.Outcome, r.Checks)
@@ -170,7 +184,7 @@ func TestAHeldWriteIsRefusedAndEndsRefusedWithTheSandboxUnchanged(t *testing.T) 
 }
 
 func TestAHeldWriteThatDoesNotEndRefusedFails(t *testing.T) {
-	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "held", Hold: "exc_1"}, refused: "held", after: listed(3)}
+	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "held", Hold: "exc_1"}, refused: "held", before: listed(3), after: listed(3)}
 	r := runProof(context.Background(), proofApps["pipedrive"], "1118-0500", f, clock())
 	if c := checksOf(r)["writes"]; c.OK || !strings.Contains(c.Why, "not refused") {
 		t.Fatalf("writes %+v; want it failed: the hold didn't end refused", c)
@@ -178,7 +192,7 @@ func TestAHeldWriteThatDoesNotEndRefusedFails(t *testing.T) {
 }
 
 func TestAWriteThatGoesThroughFailsTheLimitAndTheHold(t *testing.T) {
-	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "forwarded"}, after: listed(4)}
+	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "forwarded"}, before: listed(3), after: listed(4)}
 	r := runProof(context.Background(), proofApps["pipedrive"], "1118-0500", f, clock())
 	c := checksOf(r)
 	if r.Outcome != "fail" || c["card_limit_held"].OK || c["hold_raised"].OK {
@@ -190,7 +204,7 @@ func TestAWriteThatGoesThroughFailsTheLimitAndTheHold(t *testing.T) {
 }
 
 func TestTheSandboxChangedAfterARefusedWriteFails(t *testing.T) {
-	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "held", Hold: "exc_1"}, refused: "refused", after: listed(4)}
+	f := &fakeProof{draftOK: true, read: listed(3), held: proofCall{State: "held", Hold: "exc_1"}, refused: "refused", before: listed(3), after: listed(4)}
 	r := runProof(context.Background(), proofApps["pipedrive"], "1118-0500", f, clock())
 	if c := checksOf(r)["vendor_received"]; c.OK {
 		t.Fatalf("vendor_received %+v with one more person after the refusal", c)
@@ -203,7 +217,7 @@ func TestAnEmptyListFailsOnlyWhereTheSandboxIsSeeded(t *testing.T) {
 		t.Fatalf("a seeded sandbox listing nothing: reads %+v", c)
 	}
 	unseeded := runProof(context.Background(), proofApps["pipedrive"], "r",
-		&fakeProof{draftOK: true, read: listed(0), held: proofCall{State: "held", Hold: "exc"}, refused: "refused", after: listed(0)}, clock())
+		&fakeProof{draftOK: true, read: listed(0), held: proofCall{State: "held", Hold: "exc"}, refused: "refused", before: listed(0), after: listed(0)}, clock())
 	if c := checksOf(unseeded)["reads"]; !c.OK || c.Why != "listed 0" {
 		t.Fatalf("an unseeded sandbox listing nothing: reads %+v", c)
 	}
@@ -260,7 +274,7 @@ func TestAnExpiredTrialSaysAccountExpired(t *testing.T) {
 	app := proofApps["pipedrive"]
 	late := func() time.Time { return app.Expires.Add(time.Hour) }
 	r := runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("401")}, late)
-	if !r.Expired || checksOf(r)["connects"].Why != "account expired" {
+	if !r.Expired || !strings.HasSuffix(checksOf(r)["connects"].Why, "; account expired") {
 		t.Fatalf("expired %v, checks %+v", r.Expired, r.Checks)
 	}
 	var b bytes.Buffer
@@ -429,5 +443,75 @@ func TestPercentilesAreNearestRank(t *testing.T) {
 	}
 	if percentile(nil, 50) != 0 {
 		t.Fatal("no timings isn't 0")
+	}
+}
+
+func TestPipedrivesReadBackCountsTheActivitiesTheHeldWriteWouldAdd(t *testing.T) {
+	app := proofApps["pipedrive"]
+	if app.Unchanged != "pipedrive_list_activities" || app.Held != "pipedrive_add_activity" {
+		t.Fatalf("Pipedrive's write adds an activity, read back from %q", app.Unchanged)
+	}
+	// Persons unchanged, but one activity more: something reached the sandbox.
+	f := &fakeProof{draftOK: true, read: listed(5), held: proofCall{State: "held", Hold: "exc_1"}, refused: "refused", before: listed(2), after: listed(3)}
+	r := runProof(context.Background(), app, "r", f, clock())
+	if c := checksOf(r)["vendor_received"]; c.OK || !strings.Contains(c.Why, "3 after the refusal, 2 before") {
+		t.Fatalf("vendor_received %+v with one activity more", c)
+	}
+	want := []string{"pipedrive_list_persons_x9k2", "pipedrive_list_activities_x9k2", "pipedrive_add_activity_x9k2", "pipedrive_list_activities_x9k2"}
+	if !slices.Equal(f.calls, want) {
+		t.Fatalf("calls %v; want %v: the activities read before the write and after its refusal", f.calls, want)
+	}
+	// The read-back is on the reads Card, so KIFF lets it through.
+	b, _ := json.Marshal(f.cards[0])
+	if !strings.Contains(string(b), "pipedrive_list_activities_x9k2") {
+		t.Fatalf("the reads Card doesn't cover the read-back: %s", b)
+	}
+}
+
+func TestAProofOffTheTestAccountOrKeyReachesNoStep(t *testing.T) {
+	f := &fakeProof{pinErr: errors.New("the session isn't the test account's"), draftOK: true}
+	r := runProof(context.Background(), proofApps["pipedrive"], "r", f, clock())
+	if !r.Unpinned || r.Outcome != "error" || f.swept || f.app.Name != "" || len(f.calls) > 0 || f.cleaned {
+		t.Fatalf("unpinned %v, outcome %s, swept %v, connected %q, calls %v, cleaned %v", r.Unpinned, r.Outcome, f.swept, f.app.Name, f.calls, f.cleaned)
+	}
+}
+
+func TestTheProofRunsOnlyOnTheTestAccountAsTheProofKey(t *testing.T) {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := keyFingerprint(&k.PublicKey)
+	for _, c := range []struct {
+		tenant, want, fp string
+		ok               bool
+	}{
+		{"t1", "t1", "68dccba567dafea9", true},
+		{"t1", "t1", "a98af0aa046b0fdb", true},
+		{"t2", "t1", "68dccba567dafea9", false}, // another account
+		{"t1", "t1", other, false},              // another key
+		{"t1", "", "68dccba567dafea9", false},   // no PROOF_TENANT
+	} {
+		if err := proofPin(c.tenant, c.want, c.fp); (err == nil) != c.ok {
+			t.Errorf("proofPin(%q, %q, %q) = %v", c.tenant, c.want, c.fp, err)
+		}
+	}
+	if len(other) != 16 {
+		t.Fatalf("a fingerprint is 16 hex characters: %q", other)
+	}
+}
+
+func TestAccountExpiredLabelsOnlyWhatAnEndedAccountExplains(t *testing.T) {
+	app := proofApps["pipedrive"]
+	late := func() time.Time { return app.Expires.Add(time.Hour) }
+	r := runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("401 unauthorized")}, late)
+	if c := checksOf(r)["connects"]; !r.Expired || !strings.Contains(c.Why, "401 unauthorized") || !strings.Contains(c.Why, "account expired") {
+		t.Fatalf("expired %v, connects %+v: the reason and the label", r.Expired, c)
+	}
+	// A write that went through is never put down to the account.
+	f := &fakeProof{draftOK: true, read: listed(1), held: proofCall{State: "forwarded"}, before: listed(1), after: listed(2)}
+	r = runProof(context.Background(), app, "r", f, late)
+	if c := checksOf(r)["card_limit_held"]; r.Expired || strings.Contains(c.Why, "account expired") {
+		t.Fatalf("expired %v, card_limit_held %+v after a write went through", r.Expired, c)
 	}
 }
