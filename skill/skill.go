@@ -251,6 +251,29 @@ type Store interface {
 	List(ctx context.Context, tenant string) ([]Package, error)
 }
 
+// Mapped reports whether instructions already map every one of ps, a line
+// "- <name>: …" each, as Coach's core does (kiff/tafs SKILLS_MAP): then the
+// catalog would say the same twice, and invite reading a skill already
+// loaded. A map that misses one isn't the map: the catalog is kept.
+func Mapped(instructions string, ps []Package) bool {
+	if len(ps) == 0 {
+		return false
+	}
+	lines := map[string]bool{}
+	for _, l := range strings.Split(instructions, "\n") {
+		l = strings.TrimSpace(l)
+		if name, _, ok := strings.Cut(strings.TrimPrefix(l, "- "), ":"); ok && strings.HasPrefix(l, "- ") {
+			lines[name] = true
+		}
+	}
+	for _, p := range ps {
+		if !lines[p.Name] {
+			return false
+		}
+	}
+	return true
+}
+
 // Catalog is what the agent's context says about its skills: each one's
 // name and description, and how to read it. It is stable for a definition,
 // so it caches with the instructions.

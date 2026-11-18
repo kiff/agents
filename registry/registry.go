@@ -895,7 +895,12 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		if err != nil {
 			return agent.Agent{}, d, err
 		}
-		system += "\n\n" + skill.Catalog(ps)
+		// Instructions that map their skills already (Coach's core) aren't
+		// given the catalog too: one map, and no invitation to read again a
+		// skill the instructions say is loaded. The read_skill tool stays.
+		if !skill.Mapped(d.Instructions, ps) {
+			system += "\n\n" + skill.Catalog(ps)
+		}
 		tools = append(tools, skill.NewTool(ps))
 	}
 	mark("tools and skills")
