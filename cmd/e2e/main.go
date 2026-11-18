@@ -453,7 +453,7 @@ type test struct {
 	agents *memory.Agents
 
 	secrets []string // every secret value the runs must never record
-	grants  []string // planque grants this run connected
+	grants  []string // planque grants this run approved, or began to
 	// refunds are the names the grant gave the refund (chargeTools), for the
 	// improve trial to count its refund by, as the taf's run is.
 	refunds []string
@@ -802,11 +802,14 @@ func (k keyring) Key(ctx context.Context, tenant, ref string) (string, error) {
 	return key, err
 }
 
-// clearEarlierRuns disconnects what an earlier run left connected, and only
-// that: the grants the test's own setup agent asked for (planque's
-// asked-grants, with its key). The account is shared with people who use
-// it, so a grant someone else's Coach asked for is theirs, never the test's
-// to disconnect, connected or not.
+// clearEarlierRuns ends what an earlier run left unfinished, and only that:
+// the grants the test's own setup agent asked for (planque's asked-grants,
+// with its key). The account is shared with people who use it, so a grant
+// someone else's Coach asked for is theirs, never the test's to disconnect,
+// connected or not. A pending or approved grant is ended too, not only a
+// connected one: one left approved by a run stopped at the sign-in was taken
+// up by the next run's taf of the same name. If one is still unfinished
+// after, the run doesn't start.
 func (t *test) clearEarlierRuns(ctx context.Context) error {
 	gs, err := t.askedGrants(ctx)
 	if err != nil {
@@ -814,11 +817,20 @@ func (t *test) clearEarlierRuns(ctx context.Context) error {
 	}
 	for _, g := range gs {
 		t.out.hide(g.ID, "<a grant>")
-		if g.Status == "connected" || g.Status == "signed_in" {
-			if err := t.phone.Disconnect(ctx, g.ID); err != nil {
-				return fmt.Errorf("disconnecting an earlier run's grant %s: %w", g.ID, err)
-			}
-			t.logf("disconnected an earlier run's grant %s", g.ID)
+		if finished(g.Status) {
+			continue
+		}
+		if err := t.phone.Disconnect(ctx, g.ID); err != nil {
+			return fmt.Errorf("ending an earlier run's %s grant %s: %w", g.Status, g.ID, err)
+		}
+		t.logf("ended an earlier run's %s grant %s", g.Status, g.ID)
+	}
+	if gs, err = t.askedGrants(ctx); err != nil {
+		return err
+	}
+	for _, g := range gs {
+		if !finished(g.Status) {
+			return fmt.Errorf("an earlier run's grant %s is still %s: a run doesn't start beside it, or its taf could take it up", g.ID, g.Status)
 		}
 	}
 	return nil
@@ -1466,12 +1478,16 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		// Connected to look, with no tools yet: there is nothing to approve.
 		t.logf("grant %s is listed: no tools to approve yet", g.ID)
 	default:
+		// Recorded before the phone acts on it: a grant approved whose sign-in
+		// then fails is still this run's, disconnected at its end, and its taf
+		// is the sweep's after it. An Eval's setup stopped at the sign-in left
+		// one approved, and the next run's taf of the same name took it up.
+		if err := t.madeGrant(ctx, g); err != nil {
+			return false, "", err
+		}
 		status, err := t.phone.ApproveAndSignIn(ctx, g)
 		if err != nil {
 			return false, "", fmt.Errorf("the grant %s: %w", g.ID, err)
-		}
-		if !slices.Contains(t.grants, g.ID) {
-			t.grants = append(t.grants, g.ID)
 		}
 		*approved = g.ID
 		t.logf("grant %s approved on the phone: %s", g.ID, status)
@@ -2483,6 +2499,32 @@ func unshare(ctx context.Context, k *client, agent, group string) error {
 		return err
 	}
 	return a.Err()
+}
+
+// madeGrant records a grant the phone is about to approve as this run's:
+// cleanup disconnects it, and its taf goes to -made for the sweep, whether
+// or not the run gets as far as confirming the taf's draft. Only a grant the
+// test's setup agent asked for is the run's: the account is shared, so a card
+// naming anyone else's grant fails the run, and that grant's taf is never
+// swept.
+func (t *test) madeGrant(ctx context.Context, g testaccount.Grant) error {
+	if slices.Contains(t.grants, g.ID) {
+		return nil
+	}
+	asked, err := t.askedGrants(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(asked, func(a askedGrant) bool { return a.ID == g.ID }) {
+		return fmt.Errorf("the grant %s on this chat's card isn't one the test's setup agent asked for: the phone doesn't approve it", g.ID)
+	}
+	t.grants = append(t.grants, g.ID)
+	if a := g.Request.Agent; a != "" {
+		if err := testaccount.RecordMade(t.cfg.made, a); err != nil {
+			t.logf("recording the taf for the sweep: %v", err)
+		}
+	}
+	return nil
 }
 
 // cleanup disconnects the grant, revokes the taf's Cards and archives the

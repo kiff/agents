@@ -13,6 +13,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,13 +43,21 @@ type fakeCloud struct {
 
 func (f *fakeCloud) servers(t *testing.T) (cloud, planque, kiff *httptest.Server) {
 	planque = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"grants": []map[string]any{
+		grants := []map[string]any{
 			{"id": "grt_other", "status": "connected", "request": map[string]any{"agent": "someone-else"}},
 			{"id": "grt_1", "status": "connected", "request": map[string]any{"agent": "refunds-x"}},
 			{"id": "grt_listed", "status": "listed", "request": map[string]any{"agent": "refunds-x"}},
 			{"id": "grt_adding", "status": "pending", "signed_in": true, "request": map[string]any{"agent": "refunds-x"}},
 			{"id": "grt_key", "status": "pending", "request": map[string]any{"agent": "refunds-x", "kind": "api_key"}},
-		}})
+			// Someone else's taf's grant, waiting on the shared account: not one
+			// the test's setup agent asked for.
+			{"id": "grt_theirs", "status": "pending", "request": map[string]any{"agent": "someones-taf", "kind": "api_key"}},
+		}
+		if strings.HasSuffix(r.URL.Path, "/asked-grants") {
+			// The setup agent asked for refunds-x's grants only.
+			grants = slices.DeleteFunc(grants, func(g map[string]any) bool { return g["request"].(map[string]any)["agent"] != "refunds-x" })
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"grants": grants})
 	}))
 	f.planque = planque.URL
 	cloud = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +124,7 @@ func checkWorld(t *testing.T, answer map[string]any) (*test, *fakeCloud) {
 	f := &fakeCloud{key: key, answer: answer, onRead: map[string]bool{"grt_1": true, "grt_adding": true, "grt_key": true}}
 	cloud, planque, kiff := f.servers(t)
 	out := &redacting{w: &strings.Builder{}}
-	tt := &test{out: out, cfg: config{cloud: cloud.URL, session: "session", log: out}, hc: cloud.Client(),
+	tt := &test{out: out, cfg: config{cloud: cloud.URL, planque: planque.URL, setupKey: "setup-key", session: "session", log: out}, hc: cloud.Client(),
 		phone: testaccount.NewPhone(key, planque.URL, "tnt", planque.Client()),
 		kiff:  &client{Base: kiff.URL, HTTP: kiff.Client()}, grants: []string{"grt_other", "grt_1"}}
 	return tt, f
@@ -495,5 +505,57 @@ func TestADraftlessApprovalIsAskedAboutAsTheChatIsRead(t *testing.T) {
 	}
 	if tt.splitUnchecked != 1 {
 		t.Errorf("counted %d, want only the one not taken", tt.splitUnchecked)
+	}
+}
+
+// An Eval's setup stopped at the sign-in left its grant approved, and the
+// next run's taf of the same name took it up. A grant the phone begins to
+// approve is the run's from then: cleanup disconnects it, and its taf goes
+// to -made for the sweep, though the phone's step failed and no draft was
+// confirmed.
+func TestAGrantWhoseApprovalFailsIsStillTheRuns(t *testing.T) {
+	tt, f := checkWorld(t, map[string]any{"outcome": "ok", "version": "v3"})
+	tt.cfg.made = filepath.Join(t.TempDir(), "made")
+	c := component{Type: "approval", ID: "a1", Grant: "grt_key", Draft: "drf_1"}
+	var approved string
+	if _, _, err := tt.approve(context.Background(), c, &approved); err == nil {
+		t.Fatal("a key no one gave was approved")
+	}
+	if !slices.Contains(tt.grants, "grt_key") || approved != "" {
+		t.Fatalf("grants %v, approved %q", tt.grants, approved)
+	}
+	// The taf's second grant fails as well: both are the run's.
+	c = component{Type: "approval", ID: "a2", Grant: "grt_adding", Draft: "drf_2"}
+	if _, _, err := tt.approve(context.Background(), c, &approved); err == nil || !slices.Contains(tt.grants, "grt_adding") {
+		t.Fatalf("the second grant: %v, grants %v", err, tt.grants)
+	}
+	made, err := testaccount.ReadMade(tt.cfg.made)
+	if err != nil || !slices.Equal(made, []string{"refunds-x"}) {
+		t.Fatalf("made %v, %v", made, err)
+	}
+	if strings.Contains(strings.Join(f.calls, "\n"), "/confirm") {
+		t.Fatalf("confirmed: %v", f.calls)
+	}
+}
+
+// The account is shared: a card naming a grant the test's setup agent didn't
+// ask for, another taf's waiting on the account, fails the run before the
+// phone acts. That grant is never the run's to disconnect, and its taf never
+// goes to -made for the sweep to archive.
+func TestAnotherTafsGrantIsNeverTheRuns(t *testing.T) {
+	tt, f := checkWorld(t, map[string]any{"outcome": "ok", "version": "v3"})
+	tt.cfg.made = filepath.Join(t.TempDir(), "made")
+	c := component{Type: "approval", ID: "a1", Grant: "grt_theirs", Draft: "drf_1"}
+	var approved string
+	_, _, err := tt.approve(context.Background(), c, &approved)
+	if err == nil || !strings.Contains(err.Error(), "isn't one the test's setup agent asked for") {
+		t.Fatalf("approved another taf's grant: %v", err)
+	}
+	made, rerr := testaccount.ReadMade(tt.cfg.made)
+	if slices.Contains(tt.grants, "grt_theirs") || len(made) != 0 || rerr != nil {
+		t.Fatalf("grants %v, made %v %v", tt.grants, made, rerr)
+	}
+	if strings.Contains(strings.Join(f.calls, "\n"), "/confirm") {
+		t.Fatalf("confirmed: %v", f.calls)
 	}
 }
