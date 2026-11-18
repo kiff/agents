@@ -147,6 +147,15 @@ stores, with the registry's `Builder`:
 - **The agents' KIFF keys** come from Secrets Manager through
   `registry/secretsmanager` ([#16](16-registry.md)), named
   `AGENTS_SECRETS_PREFIX` + tenant + `/` + the agent's `key_ref`.
+  With `AGENTS_KEYS_KMS_KEY`, they are kept in the table instead (package
+  `keys`, `store/dynamodb` `Keys`): one item each, `K2|tenant` / `key_ref`,
+  sealed with that KMS key under the encryption context `{purpose, tenant,
+  ref}`. tafs cloud writes them through `PUT /tenant/keys/{ref}` (body
+  `{"key": …}`, replacing any) and `DELETE /tenant/keys/{ref}`, which only a
+  role in `AGENTS_KEY_WRITERS` may call; the tenant is the signed one. A key
+  still in a secret is moved on its first read (written create-only, its
+  secret then deleted); a write deletes its old secret; a removal deletes the
+  old secret first and leaves a mark, so a removed key never comes back.
 - **The model's key** is the secret named `AGENTS_MODEL_KEY_SECRET`, read the
   first time a model turn needs it and kept in memory. A failed read fails
   that turn (the run is stored ERROR) and the next turn reads again. Setup
@@ -320,6 +329,8 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_KIFF_API` | The KIFF API held calls are withdrawn from, `https://` and a host only; `https://api.kiff.dev` by default. Required when `AGENTS_GATEWAYS` is set, so a withdrawal never sends an agent's key to another KIFF than the one holding its calls |
 | `SCHEDULE_GROUP`, `SCHEDULE_TARGET`, `SCHEDULE_ROLE` | EventBridge Scheduler's group, the function each firing invokes, and the role it invokes with |
 | `AGENTS_SECRETS_PREFIX` | The name prefix of the agents' KIFF keys in Secrets Manager |
+| `AGENTS_KEYS_KMS_KEY` | Optional: the KMS key the agents' KIFF keys are sealed with in the table, another than the drafts' one. Set, keys are written there only, and secrets under the prefix are moved and deleted |
+| `AGENTS_KEY_WRITERS` | With `AGENTS_KEYS_KMS_KEY`: the caller roles that may write keys, each one of `AGENTS_CALLERS` |
 | `AGENTS_MODEL_KEY_SECRET` | The name of the secret holding the model provider's key; not under the prefix |
 | `AWS_LAMBDA_FUNCTION_NAME` | Set by Lambda: where background runs are sent |
 
@@ -419,6 +430,7 @@ Tests drive the routes against `store/memory`. No test touches AWS.
   - **Not checked yet:** a signed call from tafs cloud's role, a run end to
     end, and `TransactWriteItems` under the alerts role's leading-keys
     condition against a real answer.
-  - The agents' keys (`agents/<tenant>/<key_ref>`) and the KIFF accounts
-    (`agents-accounts/<account>`) are written by tafs cloud, whose role gets
-    that permission in kiff/tafs's own `infra/aws.sh`.
+  - The KIFF accounts (`agents-accounts/<account>`) are written by tafs
+    cloud, whose role gets that permission in kiff/tafs's own
+    `infra/aws.sh`. So were the agents' keys (`agents/<tenant>/<key_ref>`)
+    until `AGENTS_KEYS_KMS_KEY`: tafs cloud then writes them through the API.

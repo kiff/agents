@@ -91,7 +91,8 @@ func rawItem(t *testing.T, db *ddb.Client, name, tenant, draft string) map[strin
 	}
 	for _, it := range out.Items {
 		if sk, _ := it["sk"].(*types.AttributeValueMemberS); sk != nil && sk.Value == draft {
-			if pk, _ := it["pk"].(*types.AttributeValueMemberS); pk != nil && strings.Contains(pk.Value, tenant) {
+			// The tenant is the key's last part: "t1" must not find t10's.
+			if pk, _ := it["pk"].(*types.AttributeValueMemberS); pk != nil && strings.HasSuffix(pk.Value, ":"+tenant) {
 				return it
 			}
 		}
