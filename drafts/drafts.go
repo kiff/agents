@@ -97,6 +97,8 @@ type KIFF interface {
 var (
 	// ErrNotFound: no draft submitted here by that id, for this tenant.
 	ErrNotFound = errors.New("drafts: no such draft")
+	// ErrGone: the draft had a record, past its time; it is ErrNotFound too.
+	ErrGone = fmt.Errorf("%w: its record is past its time", ErrNotFound)
 	// ErrNotClaimable: KIFF won't give the draft's key now: the owner hasn't
 	// confirmed it yet, or it was already claimed or discarded.
 	ErrNotClaimable = errors.New("drafts: KIFF can't give the draft's key now: not confirmed yet, or already claimed or discarded")

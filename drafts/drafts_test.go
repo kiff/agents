@@ -127,7 +127,9 @@ func TestClaim(t *testing.T) {
 	if key, ok, _ := m.Key(ctx, "t1", "kiff/taf-1"); !ok || key != "kiff_key_taf" {
 		t.Fatalf("stored %q %v", key, ok)
 	}
-	if r, _ := m.Get(ctx, "t1", "drf_1"); r.Secret != "" || !r.Claimed || r.KeyRef != "kiff/taf-1" {
+	// The record as stored holds no credential after the claim: neither the
+	// claim secret nor the key, only where the key went.
+	if r, _ := m.Get(ctx, "t1", "drf_1"); r != (drafts.Record{AgentID: "agt_refunds", KeyRef: "kiff/taf-1", Claimed: true}) {
 		t.Fatalf("record after the claim %+v", r)
 	}
 	if agent, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); err != nil || agent != "agt_refunds" || k.claims != 1 {
@@ -168,7 +170,7 @@ func TestARetryFinishesAnInterruptedClaim(t *testing.T) {
 	if err != nil || agent != "agt_refunds" || k.claims != 0 {
 		t.Fatalf("recovery: %q %v, claims %d", agent, err, k.claims)
 	}
-	if r, _ := m.Get(ctx, "t1", "drf_1"); !r.Claimed || r.Secret != "" {
+	if r, _ := m.Get(ctx, "t1", "drf_1"); r != (drafts.Record{AgentID: "agt_refunds", KeyRef: "kiff/taf-1", Claimed: true}) {
 		t.Fatalf("record %+v", r)
 	}
 }
@@ -227,8 +229,8 @@ func TestARetryFinishesAfterTheKeyWasMinted(t *testing.T) {
 	if key, ok, _ := m.Key(ctx, "t1", "kiff/taf-1"); !ok || key != "kiff_key_taf" {
 		t.Fatalf("stored %q %v", key, ok)
 	}
-	if r, _ := m.Get(ctx, "t1", "drf_1"); r.Key != "" || !r.Claimed {
-		t.Fatalf("the record still holds the key, or isn't claimed: %+v", r)
+	if r, _ := m.Get(ctx, "t1", "drf_1"); r != (drafts.Record{AgentID: "agt_refunds", KeyRef: "kiff/taf-1", Claimed: true}) {
+		t.Fatalf("the record still holds a credential, or isn't claimed: %+v", r)
 	}
 }
 

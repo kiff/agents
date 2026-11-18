@@ -49,12 +49,19 @@ var ErrUnauthorized = errors.New("server: the caller is not verified")
 // Caller is who made a request, as verified by Auth.
 type Caller struct {
 	Tenant string
+	// Role is the caller's role, as the request was signed; empty when it
+	// isn't known.
+	Role string
 }
 
 // Server serves the API.
 type Server struct {
 	// Auth verifies a request's caller, or returns ErrUnauthorized.
 	Auth func(r *http.Request) (Caller, error)
+	// Keys is where tafs cloud writes the tafs' KIFF keys, and KeyWriters
+	// the caller roles that may: nil Keys serves no key route.
+	Keys       KeyStore
+	KeyWriters []string
 
 	Agents    registry.Agents
 	Sessions  session.Store
@@ -233,6 +240,10 @@ func (s *Server) Handler() http.Handler {
 		route("POST /agents/{id}/events", s.startEvent)
 		mux.HandleFunc("POST /agents/{id}/versions/{n}/trial", s.startTrial)
 		mux.HandleFunc("POST /agents/{id}/trial/messages", s.trialMessage)
+	}
+	if s.Keys != nil {
+		route("PUT /tenant/keys/{ref...}", s.putKey)
+		route("DELETE /tenant/keys/{ref...}", s.removeKey)
 	}
 	if s.Drafts != nil {
 		route("POST /drafts/{draft_id}/claim", s.claimDraft)

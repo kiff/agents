@@ -20,6 +20,15 @@
 //	AGENTS_MODEL_KEY_SECRET  the name of the secret holding the model provider's key; not under AGENTS_SECRETS_PREFIX
 //	AGENTS_DRAFTS_PREFIX     the name prefix of taf drafts' claim secrets (#91); not under AGENTS_SECRETS_PREFIX.
 //	                         Unset: no agent gets the draft tool, and POST /drafts/{id}/claim isn't served
+//	AGENTS_DRAFTS_KMS_KEY    the KMS key draft records are sealed with, in the table (store/dynamodb Drafts).
+//	                         Set: records are written there only, and the secrets under AGENTS_DRAFTS_PREFIX
+//	                         are only read, for records written before. Unset: records stay secrets, as before
+//	AGENTS_KEYS_KMS_KEY      the KMS key the tafs' KIFF keys are sealed with, in the table (store/dynamodb Keys);
+//	                         another key than AGENTS_DRAFTS_KMS_KEY. Set: keys are written there only, through
+//	                         PUT and DELETE /tenant/keys/{ref}, and a secret under AGENTS_SECRETS_PREFIX is moved
+//	                         on its first read and deleted. Unset: keys stay secrets, as before
+//	AGENTS_KEY_WRITERS       with AGENTS_KEYS_KMS_KEY: the caller roles that may write keys, each one of
+//	                         AGENTS_CALLERS (tafs cloud's only)
 //	AGENTS_ATTACHMENTS_BUCKET the private S3 bucket of the files people attach to chat messages
 //	                         (kiff/tafs#209). Unset: no file is attached, and a message naming one is refused
 //
@@ -42,7 +51,9 @@
 //     event only executes a stored run once, as a request would.
 //   - The function's asynchronous retries are off (MaximumRetryAttempts 0).
 //   - Its role reads only secrets under AGENTS_SECRETS_PREFIX and the model
-//     key's secret.
+//     key's secret. With AGENTS_KEYS_KMS_KEY it may delete those under
+//     AGENTS_SECRETS_PREFIX too, and Encrypt and Decrypt with that key only
+//     under the encryption context {purpose, tenant, ref}.
 //   - tafs cloud's role gets lambda:InvokeFunctionUrl, plus
 //     lambda:InvokeFunction only under the lambda:InvokedViaFunctionUrl
 //     condition, if the account's function URL authorization needs both.
@@ -63,6 +74,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +84,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	sch "github.com/aws/aws-sdk-go-v2/service/scheduler"
@@ -80,6 +93,7 @@ import (
 	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/drafts"
 	draftsapi "github.com/kiff/agents/drafts/kiffapi"
+	tafkeys "github.com/kiff/agents/keys"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/registry"
@@ -203,7 +217,29 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		key:  func(ctx context.Context) (string, error) { return modelKey(ctx, secrets, keySecret) },
 		make: func(key string) model.Model { return anthropic.New(option.WithAPIKey(key)) },
 	}
-	keys := secretsmanager.New(secrets, prefix)
+	oldKeys := secretsmanager.New(secrets, prefix)
+	var keys registry.Secrets = oldKeys
+	// A secret per key costs as long as it's kept: with a key of their own,
+	// the tafs' keys go to the table, sealed, written by tafs cloud through
+	// the API (PUT and DELETE /tenant/keys/…); the secrets are read, moved
+	// on that read, and deleted.
+	var keyRecords *dynamodb.Keys
+	var movingKeys tafkeys.Moving
+	if kk := strings.TrimSpace(os.Getenv("AGENTS_KEYS_KMS_KEY")); kk != "" {
+		keyRecords = dynamodb.NewKeys(db, table, kms.NewFromConfig(cfg), kk)
+		movingKeys = tafkeys.Moving{New: keyRecords, Old: secretsmanager.NewOldKeys(oldKeys, secrets),
+			Log: func(msg, tenant, ref string, err error) { log.Warn(msg, "tenant", tenant, "ref", ref, "err", err) }}
+		keys = movingKeys
+	}
+	keyWriters := split(os.Getenv("AGENTS_KEY_WRITERS"))
+	for _, w := range keyWriters {
+		if !slices.Contains(split(callers), w) {
+			return nil, fmt.Errorf("lambda: AGENTS_KEY_WRITERS %q is not one of AGENTS_CALLERS", w)
+		}
+	}
+	if keyRecords != nil && len(keyWriters) == 0 {
+		return nil, errors.New("lambda: AGENTS_KEYS_KMS_KEY needs AGENTS_KEY_WRITERS: no caller could write a key")
+	}
 	// A run started with notify is announced when it ends or pauses, from
 	// any path that moves it (kiff/tafs#206). Every run that ends having
 	// used AI is reported to KIFF with its agent's key, which keeps it and
@@ -214,11 +250,24 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Log:    func(msg string, err error) { log.Warn(msg, "err", err) },
 	}
 	var claims *drafts.Service
+	var draftRecords *dynamodb.Drafts
 	if dp := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); dp != "" {
 		if strings.HasPrefix(dp, prefix) || strings.HasPrefix(prefix, dp) {
 			return nil, fmt.Errorf("lambda: AGENTS_DRAFTS_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap: a key reference could name a claim secret", dp, prefix)
 		}
-		claims = &drafts.Service{Store: secretsmanager.NewDrafts(secrets, dp), Keys: secretsmanager.NewKeys(keys, secrets),
+		var store drafts.Store = secretsmanager.NewDrafts(secrets, dp)
+		// A secret per draft costs as long as it's kept: with a key, records
+		// go to the table, sealed, and leave on their own; the secrets are
+		// only read, for records written before.
+		if kk := strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_KMS_KEY")); kk != "" {
+			draftRecords = dynamodb.NewDrafts(db, table, kms.NewFromConfig(cfg), kk)
+			store = drafts.Moving{New: draftRecords, Old: secretsmanager.NewDrafts(secrets, dp), Log: func(msg string, err error) { log.Warn(msg, "err", err) }}
+		}
+		var claimKeys drafts.Keys = secretsmanager.NewKeys(oldKeys, secrets)
+		if keyRecords != nil {
+			claimKeys = tafkeys.Claims{Moving: movingKeys}
+		}
+		claims = &drafts.Service{Store: store, Keys: claimKeys,
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
 	warm := &kiff.Sessions{}
@@ -335,12 +384,20 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// Another person's sessions are served only with a read grant KIFF
 	// recorded and resolves: with none, a caller reads its own.
 	f.api.ResolveReadGrant = kiff.ReadGrantResolver(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
-	// Deleting an account erases its sealing key and its drafts' records
-	// too (kiff/tafs#185). The tafs' keys and its alert secret are tafs
-	// cloud's to delete.
-	if sp, dp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); sp != "" || dp != "" {
-		f.api.Erase = secretsmanager.NewEraser(secrets, sp, dp).Erase
+	if keyRecords != nil {
+		f.api.Keys, f.api.KeyWriters = movingKeys, keyWriters
 	}
+	// Deleting an account erases its sealing key and its drafts' records
+	// too (kiff/tafs#185), and its tafs' keys once they're kept here
+	// (accountErase). Its alert secret is tafs cloud's to delete.
+	var draftsTable, keysTable tenantEraser
+	if draftRecords != nil {
+		draftsTable = draftRecords
+	}
+	if keyRecords != nil {
+		keysTable = keyRecords
+	}
+	f.api.Erase = accountErase(secrets, strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")), prefix, draftsTable, keysTable)
 	// The sweep ends a trial idle for a week in KIFF first, with the agent's
 	// own key, which may end only its own trials (kiff/tafs#173).
 	f.api.EndKIFFTrial = kiff.TrialEnder(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
@@ -490,4 +547,53 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		return nil, nil
 	}
 	return nil, errors.New("lambda: an event this function doesn't take")
+}
+
+// tenantEraser is a store that erases a tenant's items.
+type tenantEraser interface {
+	Erase(ctx context.Context, tenant string) error
+}
+
+// accountErase is what deleting an account erases beyond the API's own
+// stores, in this order, stopping at the first failure:
+//   - the drafts' records in the table, when kept there (draftsTable);
+//   - in Secrets Manager: the tenant's sealing key, its drafts' old claim
+//     secrets and, when the tafs' keys are kept in the table (keysTable),
+//     their old secrets under keysPrefix;
+//   - then the tafs' keys in the table, their removed keys' marks included.
+//
+// The old secrets go before the table's keys, so no key moves back in
+// between. Nil: nothing to erase.
+func accountErase(sm secretsmanager.EraseAPI, sealingPrefix, draftsPrefix, keysPrefix string, draftsTable, keysTable tenantEraser) func(context.Context, string) error {
+	var steps []func(context.Context, string) error
+	if draftsTable != nil {
+		steps = append(steps, draftsTable.Erase)
+	}
+	if sealingPrefix != "" || draftsPrefix != "" || keysTable != nil {
+		e := secretsmanager.NewEraser(sm, sealingPrefix, draftsPrefix)
+		if keysTable != nil {
+			if keysPrefix == "" {
+				// Never the table's keys without their old secrets: refuse.
+				steps = append(steps, func(context.Context, string) error {
+					return errors.New("lambda: the tafs' keys are kept in the table, but their old secrets' prefix is unknown")
+				})
+			}
+			e.KeysPrefix = keysPrefix
+		}
+		steps = append(steps, e.Erase)
+	}
+	if keysTable != nil {
+		steps = append(steps, keysTable.Erase)
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	return func(ctx context.Context, tenant string) error {
+		for _, step := range steps {
+			if err := step(ctx, tenant); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }

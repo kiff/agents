@@ -21,25 +21,36 @@ import (
 // grant's first characters, its status before and after, and its server's
 // host.
 func runDisconnect(ctx context.Context, apiBase, planqueBase string, cfg config, id string, out io.Writer) error {
+	phone, err := testPhone(ctx, apiBase, planqueBase, cfg, "-disconnect")
+	if err != nil {
+		return err
+	}
+	return disconnectGrant(ctx, phone, id, out)
+}
+
+// testPhone is the owner's phone on planque, from its KIFF session: the
+// test account's tenant and the phone's device in KIFF, for a one-off
+// (flag) signed as the phone.
+func testPhone(ctx context.Context, apiBase, planqueBase string, cfg config, flag string) (*testaccount.Phone, error) {
 	if cfg.session == "" || cfg.phone == "" {
-		return errors.New("-disconnect: E2E_KIFF_SESSION and E2E_PHONE_KEY are required")
+		return nil, errors.New(flag + ": E2E_KIFF_SESSION and E2E_PHONE_KEY are required")
 	}
 	pk, err := testaccount.ParsePhone(cfg.phone)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	hc := &http.Client{Timeout: 30 * time.Second}
 	me, err := testaccount.KIFFSession(apiBase, cfg.session, "", pk, hc).Do(ctx, http.MethodGet, "/v1/me", nil)
 	if err != nil || me.Err() != nil {
-		return fmt.Errorf("KIFF didn't take the phone's session: %v %v", err, me.Err())
+		return nil, fmt.Errorf("KIFF didn't take the phone's session: %v %v", err, me.Err())
 	}
 	tenant, _ := me.Body["tenant_id"].(string)
 	phone := testaccount.NewPhone(pk, planqueBase, tenant, hc)
 	// planque asks KIFF whether this device signed (d=), as for the app and the run.
 	if phone.Device, err = testaccount.ThisDevice(ctx, testaccount.KIFFSession(apiBase, cfg.session, tenant, pk, hc)); err != nil {
-		return fmt.Errorf("the phone's device in KIFF: %w", err)
+		return nil, fmt.Errorf("the phone's device in KIFF: %w", err)
 	}
-	return disconnectGrant(ctx, phone, id, out)
+	return phone, nil
 }
 
 // disconnectGrant disconnects the phone's account's one grant whose id

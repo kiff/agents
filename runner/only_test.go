@@ -167,3 +167,57 @@ func TestASessionWithoutALimitIsAsBefore(t *testing.T) {
 		t.Fatalf("the session has a limit: %+v", sess.Only)
 	}
 }
+
+// Instructions that map their skills (Coach's core) are given no catalog
+// (skill.Mapped), so a limited session has none to take out: it opens, is
+// offered only its tools, and read_skill lists only its own skill, as the
+// watch's requests need.
+func TestALimitedSessionOnMappedInstructionsOpens(t *testing.T) {
+	f := newFixture(t, use("c1", skill.ToolName, `{"name":"cards"}`), say("Sent."))
+	withOneWayIn(t, f)
+	d := registrytest.Definition("t1", "rae")
+	d.Instructions += "\n\nYour skills:\n- cards: how to cards\n- wakes: how to wakes"
+	d.Skills = []skill.Ref{{Name: "cards", Version: "1"}, {Name: "wakes", Version: "1"}, {Name: "ask", Version: "1", NamedOnly: true}}
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	only := &session.Only{Skills: true, Tools: []string{"tafs_state", "taf_task"}}
+	r := f.start(server.Start{Input: "move my call", Requester: ana, Skills: []string{"ask@1"}, Only: only})
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatalf("the limited session on mapped instructions: %v", err)
+	}
+	reqs := f.model.requests()
+	if got := strings.Join(toolNames(reqs[0].Tools), " "); got != "read_skill taf_task tafs_state" {
+		t.Fatalf("offered %s", got)
+	}
+	if enum := skillEnum(t, reqs[0].Tools); !strings.Contains(enum, `["ask"]`) {
+		t.Fatalf("read_skill lists %s", enum)
+	}
+	if sys := reqs[0].System; strings.Contains(sys, skill.Catalog([]skill.Package{{Name: "cards", Version: "1", Description: "how to cards"}})) {
+		t.Fatalf("a catalog in the context:\n%s", sys)
+	}
+	if res := reqs[1].Messages[len(reqs[1].Messages)-1].Blocks[0]; !res.IsError || strings.Contains(res.Result, "cards procedure") {
+		t.Fatalf("read_skill of cards answered %+v", res)
+	}
+}
+
+// A map that misses one of the skills isn't the map: the catalog was added,
+// and the limit still takes it out.
+func TestALimitedSessionOnAPartialMapLosesTheCatalog(t *testing.T) {
+	f := newFixture(t, say("Sent."))
+	withOneWayIn(t, f)
+	d := registrytest.Definition("t1", "rae")
+	d.Instructions += "\n\nYour skills:\n- cards: how to cards"
+	d.Skills = []skill.Ref{{Name: "cards", Version: "1"}, {Name: "wakes", Version: "1"}, {Name: "ask", Version: "1", NamedOnly: true}}
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	only := &session.Only{Skills: true, Tools: []string{"tafs_state", "taf_task"}}
+	r := f.start(server.Start{Input: "hi", Requester: ana, Skills: []string{"ask@1"}, Only: only})
+	if _, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if sys := f.model.requests()[0].System; strings.Contains(sys, "- wakes:") {
+		t.Fatalf("the catalog stayed:\n%s", sys)
+	}
+}
