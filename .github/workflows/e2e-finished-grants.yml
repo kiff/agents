@@ -1,0 +1,32 @@
+name: E2E finished grants
+# A one-off beside the sweep: delete the test account's finished grants
+# (disconnected or failed) with their own records (cmd/e2e -finished-grants,
+# finished.go). It runs as the owner's phone, through planque's own route,
+# signed with the phone's key as the account's erase is. planque decides
+# what is finished and keeps one that still holds a secret; the run counts
+# the account's grants before and after, and fails if a live one changed.
+#
+# By hand only, and never beside an Eval or E2E run. The log is public:
+# it says counts, never a grant's id.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+# The test account's group: it never runs beside an Eval or E2E run.
+concurrency:
+  group: test-account
+  cancel-in-progress: false
+jobs:
+  finished-grants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Delete the finished grants, as the owner's phone
+        env:
+          E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
+          E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
+        run: go run ./cmd/e2e -finished-grants
