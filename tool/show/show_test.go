@@ -148,14 +148,15 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"questions","id":"q","text":"?","questions":[]}`:                  "1 to 4 questions",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"q0","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q1","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q2","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q3","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q4","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`: "1 to 4 questions",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                                                                                                                                                                                        "different",
-		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"}]}]}`:                                      "2 to 5 options",
-		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:             "a question's text is required",
-		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}],"own":true}]}`: "unknown",
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y","description":"more"},{"value":"n","label":"N"}]}`:                             "no description",
-		`{"type":"questions","id":"q","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                       "text is required",
-		`{"type":"questions","id":"q","text":"?","questions":[{"id":"cur","text":"?","options":[{"value":"usd","label":"USD"},{"value":"EUR","label":"EUR"}]}]}`:  `question cur: option 2 value "EUR": use 1 to 64 of a-z 0-9 - _`,
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"y","label":"Again"}]}`:                                              `option 2 value "y": another option has it`,
-		`{"type":"questions","id":"q","text":"?","questions":[{"id":"Currency","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:     `question 1 id "Currency": use 1 to 64`,
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[]}]}`: "1 to 5 options",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"},{"value":"c","label":"C"},{"value":"d","label":"D"},{"value":"e","label":"E"},{"value":"f","label":"F"}]}]}`: "1 to 5 options",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                          "a question's text is required",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}],"own":true}]}`:                                                                                              "unknown",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y","description":"more"},{"value":"n","label":"N"}]}`:                                                                                                                          "no description",
+		`{"type":"questions","id":"q","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                                    "text is required",
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"cur","text":"?","options":[{"value":"usd","label":"USD"},{"value":"EUR","label":"EUR"}]}]}`:                                                                                               `question cur: option 2 value "EUR": use 1 to 64 of a-z 0-9 - _`,
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"y","label":"Again"}]}`:                                                                                                                                           `option 2 value "y": another option has it`,
+		`{"type":"questions","id":"q","text":"?","questions":[{"id":"Currency","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                  `question 1 id "Currency": use 1 to 64`,
 		`not json`: "a JSON object",
 	} {
 		r := call(t, in)
@@ -442,5 +443,32 @@ func TestALimitSaysItsOwnOver(t *testing.T) {
 	b, _ := json.Marshal(c)
 	if !strings.Contains(string(b), `"limit":500,"over":"ask"}`) || !strings.Contains(string(b), `"limit":5000}`) {
 		t.Fatalf("recorded: %s", b)
+	}
+}
+
+// Coach's card in a Google Sheets connect (18 Nov, the emulator): which sheet
+// to write to, with one option, the owner's existing sheet, whose link they
+// type under Something else…, which every app adds. It was refused for having
+// one option, Coach drew it again, and the owner saw "1 failed". It's shown
+// the first time.
+func TestAQuestionWithOneOptionIsShownTheFirstTime(t *testing.T) {
+	in := `{"type":"questions","id":"orders-setup","text":"To know where the orders come from and which sheet to write to:","questions":[` +
+		`{"id":"source","text":"Where do new orders come in?","options":[{"value":"chat","label":"I tell the taf in its chat","description":"You write who ordered what; it adds the row"},` +
+		`{"value":"gmail","label":"Order emails in Gmail","description":"It reads new order emails and adds a row for each"},` +
+		`{"value":"moneybird","label":"New invoices in Moneybird","description":"Each new sales invoice counts as an order"}]},` +
+		`{"id":"sheet","text":"Which sheet should it write to?","options":[{"value":"paste","label":"My existing sheet","description":"Paste its link in the field below"}],` +
+		`"note":"The link holds the sheet's id, so the taf always finds the right sheet."}]}`
+	r := call(t, in)
+	if r.IsError || r.Component == nil {
+		t.Fatalf("Coach's card was refused: %s", r.Text)
+	}
+	var got struct {
+		Questions []struct {
+			ID      string            `json:"id"`
+			Options []json.RawMessage `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(r.Component, &got); err != nil || len(got.Questions) != 2 || got.Questions[1].ID != "sheet" || len(got.Questions[1].Options) != 1 {
+		t.Fatalf("shown %s (%v)", r.Component, err)
 	}
 }
