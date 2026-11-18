@@ -12,6 +12,14 @@ name: Proofs
 # the log says each check and nothing of the account or the vendor. With dry,
 # a proof asks, signs and posts nothing, and needs no key.
 #
+# A real proof's credentials, all in kiff-test: PROOF_TENANT (the Eval
+# account; a proof anywhere else does nothing), PROOF_PHONE_KEY (the proof
+# key, paired to that account as a phone) and PROOF_KIFF_SESSION (that
+# phone's KIFF session, from the e2e sign-in for the Eval account, 90 days),
+# E2E_SETUP_KEY, and each app's sandbox key. When the session ends or the key
+# is unpaired, every proof ends as the runner's error, never counted against
+# an app; KIFF alerts after three, and the session is signed in again.
+#
 # The claims job is the first setup's: it prints the claims KIFF pins and the
 # test phone key's fingerprint, so KIFF can be set to take this workflow's
 # runs. It reads no vendor and no account, sends nothing, and prints no

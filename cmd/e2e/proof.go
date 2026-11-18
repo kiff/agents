@@ -345,7 +345,10 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		g, err = steps.Connect(ctx, app, proofAgentPrefix(app.Name)+run, proofTools(app))
 		return err
 	})
-	if err != nil {
+	if err != nil && g.ID == "" {
+		if ours(err) {
+			return broke("connect", err)
+		}
 		check(checkConnects, false, "planque didn't connect it: "+whyOf(err))
 		return finish()
 	}
@@ -354,6 +357,15 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 			r.Error = cmpJoin(r.Error, "cleanup: "+err.Error())
 		}
 	}()
+	if err != nil {
+		// A grant was made, then a step of the connection failed: it's
+		// cleaned up below like any other.
+		if ours(err) {
+			return broke("connect", err)
+		}
+		check(checkConnects, false, "planque didn't connect it: "+whyOf(err))
+		return finish()
+	}
 	check(checkConnects, true, "")
 
 	cards, err := proofCards(app, g)
@@ -369,6 +381,9 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		draft, ok, code, err = steps.Draft(ctx, g, "Proof of "+app.Name, cards)
 		return err
 	}); err != nil {
+		if ours(err) {
+			return broke("the draft", err)
+		}
 		check(checkWords, false, "the draft wasn't checked: "+whyOf(err))
 		return finish()
 	}
@@ -379,6 +394,9 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 	check(checkWords, true, "")
 
 	if err := timed(func() error { return steps.Approve(ctx, g, draft) }); err != nil {
+		if ours(err) {
+			return broke("the approval", err)
+		}
 		check(checkApprovalApplied, false, whyOf(err))
 		return finish()
 	}
@@ -390,6 +408,9 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		read, err = steps.Call(ctx, g, g.Names[app.Read], app.ReadArgs)
 		return err
 	}); err != nil || read.State != "forwarded" {
+		if ours(err) {
+			return broke("the read", err)
+		}
 		check(checkReads, false, "the read wasn't forwarded: "+stateOf(read, err))
 		return finish()
 	}
@@ -408,6 +429,9 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 	if app.Unchanged != "" && app.Unchanged != app.Read {
 		var err error
 		if before, err = steps.Call(ctx, g, g.Names[app.Unchanged], map[string]any{}); err != nil || before.State != "forwarded" {
+			if ours(err) {
+				return broke("the read-back", err)
+			}
 			check(checkVendorReceived, false, "the read-back before the write wasn't forwarded: "+stateOf(before, err))
 			return finish()
 		}
@@ -419,6 +443,9 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		call, err = steps.Call(ctx, g, g.Names[app.Held], held)
 		return err
 	}); err != nil {
+		if ours(err) {
+			return broke("the held call", err)
+		}
 		check(checkCardLimitHeld, false, "the call outside the Card failed: "+whyOf(err))
 		return finish()
 	}
@@ -439,12 +466,18 @@ func runProof(ctx context.Context, app proofApp, run string, steps proofSteps, n
 		status, err = steps.Refuse(ctx, call.Hold)
 		return err
 	}); err != nil {
+		if ours(err) {
+			return broke("the phone's refusal", err)
+		}
 		check(checkWrites, false, "the phone's refusal failed: "+whyOf(err))
 		return finish()
 	}
 	check(checkWrites, status == "refused", ifNot(status == "refused", "the held write ended "+status+", not refused"))
 	if app.Unchanged != "" {
 		after, err := steps.Call(ctx, g, g.Names[app.Unchanged], map[string]any{})
+		if ours(err) {
+			return broke("the read-back", err)
+		}
 		same := err == nil && after.State == "forwarded" && after.Count >= 0 && after.Count == before.Count
 		why := ""
 		if !same {
@@ -704,3 +737,14 @@ func proofPin(tenant, want, fingerprint string) error {
 	}
 	return nil
 }
+
+// oursRefused is how KIFF, planque and tafs cloud refuse the runner's own
+// identity: a 401 or a 403, or a code that names the caller's session, key,
+// device or signature. Its session ending or its key unpaired is ours to
+// mend, never the app's failure.
+var oursRefused = regexp.MustCompile(`(?:^|[^0-9])(?:401|403)(?:[^0-9]|$)|\b(?:unauthenticated|unauthorized|forbidden|test_key_tenant|signature_(?:required|invalid|missing|unchecked)|device_session_required|passkey_not_this_session|view_only|critical_key_required)\b`)
+
+// ours reports whether err is the runner's identity refused. Such a step
+// ends the run as an error: shown and alerted on, never counted against the
+// app, so a credential of ours never turns an app red.
+func ours(err error) bool { return err != nil && oursRefused.MatchString(err.Error()) }

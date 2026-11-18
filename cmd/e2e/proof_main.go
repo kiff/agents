@@ -59,7 +59,9 @@ func runProofMode(ctx context.Context, name string, dry bool, stdout *redacting,
 	stdout.hide(cfg.session, "<the session>")
 	stdout.hide(cfg.setupKey, "<the setup key>")
 
-	t := &test{cfg: cfg, out: stdout, hc: hc, run: time.Now().UTC().Format("0102-1504")}
+	// The run's name, to the second and with its attempt, so a re-run never
+	// takes an earlier attempt's grant for its own.
+	t := &test{cfg: cfg, out: stdout, hc: hc, run: time.Now().UTC().Format("0102-150405") + "-" + firstOf(env("GITHUB_RUN_ATTEMPT"), "1")}
 	pk, err := testaccount.ParsePhone(cfg.phone)
 	if err != nil {
 		return err

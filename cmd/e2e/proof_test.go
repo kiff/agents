@@ -15,21 +15,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiff/agents/tool/planque"
 )
 
 // fakeProof is a proof's steps on nothing: each answer is the test's.
 type fakeProof struct {
-	pinErr     error
-	connectErr error
-	draftOK    bool
-	draftCode  string
-	approveErr error
-	read       proofCall
-	held       proofCall
-	refused    string
-	before     proofCall // the read-back before the held write
-	after      proofCall // and after its refusal
-	cleanupErr error
+	pinErr      error
+	connectErr  error
+	draftOK     bool
+	draftCode   string
+	approveErr  error
+	refuseErr   error
+	madeThenErr bool // Connect makes the grant, then fails
+	read        proofCall
+	held        proofCall
+	refused     string
+	before      proofCall // the read-back before the held write
+	after       proofCall // and after its refusal
+	cleanupErr  error
 
 	app      proofApp
 	calls    []string // the tools called, by name
@@ -46,14 +50,14 @@ func (f *fakeProof) Sweep(context.Context, proofApp) (int, error) { f.swept = tr
 
 func (f *fakeProof) Connect(_ context.Context, app proofApp, name string, tools []string) (proofGrant, error) {
 	f.app = app
-	if f.connectErr != nil {
+	if f.connectErr != nil && !f.madeThenErr {
 		return proofGrant{}, f.connectErr
 	}
 	g := proofGrant{ID: "grt_fake", Agent: name + "-a1b2c", Names: map[string]string{}}
 	for _, t := range tools {
 		g.Names[t] = t + "_x9k2"
 	}
-	return g, nil
+	return g, f.connectErr
 }
 
 func (f *fakeProof) Draft(_ context.Context, _ proofGrant, _ string, cards []map[string]any) (string, bool, string, error) {
@@ -79,7 +83,7 @@ func (f *fakeProof) Call(_ context.Context, g proofGrant, name string, args map[
 	}
 }
 
-func (f *fakeProof) Refuse(context.Context, string) (string, error) { return f.refused, nil }
+func (f *fakeProof) Refuse(context.Context, string) (string, error) { return f.refused, f.refuseErr }
 
 func (f *fakeProof) Cleanup(context.Context, proofGrant) error {
 	f.cleaned = true
@@ -273,7 +277,7 @@ func TestACleanupThatFailsIsSaid(t *testing.T) {
 func TestAnExpiredTrialSaysAccountExpired(t *testing.T) {
 	app := proofApps["pipedrive"]
 	late := func() time.Time { return app.Expires.Add(time.Hour) }
-	r := runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("401")}, late)
+	r := runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("the vendor refused the key")}, late)
 	if !r.Expired || !strings.HasSuffix(checksOf(r)["connects"].Why, "; account expired") {
 		t.Fatalf("expired %v, checks %+v", r.Expired, r.Checks)
 	}
@@ -283,7 +287,7 @@ func TestAnExpiredTrialSaysAccountExpired(t *testing.T) {
 		t.Fatalf("the log doesn't say the account expired:\n%s", b.String())
 	}
 	// Before the end, the same failure is the app's.
-	r = runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("401")}, clock())
+	r = runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("the vendor refused the key")}, clock())
 	if r.Expired {
 		t.Fatal("expired before the trial's end")
 	}
@@ -504,8 +508,8 @@ func TestTheProofRunsOnlyOnTheTestAccountAsTheProofKey(t *testing.T) {
 func TestAccountExpiredLabelsOnlyWhatAnEndedAccountExplains(t *testing.T) {
 	app := proofApps["pipedrive"]
 	late := func() time.Time { return app.Expires.Add(time.Hour) }
-	r := runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("401 unauthorized")}, late)
-	if c := checksOf(r)["connects"]; !r.Expired || !strings.Contains(c.Why, "401 unauthorized") || !strings.Contains(c.Why, "account expired") {
+	r := runProof(context.Background(), app, "r", &fakeProof{connectErr: errors.New("the vendor refused the key")}, late)
+	if c := checksOf(r)["connects"]; !r.Expired || !strings.Contains(c.Why, "the vendor refused the key") || !strings.Contains(c.Why, "account expired") {
 		t.Fatalf("expired %v, connects %+v: the reason and the label", r.Expired, c)
 	}
 	// A write that went through is never put down to the account.
@@ -513,5 +517,56 @@ func TestAccountExpiredLabelsOnlyWhatAnEndedAccountExplains(t *testing.T) {
 	r = runProof(context.Background(), app, "r", f, late)
 	if c := checksOf(r)["card_limit_held"]; r.Expired || strings.Contains(c.Why, "account expired") {
 		t.Fatalf("expired %v, card_limit_held %+v after a write went through", r.Expired, c)
+	}
+}
+
+func TestOurOwnCredentialRefusedIsTheRunnersErrorNeverTheApps(t *testing.T) {
+	writes := func(f *fakeProof) *fakeProof {
+		f.draftOK, f.read, f.before, f.after = true, listed(1), listed(1), listed(1)
+		f.held, f.refused = proofCall{State: "held", Hold: "exc"}, "refused"
+		return f
+	}
+	for name, f := range map[string]*fakeProof{
+		"connect":         writes(&fakeProof{connectErr: errors.New("planque refused the request: planque answered 401: unauthorized")}),
+		"approve":         writes(&fakeProof{approveErr: errors.New("confirming the draft in KIFF: <nil> 401: unauthenticated")}),
+		"approve, device": writes(&fakeProof{approveErr: errors.New("the phone's approval: key: 403: device_session_required")}),
+		"refuse":          writes(&fakeProof{refuseErr: errors.New("the phone's signed reject: <nil> 403: signature_invalid")}),
+	} {
+		r := runProof(context.Background(), proofApps["pipedrive"], "r", f, clock())
+		if r.Outcome != "error" {
+			t.Errorf("%s: outcome %s; want error, never counted against the app", name, r.Outcome)
+		}
+		for _, c := range r.Checks {
+			if !c.OK && c.Why != "not reached" {
+				t.Errorf("%s: check %s failed (%q) on our own credential", name, c.Name, c.Why)
+			}
+		}
+	}
+	// What the app did still fails its check.
+	f := writes(&fakeProof{approveErr: errors.New("after the phone's approval the grant isn't connected: listed")})
+	if r := runProof(context.Background(), proofApps["pipedrive"], "r", f, clock()); r.Outcome != "fail" {
+		t.Fatalf("an approval that didn't connect: outcome %s; want fail", r.Outcome)
+	}
+	for _, msg := range []string{"500: internal", "planque answered 404: no such catalog entry", "listed 4031 items", "tafs cloud's check refused the Cards: rules_missing"} {
+		if ours(errors.New(msg)) {
+			t.Errorf("ours(%q) = true", msg)
+		}
+	}
+}
+
+func TestAGrantMadeBeforeTheConnectionFailedIsCleanedUp(t *testing.T) {
+	f := &fakeProof{connectErr: errors.New("planque has no grant for this account"), madeThenErr: true}
+	r := runProof(context.Background(), proofApps["typeform"], "r", f, clock())
+	if !f.cleaned || checksOf(r)["connects"].OK {
+		t.Fatalf("cleaned %v, connects %+v", f.cleaned, checksOf(r)["connects"])
+	}
+}
+
+func TestAProofAgentKeepsItsRunsName(t *testing.T) {
+	for _, app := range proofAppNames() {
+		name := proofAgentPrefix(app) + "1118-050512-3"
+		if id := planque.AgentID(name); !strings.HasPrefix(id, name) {
+			t.Errorf("AgentID(%q) = %q: the sweep and the grant's match need the whole name", name, id)
+		}
 	}
 }
