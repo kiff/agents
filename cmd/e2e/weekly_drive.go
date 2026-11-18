@@ -79,8 +79,8 @@ var (
 // Coach's cards answered as the owner's phone does, until Coach hands a taf
 // over. The scripted turns answer questions and choices only, never with an
 // approval in words: the only approval is the component route
-// (approveCard). The cost is read after each turn, and the run stops before
-// the next one would pass the cap.
+// (approveCard). The cost is checked after each turn, and the run stops once
+// it has passed the cap (so one turn can take it past).
 func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone weeklyPhone, f weeklyFamily, tenant string, wait func(context.Context) error) (weeklyResult, error) {
 	var r weeklyResult
 	session, err := chat.Start(ctx, f.Ask)
@@ -110,14 +110,16 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 			}
 			switch c.Card.Type {
 			case "approval", "sign_in":
+				// Recorded before the phone acts on it, so a connect that fails
+				// half-way is still taken away by the run's cleanup.
+				if c.Card.Grant != "" {
+					r.Grants = append(r.Grants, c.Card.Grant)
+				}
 				answer, err := approveCard(ctx, cloud, phone, weeklyShown{ID: c.Card.ID, Session: session, Grant: c.Card.Grant, Draft: c.Card.Draft, Tools: c.Tools, SignsCard: c.Signs}, tenant, f.Job)
 				if err != nil {
 					return r, err
 				}
 				r.Approvals = append(r.Approvals, answer)
-				if c.Card.Grant != "" {
-					r.Grants = append(r.Grants, c.Card.Grant)
-				}
 			case "questions":
 				raw := strings.TrimPrefix(answerQuestions(c.Card, f.Fact), "[questions "+c.Card.ID+"] ")
 				if err := chat.Answer(ctx, c.Card.ID, json.RawMessage(raw), session); err != nil {

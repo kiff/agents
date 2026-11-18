@@ -15,6 +15,10 @@ import (
 	"github.com/kiff/agents/tool/kiff"
 )
 
+// weeklyFamilyDeadline is how long one family may run, so both fit inside the
+// job's 30 minutes with their cleanup.
+const weeklyFamilyDeadline = 12 * time.Minute
+
 // weeklyFamilies are the weekly proof's families:
 // one real Coach chat each, approved through tafs cloud's component route.
 // Only key is set up today; a managed sign-in stays on the emulator pass
@@ -95,6 +99,11 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	if skipped, err := weeklySkip(f, stdout, env); skipped {
 		return err
 	}
+	// A family's own deadline, inside the job's: a Coach that stays at work
+	// ends this family, not the job, so its cleanup and summary still run and
+	// the next family still starts. The cleanup runs past it.
+	ctx, cancel := context.WithTimeout(ctx, weeklyFamilyDeadline)
+	defer cancel()
 	cfg := config{log: stdout, phone: env("PROOF_PHONE_KEY"), session: env("PROOF_KIFF_SESSION"), setupKey: env("E2E_SETUP_KEY")}
 	cfg.planque = firstOf(env("E2E_PLANQUE"), "https://planque.kiff.dev")
 	cfg.cloud = firstOf(env("E2E_TAFS_CLOUD"), "https://cloud.tafs.kiff.dev")
@@ -148,13 +157,33 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	} else {
 		f.Ask = fmt.Sprintf(f.Ask, name)
 	}
+	var r weeklyResult
 	defer func() {
-		n, err := sweepWeekly(context.WithoutCancel(ctx), t, f.Name)
-		fmt.Fprintf(stdout, "  cleanup: %d left by this run or earlier ones taken away (%v)\n", n, err)
+		// What this run recorded first, whatever Coach named it: its grants
+		// disconnected, its taf archived. Then the name sweep, for what an
+		// earlier run left.
+		cleanCtx := context.WithoutCancel(ctx)
+		mine := 0
+		for _, g := range r.Grants {
+			stdout.hide(g, "<a grant>")
+			if err := t.phone.Disconnect(cleanCtx, g); err != nil {
+				fmt.Fprintf(stdout, "  cleanup: a grant this run asked for wasn't disconnected (%v)\n", err)
+				continue
+			}
+			mine++
+		}
+		if r.Taf != "" {
+			if c, err := testaccount.Sweep(cleanCtx, t.kiff, []string{r.Taf}); err != nil || c.Left() > 0 {
+				fmt.Fprintf(stdout, "  cleanup: the taf this run made wasn't archived (%v)\n", err)
+			} else {
+				mine++
+			}
+		}
+		n, err := sweepWeekly(cleanCtx, t, f.Name)
+		fmt.Fprintf(stdout, "  cleanup: %d of this run's taken away; %d by name, this run's or earlier ones' (%v)\n", mine, n, err)
 	}()
 
 	fmt.Fprintf(stdout, "== weekly proof, %s family\n", f.Name)
-	var r weeklyResult
 	// The weekly results go to the job's summary, never to KIFF's proof ingest:
 	// a weekly failure can be Coach's wording, not the app's.
 	defer func() { writeSummary(env("GITHUB_STEP_SUMMARY"), weeklySummary(f, r, retErr)) }()

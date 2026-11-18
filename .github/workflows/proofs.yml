@@ -7,7 +7,9 @@ name: Proofs
 #
 # The proofs (cmd/e2e -proof, proof.go) run by hand for now, one app or all,
 # one at a time: the test account is the Eval's, so they share eval.yml's
-# concurrency group and never run during an Eval. A proof uses no model. Its
+# concurrency group and never run during an Eval. A proof uses no model; the
+# weekly job (cmd/e2e -weekly) is the exception: it runs Coach, so it spends
+# model money, capped per family. Its
 # keys come only from the kiff-test environment (main only) and are masked;
 # the log says each check and nothing of the account or the vendor. With dry,
 # a proof asks, signs and posts nothing, and needs no key.
@@ -26,9 +28,12 @@ name: Proofs
 # token: only the claims, which name this repository and this run, and a
 # fingerprint, which names a public key.
 on:
-  # The weekly proof: Mondays at 05:00 UTC.
-  schedule:
-    - cron: "0 5 * * 1"
+  # The weekly proof, Mondays at 05:00 UTC, is off until its spend is
+  # approved: each run is two real Coach chats, capped at US$3 each. Whoever
+  # approves that spend uncomments these two lines; until then it runs only by
+  # hand (run: weekly).
+  # schedule:
+  #   - cron: "0 5 * * 1"
   workflow_dispatch:
     inputs:
       run:
