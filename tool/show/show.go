@@ -35,7 +35,10 @@ const (
 	MaxOptions = 4
 	MaxTools   = 20
 	// A questions card asks 1 to MaxQuestions questions at once, each with
-	// 2 to MaxQuestionOptions options (kiff/tafs#138 item 57).
+	// 1 to MaxQuestionOptions options (kiff/tafs#138 item 57). One option is a
+	// choice too: every app adds "Something else…" with the owner's own words
+	// under each question, so "My existing sheet" alone is answered with its
+	// link typed in.
 	MaxQuestions       = 4
 	MaxQuestionOptions = 5
 )
@@ -391,7 +394,7 @@ func (t Tool) Spec() model.ToolSpec {
 		Description: "Show the owner a component in the chat; the app draws it. Showing an id again replaces that component in place (to advance steps). " +
 			"steps {title, steps:[{label, status: pending|active|done|failed|skipped, call?}]}, where call names the tool a step waits on, and the step is done only once that call went through; notice {tone: info|success|warning|error, title?, text}, and a rules notice {tone, title?, rules, lang, lines:[{text, kept, tools?, what?}]} with no text: each line one rule in plain words, kept card (tools: the rules' tools it is), connection (tools it holds for), kiff (what: disclosure, reads_total or held_approval) or instructions, and never its ending, which show adds; " +
 			"confirm {text, options:[{value, label}], 2 to 4}: the owner's choice comes back as their next message, \"[confirm <id>] <value>\"; " +
-			"questions {text, questions:[{id, text, options:[{value, label, description?}], 2 to 5, multi?, note?}], 1 to 4}: several questions the owner answers together, when none depends on another's answer; " +
+			"questions {text, questions:[{id, text, options:[{value, label, description?}], 1 to 5, the app adding Something else… for the owner's own words, multi?, note?}], 1 to 4}: several questions the owner answers together, when none depends on another's answer; " +
 			"the app adds a field for the owner's own words under each, and Chat about this; the answers come back as one message, " +
 			"[questions <id>] then a JSON object from each question's id to {value}, {values} (multi) or {own} (the owner's own words); " +
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
@@ -664,8 +667,8 @@ func (c Component) check() error {
 			if err := text("a question's note", q.Note, false, MaxLabel); err != nil {
 				return err
 			}
-			if len(q.Options) < 2 || len(q.Options) > MaxQuestionOptions {
-				return fmt.Errorf("question %s has 2 to %d options", q.ID, MaxQuestionOptions)
+			if len(q.Options) < 1 || len(q.Options) > MaxQuestionOptions {
+				return fmt.Errorf("question %s has 1 to %d options (the app adds Something else… with the owner's own words)", q.ID, MaxQuestionOptions)
 			}
 			if err := checkOptions(q.Options, true); err != nil {
 				return fmt.Errorf("question %s: %w", q.ID, err)
