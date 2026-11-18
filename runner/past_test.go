@@ -140,6 +140,22 @@ func TestAChatsNextRunReadsWhatWasSaidNotWhatToolsReturned(t *testing.T) {
 	}
 }
 
+// An agent that shows the owner cards (Setup, Coach) is never told to name
+// things by an id, which its own instructions forbid: its chats end with the
+// note that names them as the owner knows them. A taf's chats keep the ids.
+func TestAChatThatShowsCardsNamesThingsByNameNeverByID(t *testing.T) {
+	f, _ := keeping(t, say("Shown."))
+	f.extra = append(f.extra, &panelTool{})
+	f.execute(f.start(server.Start{Input: "connect my desk"}))
+	s := f.model.requests()[0].System
+	if !strings.HasSuffix(s, runner.NamesNoteCards) || strings.Contains(s, runner.NamesNote) {
+		t.Fatalf("a chat with cards isn't told to name things by name: %q", s)
+	}
+	if strings.Contains(runner.NamesNoteCards, "by its id") || !strings.Contains(runner.NamesNoteCards, "never by an id") {
+		t.Fatalf("the cards' note asks for ids: %q", runner.NamesNoteCards)
+	}
+}
+
 func TestAJobsRunIsNotToldAboutFollowUps(t *testing.T) {
 	f, _ := keeping(t, say("done"))
 	f.execute(f.start(server.Start{Tenant: "t1", Agent: "rae", Trigger: run.BySchedule, Input: "reconcile"}))
