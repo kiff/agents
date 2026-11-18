@@ -55,6 +55,7 @@ type weeklyFamily struct {
 // weeklyResult is what came of a weekly proof's chat.
 type weeklyResult struct {
 	Approvals []string // tafs cloud's answers to Coach, one per tap
+	Grants    []string // the grants the taps approved
 	Taf       string   // the taf Coach handed over
 	Turns     int
 	Spent     int64
@@ -113,6 +114,9 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 					return r, err
 				}
 				r.Approvals = append(r.Approvals, answer)
+				if c.Card.Grant != "" {
+					r.Grants = append(r.Grants, c.Card.Grant)
+				}
 			case "questions":
 				raw := strings.TrimPrefix(answerQuestions(c.Card, f.Fact), "[questions "+c.Card.ID+"] ")
 				if err := chat.Answer(ctx, c.Card.ID, json.RawMessage(raw), session); err != nil {

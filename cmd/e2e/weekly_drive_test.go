@@ -180,3 +180,16 @@ func TestAMixedConfirmTakesTheOptionThatDoesntAgree(t *testing.T) {
 		t.Fatalf("answered %s, taps %+v", chat.answers["c1"], r.Taps)
 	}
 }
+
+func TestTheWeeklyModeNeedsItsFamilyAndItsKeys(t *testing.T) {
+	env := func(string) string { return "" }
+	if err := runWeeklyMode(context.Background(), "managed", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "no such family") {
+		t.Fatalf("a family not set up: %v", err)
+	}
+	if err := runWeeklyMode(context.Background(), "key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "is required") {
+		t.Fatalf("no keys: %v", err)
+	}
+	if !strings.Contains(weeklyFamilies["key"].Ask, "%s") {
+		t.Fatal("the key family's request doesn't name the taf for the sweep")
+	}
+}
