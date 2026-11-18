@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,14 +28,14 @@ func (f *fakeTafsCloud) Report(_ context.Context, _, _ string, body map[string]a
 
 type fakeWeeklyPhone struct {
 	digest    string
-	tools     []string
+	tools     []weeklyTool
 	version   string
 	confirmed string
 	approved  json.RawMessage
 	status    string
 }
 
-func (f *fakeWeeklyPhone) Grant(context.Context, string) (string, []string, error) {
+func (f *fakeWeeklyPhone) Grant(context.Context, string) (string, []weeklyTool, error) {
 	return f.digest, f.tools, nil
 }
 func (f *fakeWeeklyPhone) DraftVersion(context.Context, string) (string, error) {
@@ -49,7 +50,11 @@ func (f *fakeWeeklyPhone) ApproveConnect(_ context.Context, _ string, body json.
 	return f.status, nil
 }
 
-var jobTools = []string{"pipedrive_list_persons", "pipedrive_add_activity"}
+var jobNames = []string{"pipedrive_list_persons", "pipedrive_add_activity"}
+
+var jobTools = []weeklyTool{{Name: "pipedrive_list_persons", Op: "getPersons"}, {Name: "pipedrive_add_activity", Op: "addActivity"}}
+
+var pipedriveJob = exactly(jobNames...)
 
 func signAsk(step, message string) *weeklyAsk {
 	a := askConnect("g1", `{"digest":"d1"}`)
@@ -66,7 +71,7 @@ func TestAConnectionIsApprovedThroughTheComponentRouteAndReported(t *testing.T) 
 		report:   weeklyDecision{Outcome: "answered", Answer: "approved"},
 	}
 	phone := &fakeWeeklyPhone{digest: "d1", tools: jobTools, status: "connected"}
-	got, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Session: "s1", Grant: "g1"}, "t1", jobTools)
+	got, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Session: "s1", Grant: "g1"}, "t1", pipedriveJob)
 	if err != nil || got != "approved" {
 		t.Fatalf("got %q, %v", got, err)
 	}
@@ -84,7 +89,7 @@ func TestADraftIsConfirmedAtTheVersionShown(t *testing.T) {
 		report:   weeklyDecision{Outcome: "answered", Answer: "approved"},
 	}
 	phone := &fakeWeeklyPhone{version: "v2"}
-	if _, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Draft: "dr1"}, "t1", jobTools); err != nil {
+	if _, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Draft: "dr1"}, "t1", pipedriveJob); err != nil {
 		t.Fatal(err)
 	}
 	if phone.confirmed != "dr1@v2" || cloud.reported["result"] != "confirmed" {
@@ -100,7 +105,7 @@ func TestTheProofNeverSignsAnAskItCantRebuild(t *testing.T) {
 	} {
 		cloud := &fakeTafsCloud{approval: weeklyDecision{Outcome: "sign", Ask: ask}}
 		phone := &fakeWeeklyPhone{digest: "d1", tools: jobTools, status: "connected"}
-		_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", jobTools)
+		_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", pipedriveJob)
 		if err == nil || phone.approved != nil || cloud.reported != nil {
 			t.Errorf("%s: err %v, approved %s, reported %v", name, err, phone.approved, cloud.reported)
 		}
@@ -109,8 +114,8 @@ func TestTheProofNeverSignsAnAskItCantRebuild(t *testing.T) {
 
 func TestAConnectionAskingForMoreThanTheJobIsRefusedBeforeAnyAsk(t *testing.T) {
 	cloud := &fakeTafsCloud{}
-	phone := &fakeWeeklyPhone{digest: "d1", tools: append(jobTools, "pipedrive_add_person")}
-	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", jobTools)
+	phone := &fakeWeeklyPhone{digest: "d1", tools: append(slices.Clone(jobTools), weeklyTool{Name: "pipedrive_add_person", Op: "addPerson"})}
+	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", pipedriveJob)
 	if !errors.Is(err, errMoreThanTheJob) || cloud.asked != nil {
 		t.Fatalf("err %v, asked %v", err, cloud.asked)
 	}
@@ -125,15 +130,32 @@ func TestEveryOutcomeButApprovedFailsTheRun(t *testing.T) {
 		"sign with no ask": {approval: weeklyDecision{Outcome: "sign"}},
 	} {
 		phone := &fakeWeeklyPhone{digest: "d1", tools: jobTools, status: "connected"}
-		if _, err := approveCard(context.Background(), c, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", jobTools); err == nil {
+		if _, err := approveCard(context.Background(), c, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", pipedriveJob); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
 	// A connection that didn't connect is reported as it is, and tafs cloud decides.
 	cloud := &fakeTafsCloud{approval: weeklyDecision{Outcome: "sign", Ask: signAsk("connect", "tafs.connect.v1|t1|g1|d1")}, report: weeklyDecision{Outcome: "answered", Answer: "failed: pending"}}
 	phone := &fakeWeeklyPhone{digest: "d1", tools: jobTools, status: "pending"}
-	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", jobTools)
+	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1"}, "t1", pipedriveJob)
 	if err == nil || cloud.reported["result"] != "not_connected" || cloud.reported["status"] != "pending" || !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("err %v, reported %v", err, cloud.reported)
+	}
+}
+
+func TestAnOwnKeyGrantIsHeldToTheVendorsOwnOperations(t *testing.T) {
+	desk := within("searchTickets", "fetchTicket", "postReply", "applyLabel")
+	if !desk([]weeklyTool{{Name: "desk_search", Op: "searchTickets"}, {Name: "desk_reply", Op: "postReply"}}) {
+		t.Fatal("a grant within the desk's operations isn't the job's")
+	}
+	if desk([]weeklyTool{{Name: "desk_reply", Op: "postReply"}, {Name: "desk_close", Op: "closeTicket"}}) || desk(nil) {
+		t.Fatal("an operation the desk doesn't describe, or none, is the job's")
+	}
+	// The card must show exactly the grant's tools, whatever the family.
+	cloud := &fakeTafsCloud{}
+	phone := &fakeWeeklyPhone{digest: "d1", tools: []weeklyTool{{Name: "desk_reply", Op: "postReply"}}}
+	_, err := approveCard(context.Background(), cloud, phone, weeklyShown{ID: "c1", Grant: "g1", Tools: []string{"desk_reply", "desk_label"}}, "t1", desk)
+	if !errors.Is(err, errMoreThanTheJob) || cloud.asked != nil {
+		t.Fatalf("a card showing other tools than its grant: %v", err)
 	}
 }

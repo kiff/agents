@@ -90,15 +90,15 @@ func (c *liveWeeklyCloud) Report(ctx context.Context, component, ask string, bod
 // KIFF's draft, and the calls an ask names.
 type liveWeeklyPhone struct{ t *test }
 
-func (p liveWeeklyPhone) Grant(ctx context.Context, id string) (string, []string, error) {
+func (p liveWeeklyPhone) Grant(ctx context.Context, id string) (string, []weeklyTool, error) {
 	g, err := p.t.phone.Grant(ctx, id)
 	if err != nil {
 		return "", nil, err
 	}
 	p.t.out.hide(g.ID, "<a grant>")
-	var tools []string
+	var tools []weeklyTool
 	for _, tl := range g.Request.Tools {
-		tools = append(tools, catalogName(tl))
+		tools = append(tools, weeklyTool{Name: catalogName(tl), Op: tl.Tool})
 	}
 	return g.Digest, tools, nil
 }

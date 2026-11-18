@@ -44,10 +44,11 @@ type weeklyThreadCard struct {
 // would, the owner's one fact when Coach asks in words, and the tools the job
 // needs.
 type weeklyFamily struct {
-	Name    string
-	Ask     string
-	Fact    string
-	Tools   []string
+	Name string
+	Ask  string
+	Fact string
+	// Job is what the grant's tools must be (kiff-qa (c)).
+	Job     weeklyJob
 	CapUSD  float64
 	MaxTurn int
 }
@@ -109,7 +110,7 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 			}
 			switch c.Card.Type {
 			case "approval", "sign_in":
-				answer, err := approveCard(ctx, cloud, phone, weeklyShown{ID: c.Card.ID, Session: session, Grant: c.Card.Grant, Draft: c.Card.Draft, Tools: c.Tools, SignsCard: c.Signs}, tenant, f.Tools)
+				answer, err := approveCard(ctx, cloud, phone, weeklyShown{ID: c.Card.ID, Session: session, Grant: c.Card.Grant, Draft: c.Card.Draft, Tools: c.Tools, SignsCard: c.Signs}, tenant, f.Job)
 				if err != nil {
 					return r, err
 				}

@@ -46,7 +46,7 @@ func (f *fakeChat) Answer(_ context.Context, c string, a json.RawMessage, _ stri
 
 func noWait(context.Context) error { return nil }
 
-var pipedriveFamily = weeklyFamily{Name: "key", Ask: "Connect Pipedrive so a taf can list my people.", Fact: "Use the account testco117.", Tools: jobTools, CapUSD: 3, MaxTurn: 8}
+var pipedriveFamily = weeklyFamily{Name: "key", Ask: "Connect Pipedrive so a taf can list my people.", Fact: "Use the account testco117.", Job: pipedriveJob, CapUSD: 3, MaxTurn: 8}
 
 func card(typ, id string) weeklyThreadCard {
 	return weeklyThreadCard{Session: "s1", Card: component{Type: typ, ID: id}}
@@ -184,6 +184,9 @@ func TestAMixedConfirmTakesTheOptionThatDoesntAgree(t *testing.T) {
 func TestTheWeeklyModeNeedsItsFamilyAndItsKeys(t *testing.T) {
 	env := func(string) string { return "" }
 	if err := runWeeklyMode(context.Background(), "managed", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "no such family") {
+		t.Fatalf("a family not set up: %v", err)
+	}
+	if err := runWeeklyMode(context.Background(), "own-key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY is required") {
 		t.Fatalf("a family not set up: %v", err)
 	}
 	if err := runWeeklyMode(context.Background(), "key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "is required") {

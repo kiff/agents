@@ -171,6 +171,17 @@ jobs:
           E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
           PROOF_PIPEDRIVE_KEY: ${{ secrets.PROOF_PIPEDRIVE_KEY }}
         run: go run ./cmd/e2e -weekly key
+      - name: The weekly proof, own-key family (the fake vendor's desk by its key, a raw request)
+        # Runs even when the key family failed: each family is its own proof.
+        if: ${{ !cancelled() }}
+        env:
+          PROOF_TENANT: ${{ secrets.PROOF_TENANT }}
+          PROOF_PHONE_KEY: ${{ secrets.PROOF_PHONE_KEY }}
+          PROOF_KIFF_SESSION: ${{ secrets.PROOF_KIFF_SESSION }}
+          E2E_SETUP_KEY: ${{ secrets.E2E_SETUP_KEY }}
+          E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
+          E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
+        run: go run ./cmd/e2e -weekly own-key
   claims:
     if: inputs.run == 'claims'
     runs-on: ubuntu-latest

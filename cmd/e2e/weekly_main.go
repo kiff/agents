@@ -21,14 +21,27 @@ var weeklyFamilies = map[string]weeklyFamily{
 		Name:    "key",
 		Ask:     "Connect Pipedrive with its API key so a taf can list my people, and add a follow-up activity only after I approve each one. Name the taf %s.",
 		Fact:    "Use the Pipedrive account I connect with its key, and only the people list and adding an activity.",
-		Tools:   []string{"pipedrive_list_persons", "pipedrive_add_activity"},
+		Job:     exactly("pipedrive_list_persons", "pipedrive_add_activity"),
+		CapUSD:  3,
+		MaxTurn: 8,
+	},
+	// own-key (kiff-qa 08:47): a vendor that isn't a catalog entry, by the
+	// owner's own key as a raw request: planque's fake vendor desk, its
+	// operations held to the desk's own description.
+	"own-key": {
+		Name: "own-key",
+		Ask: "Our support team answers customers in our help desk. I want a taf that replies to customers' tickets and labels them, " +
+			"in our workspace ws_demo only. The desk has no MCP server: its API is described at %[2]s/openapi.json, its operations start at %[2]s/v1, " +
+			"and its key goes in the X-Desk-Key header. Name the taf %[1]s.",
+		Fact:    "Up to 20 replies a day and 50 labels a day, nothing over that. It never touches another workspace, and never closes or deletes tickets.",
+		Job:     within("searchTickets", "fetchTicket", "postReply", "applyLabel"),
 		CapUSD:  3,
 		MaxTurn: 8,
 	},
 }
 
 // weeklyKeyEnv is the sandbox key each family's app takes, from kiff-test.
-var weeklyKeyEnv = map[string]string{"key": "PROOF_PIPEDRIVE_KEY"}
+var weeklyKeyEnv = map[string]string{"key": "PROOF_PIPEDRIVE_KEY", "own-key": "E2E_DESK_KEY"}
 
 // runWeeklyMode is -weekly <family>: a real Coach chat on tafs cloud, as the
 // owner's phone, on the test account only (the daily proof's pin), its
@@ -83,7 +96,16 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 		return err
 	}
 	name := "proof-weekly-" + f.Name + "-" + t.run
-	f.Ask = fmt.Sprintf(f.Ask, name)
+	if f.Name == "own-key" {
+		// Where the fake vendor's desk is: E2E_VENDOR, as for the Eval's -desk.
+		vendor := env("E2E_VENDOR")
+		if vendor == "" {
+			return errors.New("E2E_VENDOR is required for the own-key family (from the kiff-test environment)")
+		}
+		f.Ask = fmt.Sprintf(f.Ask, name, deskOf(vendor))
+	} else {
+		f.Ask = fmt.Sprintf(f.Ask, name)
+	}
 	defer func() {
 		n, err := sweepWeekly(context.WithoutCancel(ctx), t, f.Name)
 		fmt.Fprintf(stdout, "  cleanup: %d left by this run or earlier ones taken away (%v)\n", n, err)

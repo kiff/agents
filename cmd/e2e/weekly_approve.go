@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -31,9 +32,8 @@ type weeklyCloud interface {
 // weeklyPhone is what the phone reads and does outside tafs cloud: planque's
 // grant as it shows it, KIFF's draft, and the calls an ask names.
 type weeklyPhone interface {
-	// Grant is the grant's digest as the phone reads it, and its tools by the
-	// catalog's names.
-	Grant(ctx context.Context, grant string) (digest string, tools []string, err error)
+	// Grant is the grant's digest as the phone reads it, and its tools.
+	Grant(ctx context.Context, grant string) (digest string, tools []weeklyTool, err error)
 	DraftVersion(ctx context.Context, draft string) (string, error)
 	ConfirmDraft(ctx context.Context, draft, version string) error
 	// ApproveConnect sends planque's approve body as tafs cloud built it, and
@@ -49,6 +49,41 @@ type weeklyShown struct {
 	SignsCard    *bool
 }
 
+// weeklyTool is one tool of a grant: its name without the grant's suffix,
+// and the vendor's operation it calls.
+type weeklyTool struct{ Name, Op string }
+
+// weeklyJob says whether a grant's tools are the job's (kiff-qa (c)).
+type weeklyJob func(tools []weeklyTool) bool
+
+// exactly is a catalog entry's job: its tools are exactly these, by the
+// catalog's names (the key family).
+func exactly(names ...string) weeklyJob {
+	return func(tools []weeklyTool) bool { return sameTools(toolNames(tools), names, names) }
+}
+
+// within is a raw request's job (the own-key family, kiff-qa 08:47): each
+// tool calls an operation the vendor's own description has, and there's at
+// least one.
+func within(ops ...string) weeklyJob {
+	return func(tools []weeklyTool) bool {
+		for _, t := range tools {
+			if !slices.Contains(ops, t.Op) {
+				return false
+			}
+		}
+		return len(tools) > 0
+	}
+}
+
+func toolNames(tools []weeklyTool) []string {
+	out := make([]string, len(tools))
+	for i, t := range tools {
+		out[i] = t.Name
+	}
+	return out
+}
+
 // errMoreThanTheJob is kiff-qa's (c): the phone refuses a connection that
 // asks for more than the card showed and the job needs.
 var errMoreThanTheJob = errors.New("asked for more than the job")
@@ -58,7 +93,7 @@ var errMoreThanTheJob = errors.New("asked for more than the job")
 // the ask names, and the signed report. It returns tafs cloud's answer to
 // Coach. Anything the phone can't rebuild from what the card showed is
 // refused, never signed.
-func approveCard(ctx context.Context, cloud weeklyCloud, phone weeklyPhone, c weeklyShown, tenant string, fixture []string) (string, error) {
+func approveCard(ctx context.Context, cloud weeklyCloud, phone weeklyPhone, c weeklyShown, tenant string, job weeklyJob) (string, error) {
 	card := weeklyCard{Grant: c.Grant, Draft: c.Draft, SignsCard: c.SignsCard}
 	body := map[string]any{"grant": c.Grant, "session": c.Session}
 	if c.Grant != "" {
@@ -66,14 +101,16 @@ func approveCard(ctx context.Context, cloud weeklyCloud, phone weeklyPhone, c we
 		if err != nil {
 			return "", fmt.Errorf("the phone's read of the grant: %w", err)
 		}
+		// The card shows exactly the grant's tools, and they're the job's.
+		names := toolNames(tools)
 		shown := c.Tools
 		if len(shown) == 0 {
-			shown = tools
+			shown = names
 		}
-		if !sameTools(tools, shown, fixture) {
+		if !sameTools(names, shown, names) || !job(tools) {
 			return "", errMoreThanTheJob
 		}
-		card.ShownDigest, card.Tools = digest, tools
+		card.ShownDigest, card.Tools = digest, names
 		body["shown_digest"] = digest
 	}
 	if c.Draft != "" {
