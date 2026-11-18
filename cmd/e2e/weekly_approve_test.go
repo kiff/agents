@@ -37,7 +37,9 @@ type fakeWeeklyPhone struct {
 func (f *fakeWeeklyPhone) Grant(context.Context, string) (string, []string, error) {
 	return f.digest, f.tools, nil
 }
-func (f *fakeWeeklyPhone) DraftVersion(context.Context, string) (string, error) { return f.version, nil }
+func (f *fakeWeeklyPhone) DraftVersion(context.Context, string) (string, error) {
+	return f.version, nil
+}
 func (f *fakeWeeklyPhone) ConfirmDraft(_ context.Context, d, v string) error {
 	f.confirmed = d + "@" + v
 	return nil
