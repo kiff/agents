@@ -218,6 +218,24 @@ const StateNote = "Where things stand now, as their own sources say (this is cur
 // ("do it", "that one") acts on.
 const NamesNote = "What your tools return isn't kept for this chat's next messages: only what you write is. When you answer, name what the owner may act on next by its id (an order, a record, a payment), so a follow-up such as \"do it\" or \"that one\" can act on it without looking it up again."
 
+// NamesNoteCards is NamesNote for an agent that shows the owner cards (a
+// tool.Shower, such as show: Setup and Coach), whose instructions never let it write an
+// id to the owner: it names what the owner acts on next as they know it, and
+// looks it up again on the follow-up. Read last, a note that asked for ids
+// would undo that rule.
+const NamesNoteCards = "What your tools return isn't kept for this chat's next messages: only what you write is. When you answer, name what the owner may act on next as the owner knows it, by its name, never by an id, so a follow-up such as \"do it\" or \"that one\" can find it again."
+
+// namesNote is the note that ends a chat run's instructions: NamesNoteCards
+// for an agent that shows the owner cards, NamesNote for any other.
+func namesNote(tools []tool.Tool) string {
+	for _, t := range tools {
+		if s, ok := t.(tool.Shower); ok && s.Shows() {
+			return NamesNoteCards
+		}
+	}
+	return NamesNote
+}
+
 // lead is what comes before the conversation the run reads: the summary, or
 // a note that earlier messages are missing, and the opening message.
 func (p past) lead() []model.Block {
