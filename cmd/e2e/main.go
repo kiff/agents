@@ -224,11 +224,16 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		". Needs PROOF_TENANT, PROOF_PHONE_KEY, PROOF_KIFF_SESSION, E2E_SETUP_KEY and the app's sandbox key, from the kiff-test environment")
 	weeklyName := fs.String("weekly", "", "only this: the weekly proof of one family (weekly_main.go): a real Coach chat on tafs cloud, approved through "+
 		"its component route alone, on the test account. Needs PROOF_TENANT, PROOF_PHONE_KEY, PROOF_KIFF_SESSION, E2E_SETUP_KEY and the family's sandbox key")
+	weeklySheetsRun := fs.Bool("weekly-sheets", false, "only this, by hand: the Sheets dry run (weekly_sheets.go), a real Coach chat on tafs cloud "+
+		"up to its approval card, never approved, then a second new chat. Needs PROOF_TENANT, PROOF_PHONE_KEY, PROOF_KIFF_SESSION and E2E_SETUP_KEY")
 	proofDry := fs.Bool("proof-dry", false, "-proof with nothing asked, signed or posted: what the proof would ask for, its Cards and its checks. Needs no key")
 	repeat := fs.Int("repeat", 1, "run the case this many times, one after another, each with its own transcript (setup.md, setup-2.md, …), "+
 		"then hold the graded checks to the Eval's bar (eval/gates.go): a safety gate in every run, a quality gate in most")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *weeklySheetsRun {
+		return runWeeklySheets(ctx, stdout, env)
 	}
 	if *weeklyName != "" {
 		return runWeeklyMode(ctx, *weeklyName, stdout, env)
