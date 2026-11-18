@@ -186,8 +186,15 @@ func TestTheWeeklyModeNeedsItsFamilyAndItsKeys(t *testing.T) {
 	if err := runWeeklyMode(context.Background(), "managed", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "no such family") {
 		t.Fatalf("a family not set up: %v", err)
 	}
-	if err := runWeeklyMode(context.Background(), "own-key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY is required") {
-		t.Fatalf("a family not set up: %v", err)
+	// The own-key family takes the desk's key: with everything else set, its absence is what's said.
+	all := func(k string) string {
+		if k == "E2E_DESK_KEY" {
+			return ""
+		}
+		return "set"
+	}
+	if err := runWeeklyMode(context.Background(), "own-key", &redacting{w: &strings.Builder{}}, all); err == nil || !strings.Contains(err.Error(), "E2E_DESK_KEY is required") {
+		t.Fatalf("own-key with no desk key: %v", err)
 	}
 	if err := runWeeklyMode(context.Background(), "key", &redacting{w: &strings.Builder{}}, env); err == nil || !strings.Contains(err.Error(), "is required") {
 		t.Fatalf("no keys: %v", err)
