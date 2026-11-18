@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/kiff/agents/cmd/internal/testaccount"
 )
 
 // The Sheets dry run (-weekly-sheets, by hand only): a new Coach chat on tafs
@@ -50,6 +52,7 @@ var (
 	errFailedStep  = errors.New("a step failed in the chat")
 	errRefused     = errors.New("the connection server refused a connection in the chat")
 	errNotListed   = errors.New("planque doesn't list the grant the approval card names")
+	errHandedOver  = errors.New("Coach handed a taf over before any approval card")
 )
 
 // driveToCard is the dry run's chat: the owner's request, then Coach's
@@ -128,7 +131,11 @@ func driveToCard(ctx context.Context, chat weeklyChat, phone weeklyPhone, f week
 					return r, err
 				}
 			case "result":
-				return r, errors.New("Coach handed a taf over before any approval card")
+				// Kept for the cleanup, which archives a taf this run made.
+				if c.Card.Taf != nil {
+					r.Taf = c.Card.Taf.Agent
+				}
+				return r, errHandedOver
 			default:
 				continue
 			}
@@ -180,14 +187,28 @@ func runWeeklySheets(ctx context.Context, stdout *redacting, env func(string) st
 	if err != nil {
 		return err
 	}
+	// The tafs on the account before the run: one Coach hands over that was
+	// already there isn't this run's to archive.
+	before, _, err := testaccount.PhoneAccess(ctx, t.kiff)
+	if err != nil {
+		return err
+	}
 	var r sheetsResult
 	defer func() {
 		cleanCtx := context.WithoutCancel(ctx)
 		for _, g := range r.Grants {
 			stdout.hide(g, "<a grant>")
 		}
-		mine := weeklyCleanup(r.weeklyResult, nil, stdout, func(g string) error { return t.phone.Disconnect(cleanCtx, g) }, func(string) error { return nil })
-		fmt.Fprintf(stdout, "  cleanup: %d grant(s) this run asked for taken away\n", mine)
+		mine := weeklyCleanup(r.weeklyResult, before, stdout,
+			func(g string) error { return t.phone.Disconnect(cleanCtx, g) },
+			func(taf string) error {
+				c, err := testaccount.Sweep(cleanCtx, t.kiff, []string{taf})
+				if err == nil && c.Left() > 0 {
+					err = errors.New("it's still on the account")
+				}
+				return err
+			})
+		fmt.Fprintf(stdout, "  cleanup: %d of this run's taken away\n", mine)
 	}()
 	defer func() { writeSummary(env("GITHUB_STEP_SUMMARY"), sheetsSummary(r, retErr)) }()
 	fmt.Fprintln(stdout, "== Sheets dry run")

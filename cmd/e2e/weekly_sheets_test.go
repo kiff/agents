@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -19,6 +20,14 @@ func questionsCard(id string, n int) weeklyThreadCard {
 	for i := 0; i < n; i++ {
 		c.Card.Questions = append(c.Card.Questions, question{ID: string(rune('a' + i)), Text: "?", Options: []option{{Value: "v", Label: "V"}}})
 	}
+	return c
+}
+
+// handedOver is Coach's hand-over card, naming the taf it made.
+func handedOver(agent string) weeklyThreadCard {
+	c := card("result", "r1")
+	b, _ := json.Marshal(map[string]any{"type": "result", "id": "r1", "taf": map[string]string{"agent": agent}})
+	_ = json.Unmarshal(b, &c.Card)
 	return c
 }
 
@@ -69,6 +78,8 @@ func TestTheSheetsDryRunFailsOnWhatTheOwnerSaw(t *testing.T) {
 		"a grant the setup agent didn't ask for": {[]weeklyThread{{Cards: []weeklyThreadCard{questionsCard("q1", 2)}}, {Cards: []weeklyThreadCard{sheetsCard("g9")}}},
 			&fakeWeeklyPhone{notAsked: map[string]bool{"g9": true}}, errNotAsked},
 		"no card in the turns": {[]weeklyThread{{}}, &fakeWeeklyPhone{}, errNoCard},
+		"a taf handed over before any card": {[]weeklyThread{{Cards: []weeklyThreadCard{questionsCard("q1", 2)}}, {Cards: []weeklyThreadCard{handedOver("agt_new")}}},
+			&fakeWeeklyPhone{}, errHandedOver},
 	}
 	for name, c := range cases {
 		r, err := driveToCard(context.Background(), &fakeChat{threads: c.threads}, c.phone, weeklySheets, noWait)
@@ -77,6 +88,9 @@ func TestTheSheetsDryRunFailsOnWhatTheOwnerSaw(t *testing.T) {
 		}
 		if name == "a grant planque doesn't list" && (len(r.Grants) != 1 || r.Listed) {
 			t.Errorf("%s: the grant must be recorded for the cleanup, and not listed: %+v", name, r)
+		}
+		if name == "a taf handed over before any card" && r.Taf != "agt_new" {
+			t.Errorf("%s: the taf must be kept for the cleanup to archive: %+v", name, r)
 		}
 		if name == "a grant the setup agent didn't ask for" && len(r.Grants) != 0 {
 			t.Errorf("%s: another's grant is never this run's to take away: %+v", name, r)
