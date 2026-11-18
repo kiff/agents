@@ -4,8 +4,9 @@
 //
 // Keys move from a secret each (Secrets Manager) to sealed items in the
 // table. Moving reads the new store first and falls back to the old secret,
-// moving it on that first read; a write goes to the new store and deletes
-// the old secret. A removed key leaves a mark in the new store, so it never
+// moving it on that first read; a write goes to the new store and retires
+// the old secret, which can be restored for a week, and a removal deletes
+// it at once. A removed key leaves a mark in the new store, so it never
 // comes back from an old secret whose delete failed, or from a move that
 // read it just before.
 package keys
@@ -52,17 +53,22 @@ type Old interface {
 	// Key is the key; ErrNotFound if there is no secret, or one being
 	// deleted.
 	Key(ctx context.Context, tenant, ref string) (string, error)
-	// Delete deletes the secret at once; none there is not an error.
+	// Retire deletes the secret with a recovery window, so a move or a
+	// replace can be undone for a while; none there, or one already being
+	// deleted, is not an error.
+	Retire(ctx context.Context, tenant, ref string) error
+	// Delete deletes the secret at once, a retired one too; none there is
+	// not an error.
 	Delete(ctx context.Context, tenant, ref string) error
 }
 
 // Moving is the keys while they move: New is read first and written, Old
-// only read, and deleted from.
+// only read, retired from and deleted from.
 type Moving struct {
 	New Store
 	Old Old
-	// Log records an old secret that wasn't deleted, by reference, never by
-	// value. Nil logs nothing.
+	// Log records an old secret that wasn't retired or deleted, by
+	// reference, never by value. Nil logs nothing.
 	Log func(msg, tenant, ref string, err error)
 }
 
@@ -75,9 +81,9 @@ func (m Moving) log(msg, tenant, ref string, err error) {
 }
 
 // Key is the tenant's key by ref. One found only in Old is moved: created
-// in New, create-only, then its secret deleted. If the create loses (a Put
+// in New, create-only, then its secret retired. If the create loses (a Put
 // or a Remove came first), it is never retried over what won, the secret is
-// still deleted, and what won is answered.
+// still retired, and what won is answered.
 func (m Moving) Key(ctx context.Context, tenant, ref string) (string, error) {
 	if err := Valid(tenant, ref); err != nil {
 		return "", err
@@ -105,8 +111,8 @@ func (m Moving) Key(ctx context.Context, tenant, ref string) (string, error) {
 		m.log("keys: a key wasn't moved", tenant, ref, err)
 		return key, nil
 	}
-	if err := m.Old.Delete(ctx, tenant, ref); err != nil {
-		m.log("keys: a moved key's old secret wasn't deleted", tenant, ref, err)
+	if err := m.Old.Retire(ctx, tenant, ref); err != nil {
+		m.log("keys: a moved key's old secret wasn't retired", tenant, ref, err)
 	}
 	if key == "" {
 		return "", ErrRemoved
@@ -114,7 +120,7 @@ func (m Moving) Key(ctx context.Context, tenant, ref string) (string, error) {
 	return key, nil
 }
 
-// Put stores the tenant's key by ref, replacing any, and deletes its old
+// Put stores the tenant's key by ref, replacing any, and retires its old
 // secret.
 func (m Moving) Put(ctx context.Context, tenant, ref, key string) error {
 	if err := Valid(tenant, ref); err != nil {
@@ -127,16 +133,16 @@ func (m Moving) Put(ctx context.Context, tenant, ref, key string) error {
 		return err
 	}
 	if m.Old != nil {
-		if err := m.Old.Delete(ctx, tenant, ref); err != nil {
-			m.log("keys: a replaced key's old secret wasn't deleted", tenant, ref, err)
+		if err := m.Old.Retire(ctx, tenant, ref); err != nil {
+			m.log("keys: a replaced key's old secret wasn't retired", tenant, ref, err)
 		}
 	}
 	return nil
 }
 
-// Remove removes the tenant's key by ref: its old secret first, then the
-// key in New, replaced by a removed key's mark either way. If the secret
-// wasn't deleted, the mark is kept, so the key reads as removed, and the
+// Remove removes the tenant's key by ref: its old secret first, deleted at
+// once even if retired, then the key in New, replaced by a removed key's
+// mark either way. If the secret wasn't deleted, the mark is kept, so the key reads as removed, and the
 // error is answered for the caller to try again. If it never does, the
 // secret stays, read by nothing here: the one-off that ends the move
 // deletes the old secret under any mark that isn't settled.

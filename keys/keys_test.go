@@ -66,10 +66,13 @@ func (t *table) Remove(_ context.Context, tenant, ref string, settled bool) erro
 }
 
 // secrets is the old store in memory; a delete can be made to fail.
+// secrets is the old secrets: a retired one is kept, unread, until deleted.
 type secrets struct {
 	keys       map[string]string
-	deleteFail bool
+	retired    map[string]string
+	deleteFail bool // retires and deletes fail
 	deletes    int
+	retires    int
 }
 
 func (s *secrets) Key(_ context.Context, tenant, ref string) (string, error) {
@@ -79,12 +82,25 @@ func (s *secrets) Key(_ context.Context, tenant, ref string) (string, error) {
 	return "", keys.ErrNotFound
 }
 
+func (s *secrets) Retire(_ context.Context, tenant, ref string) error {
+	s.retires++
+	if s.deleteFail {
+		return errors.New("secretsmanager: throttled")
+	}
+	if k, ok := s.keys[tenant+"/"+ref]; ok {
+		s.retired[tenant+"/"+ref] = k
+		delete(s.keys, tenant+"/"+ref)
+	}
+	return nil
+}
+
 func (s *secrets) Delete(_ context.Context, tenant, ref string) error {
 	s.deletes++
 	if s.deleteFail {
 		return errors.New("secretsmanager: throttled")
 	}
 	delete(s.keys, tenant+"/"+ref)
+	delete(s.retired, tenant+"/"+ref)
 	return nil
 }
 
@@ -95,22 +111,23 @@ func (l *logged) log(msg, tenant, ref string, err error) {
 }
 
 func moving(old map[string]string) (keys.Moving, *table, *secrets, *logged) {
-	t, s, l := newTable(), &secrets{keys: old}, &logged{}
+	t, s, l := newTable(), &secrets{keys: old, retired: map[string]string{}}, &logged{}
 	return keys.Moving{New: t, Old: s, Log: l.log}, t, s, l
 }
 
 // A key found only in its old secret is moved on that first read: kept in
-// the table, its secret deleted, and read from the table after.
+// the table, its secret retired, restorable for a while, and read from the
+// table after.
 func TestAKeyMovesOnItsFirstRead(t *testing.T) {
 	m, tb, old, _ := moving(map[string]string{"t1/kiff/taf_1": "kiff_key_a"})
 	if k, err := m.Key(ctx, "t1", "kiff/taf_1"); err != nil || k != "kiff_key_a" {
 		t.Fatalf("%q %v", k, err)
 	}
-	if tb.keys["t1|kiff/taf_1"] != "kiff_key_a" || len(old.keys) != 0 {
-		t.Fatalf("not moved: table %v, old %v", tb.keys, old.keys)
+	if tb.keys["t1|kiff/taf_1"] != "kiff_key_a" || len(old.keys) != 0 || old.retired["t1/kiff/taf_1"] != "kiff_key_a" || old.deletes != 0 {
+		t.Fatalf("not moved: table %v, old %v, retired %v, %d deletes", tb.keys, old.keys, old.retired, old.deletes)
 	}
-	if k, err := m.Key(ctx, "t1", "kiff/taf_1"); err != nil || k != "kiff_key_a" || old.deletes != 1 {
-		t.Fatalf("second read %q %v, %d deletes", k, err, old.deletes)
+	if k, err := m.Key(ctx, "t1", "kiff/taf_1"); err != nil || k != "kiff_key_a" || old.retires != 1 {
+		t.Fatalf("second read %q %v, %d retires", k, err, old.retires)
 	}
 	if _, err := m.Key(ctx, "t2", "kiff/taf_1"); !errors.Is(err, keys.ErrNotFound) {
 		t.Fatalf("another tenant: %v", err)
@@ -213,9 +230,36 @@ func TestARemovalRacingAMoveWins(t *testing.T) {
 	}
 }
 
-// A put replaces the key in the table and deletes its old secret; one that
-// can't be deleted is logged by reference, never by value.
-func TestAPutDeletesTheOldSecretAndLogsNoKey(t *testing.T) {
+// A put replaces the key in the table and retires its old secret, never
+// deleting it at once.
+func TestAPutRetiresTheOldSecret(t *testing.T) {
+	m, tb, old, _ := moving(map[string]string{"t1/kiff/taf_1": "kiff_key_old"})
+	if err := m.Put(ctx, "t1", "kiff/taf_1", "kiff_key_new"); err != nil {
+		t.Fatal(err)
+	}
+	if tb.keys["t1|kiff/taf_1"] != "kiff_key_new" || old.retired["t1/kiff/taf_1"] != "kiff_key_old" || old.deletes != 0 {
+		t.Fatalf("table %v, retired %v, %d deletes", tb.keys, old.retired, old.deletes)
+	}
+}
+
+// A removal after a move deletes the retired secret at once: a removed key
+// isn't kept for a week.
+func TestARemovalDeletesARetiredSecret(t *testing.T) {
+	m, _, old, _ := moving(map[string]string{"t1/kiff/taf_1": "kiff_key_a"})
+	if _, err := m.Key(ctx, "t1", "kiff/taf_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Remove(ctx, "t1", "kiff/taf_1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(old.retired)+len(old.keys) != 0 || old.deletes != 1 {
+		t.Fatalf("left: retired %v, old %v, %d deletes", old.retired, old.keys, old.deletes)
+	}
+}
+
+// A put's old secret that can't be retired is logged by reference, never by
+// value.
+func TestAPutLogsAnUnretiredSecretAndNoKey(t *testing.T) {
 	m, tb, old, l := moving(map[string]string{"t1/kiff/taf_1": "kiff_key_old"})
 	old.deleteFail = true
 	if err := m.Put(ctx, "t1", "kiff/taf_1", "kiff_key_new"); err != nil {
@@ -275,7 +319,7 @@ func TestAReferenceStaysInItsTenant(t *testing.T) {
 			t.Errorf("read %q %q: %v", c[0], c[1], err)
 		}
 	}
-	if len(tb.keys)+len(tb.removed) != 0 || old.deletes != 0 {
-		t.Fatalf("reached a store: %v %v %d", tb.keys, tb.removed, old.deletes)
+	if len(tb.keys)+len(tb.removed) != 0 || old.deletes+old.retires != 0 {
+		t.Fatalf("reached a store: %v %v %d %d", tb.keys, tb.removed, old.deletes, old.retires)
 	}
 }

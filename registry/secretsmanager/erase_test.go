@@ -59,6 +59,10 @@ func (e *erasable) DeleteSecret(_ context.Context, in *sm.DeleteSecretInput, _ .
 	return &sm.DeleteSecretOutput{}, nil
 }
 
+func (e *erasable) RestoreSecret(context.Context, *sm.RestoreSecretInput, ...func(*sm.Options)) (*sm.RestoreSecretOutput, error) {
+	return &sm.RestoreSecretOutput{}, nil
+}
+
 // Deleting an account erases its sealing key and its drafts' records at
 // once, every page of them, and nothing of another tenant's, nor the tafs'
 // keys, which are tafs cloud's (kiff/tafs#185). Asked again, it's done.

@@ -110,14 +110,14 @@ func segment(s string) bool {
 }
 
 // OldKeys is the keys' secrets while they move to the table (package keys):
-// read, and deleted once a key is kept there or removed.
+// read, retired once a key is kept there, and deleted once it's removed.
 type OldKeys struct {
 	secrets *Secrets
-	api     DeleteAPI
+	api     RestoreAPI
 }
 
-// NewOldKeys returns the old secrets of s, deleted through api.
-func NewOldKeys(s *Secrets, api DeleteAPI) *OldKeys { return &OldKeys{secrets: s, api: api} }
+// NewOldKeys returns the old secrets of s, retired and deleted through api.
+func NewOldKeys(s *Secrets, api RestoreAPI) *OldKeys { return &OldKeys{secrets: s, api: api} }
 
 // Key is the tenant's key by ref; ErrNotFound if there's no secret, or one
 // being deleted.
@@ -129,16 +129,28 @@ func (o *OldKeys) Key(ctx context.Context, tenant, ref string) (string, error) {
 	return key, err
 }
 
-// Delete deletes the secret at once, with no recovery window: the key is
-// kept in the table, or removed for good. None there is not an error.
+// Retire deletes the secret with the recovery window: the key is kept in
+// the table, and the secret can be restored for RecoveryDays if that went
+// wrong. None there, or one already being deleted, is not an error.
+func (o *OldKeys) Retire(ctx context.Context, tenant, ref string) error {
+	name, err := o.secrets.Name(tenant, ref)
+	if err != nil {
+		return err
+	}
+	if err := retire(ctx, o.api, name); err != nil {
+		return fmt.Errorf("secretsmanager: retiring the key's secret: %w", err)
+	}
+	return nil
+}
+
+// Delete deletes the secret at once, a retired one too: the key is removed
+// for good. None there is not an error.
 func (o *OldKeys) Delete(ctx context.Context, tenant, ref string) error {
 	name, err := o.secrets.Name(tenant, ref)
 	if err != nil {
 		return err
 	}
-	_, err = o.api.DeleteSecret(ctx, &sm.DeleteSecretInput{SecretId: aws.String(name), ForceDeleteWithoutRecovery: aws.Bool(true)})
-	var missing *types.ResourceNotFoundException
-	if err != nil && !errors.As(err, &missing) {
+	if err := purge(ctx, o.api, name); err != nil {
 		return fmt.Errorf("secretsmanager: deleting the key's secret: %w", err)
 	}
 	return nil

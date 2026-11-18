@@ -33,6 +33,10 @@ func (e *eraseSecrets) DeleteSecret(_ context.Context, in *sm.DeleteSecretInput,
 	return &sm.DeleteSecretOutput{}, nil
 }
 
+func (e *eraseSecrets) RestoreSecret(context.Context, *sm.RestoreSecretInput, ...func(*sm.Options)) (*sm.RestoreSecretOutput, error) {
+	return &sm.RestoreSecretOutput{}, nil
+}
+
 func (e *eraseSecrets) left() []string {
 	var out []string
 	for n := range e.names {
