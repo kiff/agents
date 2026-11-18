@@ -1482,7 +1482,9 @@ func (t *test) approve(ctx context.Context, c component, approved *string) (rere
 		// then fails is still this run's, disconnected at its end, and its taf
 		// is the sweep's after it. An Eval's setup stopped at the sign-in left
 		// one approved, and the next run's taf of the same name took it up.
-		t.madeGrant(g)
+		if err := t.madeGrant(ctx, g); err != nil {
+			return false, "", err
+		}
 		status, err := t.phone.ApproveAndSignIn(ctx, g)
 		if err != nil {
 			return false, "", fmt.Errorf("the grant %s: %w", g.ID, err)
@@ -2501,10 +2503,20 @@ func unshare(ctx context.Context, k *client, agent, group string) error {
 
 // madeGrant records a grant the phone is about to approve as this run's:
 // cleanup disconnects it, and its taf goes to -made for the sweep, whether
-// or not the run gets as far as confirming the taf's draft.
-func (t *test) madeGrant(g testaccount.Grant) {
+// or not the run gets as far as confirming the taf's draft. Only a grant the
+// test's setup agent asked for is the run's: the account is shared, so a card
+// naming anyone else's grant fails the run, and that grant's taf is never
+// swept.
+func (t *test) madeGrant(ctx context.Context, g testaccount.Grant) error {
 	if slices.Contains(t.grants, g.ID) {
-		return
+		return nil
+	}
+	asked, err := t.askedGrants(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(asked, func(a askedGrant) bool { return a.ID == g.ID }) {
+		return fmt.Errorf("the grant %s on this chat's card isn't one the test's setup agent asked for: the phone doesn't approve it", g.ID)
 	}
 	t.grants = append(t.grants, g.ID)
 	if a := g.Request.Agent; a != "" {
@@ -2512,6 +2524,7 @@ func (t *test) madeGrant(g testaccount.Grant) {
 			t.logf("recording the taf for the sweep: %v", err)
 		}
 	}
+	return nil
 }
 
 // cleanup disconnects the grant, revokes the taf's Cards and archives the
