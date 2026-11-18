@@ -20,14 +20,15 @@ type weeklyChat interface {
 	Thread(ctx context.Context, session string) (weeklyThread, error)
 	// Answer answers a card that waits for it, as data.
 	Answer(ctx context.Context, component string, answer json.RawMessage, session string) error
-	// Spent is what the run has cost so far, in millionths of a dollar.
-	Spent(ctx context.Context) (int64, error)
 }
 
 // weeklyThread is Coach's chat as tafs cloud gives it.
 type weeklyThread struct {
 	Working bool
 	Cards   []weeklyThreadCard
+	// Spent is what the chat's model turns cost so far, in millionths of a
+	// US dollar (the thread's usage.cost_micro_usd, from kiff/agents' runs).
+	Spent int64
 }
 
 // weeklyThreadCard is one card in the chat, and whether it's answered.
@@ -90,10 +91,7 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 		if err != nil {
 			return r, err
 		}
-		if r.Spent, err = chat.Spent(ctx); err != nil {
-			return r, fmt.Errorf("reading the cost: %w", err)
-		}
-		if r.Spent >= limit {
+		if r.Spent = th.Spent; r.Spent >= limit {
 			return r, fmt.Errorf("%w: US$%.2f spent of US$%.2f", errCostCap, float64(r.Spent)/1e6, f.CapUSD)
 		}
 		// The rules notices this chat showed, by id: what a confirm may agree to.

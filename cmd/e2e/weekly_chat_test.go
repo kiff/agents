@@ -2,7 +2,6 @@ package main
 
 import (
 	"testing"
-	"time"
 )
 
 func TestTheThreadIsReadAsTheAppReadsIt(t *testing.T) {
@@ -30,11 +29,9 @@ func TestTheThreadIsReadAsTheAppReadsIt(t *testing.T) {
 	}
 }
 
-func TestOnlyCoachsRunsSinceTheStartCountToTheCap(t *testing.T) {
-	since := time.Date(2026, 11, 23, 5, 0, 0, 0, time.UTC)
-	raw := []byte(`{"items":[{"at":"2026-11-23T05:10:00Z","credits":40},{"at":"2026-11-23T05:02:00Z","credits":10},{"at":"2026-11-22T20:00:00Z","credits":500}]}`)
-	got, err := spentSince(raw, since, 0.01)
-	if err != nil || got != 500_000 {
-		t.Fatalf("spent %d (%v); want 50 credits at US$0.01 = US$0.50", got, err)
+func TestTheCapReadsTheChatsOwnCostInDollars(t *testing.T) {
+	th, err := threadOf([]byte(`{"working":null,"usage":{"turns":3,"tokens_in":9000,"cost_micro_usd":1250000},"components":[]}`))
+	if err != nil || th.Spent != 1_250_000 {
+		t.Fatalf("spent %d (%v); want US$1.25 from usage.cost_micro_usd", th.Spent, err)
 	}
 }

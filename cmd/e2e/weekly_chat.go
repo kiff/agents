@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // liveWeeklyChat is Coach's chat on tafs cloud, as the owner's phone uses it
@@ -16,10 +15,7 @@ import (
 // read until Coach is done, and its cards answered as data.
 type liveWeeklyChat struct {
 	t     *test
-	coach string    // Coach's taf id on tafs cloud (GET /v1/setup)
-	since time.Time // the run's start: only Coach's runs after it count to the cap
-	// usdPerCredit turns tafs cloud's credits into dollars, for the cap.
-	usdPerCredit float64
+	coach string // Coach's taf id on tafs cloud (GET /v1/setup)
 }
 
 func (c *liveWeeklyChat) cloud() *client {
@@ -96,7 +92,10 @@ func (c *liveWeeklyChat) Thread(ctx context.Context, session string) (weeklyThre
 // each with whether it's answered and, on an approval, what it showed.
 func threadOf(raw []byte) (weeklyThread, error) {
 	var w struct {
-		Working    *string `json:"working"`
+		Working *string `json:"working"`
+		Usage   struct {
+			Cost int64 `json:"cost_micro_usd"`
+		} `json:"usage"`
 		Components []struct {
 			Session   string          `json:"session"`
 			Component json.RawMessage `json:"component"`
@@ -106,7 +105,7 @@ func threadOf(raw []byte) (weeklyThread, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return weeklyThread{}, fmt.Errorf("tafs cloud's thread: %w", err)
 	}
-	th := weeklyThread{Working: w.Working != nil && *w.Working != ""}
+	th := weeklyThread{Working: w.Working != nil && *w.Working != "", Spent: w.Usage.Cost}
 	for _, s := range w.Components {
 		var c weeklyThreadCard
 		c.Session = s.Session
@@ -138,37 +137,4 @@ func (c *liveWeeklyChat) Answer(ctx context.Context, component string, answer js
 		return err
 	}
 	return a.Err()
-}
-
-// Spent is Coach's credits since the run started, in millionths of a dollar.
-func (c *liveWeeklyChat) Spent(ctx context.Context) (int64, error) {
-	a, err := c.cloud().Do(ctx, http.MethodGet, "/v1/usage/credits/tafs/"+url.PathEscape(c.coach), nil)
-	if err != nil {
-		return 0, err
-	}
-	if err := a.Err(); err != nil {
-		return 0, err
-	}
-	return spentSince([]byte(a.Raw), c.since, c.usdPerCredit)
-}
-
-// spentSince sums the credits of Coach's runs that ended since the run
-// started, in millionths of a dollar.
-func spentSince(raw []byte, since time.Time, usdPerCredit float64) (int64, error) {
-	var out struct {
-		Items []struct {
-			At      time.Time `json:"at"`
-			Credits float64   `json:"credits"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return 0, fmt.Errorf("tafs cloud's credits: %w", err)
-	}
-	var credits float64
-	for _, it := range out.Items {
-		if !it.At.Before(since) {
-			credits += it.Credits
-		}
-	}
-	return int64(credits * usdPerCredit * 1e6), nil
 }

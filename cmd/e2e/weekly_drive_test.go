@@ -29,8 +29,12 @@ func (f *fakeChat) Send(_ context.Context, _, text string) error {
 }
 func (f *fakeChat) Thread(context.Context, string) (weeklyThread, error) {
 	i := min(f.reads, len(f.threads)-1)
+	th := f.threads[i]
+	if len(f.spent) > 0 {
+		th.Spent = f.spent[min(f.reads, len(f.spent)-1)]
+	}
 	f.reads++
-	return f.threads[i], nil
+	return th, nil
 }
 func (f *fakeChat) Answer(_ context.Context, c string, a json.RawMessage, _ string) error {
 	if f.answers == nil {
@@ -38,16 +42,6 @@ func (f *fakeChat) Answer(_ context.Context, c string, a json.RawMessage, _ stri
 	}
 	f.answers[c] = string(a)
 	return nil
-}
-func (f *fakeChat) Spent(context.Context) (int64, error) {
-	if len(f.spent) == 0 {
-		return 0, nil
-	}
-	s := f.spent[0]
-	if len(f.spent) > 1 {
-		f.spent = f.spent[1:]
-	}
-	return s, nil
 }
 
 func noWait(context.Context) error { return nil }
