@@ -129,7 +129,7 @@ func (p liveWeeklyPhone) ConfirmDraft(ctx context.Context, draft, version string
 // ApproveConnect sends planque's approve body as tafs cloud built it. A grant
 // planque already holds the sign-in of connects at once; one signed in at the
 // provider is confirmed with planque's one-use code. A vendor's sign-in page
-// is never opened: the weekly proof clicks no consent page (kiff-qa 05:27),
+// is never opened: the weekly proof clicks no consent page,
 // so a connection that needs one ends not connected.
 func (p liveWeeklyPhone) ApproveConnect(ctx context.Context, grant string, body json.RawMessage) (string, error) {
 	path := p.t.phone.AccountPath() + "/grants/" + url.PathEscape(grant) + "/approve"

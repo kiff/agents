@@ -15,10 +15,10 @@ import (
 	"github.com/kiff/agents/tool/kiff"
 )
 
-// weeklyFamilies are the weekly proof's families (PM 05:32, kiff-qa 05:27):
+// weeklyFamilies are the weekly proof's families:
 // one real Coach chat each, approved through tafs cloud's component route.
 // Only key is set up today; a managed sign-in stays on the emulator pass
-// until one completes without a consent page (integrations-prover 08:13).
+// until one completes without a consent page.
 var weeklyFamilies = map[string]weeklyFamily{
 	"key": {
 		Name:    "key",
@@ -28,7 +28,7 @@ var weeklyFamilies = map[string]weeklyFamily{
 		CapUSD:  3,
 		MaxTurn: 8,
 	},
-	// own-key (kiff-qa 08:47): a vendor that isn't a catalog entry, by the
+	// own-key: a vendor that isn't a catalog entry, by the
 	// owner's own key as a raw request: planque's fake vendor desk, its
 	// operations held to the desk's own description.
 	"own-key": {
@@ -38,7 +38,7 @@ var weeklyFamilies = map[string]weeklyFamily{
 			"The desk has no MCP server: its API is described at %[2]s/openapi.json, its operations start at %[2]s/v1, " +
 			"and its key goes in the X-Desk-Key header. Name the taf %[1]s.",
 		Fact: "Only our workspace ws_demo, and it only reads tickets: searching them and fetching one. Up to 50 reads a day.",
-		// The reading job's own operations, nothing more (kiff-qa 09:13).
+		// The reading job's own operations, nothing more.
 		Job:     operations(deskOperations, "searchTickets", "fetchTicket"),
 		CapUSD:  3,
 		MaxTurn: 8,
@@ -49,8 +49,8 @@ var weeklyFamilies = map[string]weeklyFamily{
 var weeklyKeyEnv = map[string]string{"key": "PROOF_PIPEDRIVE_KEY", "own-key": "E2E_DESK_KEY"}
 
 // weeklyOwnEnv are the secrets a family alone needs. When one isn't set, the
-// family is skipped, not proved, and the other family still runs (PM 09:27);
-// a second skip in a row fails the job (kiff-qa 09:28). The account's own
+// family is skipped, not proved, and the other family still runs;
+// a second skip in a row fails the job. The account's own
 // secrets, which both families share, are never a skip: they fail the job.
 var weeklyOwnEnv = map[string][]string{"key": {"PROOF_PIPEDRIVE_KEY"}, "own-key": {"E2E_DESK_KEY", "E2E_VENDOR"}}
 
@@ -134,7 +134,7 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 	}
 	chat := &liveWeeklyChat{t: t}
 	if chat.coach, err = coachOf(ctx, chat.cloud()); err != nil {
-		// Never start a Coach from the proof (agentgabo 08:14).
+		// Never start a Coach from the proof.
 		return err
 	}
 	name := "proof-weekly-" + f.Name + "-" + t.run
@@ -155,8 +155,8 @@ func runWeeklyMode(ctx context.Context, family string, stdout *redacting, env fu
 
 	fmt.Fprintf(stdout, "== weekly proof, %s family\n", f.Name)
 	var r weeklyResult
-	// The weekly results go to the job's summary, never to KIFF's proof ingest
-	// (kiff-qa 09:13): a weekly failure can be Coach's wording, not the app's.
+	// The weekly results go to the job's summary, never to KIFF's proof ingest:
+	// a weekly failure can be Coach's wording, not the app's.
 	defer func() { writeSummary(env("GITHUB_STEP_SUMMARY"), weeklySummary(f, r, retErr)) }()
 	r, err = driveCoach(ctx, chat, &liveWeeklyCloud{t: t, coach: chat.coach}, liveWeeklyPhone{t: t}, f, t.tenant, pollWait(5*time.Second))
 	fmt.Fprintf(stdout, "  turns %d, spent US$%.2f of US$%.2f, approvals %d, taps %d\n", r.Turns, float64(r.Spent)/1e6, f.CapUSD, len(r.Approvals), len(r.Taps))

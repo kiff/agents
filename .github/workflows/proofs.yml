@@ -26,7 +26,7 @@ name: Proofs
 # token: only the claims, which name this repository and this run, and a
 # fingerprint, which names a public key.
 on:
-  # The weekly proof: Mondays at 05:00 UTC (PM 05:32).
+  # The weekly proof: Mondays at 05:00 UTC.
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
@@ -170,7 +170,7 @@ jobs:
           go-version-file: go.mod
       - name: The families the last weekly run skipped
         # A family skipped for a secret of its own not set is "skipped, not
-        # proved"; skipped twice in a row, it fails the job (kiff-qa 09:28).
+        # proved"; skipped twice in a row, it fails the job.
         # A skip shows as the step "Skipped, not proved: <family>" that ran;
         # this reads those steps from the last run whose weekly job ran.
         id: last

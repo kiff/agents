@@ -53,7 +53,7 @@ type weeklyShown struct {
 // and the vendor's operation it calls.
 type weeklyTool struct{ Name, Op string }
 
-// weeklyJob says whether a grant's tools are the job's (kiff-qa (c)).
+// weeklyJob says whether a grant's tools are the job's.
 type weeklyJob func(tools []weeklyTool) bool
 
 // exactly is a catalog entry's job: its tools are exactly these, by the
@@ -62,8 +62,8 @@ func exactly(names ...string) weeklyJob {
 	return func(tools []weeklyTool) bool { return sameTools(toolNames(tools), names, names) }
 }
 
-// operations is a raw request's job (the own-key family, kiff-qa 08:47 and
-// 09:13): its tools call exactly the job's operations, and each of them is
+// operations is a raw request's job (the own-key family): its
+// tools call exactly the job's operations, and each of them is
 // one the vendor's own description has. A grant asking for more than the job,
 // a write for a reading job included, is refused.
 func operations(described []string, job ...string) weeklyJob {
@@ -91,7 +91,7 @@ func toolNames(tools []weeklyTool) []string {
 	return out
 }
 
-// errMoreThanTheJob is kiff-qa's (c): the phone refuses a connection that
+// errMoreThanTheJob is the tools condition: the phone refuses a connection that
 // asks for more than the card showed and the job needs.
 var errMoreThanTheJob = errors.New("asked for more than the job")
 

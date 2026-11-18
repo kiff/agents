@@ -150,7 +150,7 @@ func TestAnOwnKeyGrantIsExactlyTheJobsOwnOperations(t *testing.T) {
 		t.Fatal("the reading job's own two operations aren't the job's")
 	}
 	for name, tools := range map[string][]weeklyTool{
-		"a write for a reading job (kiff-qa 09:13)": {search, fetch, {Name: "desk_reply", Op: "postReply"}},
+		"a write for a reading job":              {search, fetch, {Name: "desk_reply", Op: "postReply"}},
 		"one short":                              {search},
 		"an operation the desk doesn't describe": {search, fetch, {Name: "desk_close", Op: "closeTicket"}},
 		"none":                                   nil,

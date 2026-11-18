@@ -1,6 +1,6 @@
 package main
 
-// The weekly proof's approval (kiff-cloud#1716, PM 05:42): a real Coach chat
+// The weekly proof's approval: a real Coach chat
 // on tafs cloud, its approval card answered only through tafs cloud's
 // component route, as the owner's phone answers it. This file is the phone's
 // side of that route: what it checks before it signs, ported from the
@@ -115,7 +115,7 @@ func stepMatchesMark(signsCard *bool, step string) bool {
 	return *signsCard == slices.Contains([]string{"cards", "key_and_cards", "tools_and_cards"}, step)
 }
 
-// sameTools is kiff-qa's condition (c): the phone signs a connection only
+// sameTools is the tools condition: the phone signs a connection only
 // when the tools it asks for are exactly the card's and the family's
 // fixture's. A broader ask is refused on the phone and fails the run as
 // "asked for more than the job".

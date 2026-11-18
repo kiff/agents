@@ -47,7 +47,7 @@ type weeklyFamily struct {
 	Name string
 	Ask  string
 	Fact string
-	// Job is what the grant's tools must be (kiff-qa (c)).
+	// Job is what the grant's tools must be.
 	Job     weeklyJob
 	CapUSD  float64
 	MaxTurn int
@@ -78,9 +78,9 @@ var (
 // driveCoach is the weekly proof's chat: the owner's request, then each of
 // Coach's cards answered as the owner's phone does, until Coach hands a taf
 // over. The scripted turns answer questions and choices only, never with an
-// approval in words (kiff-qa (b)): the only approval is the component route
+// approval in words: the only approval is the component route
 // (approveCard). The cost is read after each turn, and the run stops before
-// the next one would pass the cap (kiff-qa (d)).
+// the next one would pass the cap.
 func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone weeklyPhone, f weeklyFamily, tenant string, wait func(context.Context) error) (weeklyResult, error) {
 	var r weeklyResult
 	session, err := chat.Start(ctx, f.Ask)
@@ -180,7 +180,7 @@ func settled(ctx context.Context, chat weeklyChat, session string, wait func(con
 	}
 }
 
-// scriptedChoice is the owner's tap on a confirm card (kiff-qa 07:39). An
+// scriptedChoice is the owner's tap on a confirm card. An
 // agreeing option is tapped only when the card agrees to a rules notice this
 // chat showed (its agrees names a notice among the chat's own cards), as the
 // app does on the owner's tap. Otherwise the first option that doesn't agree;

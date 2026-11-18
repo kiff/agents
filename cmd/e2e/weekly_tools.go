@@ -18,8 +18,8 @@ type weeklyTafTools interface {
 	TafTools(ctx context.Context, agent string) ([]string, error)
 }
 
-// toolsKept is the weekly proof's check after the approval, both ways
-// (kiff-qa 08:15): every tool of the approved connection is the taf's now,
+// toolsKept is the weekly proof's check after the approval, both ways:
+// every tool of the approved connection is the taf's now,
 // and every tool the taf gained since before the approval is one the signed
 // card showed. A tool kept that the owner never saw fails as much as one
 // missing.
