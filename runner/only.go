@@ -28,8 +28,11 @@ func (x *execution) limit(ctx context.Context, a *agent.Agent, d registry.Defini
 			if err != nil {
 				return err
 			}
-			// Fail closed: the catalog must be found to be taken out, or the session would still list the other skills.
-			if cat := skill.Catalog(all); cat != "" {
+			// Instructions that map their skills were never given the catalog
+			// (registry.Build, skill.Mapped): there's nothing to take out.
+			// Otherwise fail closed: the catalog must be found to be taken
+			// out, or the session would still list the other skills.
+			if cat := skill.Catalog(all); cat != "" && !skill.Mapped(d.Instructions, all) {
 				if !strings.Contains(a.System, "\n\n"+cat) {
 					return fmt.Errorf("limited session: the skills catalog wasn't found in the instructions, so it can't be left out")
 				}
