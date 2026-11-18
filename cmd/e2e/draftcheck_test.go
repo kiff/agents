@@ -13,6 +13,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -495,5 +497,35 @@ func TestADraftlessApprovalIsAskedAboutAsTheChatIsRead(t *testing.T) {
 	}
 	if tt.splitUnchecked != 1 {
 		t.Errorf("counted %d, want only the one not taken", tt.splitUnchecked)
+	}
+}
+
+// An Eval's setup stopped at the sign-in left its grant approved, and the
+// next run's taf of the same name took it up. A grant the phone begins to
+// approve is the run's from then: cleanup disconnects it, and its taf goes
+// to -made for the sweep, though the phone's step failed and no draft was
+// confirmed.
+func TestAGrantWhoseApprovalFailsIsStillTheRuns(t *testing.T) {
+	tt, f := checkWorld(t, map[string]any{"outcome": "ok", "version": "v3"})
+	tt.cfg.made = filepath.Join(t.TempDir(), "made")
+	c := component{Type: "approval", ID: "a1", Grant: "grt_key", Draft: "drf_1"}
+	var approved string
+	if _, _, err := tt.approve(context.Background(), c, &approved); err == nil {
+		t.Fatal("a key no one gave was approved")
+	}
+	if !slices.Contains(tt.grants, "grt_key") || approved != "" {
+		t.Fatalf("grants %v, approved %q", tt.grants, approved)
+	}
+	// The taf's second grant fails as well: both are the run's.
+	c = component{Type: "approval", ID: "a2", Grant: "grt_adding", Draft: "drf_2"}
+	if _, _, err := tt.approve(context.Background(), c, &approved); err == nil || !slices.Contains(tt.grants, "grt_adding") {
+		t.Fatalf("the second grant: %v, grants %v", err, tt.grants)
+	}
+	made, err := testaccount.ReadMade(tt.cfg.made)
+	if err != nil || !slices.Equal(made, []string{"refunds-x"}) {
+		t.Fatalf("made %v, %v", made, err)
+	}
+	if strings.Contains(strings.Join(f.calls, "\n"), "/confirm") {
+		t.Fatalf("confirmed: %v", f.calls)
 	}
 }

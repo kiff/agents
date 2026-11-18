@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"github.com/kiff/agents/cmd/internal/testaccount"
+	"sync"
 
 	"bytes"
 	"context"
@@ -408,27 +410,44 @@ func TestPhoneReadsALongGrantsList(t *testing.T) {
 
 // fakeShared is planque and KIFF on an account the test shares with its
 // owner: the owner's Refunds grant (grt_owner) and Card (m_owner), and an
-// earlier run's grant (grt_old), asked for by the test's setup agent. It
-// records each call that changes something.
-func fakeShared(t *testing.T) (*httptest.Server, *[]string) {
+// earlier run's grants, asked for by the test's setup agent: one connected
+// (grt_old), one pending (grt_pending), one approved and never signed in to
+// (grt_approved) and one disconnected (grt_done). A disconnect ends a grant,
+// unless stuck. It records each call that changes something.
+func fakeShared(t *testing.T, stuck bool) (*httptest.Server, *[]string) {
 	t.Helper()
+	var mu sync.Mutex
 	var changed []string
+	asked := []string{"grt_old", "grt_pending", "grt_approved", "grt_done"}
+	status := map[string]string{"grt_owner": "connected", "grt_old": "connected", "grt_pending": "pending", "grt_approved": "approved", "grt_done": "disconnected"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		list := func(ids []string) {
+			var gs []map[string]any
+			for _, id := range ids {
+				gs = append(gs, map[string]any{"id": id, "status": status[id]})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"grants": gs})
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/t1/asked-grants":
 			if r.Header.Get("Authorization") != "Bearer setup-key" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_, _ = w.Write([]byte(`{"grants":[{"id":"grt_old","status":"connected","tools":[{"name":"create_refund"}]}]}`))
+			list(asked)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/accounts/t1/grants":
 			// The account's whole list, the owner's included.
-			_, _ = w.Write([]byte(`{"grants":[{"id":"grt_owner","status":"connected"},{"id":"grt_old","status":"connected"}]}`))
+			list(append([]string{"grt_owner"}, asked...))
 		case r.Method == http.MethodGet:
 			w.WriteHeader(http.StatusNotFound)
 		default:
 			changed = append(changed, r.Method+" "+r.URL.Path)
+			if id, ok := strings.CutPrefix(r.URL.Path, "/v1/accounts/t1/grants/"); ok && r.Method == http.MethodDelete && !stuck {
+				status[id] = "disconnected"
+			}
 			_, _ = w.Write([]byte(`{}`))
 		}
 	}))
@@ -436,26 +455,31 @@ func fakeShared(t *testing.T) (*httptest.Server, *[]string) {
 	return srv, &changed
 }
 
-// A run touches only what it made: at its start it disconnects only the
-// grants its own setup agent asked for, and its cleanup only what it
-// recorded. The owner's connected grant and Card on the same account are
-// left alone.
-func TestARunLeavesWhatItDidntMake(t *testing.T) {
-	srv, changed := fakeShared(t)
+func sharedRun(srv *httptest.Server) *test {
 	var log bytes.Buffer
-	tt := &test{cfg: config{planque: srv.URL, setupKey: "setup-key", log: &log}, out: &redacting{w: &log}, hc: srv.Client(),
+	return &test{cfg: config{planque: srv.URL, setupKey: "setup-key", log: &log}, out: &redacting{w: &log}, hc: srv.Client(),
 		phone: &phone{Planque: &client{Base: srv.URL, HTTP: srv.Client()}, Tenant: "t1"},
 		kiff:  &client{Base: srv.URL, HTTP: srv.Client()}}
+}
+
+// A run touches only what it made: at its start it ends only the grants its
+// own setup agent asked for that planque hasn't finished, pending and
+// approved ones too, and its cleanup only what it recorded. The owner's
+// connected grant and Card on the same account are left alone.
+func TestARunLeavesWhatItDidntMake(t *testing.T) {
+	srv, changed := fakeShared(t, false)
+	tt := sharedRun(srv)
 	if err := tt.clearEarlierRuns(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"DELETE /v1/accounts/t1/grants/grt_old"}; !slices.Equal(*changed, want) {
+	want := []string{"DELETE /v1/accounts/t1/grants/grt_old", "DELETE /v1/accounts/t1/grants/grt_pending", "DELETE /v1/accounts/t1/grants/grt_approved"}
+	if !slices.Equal(*changed, want) {
 		t.Fatalf("at the start: %v, want %v", *changed, want)
 	}
 	*changed = nil
 	tt.grants, tt.cardIDs, tt.tafAgents = []string{"grt_new"}, []string{"m_new"}, []string{"taf-new"}
 	tt.cleanup()
-	want := []string{"DELETE /v1/accounts/t1/grants/grt_new", "POST /v1/me/mandates/m_new/revoke", "POST /v1/me/agents/taf-new/archive"}
+	want = []string{"DELETE /v1/accounts/t1/grants/grt_new", "POST /v1/me/mandates/m_new/revoke", "POST /v1/me/agents/taf-new/archive"}
 	if !slices.Equal(*changed, want) {
 		t.Fatalf("at cleanup: %v, want %v", *changed, want)
 	}
@@ -463,6 +487,17 @@ func TestARunLeavesWhatItDidntMake(t *testing.T) {
 		if strings.Contains(c, "owner") {
 			t.Fatalf("touched the owner's %s", c)
 		}
+	}
+}
+
+// A run doesn't start beside an earlier run's grant that is still
+// unfinished after it was ended: the run's taf of the same name could take
+// it up.
+func TestARunDoesntStartBesideAnUnfinishedGrant(t *testing.T) {
+	srv, _ := fakeShared(t, true)
+	err := sharedRun(srv).clearEarlierRuns(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "doesn't start") {
+		t.Fatalf("started beside an unfinished grant: %v", err)
 	}
 }
 
