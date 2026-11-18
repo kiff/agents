@@ -143,3 +143,46 @@ func TestAHandOverWithNoComponentApprovalFailsTheRun(t *testing.T) {
 		t.Fatal("a taf handed over with no approval passed")
 	}
 }
+
+func confirmCard(agrees string, opts ...option) weeklyThreadCard {
+	c := card("confirm", "c1")
+	c.Card.Agrees, c.Card.Options = agrees, opts
+	return c
+}
+
+var (
+	agreeOpt  = option{Value: "yes", Label: "Yes, these rules"}
+	changeOpt = option{Value: "change", Label: "Change them"}
+)
+
+func TestAConfirmAgreeingToAShownNoticeIsTappedAndReported(t *testing.T) {
+	notice := card("notice", "n1")
+	chat := &fakeChat{threads: []weeklyThread{{Cards: []weeklyThreadCard{notice, confirmCard("n1", agreeOpt, changeOpt)}}, {}}}
+	r, _ := driveCoach(context.Background(), chat, &fakeTafsCloud{}, &fakeWeeklyPhone{}, pipedriveFamily, "t1", noWait)
+	if chat.answers["c1"] != `"yes"` || len(r.Taps) == 0 || r.Taps[0] != (weeklyTap{Card: "c1", Words: "Yes, these rules", Agrees: "n1"}) {
+		t.Fatalf("answered %s, taps %+v", chat.answers["c1"], r.Taps)
+	}
+}
+
+func TestAConfirmAgreeingToANoticeNotShownIsNeverTapped(t *testing.T) {
+	chat := &fakeChat{threads: []weeklyThread{{Cards: []weeklyThreadCard{confirmCard("n9", agreeOpt)}}}}
+	_, err := driveCoach(context.Background(), chat, &fakeTafsCloud{}, &fakeWeeklyPhone{}, pipedriveFamily, "t1", noWait)
+	if !errors.Is(err, errInWords) || chat.answers["c1"] != "" {
+		t.Fatalf("err %v, answered %q", err, chat.answers["c1"])
+	}
+}
+
+func TestAnAllAgreeingConfirmWithNoNoticeFailsTheRun(t *testing.T) {
+	chat := &fakeChat{threads: []weeklyThread{{Cards: []weeklyThreadCard{confirmCard("", agreeOpt, option{Value: "ok", Label: "OK"})}}}}
+	if _, err := driveCoach(context.Background(), chat, &fakeTafsCloud{}, &fakeWeeklyPhone{}, pipedriveFamily, "t1", noWait); !errors.Is(err, errInWords) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestAMixedConfirmTakesTheOptionThatDoesntAgree(t *testing.T) {
+	chat := &fakeChat{threads: []weeklyThread{{Cards: []weeklyThreadCard{confirmCard("", agreeOpt, changeOpt)}}, {}}}
+	r, _ := driveCoach(context.Background(), chat, &fakeTafsCloud{}, &fakeWeeklyPhone{}, pipedriveFamily, "t1", noWait)
+	if chat.answers["c1"] != `"change"` || len(r.Taps) == 0 || r.Taps[0].Agrees != "" {
+		t.Fatalf("answered %s, taps %+v", chat.answers["c1"], r.Taps)
+	}
+}

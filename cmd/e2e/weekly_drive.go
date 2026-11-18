@@ -57,12 +57,18 @@ type weeklyResult struct {
 	Taf       string   // the taf Coach handed over
 	Turns     int
 	Spent     int64
+	// Taps are the confirm cards the script tapped: the card, the option's
+	// words, and the rules notice it agreed to, if any.
+	Taps []weeklyTap
 }
+
+// weeklyTap is one tap on a confirm card.
+type weeklyTap struct{ Card, Words, Agrees string }
 
 var (
 	errNoCard   = errors.New("no approval card in the turns allowed")
 	errCostCap  = errors.New("cost cap")
-	errInWords  = errors.New("a card asks for agreement in words")
+	errInWords  = errors.New("a card asks for agreement with no notice shown")
 	approvalish = regexp.MustCompile(`(?i)^\s*(yes|ok|okay|approve[ds]?|agree[ds]?|confirm(ed)?|accept(ed)?|go ahead|sure)\b`)
 )
 
@@ -90,6 +96,13 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 		if r.Spent >= limit {
 			return r, fmt.Errorf("%w: US$%.2f spent of US$%.2f", errCostCap, float64(r.Spent)/1e6, f.CapUSD)
 		}
+		// The rules notices this chat showed, by id: what a confirm may agree to.
+		notices := map[string]bool{}
+		for _, c := range th.Cards {
+			if c.Session == session && c.Card.Type == "notice" {
+				notices[c.Card.ID] = true
+			}
+		}
 		acted := false
 		for _, c := range th.Cards {
 			if c.Answered || c.Session != session {
@@ -108,11 +121,16 @@ func driveCoach(ctx context.Context, chat weeklyChat, cloud weeklyCloud, phone w
 					return r, err
 				}
 			case "confirm":
-				pick, err := scriptedChoice(c.Card)
+				pick, err := scriptedChoice(c.Card, notices)
 				if err != nil {
 					return r, err
 				}
-				b, _ := json.Marshal(pick)
+				tap := weeklyTap{Card: c.Card.ID, Words: pick.Label}
+				if approvalish.MatchString(pick.Label) || approvalish.MatchString(pick.Value) {
+					tap.Agrees = c.Card.Agrees
+				}
+				r.Taps = append(r.Taps, tap)
+				b, _ := json.Marshal(pick.Value)
 				if err := chat.Answer(ctx, c.Card.ID, b, session); err != nil {
 					return r, err
 				}
@@ -159,16 +177,27 @@ func settled(ctx context.Context, chat weeklyChat, session string, wait func(con
 	}
 }
 
-// scriptedChoice is the owner's pick on a choices card: its first option,
-// unless every option is a way of agreeing, which only the component route
-// may do.
-func scriptedChoice(c component) (string, error) {
-	for _, o := range c.Options {
-		if !approvalish.MatchString(o.Label) && !approvalish.MatchString(o.Value) {
-			return o.Value, nil
+// scriptedChoice is the owner's tap on a confirm card (kiff-qa 07:39). An
+// agreeing option is tapped only when the card agrees to a rules notice this
+// chat showed (its agrees names a notice among the chat's own cards), as the
+// app does on the owner's tap. Otherwise the first option that doesn't agree;
+// and when every option agrees, the run fails: the only approval of a write
+// or a grant is the approval route.
+func scriptedChoice(c component, notices map[string]bool) (option, error) {
+	agreeing := func(o option) bool { return approvalish.MatchString(o.Label) || approvalish.MatchString(o.Value) }
+	if c.Agrees != "" && notices[c.Agrees] {
+		for _, o := range c.Options {
+			if agreeing(o) {
+				return o, nil
+			}
 		}
 	}
-	return "", errInWords
+	for _, o := range c.Options {
+		if !agreeing(o) {
+			return o, nil
+		}
+	}
+	return option{}, errInWords
 }
 
 // pollWait is the wait between reads of a chat at work.
