@@ -388,37 +388,16 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		f.api.Keys, f.api.KeyWriters = movingKeys, keyWriters
 	}
 	// Deleting an account erases its sealing key and its drafts' records
-	// too (kiff/tafs#185), and its tafs' keys once they're kept here: their
-	// old secrets, then the table's. Its alert secret is tafs cloud's to
-	// delete.
-	if sp, dp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")); sp != "" || dp != "" || keyRecords != nil {
-		e := secretsmanager.NewEraser(secrets, sp, dp)
-		if keyRecords != nil {
-			e.KeysPrefix = prefix
-		}
-		f.api.Erase = e.Erase
+	// too (kiff/tafs#185), and its tafs' keys once they're kept here
+	// (accountErase). Its alert secret is tafs cloud's to delete.
+	var draftsTable, keysTable tenantEraser
+	if draftRecords != nil {
+		draftsTable = draftRecords
 	}
 	if keyRecords != nil {
-		erase := f.api.Erase
-		f.api.Erase = func(ctx context.Context, tenant string) error {
-			if err := erase(ctx, tenant); err != nil {
-				return err
-			}
-			return keyRecords.Erase(ctx, tenant)
-		}
+		keysTable = keyRecords
 	}
-	if draftRecords != nil {
-		erase := f.api.Erase
-		f.api.Erase = func(ctx context.Context, tenant string) error {
-			if err := draftRecords.Erase(ctx, tenant); err != nil {
-				return err
-			}
-			if erase == nil {
-				return nil
-			}
-			return erase(ctx, tenant)
-		}
-	}
+	f.api.Erase = accountErase(secrets, strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")), prefix, draftsTable, keysTable)
 	// The sweep ends a trial idle for a week in KIFF first, with the agent's
 	// own key, which may end only its own trials (kiff/tafs#173).
 	f.api.EndKIFFTrial = kiff.TrialEnder(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
@@ -568,4 +547,53 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		return nil, nil
 	}
 	return nil, errors.New("lambda: an event this function doesn't take")
+}
+
+// tenantEraser is a store that erases a tenant's items.
+type tenantEraser interface {
+	Erase(ctx context.Context, tenant string) error
+}
+
+// accountErase is what deleting an account erases beyond the API's own
+// stores, in this order, stopping at the first failure:
+//   - the drafts' records in the table, when kept there (draftsTable);
+//   - in Secrets Manager: the tenant's sealing key, its drafts' old claim
+//     secrets and, when the tafs' keys are kept in the table (keysTable),
+//     their old secrets under keysPrefix;
+//   - then the tafs' keys in the table, their removed keys' marks included.
+//
+// The old secrets go before the table's keys, so no key moves back in
+// between. Nil: nothing to erase.
+func accountErase(sm secretsmanager.EraseAPI, sealingPrefix, draftsPrefix, keysPrefix string, draftsTable, keysTable tenantEraser) func(context.Context, string) error {
+	var steps []func(context.Context, string) error
+	if draftsTable != nil {
+		steps = append(steps, draftsTable.Erase)
+	}
+	if sealingPrefix != "" || draftsPrefix != "" || keysTable != nil {
+		e := secretsmanager.NewEraser(sm, sealingPrefix, draftsPrefix)
+		if keysTable != nil {
+			if keysPrefix == "" {
+				// Never the table's keys without their old secrets: refuse.
+				steps = append(steps, func(context.Context, string) error {
+					return errors.New("lambda: the tafs' keys are kept in the table, but their old secrets' prefix is unknown")
+				})
+			}
+			e.KeysPrefix = keysPrefix
+		}
+		steps = append(steps, e.Erase)
+	}
+	if keysTable != nil {
+		steps = append(steps, keysTable.Erase)
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	return func(ctx context.Context, tenant string) error {
+		for _, step := range steps {
+			if err := step(ctx, tenant); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }

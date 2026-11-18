@@ -137,7 +137,9 @@ func (m Moving) Put(ctx context.Context, tenant, ref, key string) error {
 // Remove removes the tenant's key by ref: its old secret first, then the
 // key in New, replaced by a removed key's mark either way. If the secret
 // wasn't deleted, the mark is kept, so the key reads as removed, and the
-// error is answered for the caller to try again.
+// error is answered for the caller to try again. If it never does, the
+// secret stays, read by nothing here: the one-off that ends the move
+// deletes the old secret under any mark that isn't settled.
 func (m Moving) Remove(ctx context.Context, tenant, ref string) error {
 	if err := Valid(tenant, ref); err != nil {
 		return err

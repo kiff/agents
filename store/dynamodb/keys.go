@@ -31,6 +31,9 @@ import (
 // A removed key's mark stops a key coming back: from its old secret if that
 // wasn't deleted (the mark is then kept), and from a move that read the old
 // secret just before the removal (the mark outlives it by RemovedFor).
+// A settled mark past its "until" reads as not found, but DynamoDB removes
+// it late (up to about 48 hours): until then Create still answers taken, so
+// a draft's claim on that reference is refused for that while.
 type Keys struct {
 	db    API
 	table string
