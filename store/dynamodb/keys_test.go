@@ -150,7 +150,7 @@ func TestTafKeysFailClosed(t *testing.T) {
 
 // Erasing a tenant's account takes its keys and marks, and only its own.
 func TestTafKeysErase(t *testing.T) {
-	k, db, name, _, _ := keysStore(t)
+	k, _, _, _, _ := keysStore(t)
 	for _, c := range [][2]string{{"t1", "kiff/a"}, {"t1", "kiff/b"}, {"t10", "kiff/a"}, {"t2", "kiff/a"}} {
 		if err := k.Put(ctx, c[0], c[1], "kiff_key"); err != nil {
 			t.Fatal(err)
@@ -162,9 +162,10 @@ func TestTafKeysErase(t *testing.T) {
 	if err := k.Erase(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
+	// Not rawItem: "t1" is in t10's key too. Gone, the mark included.
 	for _, ref := range []string{"kiff/a", "kiff/b"} {
-		if rawItem(t, db, name, "t1", ref) != nil {
-			t.Fatalf("t1 %s kept", ref)
+		if _, err := k.Get(ctx, "t1", ref); !errors.Is(err, keys.ErrNotFound) || errors.Is(err, keys.ErrRemoved) {
+			t.Fatalf("t1 %s kept: %v", ref, err)
 		}
 	}
 	for _, tn := range []string{"t10", "t2"} {
