@@ -297,3 +297,22 @@ func TestAuthRefusesARoleThatCouldMatchOthers(t *testing.T) {
 		t.Fatal("the test role must end at its name")
 	}
 }
+
+// The caller names the role that signed, so a route can be kept to one of
+// the callers (the tafs' keys, to tafs cloud's).
+func TestAuthNamesTheCallersRole(t *testing.T) {
+	other := "arn:aws:sts::000000000000:assumed-role/console/"
+	auth, err := lambdaurl.Auth([]string{role, other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for signer, want := range map[string]string{role + "tafs-cloud-fn": role, other + "s1": other} {
+		r, err := lambdaurl.Request(ctx, event("GET", "/agents", "", map[string]string{"kiff-tenant": "t1"}, signer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c, err := auth(r); err != nil || c.Role != want || c.Tenant != "t1" {
+			t.Fatalf("%s: %+v %v", signer, c, err)
+		}
+	}
+}

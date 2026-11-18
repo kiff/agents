@@ -108,3 +108,38 @@ func segment(s string) bool {
 	}
 	return true
 }
+
+// OldKeys is the keys' secrets while they move to the table (package keys):
+// read, and deleted once a key is kept there or removed.
+type OldKeys struct {
+	secrets *Secrets
+	api     DeleteAPI
+}
+
+// NewOldKeys returns the old secrets of s, deleted through api.
+func NewOldKeys(s *Secrets, api DeleteAPI) *OldKeys { return &OldKeys{secrets: s, api: api} }
+
+// Key is the tenant's key by ref; ErrNotFound if there's no secret, or one
+// being deleted.
+func (o *OldKeys) Key(ctx context.Context, tenant, ref string) (string, error) {
+	key, err := o.secrets.Key(ctx, tenant, ref)
+	if deleting(err) {
+		return "", ErrNotFound
+	}
+	return key, err
+}
+
+// Delete deletes the secret at once, with no recovery window: the key is
+// kept in the table, or removed for good. None there is not an error.
+func (o *OldKeys) Delete(ctx context.Context, tenant, ref string) error {
+	name, err := o.secrets.Name(tenant, ref)
+	if err != nil {
+		return err
+	}
+	_, err = o.api.DeleteSecret(ctx, &sm.DeleteSecretInput{SecretId: aws.String(name), ForceDeleteWithoutRecovery: aws.Bool(true)})
+	var missing *types.ResourceNotFoundException
+	if err != nil && !errors.As(err, &missing) {
+		return fmt.Errorf("secretsmanager: deleting the key's secret: %w", err)
+	}
+	return nil
+}

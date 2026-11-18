@@ -92,3 +92,27 @@ func TestEraseDeletesOnlyTheTenantsOwn(t *testing.T) {
 		t.Fatal("a tenant that isn't one segment was erased")
 	}
 }
+
+// While the tafs' keys move to the table, an account's erase takes their
+// old secrets too, its own only: never another tenant's whose name starts
+// the same.
+func TestEraseTakesTheTafKeysOldSecrets(t *testing.T) {
+	e := &erasable{fake: &fake{secrets: map[string]*sm.GetSecretValueOutput{
+		"agents/t1/kiff/taf_1":  secret("agents/t1/kiff/taf_1", "key"),
+		"agents/t1/kiff/taf_2":  secret("agents/t1/kiff/taf_2", "key"),
+		"agents/t10/kiff/taf_1": secret("agents/t10/kiff/taf_1", "key"),
+		"agents/t2/kiff/taf_1":  secret("agents/t2/kiff/taf_1", "key"),
+	}}}
+	er := secretsmanager.NewEraser(e, "", "")
+	er.KeysPrefix = "agents/"
+	if err := er.Erase(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(e.deleted)
+	if want := []string{"agents/t1/kiff/taf_1", "agents/t1/kiff/taf_2"}; !slices.Equal(e.deleted, want) || !e.forced {
+		t.Fatalf("deleted %v (forced %v), want %v", e.deleted, e.forced, want)
+	}
+	if len(e.secrets) != 2 {
+		t.Fatalf("left %v", e.secrets)
+	}
+}

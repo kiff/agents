@@ -24,6 +24,8 @@
 # Secrets (made by a person or by tafs cloud, never by this script, except the
 # model key below):
 #   agents/<tenant>/<key_ref>      an agent's KIFF key            AGENTS_SECRETS_PREFIX
+#                                  (written by tafs cloud before the keys'
+#                                  key below; now read, moved and deleted)
 #   agents-accounts/<KIFF account> {"tenant","secret"} for alerts KIFF_ACCOUNTS_PREFIX
 #   agents-drafts/<tenant>/<draft> a taf draft's claim secret     AGENTS_DRAFTS_PREFIX
 #                                  (written by the API function before the
@@ -85,6 +87,11 @@ SEALING_PREFIX=agents-sealing/
 # nothing of its own, where a secret per draft cost $0.40 a month for as long
 # as it was kept.
 DRAFTS_KEY_ALIAS=alias/agents-drafts
+# The one KMS key the tafs' KIFF keys are sealed with in the table, another
+# than the drafts' one: a role that may open drafts may not open keys, and
+# the reverse. tafs cloud writes keys through the API (AGENTS_KEY_WRITERS),
+# never this key or the table.
+KEYS_KEY_ALIAS=alias/agents-keys
 PLANQUES=${AGENTS_PLANQUES:-https://planque.kiff.dev}
 NOTIFY_URLS=${AGENTS_NOTIFY_URLS:-}
 MODEL_SECRET=${AGENTS_MODEL_KEY_SECRET:-agents-model/anthropic}
@@ -140,6 +147,15 @@ if [ -z "$DRAFTS_KEY" ] || [ "$DRAFTS_KEY" = "None" ]; then
   DRAFTS_KEY=$(aws kms create-key --description "kiff/agents: seals taf draft records" \
     --key-usage ENCRYPT_DECRYPT --key-spec SYMMETRIC_DEFAULT --query KeyMetadata.Arn)
   aws kms create-alias --alias-name "$DRAFTS_KEY_ALIAS" --target-key-id "$DRAFTS_KEY"
+fi
+# The same for the tafs' keys: deleting it makes every key in the table
+# unreadable.
+KEYS_KEY=$(aws kms describe-key --key-id "$KEYS_KEY_ALIAS" --query KeyMetadata.Arn 2>/dev/null || true)
+if [ -z "$KEYS_KEY" ] || [ "$KEYS_KEY" = "None" ]; then
+  say "creating the tafs' keys' KMS key"
+  KEYS_KEY=$(aws kms create-key --description "kiff/agents: seals the tafs' KIFF keys" \
+    --key-usage ENCRYPT_DECRYPT --key-spec SYMMETRIC_DEFAULT --query KeyMetadata.Arn)
+  aws kms create-alias --alias-name "$KEYS_KEY_ALIAS" --target-key-id "$KEYS_KEY"
 fi
 
 # --- The table -------------------------------------------------------------
@@ -250,7 +266,11 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
   "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents draft record v1"},
    "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant","draft"]},
    "Null":{"kms:EncryptionContext:tenant":"false","kms:EncryptionContext:draft":"false"}}},
- {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
+ {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"$KEYS_KEY",
+  "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents taf key v1"},
+   "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant","ref"]},
+   "Null":{"kms:EncryptionContext:tenant":"false","kms:EncryptionContext:ref":"false"}}},
+ {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*","$ARN_SECRET:${SECRETS_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:ListSecrets","Resource":"*"},
  {"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"$ARN_FN"},
  {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::$ATTACHMENTS/*"},
@@ -298,7 +318,7 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_KEYS_KMS_KEY":"$KEYS_KEY","AGENTS_KEY_WRITERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
  "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"}}
 EOF
 )

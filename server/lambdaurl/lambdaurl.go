@@ -151,7 +151,7 @@ func (w *streamWriter) Write(b []byte) (int, error) {
 func (w *streamWriter) Flush() { w.WriteHeader(http.StatusOK) }
 
 // Auth returns a server's Auth that accepts a request signed by one of
-// roles, for the tenant in its TenantHeader. Each role is an assumed-role ARN
+// roles, for the tenant in its TenantHeader; the Caller names the role. Each role is an assumed-role ARN
 // prefix that ends at the role's name, such as
 // "arn:aws:sts::<account>:assumed-role/<role>/": the session name after it
 // varies by invocation.
@@ -167,20 +167,20 @@ func Auth(roles []string) (func(*http.Request) (server.Caller, error), error) {
 	}
 	return func(req *http.Request) (server.Caller, error) {
 		arn := callerARN(req)
-		allowed := false
+		role := ""
 		for _, r := range roles {
 			if strings.HasPrefix(arn, r) && len(arn) > len(r) {
-				allowed = true
+				role = r
 				break
 			}
 		}
-		if !allowed {
+		if role == "" {
 			return server.Caller{}, errors.New("lambdaurl: not signed by a caller role")
 		}
 		tenant := req.Header.Get(TenantHeader)
 		if tenant == "" {
 			return server.Caller{}, errors.New("lambdaurl: no tenant header")
 		}
-		return server.Caller{Tenant: tenant}, nil
+		return server.Caller{Tenant: tenant, Role: role}, nil
 	}, nil
 }
