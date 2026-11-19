@@ -139,9 +139,11 @@ func TestADefinitionsKeptWordsHaveEveryEndingInEachLanguage(t *testing.T) {
 }
 
 // A definition with no kept words (one written before them, until its next
-// Upgrade) is never offered lines or lang, and a notice sent with them anyway
-// is refused with a fix that names the form it takes: its own text, as
-// before lines. The text form still shows, rules and all.
+// Upgrade) is never offered lines or lang. A notice sent with them anyway is
+// shown in the form that definition takes, never refused: refused, the owner
+// read "your OK" with no card, and the confirm agreeing to it went unmade
+// (Eval 44452262404). Its own text when it has one, else its lines' words, one
+// a line and with no endings; lines and lang go. The text form shows as ever.
 func TestADefinitionWithoutKeptWordsTakesTheNoticesOwnText(t *testing.T) {
 	plain := New()
 	schema := string(plain.Spec().InputSchema)
@@ -155,18 +157,41 @@ func TestADefinitionWithoutKeptWordsTakesTheNoticesOwnText(t *testing.T) {
 	if s := string(with.Spec().InputSchema); !strings.Contains(s, `"lines"`) || !strings.Contains(s, `"lang"`) || !json.Valid(with.Spec().InputSchema) {
 		t.Fatal("lines and lang not offered with kept words")
 	}
-	call := func(input string) (string, bool) {
+	call := func(input string) (Component, string) {
 		r, err := plain.Call(context.Background(), json.RawMessage(input))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return r.Text, r.IsError
+		if r.IsError {
+			return Component{}, r.Text
+		}
+		var c Component
+		if err := json.Unmarshal(r.Component, &c); err != nil {
+			t.Fatal(err)
+		}
+		return c, ""
 	}
-	why, refused := call(`{"type":"notice","id":"rules","tone":"info","lang":"en",` + lineRules + `,"lines":[{"text":"Skips anyone","kept":"instructions"}]}`)
-	if !refused || !strings.Contains(why, "send its text and its rules, with no lines and no lang") {
-		t.Fatalf("lines without kept words: %v %q", refused, why)
+	// Lines and no text: the lines' words are its text, one a line, with no endings.
+	c, why := call(`{"type":"notice","id":"rules","tone":"info","lang":"en",` + lineRules + `,"lines":[{"text":"Adds at most 50 rows a day","kept":"card","tools":["append_row"]},{"text":" Skips anyone ","kept":"instructions"}]}`)
+	if why != "" {
+		t.Fatalf("lines without kept words, refused: %q", why)
 	}
-	if why, refused := call(`{"type":"notice","id":"rules","tone":"info","text":"Adds at most 50 rows a day",` + lineRules + `}`); refused {
-		t.Fatalf("the text form, refused: %q", why)
+	if c.Text != "Adds at most 50 rows a day\nSkips anyone" || c.Lines != nil || c.Lang != "" || len(c.Rules) != 2 {
+		t.Fatalf("shown as %q, lines %v, lang %q, %d rules", c.Text, c.Lines, c.Lang, len(c.Rules))
+	}
+	// Its own text and lines: its own text, and the lines go.
+	c, why = call(`{"type":"notice","id":"rules","tone":"info","text":"Adds at most 50 rows a day; skips anyone.","lang":"en",` + lineRules + `,"lines":[{"text":"Skips anyone","kept":"instructions"}]}`)
+	if why != "" || c.Text != "Adds at most 50 rows a day; skips anyone." || c.Lines != nil || c.Lang != "" {
+		t.Fatalf("own text with lines: %q, %q, lines %v", why, c.Text, c.Lines)
+	}
+	// A line is still a line: markup or an empty one is refused, with what to fix.
+	if _, why := call(`{"type":"notice","id":"rules","tone":"info",` + lineRules + `,"lines":[{"text":"**Adds** rows","kept":"card","tools":["append_row"]}]}`); !strings.Contains(why, "line 1: plain words on one line, no markup") {
+		t.Fatalf("markup in a line: %q", why)
+	}
+	if _, why := call(`{"type":"notice","id":"rules","tone":"info",` + lineRules + `,"lines":[{"text":"  ","kept":"instructions"}]}`); !strings.Contains(why, "line 1: text is 1 to") {
+		t.Fatalf("an empty line: %q", why)
+	}
+	if c, why := call(`{"type":"notice","id":"rules","tone":"info","text":"Adds at most 50 rows a day",` + lineRules + `}`); why != "" || c.Text != "Adds at most 50 rows a day" {
+		t.Fatalf("the text form: %q %q", why, c.Text)
 	}
 }
