@@ -808,6 +808,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 		// As the Lambda does, on stores in memory: a taf with files (kiff/tafs sets files: true) gets
 		// deliver_file in a run, so it builds and runs here as it does live.
 		DeliverFile: delivered.Tool(runStore),
+		// As the Lambda does: a taf whose definition asks for your_step (kiff/tafs with TAFS_YOUR_STEP=on) gets it, with
+		// its own key, so it builds here as it does live.
+		YourStep: func(key string) tool.Tool { return kiff.NewYourStep(kiff.APIURL, key, t.hc) },
 	}}
 	return nil
 }

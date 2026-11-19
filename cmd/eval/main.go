@@ -247,6 +247,9 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 		},
 		// As the Lambda does, on stores in memory: a job whose agent delivers files runs with deliver_file.
 		DeliverFile: delivered.Tool(rt.runs),
+		// As the Lambda does: a job whose definition asks for your_step (kiff/tafs with TAFS_YOUR_STEP=on) gets it, with
+		// its own key, at the KIFF API this run uses.
+		YourStep: func(key string) tool.Tool { return kiff.NewYourStep(rt.kiffAPI, key, nil) },
 	}}
 	return rt
 }
