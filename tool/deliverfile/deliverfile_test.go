@@ -94,3 +94,26 @@ func TestCallsAtOnceDeliverAtMostFive(t *testing.T) {
 		t.Errorf("%d kept and %d refused, want %d and %d", len(all), refused, files.MaxPerRun, 10-files.MaxPerRun)
 	}
 }
+
+// Until the apps show delivered files, the tool never tells the run a file is
+// in Files or in the chat, in its description or its answer, so a taf never
+// sends the owner to a screen the apps don't have. Shown, it says where.
+func TestWhereAFileIsSaidOnlyOnceTheAppsShowIt(t *testing.T) {
+	for _, shown := range []bool{false, true} {
+		d, _ := newTool()
+		d.Shown(shown)
+		r, err := d.Call(ctx, input("week.csv"))
+		if err != nil || r.IsError {
+			t.Fatalf("shown %v: %v %q", shown, err, r.Text)
+		}
+		said := d.Spec().Description + "\n" + r.Text
+		for _, where := range []string{"kept 30 days in Files", "it's in Files for 30 days", "it shows in this chat"} {
+			if strings.Contains(said, where) != shown {
+				t.Errorf("shown %v: %q said: %v\n%s", shown, where, strings.Contains(said, where), said)
+			}
+		}
+		if !shown && !strings.Contains(said, "never that it's in Files, in this chat or anywhere to open") {
+			t.Errorf("not shown: the description doesn't tell the run what not to say:\n%s", said)
+		}
+	}
+}

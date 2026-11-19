@@ -416,11 +416,14 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		// table, their bytes in the same bucket under their own prefix.
 		delivered := &files.Service{Store: dynamodb.NewFiles(db, table), Blobs: blobs, Log: log}
 		f.api.Delivered, f.delivered = delivered, delivered
+		// AGENTS_FILES_SHOWN=on once the apps show delivered files (their Files switch):
+		// until then a run never tells anyone a file is in Files or in the chat.
+		shown := strings.TrimSpace(os.Getenv("AGENTS_FILES_SHOWN")) == "on"
 		rn.Builder.DeliverFile = func(tenant, agent, runID string) tool.Tool {
 			return deliverfile.New(delivered, tenant, agent, runID, func(ctx context.Context, tenant, runID string) (string, error) {
 				r, err := runs.Get(ctx, tenant, runID)
 				return r.Session, err
-			})
+			}).Shown(shown)
 		}
 	}
 	f.http = f.api.Handler()
