@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/kiff/agents/attach"
+	"github.com/kiff/agents/files"
 )
 
 // API is the part of the S3 client the store uses.
@@ -49,7 +50,10 @@ func New(client *s3.Client, bucket string) *Blobs {
 	return &Blobs{api: client, presign: s3.NewPresignClient(client), bucket: bucket, now: time.Now}
 }
 
-var _ attach.Blobs = (*Blobs)(nil)
+var (
+	_ attach.Blobs = (*Blobs)(nil)
+	_ files.Blobs  = (*Blobs)(nil)
+)
 
 // PresignPut signs a PUT of exactly size bytes of mediaType, with that
 // SHA-256, at key. The app sends the headers it returns, unchanged.
@@ -80,6 +84,18 @@ func (b *Blobs) PresignGet(ctx context.Context, key, name string, ttl time.Durat
 	disposition := "attachment; filename*=UTF-8''" + url.PathEscape(name)
 	req, err := b.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &b.bucket, Key: &key,
 		ResponseContentDisposition: &disposition}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+// PresignGetAs signs a GET of key, downloaded under name and served as
+// served, whatever type it was stored as (files.Blobs).
+func (b *Blobs) PresignGetAs(ctx context.Context, key, name, served string, ttl time.Duration) (string, error) {
+	disposition := "attachment; filename*=UTF-8''" + url.PathEscape(name)
+	req, err := b.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &b.bucket, Key: &key,
+		ResponseContentDisposition: &disposition, ResponseContentType: &served}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", err
 	}

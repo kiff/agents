@@ -369,6 +369,46 @@ func TestBuildGivesAWorkspaceOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
 	}
 }
 
+// deliver_file is opt-in per definition and bound to the run being built:
+// an agent that doesn't ask never gets it, and one that does is never built
+// without its run's.
+func TestBuildGivesDeliverFileOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
+	f := newFixture(t)
+	var got [3]string
+	f.b.DeliverFile = func(tenant, agent, run string) tool.Tool {
+		got = [3]string{tenant, agent, run}
+		return stub{name: "deliver_file", access: tool.Own}
+	}
+	has := func(a agent.Agent) bool {
+		for _, tl := range a.Tools {
+			if tl.Spec().Name == "deliver_file" {
+				return true
+			}
+		}
+		return false
+	}
+	a, _, err := f.b.BuildRun(ctx, "t1", "payouts", "run-1")
+	if err != nil || has(a) || got[2] != "" {
+		t.Fatalf("a definition without files: tool %v, built for %q, err %v", has(a), got[2], err)
+	}
+	d := registrytest.Definition("t1", "payouts")
+	d.Files = true
+	if err := f.agents.Put(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err = f.b.BuildRun(ctx, "t1", "payouts", "run-1")
+	if err != nil || !has(a) || got != [3]string{"t1", "payouts", "run-1"} {
+		t.Fatalf("with files: tool %v for %v, err %v", has(a), got, err)
+	}
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrNoFiles) {
+		t.Fatalf("built for no run: %v, want ErrNoFiles", err)
+	}
+	f.b.DeliverFile = nil
+	if _, _, err := f.b.BuildRun(ctx, "t1", "payouts", "run-1"); !errors.Is(err, registry.ErrNoFiles) {
+		t.Fatalf("a server with no files: %v, want ErrNoFiles", err)
+	}
+}
+
 // The show tool is the definition's to turn on; it is off unless set.
 func TestShowIsOptIn(t *testing.T) {
 	f := newFixture(t)

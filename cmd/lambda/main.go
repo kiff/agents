@@ -93,6 +93,7 @@ import (
 	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/drafts"
 	draftsapi "github.com/kiff/agents/drafts/kiffapi"
+	"github.com/kiff/agents/files"
 	tafkeys "github.com/kiff/agents/keys"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
@@ -108,6 +109,7 @@ import (
 	"github.com/kiff/agents/store/dynamodb"
 	blobs3 "github.com/kiff/agents/store/s3"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/deliverfile"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
 	"github.com/kiff/agents/tool/followup"
 	"github.com/kiff/agents/tool/kiff"
@@ -138,6 +140,9 @@ type function struct {
 	sweeper func(ctx context.Context, now time.Time) (int, error)
 	// files are the attached files the sweep removes when due; nil: none.
 	files *attach.Service
+	// delivered are the files tafs' runs deliver, which the sweep removes
+	// after 30 days; nil: none.
+	delivered *files.Service
 	// cont is how the sweep continues a resolved paused run; setup keeps it
 	// so its wiring can be read.
 	cont func(ctx context.Context, tenant, id string) error
@@ -404,8 +409,19 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// The files people attach to their chat messages (kiff/tafs#209): their
 	// records in the table, their bytes in a private bucket.
 	if bucket := strings.TrimSpace(os.Getenv("AGENTS_ATTACHMENTS_BUCKET")); bucket != "" {
-		files := &attach.Service{Store: dynamodb.NewAttachments(db, table), Blobs: blobs3.New(s3.NewFromConfig(cfg), bucket)}
-		f.api.Files, rn.Files, f.files = files, files, files
+		blobs := blobs3.New(s3.NewFromConfig(cfg), bucket)
+		attached := &attach.Service{Store: dynamodb.NewAttachments(db, table), Blobs: blobs}
+		f.api.Files, rn.Files, f.files = attached, attached, attached
+		// The files tafs' runs deliver (package files): their records in the
+		// table, their bytes in the same bucket under their own prefix.
+		delivered := &files.Service{Store: dynamodb.NewFiles(db, table), Blobs: blobs, Log: log}
+		f.api.Delivered, f.delivered = delivered, delivered
+		rn.Builder.DeliverFile = func(tenant, agent, runID string) tool.Tool {
+			return deliverfile.New(delivered, tenant, agent, runID, func(ctx context.Context, tenant, runID string) (string, error) {
+				r, err := runs.Get(ctx, tenant, runID)
+				return r.Session, err
+			})
+		}
 	}
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)

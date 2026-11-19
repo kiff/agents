@@ -421,6 +421,15 @@ func (f *function) sweep(ctx context.Context) error {
 			f.log.InfoContext(ctx, "sweeping attachments", "removed", n)
 		}
 	}
+	// Delivered files go 30 days after their run delivered them.
+	if f.delivered != nil {
+		n, err := f.delivered.Sweep(ctx, sweepLimit)
+		if err != nil {
+			f.log.ErrorContext(ctx, "sweeping delivered files", "removed", n, "err", err)
+		} else if n > 0 {
+			f.log.InfoContext(ctx, "sweeping delivered files", "removed", n)
+		}
+	}
 	// Trials idle for a week end too (kiff/tafs#173). One KIFF can't end now
 	// is tried again on the next sweep, so its error doesn't fail this one.
 	if f.api == nil {

@@ -146,6 +146,9 @@ of its eight kinds):
 - `workspace` (optional, off by default) gives each run a workspace: files
   and commands, with no credentials and no way out (#86). Only an agent that
   needs one sets it, such as kiff/tafs' setup agent.
+- `files` (optional, off by default) gives each run the `deliver_file` tool:
+  a file the run made, kept 30 days for everyone on the account
+  ([runs.md](runs.md#files-a-run-delivers)).
 - `keep` has a rule for every event kind (`session.DefaultPolicy` gives one).
   `Retention` is in nanoseconds: 30 days here.
 - `Check` refuses what can't run safely: a bad ID, no cost cap, a gateway
@@ -185,7 +188,9 @@ a, def, err := b.Build(ctx, "t1", "rae")
 5. adds the run's workspace tool when the definition asks for one; `BuildRun`
    names the run, and without a run or a server `Workspace` it refuses
    (`ErrNoWorkspace`) rather than build the agent without it;
-6. returns the agent, checked, and the definition (its keep rules and history
+6. adds the run's `deliver_file` tool when the definition asks for files, on
+   the same terms (`ErrNoFiles`);
+7. returns the agent, checked, and the definition (its keep rules and history
    size are the runner's to apply).
 
 ## Keys on Secrets Manager
