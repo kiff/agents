@@ -42,7 +42,13 @@ var figure = regexp.MustCompile(`\d(?:[\d.,']*\d)?`)
 // Before and after are how many words from a limit word an amount may be to
 // be its figure: "the $100 limit", "a limit of 100 EUR". Further off, it's
 // another amount in the sentence ("$150 is above the $100 limit": $150 is the
-// dispute's).
+// dispute's). So "the limit for one call is $40" names no figure, and passes
+// unchecked: a wider window would take the item's own amount for the limit
+// in more reports than it would catch.
+//
+// Only an amount, with its sign or code, is named: a bare figure beside a
+// limit word ("a limit of 10 a day") is as often a count as an amount, and
+// counts aren't checked here.
 const (
 	limitBefore = 2
 	limitAfter  = 3
@@ -133,15 +139,15 @@ func readAmount(named string, read []string) bool {
 }
 
 // value reads a figure written either way: "1,234.50", "1.234,50", "1'234",
-// "15000". A separator followed by exactly two digits at the end is the
-// decimal point; any other is a thousands separator.
+// "12.5", "15000". A separator followed by one or two digits at the end is
+// the decimal point; one followed by three is a thousands separator.
 func value(s string) (float64, bool) {
 	s = strings.ReplaceAll(s, "'", "")
 	if s == "" {
 		return 0, false
 	}
 	dec := ""
-	if i := strings.LastIndexAny(s, ".,"); i >= 0 && len(s)-i-1 == 2 {
+	if i := strings.LastIndexAny(s, ".,"); i >= 0 && len(s)-i-1 <= 2 {
 		s, dec = s[:i], s[i+1:]
 	}
 	s = strings.NewReplacer(".", "", ",", "").Replace(s)

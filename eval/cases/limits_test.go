@@ -81,6 +81,8 @@ func TestALimitTheRunReadPasses(t *testing.T) {
 		{"KIFF's refusal, formatted", run3Report, chargebacksWith(refused("refused: $150 is over the $100 limit for one call"))},
 		{"KIFF's refusal, a limit word in its own language", run3Report, chargebacksWith(refused("rechazada: 150 $ supera el límite de 100 $ por llamada"))},
 		{"a figure after the word", "T-2005: KIFF refused closing it: over the limit of $100 for one call.", chargebacksWith(refused("refused: sum(amount) of 15000 is above the per-action limit of 10000"))},
+		{"a figure with one decimal", "T-2005: not closed: it's above the €12.5 limit.", chargebacksWith(refused("refused: sum(amount) of 1500 is above the per-action limit of 1250"))},
+		{"a figure the window doesn't reach (unchecked)", "T-2005: not closed. The limit for one call is $40.", chargebacksWith()},
 		{"KIFF's figure with cents", run3Report, chargebacksWith(refused("refused: $150.00 is over the $100.00 limit for one call"))},
 		{"its Card read", run3Report, chargebacksWith(card)},
 		{"the owner's note", "Accepted T-2002, under your $200 limit for weak disputes.", goodChargebacks()},
