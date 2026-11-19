@@ -47,6 +47,8 @@ func TestEveryComponentIsShown(t *testing.T) {
 		`{"type":"result","id":"new","taf":{"agent":"refunds","name":"Refunds","draft":"drf_01","summary":"Answers refund requests within its Card.","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"}},"text":"Refunds is ready."}`,
 		// The dial version Coach drafted: the app draws it from tafs cloud's words.
 		`{"type":"knob","id":"dial-v8","taf_id":"taf-0123456789abcdef0123","version":8}`,
+		// A door from another application Coach drafted: the app draws it as tafs cloud keeps it.
+		`{"type":"door","id":"door-1","taf_id":"taf-0123456789abcdef0123","draft_id":"draft-0123456789abcdef"}`,
 	} {
 		r := call(t, in)
 		if r.IsError || r.Component == nil {
@@ -142,10 +144,13 @@ func TestWhatDoesNotFitIsRefused(t *testing.T) {
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1"},"text":"done"}`:                                                                                                                                                                                      "taf.note",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","job":"refunds","improves":"taf-1","note":"n","unscheduled":true},"text":"done"}`:                                                                                                                                                        "for a new taf",
 		`{"type":"result","id":"a","taf":{"agent":"r","name":"R","draft":"drf_1","kickoff":"Work the refund queue.","cron":"*/30 * * * *","check":{"tool":"helpdesk_list_open","items":"data","cursor":"created","first":"all"},"summary":"` + strings.Repeat("s", show.MaxLabel+1) + `"},"text":"done"}`: "taf.summary",
-		`{"type":"knob","id":"d","version":8}`:                                     "taf_id is",
-		`{"type":"knob","id":"d","taf_id":"taf-1"}`:                                "version is",
-		`{"type":"knob","id":"d","taf_id":"taf-1","version":8,"text":"Runs at 9"}`: `has no field "text"`,
-		`{"type":"questions","id":"q","text":"?","questions":[]}`:                  "1 to 4 questions",
+		`{"type":"knob","id":"d","version":8}`:                                                    "taf_id is",
+		`{"type":"knob","id":"d","taf_id":"taf-1"}`:                                               "version is",
+		`{"type":"knob","id":"d","taf_id":"taf-1","version":8,"text":"Runs at 9"}`:                `has no field "text"`,
+		`{"type":"door","id":"d","draft_id":"draft-1"}`:                                           "taf_id is",
+		`{"type":"door","id":"d","taf_id":"taf-1"}`:                                               "draft_id is",
+		`{"type":"door","id":"d","taf_id":"taf-1","draft_id":"draft-1","text":"Key: tafs_api_x"}`: `has no field "text"`,
+		`{"type":"questions","id":"q","text":"?","questions":[]}`:                                 "1 to 4 questions",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"q0","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q1","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q2","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q3","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"q4","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`: "1 to 4 questions",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]},{"id":"x","text":"?","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}]}]}`:                                                                                                                                                                                                                                                                        "different",
 		`{"type":"questions","id":"q","text":"?","questions":[{"id":"x","text":"?","options":[]}]}`: "1 to 5 options",

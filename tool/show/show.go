@@ -45,7 +45,7 @@ const (
 
 // Types are the components the app draws, the ones an agent shows unless
 // its definition names others (New).
-var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result", "knob", "drive"}
+var Types = []string{"steps", "notice", "confirm", "questions", "approval", "sign_in", "result", "knob", "door", "drive"}
 
 // AskCoach is a taf's card for a setting only Coach changes: a line, and an
 // Ask Coach button that opens Coach on the taf with the owner's request
@@ -302,6 +302,11 @@ type Component struct {
 	// the app from the taf's dial, never the agent's.
 	TafID   string `json:"taf_id,omitempty"`
 	Version int    `json:"version,omitempty"`
+	// DraftID is a door card's (door), with TafID: the door from another
+	// application Coach drafted for the taf (tafs cloud's taf_door_api). Its
+	// words are tafs cloud's, read by the app from the kept draft, never the
+	// agent's; the owner makes the door there, signed.
+	DraftID string `json:"draft_id,omitempty"`
 	// Loop is a loop card's (the runtime's own confirm, never the agent's):
 	// the read a run repeated, and how many pages it read, for tafs cloud to
 	// word the card in the owner's language.
@@ -352,9 +357,10 @@ var fields = map[string][]string{
 	"approval":  {"grant", "draft"}, // no agent words: the owner's tap grants, so its text is planque's and the app's
 	"sign_in":   {"grant", "service", "title", "text", "yes", "no", "note"},
 	"result":    {"taf", "text", "tools", "yes"},
-	"knob":      {"taf_id", "version"}, // no agent words: the app draws the dial's draft as tafs cloud words it
-	"drive":     {"text"},              // the request, in the owner's words: the app's approval prompt names it (kiff/tafs#544)
-	AskCoach:    {"text"},              // the owner's request for Coach, in their words: the app writes it into Coach's box
+	"knob":      {"taf_id", "version"},  // no agent words: the app draws the dial's draft as tafs cloud words it
+	"door":      {"taf_id", "draft_id"}, // no agent words: the app draws the door's draft as tafs cloud keeps it
+	"drive":     {"text"},               // the request, in the owner's words: the app's approval prompt names it (kiff/tafs#544)
+	AskCoach:    {"text"},               // the owner's request for Coach, in their words: the app writes it into Coach's box
 }
 
 // Tool shows components: those of types, or Types when it names none.
@@ -400,6 +406,7 @@ func (t Tool) Spec() model.ToolSpec {
 			"approval {grant, draft?}: the app shows planque's grant and KIFF's draft as those services say, and the owner approves with Face ID; " +
 			"sign_in {grant, service}: the owner signs in at the vendor again; " +
 			"knob {taf_id, version}: the dial version you drafted for a taf (taf_dial's answer), which the app draws from tafs cloud's words, with the switch to it; " +
+			"door {taf_id, draft_id}: the door from another application you drafted for a taf (taf_door_api's answer), which the app draws as tafs cloud keeps it; the owner makes it there with their fingerprint, and its key is never yours; " +
 			"drive {text}: ask to drive the app on the owner's phone for one request, text naming it in their words; they approve it with their fingerprint, and the answer is \"approved: the drive is on\" or \"declined\"; result {taf:{agent, name, job, draft, summary?}, text, tools}: hand the owner over to the taf, with its job (one of tafs' jobs, such as refunds or access) and the KIFF draft the owner confirmed; summary is one short line on what the taf does, in the owner's language; " +
 			"to improve a taf instead, result {taf:{agent, name, job, improves, note, notes?, draft?, summary?}, text, tools}: improves is the taf's tafs id, note what changed, notes its full new instructions from the owner (omit to keep them), " +
 			"and draft the KIFF draft revising its Cards, which the owner confirms only when they switch to the new version, never in this chat. " +
@@ -408,7 +415,7 @@ func (t Tool) Spec() model.ToolSpec {
 			"Write them in the owner's language. An approval takes no words of yours: what it grants, and its buttons, are planque's, KIFF's and the app's. " +
 			"A component grants nothing: after an approval, check the grant's status in planque before going on.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
-			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result","knob","drive"]},` +
+			`"type":{"type":"string","enum":["steps","notice","confirm","questions","approval","sign_in","result","knob","door","drive"]},` +
 			`"id":{"type":"string","description":"1 to 64 of a-z 0-9 - _; the same id replaces the component"},` +
 			`"title":{"type":"string"},"text":{"type":"string"},` +
 			`"tone":{"type":"string","enum":["info","success","warning","error"]},` +
@@ -452,7 +459,8 @@ func (t Tool) Spec() model.ToolSpec {
 			`"no":{"type":"string","description":"the other button's label (sign_in)"},` +
 			`"note":{"type":"string","description":"the line under the buttons (sign_in)"},` +
 			`"taf_id":{"type":"string","description":"the taf's tafs id (knob)"},` +
-			`"version":{"type":"integer","description":"the dial version taf_dial made (knob)"}},` +
+			`"version":{"type":"integer","description":"the dial version taf_dial made (knob)"},` +
+			`"draft_id":{"type":"string","description":"the door draft taf_door_api kept (door)"}},` +
 			`"required":["type","id"]}`),
 	}
 }
@@ -700,6 +708,13 @@ func (c Component) check() error {
 		}
 		if c.Version < 1 {
 			return fmt.Errorf("version is the dial version taf_dial made")
+		}
+	case "door":
+		if !refPattern.MatchString(c.TafID) {
+			return fmt.Errorf("taf_id is the taf's tafs id")
+		}
+		if !refPattern.MatchString(c.DraftID) {
+			return fmt.Errorf("draft_id is the door draft taf_door_api kept")
 		}
 	case "result":
 		if c.Taf == nil || !refPattern.MatchString(c.Taf.Agent) {
