@@ -12,7 +12,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
@@ -109,6 +111,59 @@ type Result struct {
 	// Report is what the agent said last, which the checks read: kept so a
 	// check that fails on it ("the report doesn't name …") can be read.
 	Report string `json:"report,omitempty"`
+	// Calls are the run's tool calls, in order, with how each was answered:
+	// kept so a check that fails on what the run did ("missed update_dispute
+	// T-2001") can be read after the run's session is gone (CallsOf).
+	Calls []Call `json:"calls,omitempty"`
+}
+
+// Call is one tool call as a report keeps it: the tool, its arguments and the
+// start of its answer, each cut short (MaxCallText), with anything shaped like
+// a key taken out.
+type Call struct {
+	Tool    string `json:"tool"`
+	Input   string `json:"input"`
+	Answer  string `json:"answer,omitempty"`
+	IsError bool   `json:"is_error,omitempty"`
+	NotMade bool   `json:"not_made,omitempty"`
+}
+
+// MaxCallText is the most characters of a call's arguments or answer a report
+// keeps.
+const MaxCallText = 300
+
+// keyLike is a secret's shape (Stripe's sk_, rk_, whsec_; KIFF's kf_ and its
+// session tokens): never written into a report, private as it is.
+var keyLike = regexp.MustCompile(`\b(?:sk|rk|pk|whsec|kf|at|rt)_[A-Za-z0-9_]{8,}`)
+
+// CallsOf is r's tool calls as a report keeps them, in order.
+func CallsOf(r Run) ([]Call, error) {
+	calls, err := r.Calls()
+	if err != nil {
+		return nil, err
+	}
+	results, err := r.Results()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Call, 0, len(calls))
+	for _, c := range calls {
+		k := Call{Tool: c.Tool, Input: keptText(string(c.Input))}
+		if res, ok := results[c.CallID]; ok {
+			k.Answer, k.IsError, k.NotMade = keptText(res.Text), res.IsError, res.NotMade
+		}
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+// keptText is s on one line, with no key in it, cut at MaxCallText characters.
+func keptText(s string) string {
+	s = keyLike.ReplaceAllString(strings.Join(strings.Fields(s), " "), "…")
+	if r := []rune(s); len(r) > MaxCallText {
+		return string(r[:MaxCallText]) + "…"
+	}
+	return s
 }
 
 // Context is what the run's turns read, from its Usage events: the tokens
@@ -167,6 +222,9 @@ func (c Case) Grade(ctx context.Context, r Run, j *Judge) (Result, error) {
 	}
 	if res.Context, err = contextOf(r.Events); err != nil {
 		return Result{}, fmt.Errorf("eval: %s: context: %w", c.Name, err)
+	}
+	if res.Calls, err = CallsOf(r); err != nil {
+		return Result{}, fmt.Errorf("eval: %s: calls: %w", c.Name, err)
 	}
 	if c.Items > 0 {
 		res.PerItemMicro = (cost + int64(c.Items) - 1) / int64(c.Items)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -261,5 +262,42 @@ func TestGradeReportsTheContext(t *testing.T) {
 		ev(2, session.Usage, session.UsageBody{InputTokens: 100, Context: &session.ContextBody{MessagesBytes: 10}})}
 	if res, _ := (eval.Case{Name: "c"}).Grade(context.Background(), run, nil); res.Context.LeastRoomTokens != -1 {
 		t.Fatalf("no window, room %d", res.Context.LeastRoomTokens)
+	}
+}
+
+// A run's calls are kept in its result, in order, with how each was answered:
+// so a check that fails on what the run did can be read once the session is
+// gone. Arguments and answers are one line and cut short, and nothing shaped
+// like a key is kept.
+func TestARunsCallsAreKeptInItsResult(t *testing.T) {
+	long := strings.Repeat("x", eval.MaxCallText+50)
+	r := eval.Run{Events: []session.Event{
+		ev(1, session.ToolCall, eval.ToolCallBody{CallID: "1", Tool: "update_dispute", Input: json.RawMessage(`{"dispute":"dp_1","evidence":{"text":"signed\nfor"}}`)}),
+		ev(2, session.ToolResult, eval.ToolResultBody{CallID: "1", Tool: "update_dispute", Text: "No such dispute", IsError: true}),
+		ev(3, session.ToolCall, eval.ToolCallBody{CallID: "2", Tool: "kiff_card", Input: json.RawMessage(`{"key":"sk_test_abcdefghijkl"}`)}),
+		ev(4, session.ToolResult, eval.ToolResultBody{CallID: "2", Tool: "kiff_card", Text: long}),
+		ev(5, session.ToolCall, eval.ToolCallBody{CallID: "3", Tool: "close_dispute", Input: json.RawMessage(`{"dispute":"dp_5"}`)}),
+		ev(6, session.ToolResult, eval.ToolResultBody{CallID: "3", Tool: "close_dispute", NotMade: true}),
+		ev(7, session.ToolCall, eval.ToolCallBody{CallID: "4", Tool: "list_disputes", Input: json.RawMessage(`{}`)}),
+	}}
+	calls, err := eval.CallsOf(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []eval.Call{
+		{Tool: "update_dispute", Input: `{"dispute":"dp_1","evidence":{"text":"signed\nfor"}}`, Answer: "No such dispute", IsError: true},
+		{Tool: "kiff_card", Input: `{"key":"…"}`, Answer: strings.Repeat("x", eval.MaxCallText) + "…"},
+		{Tool: "close_dispute", Input: `{"dispute":"dp_5"}`, NotMade: true},
+		{Tool: "list_disputes", Input: `{}`},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls\n%+v\nwant\n%+v", calls, want)
+	}
+	res, err := eval.Case{Name: "chargebacks"}.Grade(context.Background(), r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(res.Calls, want) {
+		t.Fatalf("the result keeps %+v", res.Calls)
 	}
 }
