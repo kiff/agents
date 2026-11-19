@@ -208,7 +208,14 @@ type Run struct {
 	// the owner's runs and evals'. ListSource lists the runs one source
 	// started.
 	Source string `json:"source,omitempty"`
-	Status Status `json:"status"`
+	// Outcomes are what the run may answer its request with, named by its
+	// caller at the start (a door from another application's outcomes); with
+	// any, the run holds the tool that answers with one (tool/outcome).
+	// Outcome is the one it answered, as that tool accepted it: kiff/agents'
+	// record, never the model's words. Empty: it answered none.
+	Outcomes []string `json:"outcomes,omitempty"`
+	Outcome  string   `json:"outcome,omitempty"`
+	Status   Status   `json:"status"`
 	// Input is what the run was asked: the owner's message, or the job's
 	// instruction. A PENDING run is started from it.
 	Input string `json:"input"`

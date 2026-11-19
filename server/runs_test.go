@@ -74,6 +74,7 @@ func (rr *runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	}
 	r := run.New(s.Tenant, s.Agent, s.Session, s.Trigger, s.Input, now)
 	r.Source, r.AgentVersion, r.Draft, r.Requester, r.NewSession, r.Grant = s.Source, s.Version, s.Draft, s.Requester, opened, s.Grant
+	r.Outcomes = s.Outcomes
 	if s.After != "" { // the contract: queued behind the thread's run, looked at again in QueueLook
 		r.After, r.Wait = s.After, now.Add(run.QueueLook)
 	}
@@ -2055,9 +2056,37 @@ func TestARequestSentTwiceStartsOneRun(t *testing.T) {
 		"a long key, streamed": {"input": "x", "dedup_key": strings.Repeat("k", server.MaxEventKey+1)},
 		"a bad source":         {"input": "x", "dedup_key": "k", "source": "E Mail", "background": true},
 		"source, no key":       {"input": "x", "source": "email", "background": true},
+		"a bad outcome":        {"input": "x", "dedup_key": "k", "background": true, "outcomes": []string{"Refunded"}},
+		"an outcome twice":     {"input": "x", "dedup_key": "k", "background": true, "outcomes": []string{"refunded", "refunded"}},
+		"eleven outcomes":      {"input": "x", "dedup_key": "k", "background": true, "outcomes": []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}},
 	} {
 		code, got := f.do("t1", "POST", "/agents/payouts/runs?as=service", body)
 		f.want(400, code, got, name)
+	}
+}
+
+// A run started with outcomes (a door from another application's request)
+// keeps them, and its view says the one it answered, as its tool accepted it.
+func TestARunStartedWithOutcomesKeepsThemAndSaysItsOutcome(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	code, got := f.do("t1", "POST", "/agents/payouts/runs?as=service", map[string]any{"input": "Check A-1047.", "background": true,
+		"dedup_key": "api:door-1:k1", "source": "api", "outcomes": []string{"refunded", "refused"}})
+	f.want(202, code, got, "started with outcomes")
+	r, err := f.runs.Get(ctx, "t1", got["id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Outcomes) != 2 || r.Outcomes[0] != "refunded" || got["outcome"] != nil {
+		t.Fatalf("run %+v, view %v", r.Outcomes, got["outcome"])
+	}
+	if _, err := run.Change(ctx, f.runs, r, now, func(n *run.Run) error { n.Outcome = "refused"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	code, view := f.do("t1", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
+	f.want(200, code, view, "the run")
+	if view["outcome"] != "refused" {
+		t.Errorf("the view's outcome: %v, want refused", view["outcome"])
 	}
 }
 

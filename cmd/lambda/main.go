@@ -114,6 +114,7 @@ import (
 	"github.com/kiff/agents/tool/followup"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
+	"github.com/kiff/agents/tool/outcome"
 	"github.com/kiff/agents/tool/planque"
 )
 
@@ -425,6 +426,14 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 				return r.Session, err
 			}).Shown(shown)
 		}
+	}
+	// A run started with outcomes (a door from another application's request) answers with one of them.
+	rn.Builder.Outcome = func(ctx context.Context, tenant, agent, runID string) (tool.Tool, error) {
+		r, err := runs.Get(ctx, tenant, runID)
+		if err != nil || len(r.Outcomes) == 0 {
+			return nil, err
+		}
+		return outcome.New(r.Outcomes), nil
 	}
 	f.http = f.api.Handler()
 	f.sweeper = sweeping(runs, rn, f.cont)
