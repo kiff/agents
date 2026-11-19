@@ -79,6 +79,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/cmd/internal/delivered"
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
 	"github.com/kiff/agents/eval/managed"
@@ -244,6 +245,8 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 		Own: func(tenant, agent string, version int) []tool.Tool {
 			return []tool.Tool{toolmemory.New(rt.sessions, tenant, agent, version)}
 		},
+		// As the Lambda does, on stores in memory: a job whose agent delivers files runs with deliver_file.
+		DeliverFile: delivered.Tool(rt.runs),
 	}}
 	return rt
 }
@@ -328,6 +331,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		d.Speed, d.PriceFast = t.Speed, t.PriceFast // measured as it runs: fast where someone waits
 		d.Skills = t.Skills                         // read from -skills: a skill it names that isn't there fails the build
 		d.DeferredTools, d.DeferVendorTools = t.DeferredTools, t.DeferVendorTools
+		d.Files = t.Files // deliver_file, as the taf runs live
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
 		if err != nil {

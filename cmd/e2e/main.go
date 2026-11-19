@@ -64,6 +64,7 @@ import (
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/chat"
+	"github.com/kiff/agents/cmd/internal/delivered"
 	"github.com/kiff/agents/drafts"
 	draftsapi "github.com/kiff/agents/drafts/kiffapi"
 	"github.com/kiff/agents/eval"
@@ -786,7 +787,8 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 	}
 	claims := &drafts.Service{Store: t.keys, Keys: t.keys, KIFF: draftsapi.New(kiff.APIURL, t.hc)}
 	t.words = &wordsClock{Model: m}
-	t.rn = &runner.Runner{Runs: memory.NewRuns(), Sessions: t.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
+	runStore := memory.NewRuns()
+	t.rn = &runner.Runner{Runs: runStore, Sessions: t.sessions, Collect: kiff.Collect, Builder: &registry.Builder{
 		Agents: t.agents, Secrets: keyring{t.keys}, Model: t.words, Gateways: []string{kiff.URL}, Skills: skills,
 		// As the Lambda does: a chat's next message reuses its agent's gateway session (kiff.Sessions).
 		Connect: func(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
@@ -803,6 +805,9 @@ func (t *test) runtime(ctx context.Context, m model.Model) error {
 			return planque.New(base, tenant, key, t.hc).ReadThrough(kiff.New(gateway, key, nil))
 		},
 		Drafts: func(tenant, key string) tool.Tool { return tooldrafts.New(claims, tenant, key) },
+		// As the Lambda does, on stores in memory: a taf with files (kiff/tafs sets files: true) gets
+		// deliver_file in a run, so it builds and runs here as it does live.
+		DeliverFile: delivered.Tool(runStore),
 	}}
 	return nil
 }
