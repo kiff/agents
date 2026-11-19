@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool/show"
 )
 
 // Setup's notes are graded as the owner saw them: the agent's Update events,
@@ -67,18 +70,31 @@ func TestUnshownConfirmsAreCounted(t *testing.T) {
 }
 
 // A card Setup sent with no text, which show refused, is counted as its own
-// line, whether or not Coach recovered; another refusal of a card isn't.
+// line, whether or not Coach recovered; another refusal of a card isn't. The
+// refusals are show's own words, read from show.New().Call, never typed here:
+// Parse names a card by its type and id ("notice rules: text is required").
 func TestEmptyCardsAreCounted(t *testing.T) {
-	refused := func(b agent.OwnRefusedBody) session.Event {
-		raw, _ := json.Marshal(b)
+	shown := func(card string) string {
+		res, err := show.New().Call(context.Background(), json.RawMessage(card))
+		if err != nil || !res.IsError {
+			t.Fatalf("show should refuse %s: %+v %v", card, res, err)
+		}
+		return res.Text
+	}
+	refused := func(tool, why string) session.Event {
+		raw, _ := json.Marshal(agent.OwnRefusedBody{Tool: tool, Error: why})
 		return session.Event{Kind: session.OwnRefused, Body: raw}
 	}
+	empty := shown(`{"type":"notice","id":"rules","tone":"info","title":"Your rules","text":""}`)
+	if !strings.HasSuffix(empty, ": text is required") {
+		t.Fatalf("show says %q: the count's match no longer fits it", empty)
+	}
 	events := []session.Event{
-		refused(agent.OwnRefusedBody{Tool: "show", Error: "text is required"}),
-		refused(agent.OwnRefusedBody{Tool: "show", Error: agent.UnshownNotice}),
-		refused(agent.OwnRefusedBody{Tool: "show", Error: "no lines and no lang"}),
-		refused(agent.OwnRefusedBody{Tool: agent.MessageTool, Error: "text is required"}), // not a card
-		refused(agent.OwnRefusedBody{Tool: "show", Error: "text is required"}),
+		refused("show", empty),
+		refused("show", agent.UnshownNotice),
+		refused("show", "no lines and no lang"),
+		refused(agent.MessageTool, empty), // not a card
+		refused("show", shown(`{"type":"notice","id":"n1","tone":"info","title":"x"}`)),
 		{Kind: session.AgentMessage, Body: json.RawMessage(`{"text":"Agree?"}`)},
 	}
 	if got := emptyCards(events); got != 2 {
@@ -89,5 +105,8 @@ func TestEmptyCardsAreCounted(t *testing.T) {
 	}
 	if got := emptyCards(nil); got != 0 {
 		t.Fatalf("none: %d", got)
+	}
+	if emptyCardsFailure(0) != nil || emptyCardsFailure(1) == nil {
+		t.Fatal("a setup fails on one empty card, and not on none")
 	}
 }

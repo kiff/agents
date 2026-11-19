@@ -62,7 +62,8 @@ func wordingLine(events []session.Event) string {
 }
 
 // emptyCards counts the cards Setup sent with no text, which show refused
-// ("text is required"): a rules notice sent that way is refused, and so is
+// ("notice rules: text is required": Parse names the card by its type and id,
+// so the refusal ends ": text is required"): a rules notice sent that way is refused, and so is
 // the confirm that agrees to it unless Coach shows a full notice first
 // (unshownConfirms). Coach recovering is no reason to hide it: the count is
 // printed beside the wording line, so a definition that makes Coach send an
@@ -74,15 +75,24 @@ func emptyCards(events []session.Event) int {
 			continue
 		}
 		var b agent.OwnRefusedBody
-		if json.Unmarshal(e.Body, &b) == nil && b.Tool == "show" && b.Error == emptyCardError {
+		if json.Unmarshal(e.Body, &b) == nil && b.Tool == "show" && strings.HasSuffix(b.Error, emptyCardError) {
 			n++
 		}
 	}
 	return n
 }
 
-// emptyCardError is show's refusal of a card with no text.
-const emptyCardError = "text is required"
+// emptyCardError is how show's refusal of a card with no text ends.
+const emptyCardError = ": text is required"
+
+// emptyCardsFailure is the setup's failure when Coach sent a card with no text, even if it recovered: the
+// regression draft-the-card@40 is there to remove, which the Eval must show gone. Nil for none.
+func emptyCardsFailure(n int) error {
+	if n == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d card(s) were sent with no text and refused by show: Coach must write a notice's text out", n)
+}
 
 // emptyCardsLine is the public log's line for emptyCards: a count, never a word.
 func emptyCardsLine(events []session.Event) string {

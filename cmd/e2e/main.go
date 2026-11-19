@@ -636,11 +636,12 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	fmt.Fprintln(t.cfg.log, refusalsLine(t.draftRefusals))
 	fmt.Fprintf(t.cfg.log, "draftless approvals tafs cloud's check didn't take: %d\n", t.splitUnchecked)
 	fmt.Fprintln(t.cfg.log, unconfirmedLine(t.unconfirmedResults))
-	unshown := 0
+	unshown, empty := 0, 0
 	if t.setupSession != "" {
 		if _, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession); err == nil {
 			fmt.Fprintln(t.cfg.log, wordingLine(events))
 			fmt.Fprintln(t.cfg.log, emptyCardsLine(events))
+			empty = emptyCards(events)
 			unshown = unshownConfirms(events)
 		}
 	}
@@ -650,6 +651,9 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	// A confirm whose rules notice was never shown is a step the owner sees fail: never one in a Setup.
 	if unshown > 0 {
 		return fmt.Errorf("%d confirm(s) agreed to a rules notice that was never shown (the notice was refused): a failed step the owner sees", unshown)
+	}
+	if err := emptyCardsFailure(empty); err != nil {
+		return err
 	}
 	if t.cfg.recipe != nil {
 		return t.recipeTaf(ctx, tafID)
