@@ -28,6 +28,10 @@ type Tool struct {
 	files              *files.Service
 	tenant, agent, run string
 	session            Sessions
+	// shown: the apps show delivered files (their Files switch is on), so the
+	// tool may tell the run where people open them. Off, it says only that the
+	// file is kept: a taf never sends the owner to a screen the apps don't have.
+	shown bool
 
 	mu sync.Mutex
 	n  int // files this run delivered through it
@@ -39,6 +43,22 @@ func New(fs *files.Service, tenant, agent, run string, session Sessions) *Tool {
 	return &Tool{files: fs, tenant: tenant, agent: agent, run: run, session: session}
 }
 
+// Shown returns t telling the run that people open delivered files in the
+// apps' Files and the chat, once the apps show them.
+func (t *Tool) Shown(on bool) *Tool {
+	t.shown = on
+	return t
+}
+
+// where is where people find a delivered file, as the run may say it.
+func (t *Tool) where() string {
+	if t.shown {
+		return "It's kept 30 days in Files, where everyone on the account can open, save or share it, and it shows in this chat. "
+	}
+	return "It's kept 30 days for the account. The apps don't show delivered files yet: say what's in the file and that it's kept, " +
+		"never that it's in Files, in this chat or anywhere to open. "
+}
+
 func (t *Tool) Access() tool.Access { return tool.Own }
 func (t *Tool) Gateway() bool       { return false }
 
@@ -46,7 +66,7 @@ func (t *Tool) Spec() model.ToolSpec {
 	return model.ToolSpec{
 		Name: Name,
 		Description: fmt.Sprintf("Hand the account a file you made in this run: a report, a table or a document, as text. "+
-			"It's kept 30 days in Files, where everyone on the account can open, save or share it, and it shows in this chat. "+
+			t.where()+
 			"media_type is one of text/csv, text/markdown, text/plain or application/json; content is the whole file, at most 10 MB; "+
 			"name is what people see (its extension is set from the type). At most %d files a run. "+
 			"A CSV cell starting with =, +, - or @ that isn't a number is kept as text, never as a formula. "+
@@ -89,5 +109,8 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		return tool.Result{}, err
 	}
 	t.n++
+	if !t.shown {
+		return tool.Result{Text: fmt.Sprintf("Delivered %q (%d bytes, id %s): kept 30 days for the account. The apps don't show it yet.", f.Name, f.Size, f.ID)}, nil
+	}
 	return tool.Result{Text: fmt.Sprintf("Delivered %q (%d bytes, id %s): it's in Files for 30 days, for everyone on the account.", f.Name, f.Size, f.ID)}, nil
 }
