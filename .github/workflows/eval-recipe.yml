@@ -56,6 +56,9 @@ jobs:
         env:
           CASE: ${{ inputs.case }}
           RECIPE_REF: ${{ inputs.recipe_ref }}
+          # tafs cloud's flags that change a definition (tafdef.ts), as set on the live tafs-cloud: so the
+          # Eval measures what the Upgrade, which runs there, writes. Set the variable when the flag changes.
+          TAFS_YOUR_STEP: ${{ vars.TAFS_YOUR_STEP }}
         run: |
           case "$CASE" in
             tickets) recipe=acknowledge-every-ticket ;;
@@ -76,6 +79,7 @@ jobs:
             (cd tafs/runtime && node scripts/recipes.mjs)
           fi
           infra/eval-definitions.sh tafs defs
+          echo "Definitions built with TAFS_YOUR_STEP=${TAFS_YOUR_STEP:-off}." >> "$GITHUB_STEP_SUMMARY"
           if [ ! -f "defs/recipe-$recipe.json" ]; then
             echo "recipe: kiff/tafs has no recipe $recipe at ${RECIPE_REF:-eval/tafs.ref}" >&2
             exit 1

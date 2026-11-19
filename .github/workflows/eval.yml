@@ -138,10 +138,15 @@ jobs:
           [ "$list" = ",all," ] || echo "Suites **${list:1:-1}** only: it doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: tafs' definitions, at eval/tafs.ref
         if: steps.unchanged.outputs.skip != 'true'
+        env:
+          # tafs cloud's flags that change a definition (tafdef.ts), as set on the live tafs-cloud: so the
+          # Eval measures what the Upgrade, which runs there, writes. Set the variable when the flag changes.
+          TAFS_YOUR_STEP: ${{ vars.TAFS_YOUR_STEP }}
         run: |
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
+          echo "Definitions built with TAFS_YOUR_STEP=${TAFS_YOUR_STEP:-off}." >> "$GITHUB_STEP_SUMMARY"
       - name: What's deployed, at the start
         # tafs cloud, planque and agents as deployed when the suites start
         # (infra/eval-deployed.sh: each one's newest successful deploy on
