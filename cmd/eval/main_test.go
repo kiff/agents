@@ -26,6 +26,7 @@ import (
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/tool/deliverfile"
 	"github.com/kiff/agents/tool/kiff"
 )
 
@@ -1132,5 +1133,30 @@ func TestADeskRunDisclosesInItsReplies(t *testing.T) {
 	}
 	if len(d.In) != 1 || d.In[0].Tool != "t1a2b3c4d_reply" || d.In[0].Fields[0] != "body" {
 		t.Fatalf("%+v", d)
+	}
+}
+
+// A job whose agent delivers files (kiff/tafs's definitions set files: true)
+// runs with deliver_file, as on the Lambda: the definition keeps Files, and the
+// runner's builder has a DeliverFile, so the gate covers the tool that ships.
+func TestAJobWithFilesRunsWithDeliverFile(t *testing.T) {
+	defs := t.TempDir()
+	if err := os.WriteFile(filepath.Join(defs, "refunds.json"), []byte(`{"model":"m","instructions":"You are Refunds.","files":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := newRuntime(&script{}, "kiff-k", registry.Definition{Tenant: evalTenant, Gateway: "https://gateway.test/mcp"}, "", "", io.Discard)
+	rt.defs = defs
+	d, err := rt.definition(cases.Scenario{Name: "refunds-files", Job: "refunds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Files {
+		t.Fatal("the job's files: true wasn't kept")
+	}
+	if rt.rn.Builder.DeliverFile == nil {
+		t.Fatal("the runner gives no deliver_file: a build of the job for a run fails with registry.ErrNoFiles")
+	}
+	if name := rt.rn.Builder.DeliverFile(evalTenant, d.ID, "run_1").Spec().Name; name != deliverfile.Name {
+		t.Fatalf("the tool is %q", name)
 	}
 }
