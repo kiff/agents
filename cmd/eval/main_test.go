@@ -1160,3 +1160,20 @@ func TestAJobWithFilesRunsWithDeliverFile(t *testing.T) {
 		t.Fatalf("the tool is %q", name)
 	}
 }
+
+// A job whose definition asks for your_step (kiff/tafs with TAFS_YOUR_STEP=on) builds and runs here as it does live:
+// the runtime offers the tool, as the Lambda does, so the Eval never fails on "this server doesn't offer your_step".
+func TestARuntimeOffersYourStep(t *testing.T) {
+	m := &script{replies: agentTurns()}
+	withAgent(t, m)
+	rt := newRuntime(m, "kiff-k", registry.Definition{Tenant: evalTenant, Model: "m", Price: model.Price{Input: 1, Output: 1},
+		MaxTokens: 1024, Gateway: "https://gateway.test/mcp", KeyRef: "KIFF_AGENT_KEY", Keep: session.DefaultPolicy(evalKeep),
+		MaxCost: 2_000_000, History: 20, YourStep: true}, jobsDir(t), "", io.Discard)
+	r, err := rt.Run(context.Background(), cases.Refunds)
+	if err != nil {
+		t.Fatalf("a your_step definition: %v", err)
+	}
+	if r.Status != runs.Completed {
+		t.Fatalf("status %s", r.Status)
+	}
+}
