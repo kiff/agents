@@ -380,6 +380,31 @@ func TestProbeReadsThroughTheAgentsGateway(t *testing.T) {
 	}
 }
 
+// A taf that delivers files still checks its work: the probe's build has no
+// run, so it goes without deliver_file instead of refusing, with or without a
+// server that keeps files.
+func TestProbeOfATafWithFilesReadsAsBefore(t *testing.T) {
+	agents := memory.NewAgents()
+	d := registrytest.Definition("t1", "payouts")
+	d.Files = true
+	_ = agents.Put(ctx, d)
+	list := &gwTool{name: "gmail__list", access: tool.Read}
+	b := &registry.Builder{Agents: agents, Secrets: keys{}, Model: &replies{}, Gateways: []string{"https://gateway.test/mcp"},
+		Connect: func(context.Context, string, string, string, string) ([]tool.Tool, error) {
+			return []tool.Tool{list}, nil
+		}}
+	for _, deliver := range []func(string, string, string) tool.Tool{nil, func(string, string, string) tool.Tool {
+		t.Fatal("a probe built deliver_file")
+		return nil
+	}} {
+		b.DeliverFile = deliver
+		got, err := probe(ctx, b, "t1", "payouts", schedule.Check{Tool: "gmail__list", Arguments: json.RawMessage(`{}`), Cursor: "c"})
+		if err != nil || got != `{"data":[]}` {
+			t.Fatalf("a files taf's check read %q, %v", got, err)
+		}
+	}
+}
+
 // A read KIFF's gateway sent comes back "forwarded": the check reads it like
 // one with no state. A held, refused or failed read, or an error, isn't made.
 func TestProbeTakesAForwardedRead(t *testing.T) {

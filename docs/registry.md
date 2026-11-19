@@ -188,8 +188,9 @@ a, def, err := b.Build(ctx, "t1", "rae")
 5. adds the run's workspace tool when the definition asks for one; `BuildRun`
    names the run, and without a run or a server `Workspace` it refuses
    (`ErrNoWorkspace`) rather than build the agent without it;
-6. adds the run's `deliver_file` tool when the definition asks for files, on
-   the same terms (`ErrNoFiles`);
+6. adds the run's `deliver_file` tool when the definition asks for files and
+   a run is named. A build for no run (a check's probe) goes without it, and a
+   run on a server with no files is refused (`ErrNoFiles`);
 7. returns the agent, checked, and the definition (its keep rules and history
    size are the runner's to apply).
 
