@@ -113,7 +113,7 @@ func (s *Server) downloadFile(ctx context.Context, c Caller, r *http.Request) (i
 	if err != nil {
 		return 0, nil, err
 	}
-	f, url, err := s.Delivered.Download(ctx, c.Tenant, r.PathValue("file"), by)
+	f, url, until, err := s.Delivered.DownloadUntil(ctx, c.Tenant, r.PathValue("file"), by)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -121,7 +121,7 @@ func (s *Server) downloadFile(ctx context.Context, c Caller, r *http.Request) (i
 		fileView
 		URL     string    `json:"url"`
 		Expires time.Time `json:"url_expires"`
-	}{viewFile(f), url, time.Now().Add(files.ReadTTL)}, nil
+	}{viewFile(f), url, until}, nil
 }
 
 // deleteFile is DELETE /files/{file}?by=member:<subject>: the file goes for

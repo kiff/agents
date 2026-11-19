@@ -44,3 +44,24 @@ func TestWordingLineCountsWhatTheRulesDid(t *testing.T) {
 		t.Fatalf("none: %q", got)
 	}
 }
+
+// A confirm left unmade because its rules notice was refused is counted; a
+// card refused and redrawn, or a wording miss, isn't.
+func TestUnshownConfirmsAreCounted(t *testing.T) {
+	refused := func(b agent.OwnRefusedBody) session.Event {
+		raw, _ := json.Marshal(b)
+		return session.Event{Kind: session.OwnRefused, Body: raw}
+	}
+	events := []session.Event{
+		refused(agent.OwnRefusedBody{Tool: "show", Error: "no lines and no lang"}),
+		refused(agent.OwnRefusedBody{Tool: "show", Error: agent.UnshownNotice}),
+		refused(agent.OwnRefusedBody{Tool: agent.MessageTool, Error: "your message says …"}),
+		{Kind: session.AgentMessage, Body: json.RawMessage(`{"text":"Agree?"}`)},
+	}
+	if got := unshownConfirms(events); got != 1 {
+		t.Fatalf("unshown confirms: %d, want 1", got)
+	}
+	if got := unshownConfirms(events[:1]); got != 0 {
+		t.Fatalf("a refused card alone: %d, want 0", got)
+	}
+}

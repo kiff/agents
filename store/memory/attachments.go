@@ -155,6 +155,17 @@ func (s *Blobs) Get(_ context.Context, key string, max int64) ([]byte, error) {
 	return bytes.Clone(b), nil
 }
 
+// GetStart reads at most the first n bytes of key.
+func (s *Blobs) GetStart(_ context.Context, key string, n int64) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.b[key]
+	if !ok {
+		return nil, fmt.Errorf("memory: no blob %s", key)
+	}
+	return bytes.Clone(b[:min(int64(len(b)), n)]), nil
+}
+
 // Put writes key, stored as mediaType.
 func (s *Blobs) Put(_ context.Context, key, mediaType string, data []byte) error {
 	s.mu.Lock()

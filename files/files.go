@@ -145,6 +145,8 @@ type Blobs interface {
 	Put(ctx context.Context, key, served string, data []byte) error
 	// Get reads key, at most max bytes; more is an error.
 	Get(ctx context.Context, key string, max int64) ([]byte, error)
+	// GetStart reads at most the first n bytes of key.
+	GetStart(ctx context.Context, key string, n int64) ([]byte, error)
 	// PresignGetAs is a URL that reads key as a download named name, served
 	// as served, until ttl passes.
 	PresignGetAs(ctx context.Context, key, name, served string, ttl time.Duration) (string, error)
@@ -260,9 +262,10 @@ func formula(cell string) bool {
 func Preview(data []byte) string {
 	if len(data) > MaxPreview {
 		data = data[:MaxPreview]
-		for len(data) > 0 && !utf8.Valid(data) {
-			data = data[:len(data)-1]
-		}
+	}
+	// A cut, here or by a ranged read, may end inside a character: drop its start.
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[:len(data)-1]
 	}
 	return strings.Map(func(r rune) rune {
 		switch {

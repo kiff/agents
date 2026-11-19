@@ -155,7 +155,7 @@ func (s *Service) Read(ctx context.Context, tenant, id, member string) (File, st
 	if err != nil {
 		return File{}, "", err
 	}
-	data, err := s.Blobs.Get(ctx, f.Key(), f.Size)
+	data, err := s.Blobs.GetStart(ctx, f.Key(), MaxPreview)
 	if err != nil {
 		return File{}, "", err
 	}
@@ -166,6 +166,17 @@ func (s *Service) Read(ctx context.Context, tenant, id, member string) (File, st
 // Download is a URL to one file's bytes for ReadTTL, served as an attachment
 // of its checked type under its cleaned name.
 func (s *Service) Download(ctx context.Context, tenant, id, member string) (File, string, error) {
+	f, url, _, err := s.DownloadUntil(ctx, tenant, id, member)
+	return f, url, err
+}
+
+// DownloadUntil is Download, with when its URL stops working, by the service's clock.
+func (s *Service) DownloadUntil(ctx context.Context, tenant, id, member string) (File, string, time.Time, error) {
+	f, url, err := s.download(ctx, tenant, id, member)
+	return f, url, s.now().Add(ReadTTL), err
+}
+
+func (s *Service) download(ctx context.Context, tenant, id, member string) (File, string, error) {
 	f, err := s.Get(ctx, tenant, id)
 	if err != nil {
 		return File{}, "", err

@@ -124,6 +124,10 @@ func TestAPreviewIsPlainText(t *testing.T) {
 	if got != "Total 99\n[31mred\tok" {
 		t.Errorf("Preview = %q", got)
 	}
+	// A ranged read that ends inside a character drops its start.
+	if got := files.Preview([]byte("abc\xc3")); got != "abc" {
+		t.Errorf("a preview ending mid-character = %q", got)
+	}
 	long := strings.Repeat("a", files.MaxPreview-1) + "é and more"
 	p := files.Preview([]byte(long))
 	if !utf8.ValidString(p) || len(p) != files.MaxPreview-1 {
@@ -133,6 +137,20 @@ func TestAPreviewIsPlainText(t *testing.T) {
 
 // A delivered file is stored under its own prefix, as its checked type, and
 // a download is served as that type under its cleaned name.
+// A preview reads only the file's start, never its whole bytes.
+func TestAPreviewReadsOnlyTheStart(t *testing.T) {
+	w := newWorld()
+	f := w.deliver(t, "t1", "refunds", "r1", "big.txt", "text/plain", strings.Repeat("x", files.MaxPreview*3)+"END")
+	_, p, err := w.svc.Read(ctx, "t1", f.ID, "member:ana")
+	if err != nil || len(p) != files.MaxPreview || strings.Contains(p, "END") {
+		t.Fatalf("preview of %d bytes, %v", len(p), err)
+	}
+	_, _, until, err := w.svc.DownloadUntil(ctx, "t1", f.ID, "member:ana")
+	if err != nil || !until.Equal(t0.Add(files.ReadTTL)) {
+		t.Fatalf("url_expires %v, want the service's clock plus a minute", until)
+	}
+}
+
 func TestADeliveredFileIsKeptAsItsCheckedType(t *testing.T) {
 	w := newWorld()
 	f := w.deliver(t, "t1", "refunds", "r1", "week.csv", "text/csv", "a,b\n1,2\n")
