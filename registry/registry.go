@@ -753,8 +753,8 @@ var ErrPlanque = errors.New("registry: the planque is not one this server allows
 // give: the server has none, or the agent is built for no run.
 var ErrNoWorkspace = errors.New("registry: the agent needs a workspace, and this build has none")
 
-// ErrNoFiles means a definition asks for deliver_file this build can't give:
-// the server keeps no delivered files, or the agent is built for no run.
+// ErrNoFiles means a definition asks for deliver_file a run's build can't
+// give: the server keeps no delivered files. A build for no run goes without it.
 var ErrNoFiles = errors.New("registry: the agent delivers files, and this build keeps none")
 
 // Builder builds agents from their definitions, once per request.
@@ -900,8 +900,10 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 		}
 		tools = append(tools, b.Workspace(tenant, run))
 	}
-	if d.Files {
-		if b.DeliverFile == nil || run == "" {
+	// A build for no run (a check's probe, a describe) delivers nothing: it goes without deliver_file
+	// rather than refusing, so a taf with files still checks its work.
+	if d.Files && run != "" {
+		if b.DeliverFile == nil {
 			return agent.Agent{}, d, ErrNoFiles
 		}
 		tools = append(tools, b.DeliverFile(tenant, id, run))

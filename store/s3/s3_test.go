@@ -58,6 +58,24 @@ func TestADownloadIsNamed(t *testing.T) {
 	}
 }
 
+// A delivered file downloads under its name, every byte outside RFC 5987's
+// attr-chars encoded (":", "=", "@" and the name's own characters), served as
+// its checked type.
+func TestADeliveredFileIsNamedAndTyped(t *testing.T) {
+	b := New(client(), "attachments")
+	got, err := b.PresignGetAs(context.Background(), "delivered/t1/a1/fil_1", "Q4: a=b@c é.csv", "text/csv; charset=utf-8", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(got)
+	if d := u.Query().Get("response-content-disposition"); d != "attachment; filename*=UTF-8''Q4%3A%20a%3Db%40c%20%C3%A9.csv" {
+		t.Fatalf("disposition %q", d)
+	}
+	if ct := u.Query().Get("response-content-type"); ct != "text/csv; charset=utf-8" {
+		t.Fatalf("type %q", ct)
+	}
+}
+
 type fake struct {
 	API
 	objects map[string][]byte

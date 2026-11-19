@@ -370,8 +370,8 @@ func TestBuildGivesAWorkspaceOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
 }
 
 // deliver_file is opt-in per definition and bound to the run being built:
-// an agent that doesn't ask never gets it, and one that does is never built
-// without its run's.
+// an agent that doesn't ask never gets it, a run's build gets that run's, and
+// a build for no run (a check's probe) goes without it.
 func TestBuildGivesDeliverFileOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
 	f := newFixture(t)
 	var got [3]string
@@ -400,12 +400,18 @@ func TestBuildGivesDeliverFileOnlyWhenAskedAndOnlyForTheRun(t *testing.T) {
 	if err != nil || !has(a) || got != [3]string{"t1", "payouts", "run-1"} {
 		t.Fatalf("with files: tool %v for %v, err %v", has(a), got, err)
 	}
-	if _, _, err := f.b.Build(ctx, "t1", "payouts"); !errors.Is(err, registry.ErrNoFiles) {
-		t.Fatalf("built for no run: %v, want ErrNoFiles", err)
+	// A build for no run (a check's probe) goes without it, and never refuses: a taf with files still checks its work.
+	got = [3]string{}
+	a, _, err = f.b.Build(ctx, "t1", "payouts")
+	if err != nil || has(a) || got[2] != "" {
+		t.Fatalf("built for no run: tool %v, built for %q, err %v; want no deliver_file and no error", has(a), got[2], err)
 	}
 	f.b.DeliverFile = nil
 	if _, _, err := f.b.BuildRun(ctx, "t1", "payouts", "run-1"); !errors.Is(err, registry.ErrNoFiles) {
-		t.Fatalf("a server with no files: %v, want ErrNoFiles", err)
+		t.Fatalf("a run on a server with no files: %v, want ErrNoFiles", err)
+	}
+	if _, _, err := f.b.Build(ctx, "t1", "payouts"); err != nil {
+		t.Fatalf("no run, on a server with no files: %v, want it built", err)
 	}
 }
 

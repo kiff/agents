@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 	"time"
 
@@ -81,7 +80,7 @@ func (b *Blobs) PresignPut(ctx context.Context, key, mediaType string, size int6
 
 // PresignGet signs a GET of key, downloaded under name.
 func (b *Blobs) PresignGet(ctx context.Context, key, name string, ttl time.Duration) (string, error) {
-	disposition := "attachment; filename*=UTF-8''" + url.PathEscape(name)
+	disposition := attachment(name)
 	req, err := b.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &b.bucket, Key: &key,
 		ResponseContentDisposition: &disposition}, s3.WithPresignExpires(ttl))
 	if err != nil {
@@ -93,13 +92,38 @@ func (b *Blobs) PresignGet(ctx context.Context, key, name string, ttl time.Durat
 // PresignGetAs signs a GET of key, downloaded under name and served as
 // served, whatever type it was stored as (files.Blobs).
 func (b *Blobs) PresignGetAs(ctx context.Context, key, name, served string, ttl time.Duration) (string, error) {
-	disposition := "attachment; filename*=UTF-8''" + url.PathEscape(name)
+	disposition := attachment(name)
 	req, err := b.presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &b.bucket, Key: &key,
 		ResponseContentDisposition: &disposition, ResponseContentType: &served}, s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", err
 	}
 	return req.URL, nil
+}
+
+// attachment is a Content-Disposition that downloads under name, encoded as
+// RFC 5987 says: every byte outside its attr-chars percent-encoded.
+func attachment(name string) string {
+	var b strings.Builder
+	for _, c := range []byte(name) {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$&+-.^_`|~", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return "attachment; filename*=UTF-8''" + b.String()
+}
+
+// GetStart reads at most the first n bytes of key.
+func (b *Blobs) GetStart(ctx context.Context, key string, n int64) ([]byte, error) {
+	rng := fmt.Sprintf("bytes=0-%d", n-1)
+	out, err := b.api.GetObject(ctx, &s3.GetObjectInput{Bucket: &b.bucket, Key: &key, Range: &rng})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+	return io.ReadAll(io.LimitReader(out.Body, n))
 }
 
 // Get reads key, refusing more than max bytes.

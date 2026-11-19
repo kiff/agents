@@ -60,3 +60,20 @@ func wordingLine(events []session.Event) string {
 	}
 	return fmt.Sprintf("setup wording: %d messages held and reworded, %d said as written (misses), %d notes dropped", held, said, dropped)
 }
+
+// unshownConfirms counts the confirms left unmade because the rules notice
+// they agree to was never shown (agent.UnshownNotice): the notice was
+// refused, so the owner saw neither, and the step fails for them.
+func unshownConfirms(events []session.Event) int {
+	n := 0
+	for _, e := range events {
+		if e.Kind != session.OwnRefused {
+			continue
+		}
+		var b agent.OwnRefusedBody
+		if json.Unmarshal(e.Body, &b) == nil && b.Error == agent.UnshownNotice {
+			n++
+		}
+	}
+	return n
+}
