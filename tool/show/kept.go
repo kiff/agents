@@ -116,10 +116,12 @@ func (t Tool) drawLines(c *Component, ownText bool) error {
 		return nil
 	}
 	// A definition with no endings (written before them, until its next
-	// Upgrade) takes a rules notice's own text, as before lines: the fix says
-	// so, so the notice is sent again in that form, never left unshown.
+	// Upgrade) is never offered lines, and a notice sent with them anyway is
+	// shown, not refused: refused, it left the owner a "your OK" with no card,
+	// and the confirm agreeing to it unmade (Eval 44452262404). Its own text
+	// when it has one, else its lines' words, one a line, with no endings.
 	if len(t.keptWords) == 0 {
-		return fmt.Errorf("this Coach writes a rules notice's own text: send its text and its rules, with no lines and no lang")
+		return textOnly(c)
 	}
 	if ownText {
 		return fmt.Errorf("a notice with lines has no text of its own: show writes it from the lines, with each line's ending")
@@ -181,6 +183,31 @@ func (t Tool) drawLines(c *Component, ownText bool) error {
 	if utf8.RuneCountInString(c.Text) > MaxText {
 		return fmt.Errorf("the lines come to more than %d characters: fewer or shorter lines", MaxText)
 	}
+	return nil
+}
+
+// textOnly shows a notice sent with lines to a definition with no endings in
+// the form that definition takes: its own text, or, with none, the lines'
+// words as its text, each checked as a line is. Lines and lang go.
+func textOnly(c *Component) error {
+	if c.Text == "" {
+		text := make([]string, 0, len(c.Lines))
+		for i, l := range c.Lines {
+			line := strings.TrimSpace(l.Text)
+			if n := utf8.RuneCountInString(line); n == 0 || n > MaxLine {
+				return fmt.Errorf("line %d: text is 1 to %d characters", i+1, MaxLine)
+			}
+			if markupLike.MatchString(l.Text) {
+				return fmt.Errorf("line %d: plain words on one line, no markup", i+1)
+			}
+			text = append(text, line)
+		}
+		c.Text = strings.Join(text, "\n")
+		if utf8.RuneCountInString(c.Text) > MaxText {
+			return fmt.Errorf("the lines come to more than %d characters: fewer or shorter lines", MaxText)
+		}
+	}
+	c.Lines, c.Lang = nil, ""
 	return nil
 }
 
