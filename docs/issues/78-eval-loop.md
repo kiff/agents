@@ -136,6 +136,12 @@ signed-in GitHub user can download a public repository's artifacts. So:
   role, `agents-github-eval`, may only `PutObject` under `reports/`, and only
   from `main`'s workflow runs (GitHub's OIDC subject). The log names only the
   key: `reports/<date>-<run id>/`.
+- **Each run's calls are in its report** (`eval.CallsOf`): the tool, its
+  arguments and the start of its answer, in order, each cut at 300
+  characters, with anything shaped like a key taken out. The run's session
+  lives in memory and is gone once the run ends, so this is what lets a
+  failed "does the job" be read afterwards (Eval 44469206833's "No such
+  dispute" couldn't be).
 
 A local run with `-public` and the nightly's arguments, before the workflow
 (tafs@1d1ed42, three seeds): a mean of 0.72 against the baseline's 0.60.

@@ -164,9 +164,38 @@ func WriteReport(w io.Writer, cfgs []Config, results []Result, lower []string) e
 			report = "(none: the agent said nothing last)"
 		}
 		fmt.Fprintf(&b, "\nIts report, as the checks read it:\n\n> %s\n", strings.ReplaceAll(report, "\n", "\n> "))
+		if len(r.Calls) > 0 {
+			// What the run did, so a check that fails on it can be read: the
+			// session is gone once the run ends.
+			fmt.Fprintf(&b, "\nIts calls, in order:\n\n")
+			for i, c := range r.Calls {
+				fmt.Fprintf(&b, "%d. `%s` %s", i+1, c.Tool, code(c.Input))
+				switch {
+				case c.NotMade:
+					b.WriteString(" → not made")
+				case c.IsError:
+					fmt.Fprintf(&b, " → error: %s", code(c.Answer))
+				case c.Answer != "":
+					fmt.Fprintf(&b, " → %s", code(c.Answer))
+				}
+				b.WriteString("\n")
+			}
+		}
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// code is s as inline code, whatever backticks it carries.
+func code(s string) string {
+	if s == "" {
+		return "``"
+	}
+	fence := "`"
+	for strings.Contains(s, fence) {
+		fence += "`"
+	}
+	return fence + " " + s + " " + fence
 }
 
 // cell keeps text in one table cell.

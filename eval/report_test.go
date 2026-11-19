@@ -51,6 +51,11 @@ func TestWriteReport(t *testing.T) {
 	r := result("chargebacks", 0.5, 384_200, "stops on held")
 	r.Checks[0].Why = "wrote T-2005 again | with update_dispute"
 	r.Report = "Answered T-2001.\nT-2004 waits for you."
+	r.Calls = []eval.Call{
+		{Tool: "update_dispute", Input: `{"dispute":"dp_1"}`, Answer: "No such dispute", IsError: true},
+		{Tool: "close_dispute", Input: `{"dispute":"dp_5"}`, NotMade: true},
+		{Tool: "list_disputes", Input: "{}", Answer: "a `quoted` id"},
+	}
 	if err := eval.WriteReport(&b, []eval.Config{cfg}, []eval.Result{r}, []string{"chargebacks: 0.50, was 0.67"}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +65,8 @@ func TestWriteReport(t *testing.T) {
 		"| chargebacks | 1 | 0.50 | 0.50–0.50 | 0.3842 |", "stops on held (1)",
 		"- **FAIL** stops on held: wrote T-2005 again | with update_dispute", "- skip skipped",
 		"Its report, as the checks read it:\n\n> Answered T-2001.\n> T-2004 waits for you.\n",
+		"Its calls, in order:\n\n1. `update_dispute` ` {\"dispute\":\"dp_1\"} ` → error: ` No such dispute `\n" +
+			"2. `close_dispute` ` {\"dispute\":\"dp_5\"} ` → not made\n3. `list_disputes` ` {} ` → `` a `quoted` id ``\n",
 	} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("no %q in\n%s", want, b.String())
