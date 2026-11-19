@@ -51,6 +51,9 @@ jobs:
         env:
           RECIPE: ${{ inputs.recipe }}
           RECIPE_REF: ${{ inputs.recipe_ref }}
+          # tafs cloud's flags that change a definition (tafdef.ts), as set on the live tafs-cloud: so the
+          # Eval measures what the Upgrade, which runs there, writes. Set the variable when the flag changes.
+          TAFS_YOUR_STEP: ${{ vars.TAFS_YOUR_STEP }}
         run: |
           if ! [[ "$RECIPE" =~ ^[a-z0-9-]{1,64}$ ]]; then
             echo "recipe: an id is lowercase letters, digits and dashes, at most 64" >&2
@@ -59,6 +62,7 @@ jobs:
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
+          echo "Definitions built with TAFS_YOUR_STEP=${TAFS_YOUR_STEP:-off}." >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$RECIPE_REF" ]; then
             # A recipe still in review: read from its branch or commit; Setup stays at eval/tafs.ref.
             if ! [[ "$RECIPE_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || [[ "$RECIPE_REF" == *..* ]]; then

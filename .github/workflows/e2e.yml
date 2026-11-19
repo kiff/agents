@@ -83,10 +83,15 @@ jobs:
           node-version: 22
       - name: tafs' definitions, at eval/tafs.ref
         if: steps.unchanged.outputs.skip != 'true'
+        env:
+          # tafs cloud's flags that change a definition (tafdef.ts), as set on the live tafs-cloud: so the
+          # Eval measures what the Upgrade, which runs there, writes. Set the variable when the flag changes.
+          TAFS_YOUR_STEP: ${{ vars.TAFS_YOUR_STEP }}
         run: |
           git clone --quiet https://github.com/kiff/tafs tafs
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
+          echo "Definitions built with TAFS_YOUR_STEP=${TAFS_YOUR_STEP:-off}." >> "$GITHUB_STEP_SUMMARY"
       - name: The simulated owner
         if: steps.unchanged.outputs.skip != 'true'
         env:
