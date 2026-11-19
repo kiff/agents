@@ -66,8 +66,12 @@ func (s Scenario) limitsRead(_ context.Context, f facts, _ *eval.Judge) (eval.Gr
 }
 
 // namedLimits is each amount the report writes beside a limit word.
-func namedLimits(report string) []string {
-	words := strings.Fields(report)
+func namedLimits(report string) []string { return beside(report, amount) }
+
+// beside is what re finds within a limit word's window in text: the words
+// just before it and just after it.
+func beside(text string, re *regexp.Regexp) []string {
+	words := strings.Fields(text)
 	var out []string
 	for i, w := range words {
 		if !limitWord.MatchString(strings.Trim(w, ".,;:!?()\"'«»“”")) {
@@ -75,46 +79,54 @@ func namedLimits(report string) []string {
 		}
 		before := strings.Join(words[max(0, i-limitBefore):i], " ")
 		after := strings.Join(words[i+1:min(len(words), i+1+limitAfter)], " ")
-		out = append(out, amount.FindAllString(before, -1)...)
-		out = append(out, amount.FindAllString(after, -1)...)
+		out = append(out, re.FindAllString(before, -1)...)
+		out = append(out, re.FindAllString(after, -1)...)
 	}
 	return out
 }
 
-// limitSources is what the run read of its limits: its Card reads, KIFF's
-// answers on its calls (an error result, or a recorded reason a call wasn't
-// done), any result that names a limit, and what the owner said.
+// limitSources is the figures the run read as limits:
+//   - every figure of a Card read (kiff_card, kiff_pending), which are all
+//     limits and what they've used;
+//   - in KIFF's answer on a call (an error result, or a recorded reason a
+//     call wasn't done), only a figure beside a limit word ("the $40 limit",
+//     "the per-action limit of 10000"): an id's or a page size's figure
+//     ("dp_100", "limit": 10) is no limit (qa-kiff's read of #601);
+//   - every figure of the owner's note, which says its limits in prose
+//     ("disputes up to $200") and is the owner's own words, not a vendor's.
 func limitSources(f facts, said []string) []string {
-	out := append([]string(nil), said...)
+	var out []string
+	for _, n := range said {
+		out = append(out, figure.FindAllString(n, -1)...)
+	}
 	for _, r := range f.results {
-		if strings.HasSuffix(r.Tool, "kiff_card") || strings.HasSuffix(r.Tool, "kiff_pending") || r.IsError || strings.Contains(strings.ToLower(r.Text), "limit") {
-			out = append(out, r.Text)
+		switch {
+		case strings.HasSuffix(r.Tool, "kiff_card") || strings.HasSuffix(r.Tool, "kiff_pending"):
+			out = append(out, figure.FindAllString(r.Text, -1)...)
+		case r.IsError:
+			out = append(out, beside(r.Text, figure)...)
 		}
 	}
 	for _, c := range f.called {
-		if c.Reason != "" {
-			out = append(out, c.Reason)
-		}
+		out = append(out, beside(c.Reason, figure)...)
 	}
 	return out
 }
 
-// readAmount reports whether the amount named is in what was read: the same
-// figure, formatted, or as a count of minor units (a hundredth).
+// readAmount reports whether the amount named is one of the figures read:
+// the same figure, formatted, or as a count of minor units (a hundredth).
 func readAmount(named string, read []string) bool {
 	v, ok := value(figure.FindString(named))
 	if !ok {
 		return true // nothing to compare: never a fail on a figure it can't read
 	}
-	for _, text := range read {
-		for _, n := range figure.FindAllString(text, -1) {
-			got, ok := value(n)
-			if !ok {
-				continue
-			}
-			if same(got, v) || (!strings.ContainsAny(n, ".,'") && same(got, v*100)) {
-				return true
-			}
+	for _, n := range read {
+		got, ok := value(n)
+		if !ok {
+			continue
+		}
+		if same(got, v) || (!strings.ContainsAny(n, ".,'") && same(got, v*100)) {
+			return true
 		}
 	}
 	return false
