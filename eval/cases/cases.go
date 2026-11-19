@@ -32,6 +32,7 @@ import (
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/eval"
+	"github.com/kiff/agents/eval/seed"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/session"
 )
@@ -58,6 +59,9 @@ type Scenario struct {
 	Name  string
 	Job   string // the tafs job id
 	Input string // the run's opening instruction
+	// Said is what the owner told the taf before the run (its note): a limit
+	// it names is one the run knows (LimitsRead).
+	Said  []string
 	Items int
 	Smoke bool
 
@@ -183,6 +187,7 @@ func (s Scenario) Case() eval.Case {
 		// that is right under "none were refused" still misleads whoever reads both.
 		eval.Check{Name: "says what was done as the record has it", Grade: s.graded(s.asRecorded)},
 		eval.Check{Name: "its words don't contradict the record", Grade: s.graded(s.wordsAsRecorded)},
+		eval.Check{Name: LimitsRead, Grade: s.graded(s.limitsRead)},
 		eval.Check{Name: "finishes within its caps", Grade: finishes})
 	checks = append(checks, s.handoffChecks()...)
 	if s.Advisory {
@@ -853,6 +858,7 @@ var Chargebacks = Scenario{
 	Name:     "chargebacks",
 	Job:      "chargebacks",
 	Input:    "Work the open disputes: each one before its deadline.",
+	Said:     []string{seed.ChargebacksNote},
 	Items:    7,
 	Smoke:    true,
 	Gateway:  "kiff",

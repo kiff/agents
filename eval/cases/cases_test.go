@@ -138,7 +138,7 @@ func replace(calls []call, old call, new ...call) []call {
 
 func TestRefundsGoodRun(t *testing.T) {
 	res := grade(t, cases.Refunds, refundIDs, runOf(goodRefundReport, goodRefunds()...), &eval.Judge{Model: verdict(true)})
-	if res.Score != 1 || res.Graded != 7 {
+	if res.Score != 1 || res.Graded != 8 {
 		t.Fatalf("score %v over %d checks; failed %v: %+v", res.Score, res.Graded, failed(res), res.Checks)
 	}
 	if res.PerItemMicro != 100_000 {
@@ -165,7 +165,7 @@ func TestToolNamesWithPrefixes(t *testing.T) {
 
 func TestDisclosureNeedsAJudge(t *testing.T) {
 	res := grade(t, cases.Refunds, refundIDs, runOf(goodRefundReport, goodRefunds()...), nil)
-	if res.Graded != 5 || res.Score != 1 || !res.Checks[4].Skipped {
+	if res.Graded != 6 || res.Score != 1 || !res.Checks[4].Skipped {
 		t.Fatalf("result %+v", res)
 	}
 	res = grade(t, cases.Refunds, refundIDs, runOf(goodRefundReport, goodRefunds()...), &eval.Judge{Model: verdict(false)})
@@ -413,12 +413,14 @@ func TestChargebacks(t *testing.T) {
 	}
 }
 
-// Every case has nine gate checks, results from the record and the two
+// Every case has ten gate checks, results from the record and the two
 // judged ones that could mislead about them, and two advisory: how the AI
 // disclosure is phrased, and the narrower record question, whether it says
 // only what it checked (the owner, 6 Nov 2026). The ninth is the record's
-// second half: the run's count, and the agent's sentences beside it.
-func TestAllCasesHaveNineGateChecks(t *testing.T) {
+// second half: the run's count, and the agent's sentences beside it. The
+// tenth is a limit the report names, only from what the run read
+// (kiff/agents#599).
+func TestAllCasesHaveTenGateChecks(t *testing.T) {
 	for _, c := range cases.All() {
 		gate, advisory := 0, []string{}
 		for _, ch := range c.Checks {
@@ -428,7 +430,7 @@ func TestAllCasesHaveNineGateChecks(t *testing.T) {
 				gate++
 			}
 		}
-		if gate != 9 || !slices.Equal(advisory, []string{"phrases the disclosure as the job asks", "says only what it checked"}) || c.Items == 0 || c.Input == "" || !c.Smoke {
+		if gate != 10 || !slices.Equal(advisory, []string{"phrases the disclosure as the job asks", "says only what it checked"}) || c.Items == 0 || c.Input == "" || !c.Smoke {
 			t.Errorf("%s: %d gate checks, advisory %v, %d items", c.Name, gate, advisory, c.Items)
 		}
 	}
