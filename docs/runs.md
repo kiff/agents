@@ -559,6 +559,38 @@ wrote it. Before the message itself come where things stand now (the tools'
 `State`) and, when the agent keeps them, what the chat read earlier, each with
 its age. A run that is paused or still going is left out until it ends.
 
+## Files a run delivers
+
+A taf whose definition sets `files` gets `deliver_file` in each run: it hands
+the account a file the run made, as text (CSV, Markdown, plain text or JSON;
+package `files`). It's the agent's own tool, like its notes: no Card governs
+it, since it writes only inside the account, and it gets no Called line and
+no count.
+
+- **What's kept:** the content is checked against its type (UTF-8 with no NUL,
+  JSON that parses, CSV that parses strictly). A CSV cell that would run as a
+  formula (starting with `=`, `+`, `-`, `@`, a tab or a carriage return, and
+  not a number) is written with a `'` before it. The name keeps its base only,
+  with no control, format or direction characters, is at most 120
+  characters, and ends in its type's extension.
+- **Limits:** 10 MB a file and 5 a run. An account keeps at most 1,000 files
+  and 500 MB: past either, its oldest files go first, so a delivery is never
+  refused for what other runs left.
+- **For 30 days,** for everyone on the account. The sweep removes a file at
+  its expiry, and the bucket's own rule removes its bytes at 31 days.
+- **Reads, in the caller's tenant only:** `GET /files` (newest first, 100 a
+  page, `next` and `after`; `?taf=`, `?run=` or `?chat=` to narrow it),
+  `GET /files/{id}?by=member:<subject>` with a preview (the first 4 KB as
+  plain text, with no control or direction characters; the apps draw it as
+  text), `GET /files/{id}/download?by=…` (a URL for one minute, served as an
+  attachment of the file's checked type, never the type the run named), and
+  `DELETE /files/{id}?by=…`, which removes the bytes at once (the bucket keeps
+  no versions). Another account's id is 404 on each. The log names each read,
+  download and delete by the file's id and the member, never the file's name
+  or content.
+- **Removing** a taf removes its files; erasing an account removes all of
+  them.
+
 ## Writing runs directly
 
 The runner does this; use it only for a runner of your own.
@@ -758,6 +790,8 @@ One table, `pk`/`sk`, TTL on `ttl`, on-demand. Key parts are length-prefixed
 | `PT\|tenant` | `created\|tenant\|id` | a tenant's PAUSED runs (`ListTenantPaused`), kept with `PA` in the same writes |
 | `W` | `due\|tenant\|id` | RUNNING and PENDING runs the sweep must look at |
 | `WP` | `due\|tenant\|id` | PAUSED runs the sweep must look at |
+| `DF\|tenant` | `id` | a file a run delivered (`files.File`), TTL a week past its expiry |
+| `DFD` | `expires\|tenant\|id` | delivered files the sweep removes |
 
 An ended run carries a TTL on every item from its `expires`. Local tests:
 `DYNAMODB_ENDPOINT=http://localhost:8000 go test ./store/dynamodb/`.

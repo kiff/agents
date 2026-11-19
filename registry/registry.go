@@ -104,6 +104,10 @@ type Definition struct {
 	// Show gives the agent the show tool: UI components in the owner's chat
 	// (kiff/agents#91). Off unless set.
 	Show bool `json:"show,omitempty"`
+	// Files gives each of the agent's runs the deliver_file tool: a file the
+	// run made, kept 30 days for everyone on the account (package files).
+	// Off unless set.
+	Files bool `json:"files,omitempty"`
 	// ShowTypes are the cards the agent shows, when not show.Types: a taf's
 	// own (show.TafTypes: ask_coach, to send a setting to Coach;
 	// kiff/tafs#476, gap 15). It needs Show.
@@ -749,6 +753,10 @@ var ErrPlanque = errors.New("registry: the planque is not one this server allows
 // give: the server has none, or the agent is built for no run.
 var ErrNoWorkspace = errors.New("registry: the agent needs a workspace, and this build has none")
 
+// ErrNoFiles means a definition asks for deliver_file this build can't give:
+// the server keeps no delivered files, or the agent is built for no run.
+var ErrNoFiles = errors.New("registry: the agent delivers files, and this build keeps none")
+
 // Builder builds agents from their definitions, once per request.
 type Builder struct {
 	Agents  Agents
@@ -766,6 +774,9 @@ type Builder struct {
 	// Workspace, when set, returns the workspace tool for one run of an
 	// agent whose definition asks for one.
 	Workspace func(tenant, run string) tool.Tool
+	// DeliverFile, when set, returns the deliver_file tool for one run of an
+	// agent whose definition asks for it.
+	DeliverFile func(tenant, agent, run string) tool.Tool
 	// FollowUp, when set, returns the follow-up tool for an agent whose
 	// definition asks for one, at its version.
 	FollowUp func(tenant, agent string, version int) tool.Tool
@@ -888,6 +899,12 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 			return agent.Agent{}, d, ErrNoWorkspace
 		}
 		tools = append(tools, b.Workspace(tenant, run))
+	}
+	if d.Files {
+		if b.DeliverFile == nil || run == "" {
+			return agent.Agent{}, d, ErrNoFiles
+		}
+		tools = append(tools, b.DeliverFile(tenant, id, run))
 	}
 	system := d.Instructions
 	if refs := d.CatalogSkills(); len(refs) > 0 {

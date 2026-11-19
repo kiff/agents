@@ -122,10 +122,11 @@ func (s *Attachments) Delete(_ context.Context, tenant, id string) error {
 type Blobs struct {
 	mu sync.Mutex
 	b  map[string][]byte
+	t  map[string]string // each key's stored type
 }
 
 // NewBlobs returns an empty blob store.
-func NewBlobs() *Blobs { return &Blobs{b: map[string][]byte{}} }
+func NewBlobs() *Blobs { return &Blobs{b: map[string][]byte{}, t: map[string]string{}} }
 
 var _ attach.Blobs = (*Blobs)(nil)
 
@@ -154,12 +155,24 @@ func (s *Blobs) Get(_ context.Context, key string, max int64) ([]byte, error) {
 	return bytes.Clone(b), nil
 }
 
-// Put writes key.
-func (s *Blobs) Put(_ context.Context, key, _ string, data []byte) error {
+// Put writes key, stored as mediaType.
+func (s *Blobs) Put(_ context.Context, key, mediaType string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.b[key] = bytes.Clone(data)
+	s.b[key], s.t[key] = bytes.Clone(data), mediaType
 	return nil
+}
+
+// PresignGetAs is "memory:" plus key, then the name and type it's served as.
+func (s *Blobs) PresignGetAs(_ context.Context, key, name, served string, _ time.Duration) (string, error) {
+	return "memory:" + key + "?name=" + name + "&type=" + served, nil
+}
+
+// Type is the type key was stored as, for tests.
+func (s *Blobs) Type(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.t[key]
 }
 
 // Delete removes keys.
@@ -168,6 +181,7 @@ func (s *Blobs) Delete(_ context.Context, keys ...string) error {
 	defer s.mu.Unlock()
 	for _, k := range keys {
 		delete(s.b, k)
+		delete(s.t, k)
 	}
 	return nil
 }
@@ -179,6 +193,7 @@ func (s *Blobs) DeletePrefix(_ context.Context, prefix string) error {
 	for k := range s.b {
 		if strings.HasPrefix(k, prefix) {
 			delete(s.b, k)
+			delete(s.t, k)
 		}
 	}
 	return nil

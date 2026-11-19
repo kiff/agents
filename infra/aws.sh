@@ -19,7 +19,9 @@
 #                        (kiff/tafs#209), private, encrypted, TLS only. The sweep
 #                        removes each when its message goes; a lifecycle rule
 #                        removes anything left 38 days on (30 days' retention and
-#                        the week a record outlives it).
+#                        the week a record outlives it). The files tafs' runs
+#                        deliver are under delivered/: the sweep removes each
+#                        30 days on, and their own rule anything left at 31.
 #
 # Secrets (made by a person or by tafs cloud, never by this script, except the
 # model key below):
@@ -203,7 +205,7 @@ aws s3api put-bucket-ownership-controls --bucket "$ATTACHMENTS" --ownership-cont
 aws s3api put-bucket-encryption --bucket "$ATTACHMENTS" --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 aws s3api put-bucket-lifecycle-configuration --bucket "$ATTACHMENTS" --lifecycle-configuration \
-  '{"Rules":[{"ID":"leftovers-38-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":38},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+  '{"Rules":[{"ID":"leftovers-38-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":38},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"delivered-31-days","Status":"Enabled","Filter":{"Prefix":"delivered/"},"Expiration":{"Days":31}}]}'
 aws s3api put-bucket-policy --bucket "$ATTACHMENTS" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"tls-only","Effect":"Deny","Principal":"*","Action":"s3:*",
  "Resource":["arn:aws:s3:::'"$ATTACHMENTS"'","arn:aws:s3:::'"$ATTACHMENTS"'/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
 

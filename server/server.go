@@ -22,6 +22,7 @@ import (
 
 	"github.com/kiff/agents/attach"
 	"github.com/kiff/agents/drafts"
+	"github.com/kiff/agents/files"
 	"github.com/kiff/agents/registry"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/schedule"
@@ -96,6 +97,10 @@ type Server struct {
 	// (kiff/tafs#209). Nil: the attachment routes answer 503, and removing a
 	// session, an agent or a tenant has no files to remove.
 	Files *attach.Service
+	// Delivered are the files tafs' runs deliver, kept 30 days for everyone on
+	// the account (package files). Nil: the file routes answer 503, and
+	// removing an agent or a tenant has none to remove.
+	Delivered *files.Service
 	// Access answers whether a member may use or oversee an agent (#221): a
 	// member reads their sessions with it, and writes into their runs, only
 	// if they may. Nil: nothing is checked. The runner checks runs.
@@ -209,6 +214,10 @@ func (s *Server) Handler() http.Handler {
 	route("DELETE /sessions/{id}", s.deleteSession)
 	route("POST /agents/{id}/attachments", s.createAttachment)
 	route("GET /agents/{id}/attachments/{att}", s.readAttachment)
+	route("GET /files", s.listFiles)
+	route("GET /files/{file}", s.readFile)
+	route("GET /files/{file}/download", s.downloadFile)
+	route("DELETE /files/{file}", s.deleteFile)
 	route("PUT /agents/{id}/sessions/{session}/skills", s.addSessionSkills)
 	route("POST /sessions/{id}/archive", s.archiveSession(true))
 	route("POST /sessions/{id}/unarchive", s.archiveSession(false))
@@ -472,6 +481,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, msg = http.StatusConflict, "skills_limited", err.Error()
 	case errors.Is(err, attach.ErrInvalid):
 		status, code, msg = http.StatusBadRequest, "invalid", strings.TrimPrefix(err.Error(), attach.ErrInvalid.Error()+": ")
+	case errors.Is(err, files.ErrNotFound):
+		status, code, msg = http.StatusNotFound, "not_found", "not found"
+	case errors.Is(err, files.ErrInvalid):
+		status, code, msg = http.StatusBadRequest, "invalid", strings.TrimPrefix(err.Error(), files.ErrInvalid.Error()+": ")
 	}
 	if status >= 500 || status == http.StatusUnauthorized {
 		if s.Log != nil {
@@ -615,6 +628,11 @@ func (s *Server) removeAgent(ctx context.Context, tenant, id string) error {
 			return err
 		}
 	}
+	if s.Delivered != nil {
+		if err := s.Delivered.RemoveAgent(ctx, tenant, id); err != nil {
+			return err
+		}
+	}
 	if err := session.Remove(ctx, s.Sessions, s.Notes, tenant, id); err != nil {
 		return err
 	}
@@ -659,6 +677,11 @@ func (s *Server) eraseTenant(ctx context.Context, c Caller, _ *http.Request) (in
 	}
 	if s.Files != nil {
 		if err := s.Files.EraseTenant(ctx, c.Tenant); err != nil {
+			return 0, nil, err
+		}
+	}
+	if s.Delivered != nil {
+		if err := s.Delivered.EraseTenant(ctx, c.Tenant); err != nil {
 			return 0, nil, err
 		}
 	}
