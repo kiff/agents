@@ -640,6 +640,7 @@ func (t *test) scenario(ctx context.Context, m model.Model) error {
 	if t.setupSession != "" {
 		if _, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession); err == nil {
 			fmt.Fprintln(t.cfg.log, wordingLine(events))
+			fmt.Fprintln(t.cfg.log, emptyCardsLine(events))
 			unshown = unshownConfirms(events)
 		}
 	}

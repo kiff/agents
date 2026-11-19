@@ -65,3 +65,29 @@ func TestUnshownConfirmsAreCounted(t *testing.T) {
 		t.Fatalf("a refused card alone: %d, want 0", got)
 	}
 }
+
+// A card Setup sent with no text, which show refused, is counted as its own
+// line, whether or not Coach recovered; another refusal of a card isn't.
+func TestEmptyCardsAreCounted(t *testing.T) {
+	refused := func(b agent.OwnRefusedBody) session.Event {
+		raw, _ := json.Marshal(b)
+		return session.Event{Kind: session.OwnRefused, Body: raw}
+	}
+	events := []session.Event{
+		refused(agent.OwnRefusedBody{Tool: "show", Error: "text is required"}),
+		refused(agent.OwnRefusedBody{Tool: "show", Error: agent.UnshownNotice}),
+		refused(agent.OwnRefusedBody{Tool: "show", Error: "no lines and no lang"}),
+		refused(agent.OwnRefusedBody{Tool: agent.MessageTool, Error: "text is required"}), // not a card
+		refused(agent.OwnRefusedBody{Tool: "show", Error: "text is required"}),
+		{Kind: session.AgentMessage, Body: json.RawMessage(`{"text":"Agree?"}`)},
+	}
+	if got := emptyCards(events); got != 2 {
+		t.Fatalf("empty cards: %d, want 2", got)
+	}
+	if got, want := emptyCardsLine(events), "setup cards sent with no text and refused: 2"; got != want {
+		t.Fatalf("line %q, want %q", got, want)
+	}
+	if got := emptyCards(nil); got != 0 {
+		t.Fatalf("none: %d", got)
+	}
+}

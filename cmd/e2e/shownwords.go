@@ -61,6 +61,34 @@ func wordingLine(events []session.Event) string {
 	return fmt.Sprintf("setup wording: %d messages held and reworded, %d said as written (misses), %d notes dropped", held, said, dropped)
 }
 
+// emptyCards counts the cards Setup sent with no text, which show refused
+// ("text is required"): a rules notice sent that way is refused, and so is
+// the confirm that agrees to it unless Coach shows a full notice first
+// (unshownConfirms). Coach recovering is no reason to hide it: the count is
+// printed beside the wording line, so a definition that makes Coach send an
+// empty notice shows in the Eval before it fails a setup (draft-the-card@40).
+func emptyCards(events []session.Event) int {
+	n := 0
+	for _, e := range events {
+		if e.Kind != session.OwnRefused {
+			continue
+		}
+		var b agent.OwnRefusedBody
+		if json.Unmarshal(e.Body, &b) == nil && b.Tool == "show" && b.Error == emptyCardError {
+			n++
+		}
+	}
+	return n
+}
+
+// emptyCardError is show's refusal of a card with no text.
+const emptyCardError = "text is required"
+
+// emptyCardsLine is the public log's line for emptyCards: a count, never a word.
+func emptyCardsLine(events []session.Event) string {
+	return fmt.Sprintf("setup cards sent with no text and refused: %d", emptyCards(events))
+}
+
 // unshownConfirms counts the confirms left unmade because the rules notice
 // they agree to was never shown (agent.UnshownNotice): the notice was
 // refused, so the owner saw neither, and the step fails for them.
