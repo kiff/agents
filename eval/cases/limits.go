@@ -28,11 +28,6 @@ import (
 // is above the per-action limit of 10000").
 const LimitsRead = "names a limit only from what it read"
 
-// cardLineStart opens the line KIFF's gateway adds to a tool's description:
-// what the agent's Card allows for it, its limits only (kiff/cloud's
-// gateway, withCardLine).
-const cardLineStart = "Your KIFF Card:"
-
 // limitWord is a word that makes an amount beside it a limit, in the owner's
 // languages.
 var limitWord = regexp.MustCompile(`(?i)^(limits?|caps?|capped|maximum|max|límites?|tope|máximo|limites?|plafond|grenze|höchstbetrag|höchstens|massimo|limiet|maximaal|maksymalnie|limitu)$`)
@@ -112,7 +107,7 @@ func beside(text string, re *regexp.Regexp) []string {
 func limitSources(f facts, said []string) []string {
 	var out []string
 	for _, t := range f.given {
-		if _, line, ok := strings.Cut(t.Description, cardLineStart); ok {
+		if _, line, ok := strings.Cut(t.Description, eval.CardLineStart); ok {
 			out = append(out, figure.FindAllString(line, -1)...)
 		}
 	}

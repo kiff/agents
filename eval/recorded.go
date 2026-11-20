@@ -77,7 +77,7 @@ func GivenRecordedText(seeded string, given []GivenTool, calls []RecordedCall, t
 	}
 	b.WriteString("Tools given:\n")
 	for _, t := range given {
-		fmt.Fprintf(&b, "- %s: %s\n", t.Name, cutAt(t.Description, cardCut))
+		fmt.Fprintf(&b, "- %s: %s\n", t.Name, givenText(t.Description))
 	}
 	return b.String() + RecordedText(calls, text)
 }
@@ -165,6 +165,22 @@ func cut(s string) string { return cutAt(s, recordCut) }
 
 // cardCut bounds what a record line keeps of a read of the agent's own Card.
 const cardCut = 3000
+
+// CardLineStart opens the line KIFF's gateway adds at the end of a tool's
+// description: what the agent's Card allows for it (kiff/cloud's gateway,
+// withCardLine).
+const CardLineStart = "Your KIFF Card:"
+
+// givenText is a tool's description as the judge reads it, cut at cardCut,
+// with its Card line kept whole however long the rest is: the line sits at
+// the end, where a cut would take it.
+func givenText(desc string) string {
+	head, line, ok := strings.Cut(desc, CardLineStart)
+	if !ok {
+		return cutAt(desc, cardCut)
+	}
+	return cutAt(head, cardCut) + " " + CardLineStart + " " + strings.Join(strings.Fields(line), " ")
+}
 
 // kiffAnswer says an outcome is KIFF's own answer on a call it held or
 // refused, which names the limit that stopped it: kept whole, as a Card read

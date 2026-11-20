@@ -129,3 +129,12 @@ func TestTheJudgeReadsTheToolsGivenAndKIFFsAnswersWhole(t *testing.T) {
 		t.Error("the judge isn't told what the tools given are")
 	}
 }
+
+// A long description is cut, but never its Card line, which the gateway writes at the end.
+func TestALongDescriptionKeepsItsCardLine(t *testing.T) {
+	desc := strings.Repeat("Reads disputes. ", 400) + "\n\nYour KIFF Card: up to 100.00 USD per call."
+	got := GivenRecordedText("", []GivenTool{{Name: "close_dispute", Description: desc}}, nil, "t")
+	if !strings.Contains(got, "Your KIFF Card: up to 100.00 USD per call.") || !strings.Contains(got, "…") {
+		t.Fatalf("the Card line or the cut is missing:\n%s", got[len(got)-300:])
+	}
+}
