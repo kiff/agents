@@ -89,7 +89,8 @@ const (
 // announced. None of those ever changes; stores list runs by most of them.
 func Same(a, b Run) bool {
 	return a.Tenant == b.Tenant && a.ID == b.ID && a.Agent == b.Agent && a.Session == b.Session &&
-		a.Trigger == b.Trigger && a.Source == b.Source && a.Created.Equal(b.Created) && a.Notify == b.Notify
+		a.Trigger == b.Trigger && a.Source == b.Source && a.Created.Equal(b.Created) && a.Notify == b.Notify &&
+		slices.Equal(a.Outcomes, b.Outcomes) // what a run may answer is its caller's, fixed at its start
 }
 
 // moves is a run's life: where each status may go. Final statuses go nowhere.
@@ -312,6 +313,7 @@ func HoldsOf(runs ...Run) []string {
 func (r Run) clone() Run {
 	c := r
 	c.Attachments = slices.Clone(r.Attachments)
+	c.Outcomes = slices.Clone(r.Outcomes)
 	c.Holds = slices.Clone(r.Holds)
 	c.NotAgain = nil
 	for _, k := range r.NotAgain {

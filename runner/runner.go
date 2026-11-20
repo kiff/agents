@@ -303,6 +303,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		r.Attachments = append(r.Attachments, f.Ref())
 	}
 	r.Source = s.Source
+	r.Outcomes = s.Outcomes
 	r.Requester = s.Requester
 	r.Grant = s.Grant
 	r.NewSession = opened
@@ -1300,6 +1301,9 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			ranOn(n, out.Source, out.Region)
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
 			n.Done, n.Sent = run.AddDone(n.Done, out.Done...), n.Sent+out.Sent
+			if out.RequestOutcome != "" {
+				n.Outcome = out.RequestOutcome // kept at a pause too, so a run that goes on later still has it
+			}
 			n.Refused, n.Declined = n.Refused+out.Refused, n.Declined+out.Declined
 			if t := out.Count(); t != nil {
 				n.Tally = t // counted on from the run's start, so it replaces
@@ -1323,6 +1327,9 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
 		ranOn(n, out.Source, out.Region)
 		n.Done, n.Sent = run.AddDone(n.Done, out.Done...), n.Sent+out.Sent
+		if out.RequestOutcome != "" {
+			n.Outcome = out.RequestOutcome // kept at a pause too, so a run that goes on later still has it
+		}
 		n.Refused, n.Declined = n.Refused+out.Refused, n.Declined+out.Declined
 		if t := out.Count(); t != nil {
 			n.Tally = t // counted on from the run's start, so it replaces

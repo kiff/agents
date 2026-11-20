@@ -392,6 +392,10 @@ type Outcome struct {
 	// Done are the calls that acted and went through in this part of the
 	// run (#249), in order: the caller adds them to the run's.
 	Done []run.Done `json:"done,omitempty"`
+	// RequestOutcome is the outcome this part of the run answered its request
+	// with, through a tool that checks it against the run's list
+	// (tool/outcome): the last one accepted. The caller keeps it on the run.
+	RequestOutcome string `json:"request_outcome,omitempty"`
 	// Refused counts the calls KIFF refused outright in this part of the
 	// run, outside the agent's Card, and Declined those it held that the
 	// owner then refused: the caller adds them to the run's, whose usage
@@ -1033,6 +1037,12 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 			held = held || r.Waits()
 			if acts(byName[r.Tool], calls[i].Input) && wentThrough(r) {
 				out.Done = append(out.Done, doneOf(r, calls[i].Input))
+			}
+			// A request's outcome, as its tool accepted it: never the model's words.
+			if o, ok := byName[r.Tool].(interface{ Accepted(json.RawMessage) string }); ok && !r.IsError {
+				if v := o.Accepted(calls[i].Input); v != "" {
+					out.RequestOutcome = v
+				}
 			}
 			if acts(byName[r.Tool], calls[i].Input) && maySend(r) {
 				out.Sent++

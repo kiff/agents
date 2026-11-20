@@ -777,6 +777,9 @@ type Builder struct {
 	// DeliverFile, when set, returns the deliver_file tool for one run of an
 	// agent whose definition asks for it.
 	DeliverFile func(tenant, agent, run string) tool.Tool
+	// Outcome, when set, returns the request_outcome tool for one run of an
+	// agent: nil for a run whose caller named no outcomes (tool/outcome).
+	Outcome func(ctx context.Context, tenant, agent, run string) (tool.Tool, error)
 	// FollowUp, when set, returns the follow-up tool for an agent whose
 	// definition asks for one, at its version.
 	FollowUp func(tenant, agent string, version int) tool.Tool
@@ -907,6 +910,16 @@ func (b *Builder) BuildVersion(ctx context.Context, tenant, id, run string, n in
 			return agent.Agent{}, d, ErrNoFiles
 		}
 		tools = append(tools, b.DeliverFile(tenant, id, run))
+	}
+	// A run its caller named outcomes for answers with one of them, and with nothing else.
+	if b.Outcome != nil && run != "" {
+		t, err := b.Outcome(ctx, tenant, id, run)
+		if err != nil {
+			return agent.Agent{}, d, err
+		}
+		if t != nil {
+			tools = append(tools, t)
+		}
 	}
 	system := d.Instructions
 	if refs := d.CatalogSkills(); len(refs) > 0 {

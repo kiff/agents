@@ -74,6 +74,8 @@ type Start struct {
 	Trigger                run.Trigger
 	// Source is what started it within its trigger (run.Run.Source).
 	Source string
+	// Outcomes are what the run may answer its request with (run.Run.Outcomes).
+	Outcomes []string
 	// Requester is who asked (run.Run.Requester): a new session is theirs,
 	// and an existing one must be theirs, or have no owner.
 	Requester run.Requester
@@ -125,6 +127,9 @@ type runView struct {
 	Trigger   run.Trigger   `json:"trigger"`
 	Source    string        `json:"source,omitempty"`
 	Requester run.Requester `json:"requester,omitzero"`
+	// Outcome is the outcome the run answered its request with, as
+	// request_outcome accepted it (run.Run.Outcome).
+	Outcome string `json:"outcome,omitempty"`
 	// NewSession is whether the run opened its session (#219); always
 	// present, so a client can rely on it.
 	NewSession bool       `json:"new_session"`
@@ -175,7 +180,7 @@ func (s *Server) viewRun(r run.Run) runView { return viewRunAt(r, s.now()) }
 
 func viewRunAt(r run.Run, now time.Time) runView {
 	w := r.WorkAt(now)
-	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
+	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Outcome: r.Outcome, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
 		Output: r.Output, Error: r.Error, Code: run.ErrorCode(r.Error), Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done, Sent: r.Sent, Tally: r.Tally,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
@@ -782,7 +787,19 @@ type startBody struct {
 	// Source is where the request came from ("email", "whatsapp"): the
 	// run's Source. Only with DedupKey.
 	Source string `json:"source,omitempty"`
+	// Outcomes are what the run may answer its request with, 1 to
+	// MaxOutcomes names (a door from another application's): the run holds
+	// request_outcome, which accepts only these (tool/outcome), and keeps the
+	// one it answered as its outcome.
+	Outcomes []string `json:"outcomes,omitempty"`
 }
+
+// MaxOutcomes is the most outcomes a run may be started with.
+const MaxOutcomes = 10
+
+// outcomeName is one outcome's form: lowercase letters, digits and '_', a
+// letter first, at most 40.
+var outcomeName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 // RequestRunID is the ID of the run a request with a dedup key starts: one
 // per tenant, agent and key, apart from events' (EventRunID).
@@ -958,6 +975,11 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("the source is 1 to %d of a-z, 0-9, '.', '_' and '-'", MaxEventSource))
 		return
 	}
+	if len(body.Outcomes) > MaxOutcomes || slices.ContainsFunc(body.Outcomes, func(o string) bool { return !outcomeName.MatchString(o) }) ||
+		len(slices.Compact(slices.Sorted(slices.Values(body.Outcomes)))) != len(body.Outcomes) {
+		s.fail(w, r, bad("outcomes are 1 to %d different names of a-z, 0-9 and '_', a letter first", MaxOutcomes))
+		return
+	}
 	var q run.Requester
 	if body.Requester != nil {
 		if q = *body.Requester; !q.Valid() {
@@ -1111,7 +1133,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
-		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills, Only: body.Only}
+		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills, Only: body.Only, Outcomes: body.Outcomes}
 	if len(st.Skills) > 0 {
 		// The session's skills are the definition's, by name and version:
 		// any other is refused here, before anything is stored.
