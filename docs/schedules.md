@@ -181,6 +181,12 @@ A check's read is asked before it's set, from the same list a firing reads with
   refused, so a schedule whose read is gone can still be paused or moved, and
   a list that can't be read now never refuses either.
 
+The list is the **live** version's: its gateway, KIFF key and planque, with the
+tools its connections reach today. A version's tools come from its connections,
+not its definition, so asking before that version goes live reads the list it
+will have. A version that changed its gateway, key or planque would be checked
+against the old list.
+
 A schedule keeps its last firing that waited for credits, kept by the service
 and shown on every read: `waited: {due, why}`, why being KIFF's code
 (`credits_used_up`, `limit_reached` or `no_plan`). A run that starts unsets it,

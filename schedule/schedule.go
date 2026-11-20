@@ -648,10 +648,6 @@ type Service struct {
 	Now func() time.Time
 }
 
-// Put stores s and sets it to fire. Its agent must exist: schedules are
-// made only for live agents. One switched from off to on loses its
-// failing. If setting it fails, the schedule is stored but
-// may not fire as stored: the caller retries Put, which is safe to repeat.
 // MissingTool says whether the agent surely has no read named tool for a check (HasTool): the
 // *CheckError that says why (ReasonNoTool, ReasonNotARead), or nil when it has one, when there's no
 // HasTool, or when the list couldn't be read, so a gateway that doesn't answer never refuses a check.
@@ -675,6 +671,10 @@ func (sv *Service) ToolChecked(ctx context.Context, tenant, agent, tool string) 
 	return err == nil, nil
 }
 
+// Put stores s and sets it to fire. Its agent must exist: schedules are
+// made only for live agents. One switched from off to on loses its
+// failing. If setting it fails, the schedule is stored but
+// may not fire as stored: the caller retries Put, which is safe to repeat.
 func (sv *Service) Put(ctx context.Context, s Schedule) error {
 	if err := s.Check(); err != nil {
 		return err

@@ -105,6 +105,26 @@ func TestAScheduleUpdateRefusesACheckOfAReadTheAgentHasnt(t *testing.T) {
 		t.Fatalf("not set: %+v", got.AppCheck)
 	}
 
+	// The same read, moved to another agent that hasn't it: refused, and the schedule stays.
+	f.putAgent("t1", "calendar")
+	f.server.Schedules.HasTool = func(ctx context.Context, tenant, agent, name string) error {
+		if agent == "calendar" {
+			return &schedule.CheckError{Reason: schedule.ReasonNoTool, Err: errors.New("no tool " + name)}
+		}
+		return tools(ctx, tenant, agent, name)
+	}
+	elsewhere := fixed
+	elsewhere.Agent = "calendar"
+	code, body = f.do("t1", "PUT", "/schedules/morning", elsewhere)
+	f.want(409, code, body, "the same read on an agent that hasn't it")
+	if body["error"] != "no_tool" {
+		t.Fatalf("moved: %v", body)
+	}
+	if got, _ := f.server.Schedules.Store.Get(ctx, "t1", "morning"); got.Agent != "inbox" || got.AppCheck == nil || got.AppCheck.Tool != "calendar__list_events" {
+		t.Fatalf("a refused move changed the schedule: %+v", got)
+	}
+	f.server.Schedules.HasTool = tools
+
 	// A list that can't be read now never refuses.
 	flaky := fixed
 	flaky.AppCheck = &schedule.Check{Tool: "flaky__list", Items: "data", Cursor: "id"}
