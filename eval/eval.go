@@ -39,6 +39,18 @@ type Run struct {
 	// Outcome is what the run answered its caller's request with
 	// (request_outcome, run.Run.Outcome); empty when it answered none.
 	Outcome string
+	// Given is each tool the run was given, as KIFF's gateway described it.
+	// A description carries what the agent's Card allows (the gateway's Card
+	// line), which the agent reads as surely as a kiff_card result: a limit
+	// it names from one was read (Eval 44732158037's chargebacks: "$100" from
+	// close_dispute's, judged unread). Nil from a source that doesn't know.
+	Given []GivenTool
+}
+
+// GivenTool is one tool a run was given: its name and its description.
+type GivenTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // Grade is one check's verdict on a run. A skipped check isn't counted in the

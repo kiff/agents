@@ -242,6 +242,9 @@ type facts struct {
 	called []agent.CalledBody
 	// outcome is what the run answered its request with (eval.Run.Outcome).
 	outcome string
+	// given is each tool the run was given, with its description
+	// (eval.Run.Given): where a Card line was read.
+	given []eval.GivenTool
 }
 
 func (s Scenario) graded(check func(context.Context, facts, *eval.Judge) (eval.Grade, error)) func(context.Context, eval.Run, *eval.Judge) (eval.Grade, error) {
@@ -257,7 +260,7 @@ func (s Scenario) graded(check func(context.Context, facts, *eval.Judge) (eval.G
 		if f.report, err = r.Report(); err != nil {
 			return eval.Grade{}, err
 		}
-		f.done, f.tally, f.outcome = r.Done, r.Tally, r.Outcome
+		f.done, f.tally, f.outcome, f.given = r.Done, r.Tally, r.Outcome, r.Given
 		if f.called, err = calledIn(r.Events); err != nil {
 			return eval.Grade{}, err
 		}
@@ -632,7 +635,7 @@ func (s Scenario) judgedAsRecorded(ctx context.Context, f facts, j *eval.Judge) 
 		}
 		calls = append(calls, eval.RecordedCall{Tool: c.Tool, Input: string(c.Input), Outcome: outcome})
 	}
-	return j.AskMajority(ctx, eval.Recorded, eval.SeededRecordedText(s.Seeded, calls, f.report))
+	return j.AskMajority(ctx, eval.Recorded, eval.GivenRecordedText(s.Seeded, f.given, calls, f.report))
 }
 
 // Unchecked is the rule the "says only what it checked" judge applies to the

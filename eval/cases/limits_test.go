@@ -108,3 +108,29 @@ func TestALimitWithAnotherFigureFails(t *testing.T) {
 		t.Fatalf("a $120 limit passed against KIFF's $100: %+v", got)
 	}
 }
+
+// The Card line KIFF's gateway writes into a tool's description is read before any call: a limit the report takes
+// from it was read (Eval 44732158037's chargebacks run 2: "$100" from close_dispute's description, with no Card read
+// and no call to close). Another tool's line, or a description with no Card line, isn't a source.
+func TestALimitFromAToolsCardLineWasRead(t *testing.T) {
+	report := "T-2005: not closed yet. Its $150 is above the $100 limit for closing a dispute."
+	given := func(tools ...eval.GivenTool) eval.CheckResult {
+		t.Helper()
+		r := runOf(report, chargebacksWith()...)
+		r.Given = tools
+		return check(grade(t, cases.Chargebacks, disputeIDs, r, &eval.Judge{Model: verdict(true)}), cases.LimitsRead)
+	}
+	line := eval.GivenTool{Name: "close_dispute", Description: "Accept a dispute.\n\nYour KIFF Card: up to 100.00 USD per call."}
+	if c := given(line); !c.Pass {
+		t.Fatalf("the Card line's $100: %+v", c)
+	}
+	for name, tools := range map[string][]eval.GivenTool{
+		"no tools given":       nil,
+		"no Card line":         {{Name: "close_dispute", Description: "Accept a dispute: amount is the dispute's amount in cents, up to 100 characters of reason."}},
+		"another figure on it": {{Name: "close_dispute", Description: "Accept a dispute.\n\nYour KIFF Card: up to 120.00 USD per call."}},
+	} {
+		if c := given(tools...); c.Pass {
+			t.Errorf("%s: $100 passed as read: %+v", name, c)
+		}
+	}
+}
