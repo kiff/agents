@@ -204,11 +204,14 @@ type GrantTool struct {
 	Fixed map[string]any `json:"fixed_arguments"`
 	// Arguments are what the taf sets on a narrowed tool, each at the
 	// vendor's path. planque passes on nothing else.
-	Arguments   map[string]GrantArgument `json:"arguments"`
-	ReadOnly    bool                     `json:"read_only"`
-	SetupReads  bool                     `json:"setup_reads"`
-	AmountArg   string                   `json:"amount_argument"`
-	ResourceArg string                   `json:"resource_argument"`
+	Arguments  map[string]GrantArgument `json:"arguments"`
+	ReadOnly   bool                     `json:"read_only"`
+	SetupReads bool                     `json:"setup_reads"`
+	AmountArg  string                   `json:"amount_argument"`
+	// AmountUnit is the unit KIFF counts the amount in ("EUR"): a Card's
+	// money limits on the tool are in it.
+	AmountUnit  string `json:"amount_unit"`
+	ResourceArg string `json:"resource_argument"`
 	UnitLookup  *struct {
 		Tool string `json:"tool"`
 	} `json:"unit_lookup"`

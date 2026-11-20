@@ -935,6 +935,9 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 	if tools := tafTools(s); len(tools) > 0 {
 		kept += "\nThe taf's tools (what its approved connections give it; nothing else is the taf's):\n" + strings.Join(tools, "\n") + "\n"
 	}
+	if money := moneyUnits(s); len(money) > 0 {
+		kept += "\nMoney tools (KIFF counts each one's amounts in its unit, so the Cards' money limits on it are in that unit; it reads each call's own unit as named, and refuses a call in another unit before anything is counted or sent):\n" + strings.Join(money, "\n") + "\n"
+	}
 	made, disclosed := disclosedTools(s)
 	switch {
 	case !made:
@@ -957,6 +960,11 @@ func gradeAgreed(ctx context.Context, j *eval.Judge, s said, cards []map[string]
 	if loose := unheldColumns(s, rules[len(rules)-1]); len(loose) > 0 {
 		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Why: "the rules keep the taf's writes to " + strings.Join(loose, ", ") +
 			", but the connection doesn't fix it and the rules don't say it's in the taf's instructions: the notice promises what nothing holds"}}, nil
+	}
+	// A currency the rules keep the taf to is a fact too: each money tool counts in it and reads each call's unit
+	// (Eval 44645658428, setup run 1: the judge read "refunds in EUR only" as unpinned while KIFF held it).
+	if why := unheldCurrency(s, rules[len(rules)-1]); why != "" {
+		return eval.CheckResult{Name: signsWhatWasAgreed, Grade: eval.Grade{Why: why}}, nil
 	}
 	// A limit no agreed figure names is a fact too (unagreedFigures): the judge alone caught an hour's €50 in 1 run of 3.
 	if extra := unagreedFigures(s, cards); len(extra) > 0 {
@@ -1036,6 +1044,73 @@ func tafTools(s said) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// moneyUnits are the taf's money tools as KIFF counts them: the amount
+// argument, the unit its Card's money limits are in, and the read KIFF makes
+// for each call's own unit. A Card shows none of it, since the unit is the
+// tool's, declared to planque: in Eval 44645658428's setup run 1 the judge read
+// "refunds in EUR only" as unpinned while KIFF held it.
+func moneyUnits(s said) []string {
+	var out []string
+	for _, tl := range s.connected {
+		if tl.AmountArg == "" || tl.SetupReads {
+			continue
+		}
+		name := tl.Name
+		if name == "" {
+			name = tl.Tool
+		}
+		unit := tl.AmountUnit
+		if unit == "" {
+			unit = "no unit declared"
+		}
+		read := "no read of each call's unit"
+		if tl.UnitLookup != nil && tl.UnitLookup.Tool != "" {
+			read = "each call's unit read with " + tl.UnitLookup.Tool
+		}
+		if line := fmt.Sprintf("%s: %s in %s; %s", name, tl.AmountArg, unit, read); !slices.Contains(out, line) {
+			out = append(out, line)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// currencyOnly is a rule keeping the taf to one currency: "in EUR only",
+// "EUR only", "only in EUR", "only EUR".
+var currencyOnly = regexp.MustCompile(`\b(EUR|USD|GBP|CHF|SEK|NOK|DKK|PLN|CZK|HUF|RON|JPY|CAD|AUD|NZD) only\b|\bonly (?:in )?(EUR|USD|GBP|CHF|SEK|NOK|DKK|PLN|CZK|HUF|RON|JPY|CAD|AUD|NZD)\b`)
+
+// unheldCurrency says why a currency the agreed rules keep the taf to isn't
+// held: a money tool counting in another unit, or with no read of each call's
+// unit, so KIFF can't refuse a call in another currency. "" when every money
+// tool holds it, or the rules name none.
+func unheldCurrency(s said, rules string) string {
+	m := currencyOnly.FindStringSubmatch(rules)
+	if m == nil {
+		return ""
+	}
+	want := m[1] + m[2]
+	var loose []string
+	for _, tl := range s.connected {
+		if tl.AmountArg == "" || tl.SetupReads {
+			continue
+		}
+		name := tl.Name
+		if name == "" {
+			name = tl.Tool
+		}
+		switch {
+		case !strings.EqualFold(tl.AmountUnit, want):
+			loose = append(loose, fmt.Sprintf("%s counts in %q", name, tl.AmountUnit))
+		case tl.UnitLookup == nil || tl.UnitLookup.Tool == "":
+			loose = append(loose, name+" reads no call's unit")
+		}
+	}
+	if len(loose) == 0 {
+		return ""
+	}
+	return "the rules keep the taf to " + want + ", but " + strings.Join(loose, ", ") + ": KIFF can't refuse a call in another currency"
 }
 
 func pinsOf(g grant) []string {

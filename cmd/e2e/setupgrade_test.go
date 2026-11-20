@@ -1046,3 +1046,55 @@ func TestAColumnTheRulesKeepIsFixedOrSaidToBeInItsInstructions(t *testing.T) {
 		}
 	}
 }
+
+// A rule keeping the taf to one currency is held by the money tool, not the
+// Card: the tool counts in that unit and KIFF reads each call's own. The judge
+// is shown it, and a tool counting in another unit, or reading none, fails as a
+// fact (Eval 44645658428, setup run 1: "refunds in EUR only" judged unpinned).
+func TestACurrencyTheRulesKeepIsHeldByTheMoneyTool(t *testing.T) {
+	refund := grantTool{Tool: "create_refund", Name: "create_refund_k3f9", AmountArg: "amount", AmountUnit: "EUR", ResourceArg: "charge"}
+	refund.UnitLookup = &struct {
+		Tool string `json:"tool"`
+	}{Tool: "read_charge"}
+	s := said{cards: map[string]component{
+		"r":  {Type: "notice", Title: "Refunds' rules", Text: "It may refund a charge, in EUR only: a refund over €5 waits for you."},
+		"ok": {Type: "confirm", Title: "Agree to these rules?"},
+	}, order: []string{"r", "ok"}, connected: []grantTool{refund, {Tool: "read_charge", ReadOnly: true}}}
+	cards := []map[string]any{{"domain": "gateway", "grants": []map[string]any{{"action": "create_refund_k3f9", "per_action_max": []map[string]any{{"quantity": "sum(amount)", "max": 500}}}}}}
+	v := &verdicts{}
+	r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, s, cards, "en")
+	if err != nil || !r.Grade.Pass {
+		t.Fatalf("a refund tool counting in EUR, reading each charge's: %+v %v", r, err)
+	}
+	if asked := strings.Join(v.asked, "\n"); !strings.Contains(asked, "create_refund_k3f9: amount in EUR; each call's unit read with read_charge") {
+		t.Fatalf("the judge wasn't shown the money tool's unit: %q", asked)
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*grantTool)
+		why  string
+	}{
+		{"another unit", func(g *grantTool) { g.AmountUnit = "USD" }, `create_refund_k3f9 counts in "USD"`},
+		{"no unit", func(g *grantTool) { g.AmountUnit = "" }, `create_refund_k3f9 counts in ""`},
+		{"no read of the unit", func(g *grantTool) { g.UnitLookup = nil }, "create_refund_k3f9 reads no call's unit"},
+	} {
+		loose := refund
+		tc.edit(&loose)
+		ls := s
+		ls.connected = []grantTool{loose}
+		v := &verdicts{}
+		r, err := gradeAgreed(context.Background(), &eval.Judge{Model: v, ModelID: "judge"}, ls, cards, "en")
+		if err != nil || r.Grade.Pass || !strings.Contains(r.Grade.Why, tc.why) || !strings.Contains(r.Grade.Why, "keep the taf to EUR") || len(v.asked) != 0 {
+			t.Fatalf("%s: %+v %v (asked %d)", tc.name, r, err, len(v.asked))
+		}
+	}
+	// Rules naming no currency leave it to the judge, whatever the tool counts in.
+	if got := unheldCurrency(said{connected: []grantTool{{Tool: "create_refund", AmountArg: "amount", AmountUnit: "USD"}}}, "A refund over €5 waits for you."); got != "" {
+		t.Fatalf("no currency in the rules: %q", got)
+	}
+	for _, rule := range []string{"Refunds are in EUR only.", "It refunds only in EUR.", "only EUR"} {
+		if got := unheldCurrency(said{connected: []grantTool{{Tool: "create_refund", AmountArg: "amount", AmountUnit: "USD"}}}, rule); !strings.Contains(got, "EUR") {
+			t.Fatalf("%q: %q", rule, got)
+		}
+	}
+}
