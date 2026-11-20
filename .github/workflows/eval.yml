@@ -58,6 +58,15 @@ on:
         description: "The run's label in its report and report path, e.g. opus-low (a-z, 0-9, -)"
         type: string
         default: ""
+      # A run of some suites that can't count for the Upgrade gate (below the
+      # bar's repeat, or another suite with no pass to carry) refuses to start
+      # and says why, before it spends anything ("Can this run open the
+      # gate?"). Set this to run one anyway, for its checks alone: it still
+      # ends red.
+      not_for_the_gate:
+        description: "Run some suites even when the run can't count for the Upgrade gate (for their checks alone; it ends red)"
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -147,18 +156,45 @@ jobs:
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
           echo "Definitions built with TAFS_YOUR_STEP=${TAFS_YOUR_STEP:-off}." >> "$GITHUB_STEP_SUMMARY"
+      - name: Can this run open the gate?
+        # A run of some suites counts for the Upgrade gate only at the bar's
+        # repeat, and only when every other suite has a pass to carry
+        # (infra/eval-carry.sh, as the step at the end checks it). Checked
+        # here first, so a run that can't count refuses to start and says why,
+        # before it spends anything (20 Nov: a three-suite run ran in full,
+        # though a tafs merge an hour before had already voided the other
+        # five's passes). not_for_the_gate runs it anyway, for its checks.
+        # A change that lands during the run is still the end's to catch.
+        id: preflight
+        if: steps.unchanged.outputs.skip != 'true' && steps.suites.outputs.list != ',all,' && inputs.model == '' && inputs.effort == '' && !inputs.not_for_the_gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIST: ${{ steps.suites.outputs.list }}
+          REPEAT: ${{ inputs.repeat || '3' }}
+        run: |
+          why=""
+          if [ "$REPEAT" != 3 ]; then
+            why="repeat $REPEAT is below the bar's 3"
+          elif ! infra/eval-carry.sh "$LIST"; then
+            why="the other suites have no pass to carry (above)"
+          fi
+          if [ -n "$why" ]; then
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Not started: suites ${LIST:1:-1} can't count for the Upgrade gate, as $why. Run all suites, or set not_for_the_gate to run these for their checks alone."
+            exit 1
+          fi
       - name: What's deployed, at the start
         # tafs cloud, planque and agents as deployed when the suites start
         # (infra/eval-deployed.sh: each one's newest successful deploy on
         # main, from GitHub's API), for the end's comparison below. A read
         # that fails leaves nothing, which the end counts as mixed.
-        if: steps.unchanged.outputs.skip != 'true'
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: infra/eval-deployed.sh | tee deployed-start.txt
       - name: The model and effort to compare
-        if: steps.unchanged.outputs.skip != 'true' && (inputs.model != '' || inputs.effort != '')
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (inputs.model != '' || inputs.effort != '')
         env:
           ASKED_LABEL: ${{ inputs.label }}
         run: |
@@ -170,7 +206,7 @@ jobs:
           infra/eval-override.sh defs "$MODEL" "$EFFORT"
           echo "Override **$label**: Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own}. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
       - name: Chargebacks, two seeded runs
-        if: steps.unchanged.outputs.skip != 'true' && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',cards,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',cards,'))
         timeout-minutes: 30
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -197,7 +233,7 @@ jobs:
         # advice. A tafs commit from before tafs could say "Nothing to hand
         # over" writes no hand-off definitions: the step says so and measures
         # nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',handoffs,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',handoffs,'))
         timeout-minutes: 60
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -224,7 +260,7 @@ jobs:
         # gated. A tafs commit without API doors that answer with
         # request_outcome writes no requests: the step says so and measures
         # nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',doors,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',doors,'))
         # One dispute a run, two runs at each repeat: a few minutes each.
         timeout-minutes: 15
         env:
@@ -248,7 +284,7 @@ jobs:
         # start at zero; its id goes to E2E_MADE for the sweep below. One run,
         # gated. A tafs commit without the recipe writes no definition for it:
         # the step says so and measures nothing.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',recipe-tickets,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',recipe-tickets,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -284,7 +320,7 @@ jobs:
         # runs. Coach runs at the standard output, as kiff/tafs defines it;
         # the judge is Sonnet, as for chargebacks, and its judged checks take
         # a majority of three.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',setup,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',setup,'))
         timeout-minutes: 45
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -302,7 +338,7 @@ jobs:
         # tool pinned to the workspace, writes that name what they act on and
         # carry no amount, reads marked read-only. A Setup rule passes on both
         # vendors or fails the night.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         timeout-minutes: 15
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -321,7 +357,7 @@ jobs:
         # themselves. Graded like the desk, and checked once billing's tools
         # are connected: create_invoice pinned to status draft
         # (fixed_arguments), and no send_invoice.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         timeout-minutes: 15
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -339,7 +375,7 @@ jobs:
         # answers as they were. Graded with the bar for connecting an app
         # (one approval per app plus its Card, no raw error, no loop) and the
         # rest, through to the result. Red until the bar holds.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',connect,'))
         timeout-minutes: 25
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -361,7 +397,7 @@ jobs:
         # the words in English and French and by the judges in any language,
         # and Coach never calls it wider than planque's grant says. Telling the
         # owner a wide sign-in is wide is the card's, from the grant.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -372,7 +408,7 @@ jobs:
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan sheets -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-sheets.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
       - name: Plan words, Google Sheets in French
         # The same in French: the words checked are French too.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -385,7 +421,7 @@ jobs:
         # Today's sign-in planque narrows (Gmail's, for reading mail): a rule
         # that always says "wider" fails here. Which app is wide or narrowed is
         # planque's to say, and the report shows it; the checks don't change.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -403,7 +439,7 @@ jobs:
         # session reaches a phone skill; and a phone chat never reaches the
         # watch skill. Its taf_task only records: nothing reaches KIFF,
         # planque or the account, so it needs the model's key alone.
-        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',route,'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',route,'))
         timeout-minutes: 10
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -424,7 +460,7 @@ jobs:
         # this job didn't make. It prints only counts, and it never decides
         # the run: a failed sweep is reported, and the verdict is the steps
         # above.
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always())
         continue-on-error: true
         env:
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
@@ -436,7 +472,7 @@ jobs:
         # run mixed: it may have measured more than one version. The block
         # goes into the report (deployed.md) and the run's summary.
         id: deployed
-        if: steps.unchanged.outputs.skip != 'true' && (always())
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always())
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -451,12 +487,12 @@ jobs:
       # branch's run assumes either: never a pull request's. A red run means a
       # check failed, not the upload.
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        if: steps.unchanged.outputs.skip != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
         with:
           role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.AWS_EVAL_ROLE || secrets.AWS_EVAL_BRANCH_ROLE }}
           aws-region: eu-west-1
       - name: The full report, to the private bucket
-        if: steps.unchanged.outputs.skip != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always() && startsWith(github.ref, 'refs/heads/'))
         run: |
           run="$(date -u +%Y-%m-%d)-${GITHUB_RUN_ID}${LABEL:+-$LABEL}"
           key="reports/$run"
