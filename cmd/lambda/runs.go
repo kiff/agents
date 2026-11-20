@@ -575,43 +575,54 @@ const busyLook = 20
 // agent's Card like any read. A tool that isn't a read, or a read KIFF
 // didn't allow, is an error the firing reports, never a run.
 func probe(ctx context.Context, b *registry.Builder, tenant, agent string, c schedule.Check) (string, error) {
-	a, _, err := b.Build(ctx, tenant, agent)
+	t, err := checkTool(ctx, b, tenant, agent, c.Tool)
 	if err != nil {
 		return "", err
 	}
+	in := c.Arguments
+	if len(in) == 0 {
+		in = json.RawMessage(`{}`)
+	}
+	res, err := t.Call(ctx, in)
+	if err != nil {
+		return "", err
+	}
+	// KIFF's gateway says "forwarded" of a call it sent, or nothing:
+	// either is the read made. Any other state (held, refused, failed,
+	// or one whose sending isn't settled) is a read the check can't use.
+	// When the app itself refused it, how it answered goes with the error (its status and code,
+	// never its words), so the taf can say why it didn't run.
+	if res.IsError || (res.State != "" && res.State != tool.StateForwarded) {
+		vendor := ""
+		if res.IsError && (res.State == "" || res.State == tool.StateForwarded) {
+			vendor = schedule.VendorAnswer(res.Text)
+		}
+		msg := res.State
+		if vendor != "" {
+			msg += ", the app answered " + vendor
+		}
+		return "", &schedule.CheckError{Reason: schedule.ReasonReadNotMade, Vendor: vendor,
+			Err: fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, msg)}
+	}
+	return res.Text, nil
+}
+
+// checkTool is the agent's read named name, as a check makes it: from the tools its gateway lists
+// now (Builder.Build). A *CheckError when it has none by that name (ReasonNoTool) or that one isn't
+// a read through the gateway (ReasonNotARead); any other error is a list that couldn't be read.
+func checkTool(ctx context.Context, b *registry.Builder, tenant, agent, name string) (tool.Tool, error) {
+	a, _, err := b.Build(ctx, tenant, agent)
+	if err != nil {
+		return nil, err
+	}
 	for _, t := range a.Tools {
-		if t.Spec().Name != c.Tool {
+		if t.Spec().Name != name {
 			continue
 		}
 		if t.Access() != tool.Read || !t.Gateway() {
-			return "", &schedule.CheckError{Reason: schedule.ReasonNotARead, Err: fmt.Errorf("lambda: the check's tool %s isn't a read through the gateway", c.Tool)}
+			return nil, &schedule.CheckError{Reason: schedule.ReasonNotARead, Err: fmt.Errorf("lambda: the check's tool %s isn't a read through the gateway", name)}
 		}
-		in := c.Arguments
-		if len(in) == 0 {
-			in = json.RawMessage(`{}`)
-		}
-		res, err := t.Call(ctx, in)
-		if err != nil {
-			return "", err
-		}
-		// KIFF's gateway says "forwarded" of a call it sent, or nothing:
-		// either is the read made. Any other state (held, refused, failed,
-		// or one whose sending isn't settled) is a read the check can't use.
-		// When the app itself refused it, how it answered goes with the error (its status and code,
-		// never its words), so the taf can say why it didn't run.
-		if res.IsError || (res.State != "" && res.State != tool.StateForwarded) {
-			vendor := ""
-			if res.IsError && (res.State == "" || res.State == tool.StateForwarded) {
-				vendor = schedule.VendorAnswer(res.Text)
-			}
-			msg := res.State
-			if vendor != "" {
-				msg += ", the app answered " + vendor
-			}
-			return "", &schedule.CheckError{Reason: schedule.ReasonReadNotMade, Vendor: vendor,
-				Err: fmt.Errorf("lambda: the check's read %s wasn't made: %s", c.Tool, msg)}
-		}
-		return res.Text, nil
+		return t, nil
 	}
-	return "", &schedule.CheckError{Reason: schedule.ReasonNoTool, Err: fmt.Errorf("lambda: the agent has no tool %s to check with", c.Tool)}
+	return nil, &schedule.CheckError{Reason: schedule.ReasonNoTool, Err: fmt.Errorf("lambda: the agent has no tool %s to check with", name)}
 }

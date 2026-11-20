@@ -349,6 +349,11 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	schedules.Probe = checkRead(rn.Startable, func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
 		return probe(ctx, rn.Builder, tenant, agent, c)
 	})
+	// Before a check is set to read another tool, or a version goes live with one: the same list.
+	schedules.HasTool = func(ctx context.Context, tenant, agent, name string) error {
+		_, err := checkTool(ctx, rn.Builder, tenant, agent, name)
+		return err
+	}
 	// A taf's own follow-ups, on the same schedules.
 	rn.Builder.FollowUp = func(tenant, agent string, version int) tool.Tool {
 		return followup.New(schedules, runs, tenant, agent, version)

@@ -610,6 +610,11 @@ type Service struct {
 	// starts nothing and is kept as skipped. An error that is a *CheckError
 	// says why in its Reason; any other is a failed read.
 	Probe func(ctx context.Context, tenant, agent string, c Check) (string, error)
+	// HasTool says whether the agent has a read named tool for a check, from the same tool list a
+	// firing's Probe uses, without making the read: nil when it has, a *CheckError when it surely
+	// hasn't (ReasonNoTool, ReasonNotARead), and any other error when the list couldn't be read.
+	// Without it, nothing is checked before a firing.
+	HasTool func(ctx context.Context, tenant, agent, tool string) error
 	// Log, when set, gets one line for each check that couldn't be used
 	// ("check_failed": the agent, the check's tool and a CheckReason).
 	Log *slog.Logger
@@ -647,6 +652,29 @@ type Service struct {
 // made only for live agents. One switched from off to on loses its
 // failing. If setting it fails, the schedule is stored but
 // may not fire as stored: the caller retries Put, which is safe to repeat.
+// MissingTool says whether the agent surely has no read named tool for a check (HasTool): the
+// *CheckError that says why (ReasonNoTool, ReasonNotARead), or nil when it has one, when there's no
+// HasTool, or when the list couldn't be read, so a gateway that doesn't answer never refuses a check.
+func (sv *Service) MissingTool(ctx context.Context, tenant, agent, tool string) *CheckError {
+	_, ce := sv.ToolChecked(ctx, tenant, agent, tool)
+	return ce
+}
+
+// ToolChecked is HasTool's answer in two parts: whether the list was read (checked), and the
+// *CheckError when the agent surely has no read named tool. Not checked: no HasTool, or a list that
+// couldn't be read.
+func (sv *Service) ToolChecked(ctx context.Context, tenant, agent, tool string) (checked bool, missing *CheckError) {
+	if sv.HasTool == nil {
+		return false, nil
+	}
+	err := sv.HasTool(ctx, tenant, agent, tool)
+	var ce *CheckError
+	if errors.As(err, &ce) && (ce.Reason == ReasonNoTool || ce.Reason == ReasonNotARead) {
+		return true, ce
+	}
+	return err == nil, nil
+}
+
 func (sv *Service) Put(ctx context.Context, s Schedule) error {
 	if err := s.Check(); err != nil {
 		return err

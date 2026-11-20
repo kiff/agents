@@ -185,6 +185,7 @@ func (s *Server) Handler() http.Handler {
 	route("DELETE /agents/{id}", s.deleteAgent)
 	route("DELETE /tenant", s.eraseTenant)
 	route("GET /agents/{id}/versions", s.listVersions)
+	route("POST /agents/{id}/check-tool", s.checkTool)
 	route("POST /agents/{id}/versions", s.putVersion)
 	route("GET /agents/{id}/versions/{n}", s.getVersion)
 	route("POST /agents/{id}/versions/{n}/live", s.switchVersion)
@@ -1271,10 +1272,64 @@ func (s *Server) updateSchedule(ctx context.Context, c Caller, r *http.Request) 
 		kept := sc.AppCheck.Keeping(old.AppCheck)
 		sc.AppCheck = &kept
 	}
+	// A check that now reads another tool, or another agent's, reads one the agent has: a new
+	// version that moved the taf to another connection while its check kept the old read failed at
+	// every firing as no_tool (Nov 2026). One that reads what it read keeps
+	// working as it did, so a schedule whose read is gone can still be paused or moved.
+	if sc.AppCheck != nil && (old.AppCheck == nil || old.AppCheck.Tool != sc.AppCheck.Tool || old.Agent != sc.Agent) {
+		if ce := s.Schedules.MissingTool(ctx, c.Tenant, sc.Agent, sc.AppCheck.Tool); ce != nil {
+			return 0, nil, conflict(string(ce.Reason), checkToolWords(ce, sc.AppCheck.Tool))
+		}
+	}
 	if err := s.putSchedule(ctx, &sc); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, s.view(sc), nil
+}
+
+// checkToolBody is POST /agents/{id}/check-tool's: the read a check would make.
+type checkToolBody struct {
+	Tool string `json:"tool"`
+}
+
+// checkTool says whether the agent has a read named tool for a schedule's check, from the
+// same tool list a firing reads with, without making the read: 200 {tool, has: true}; a 409 whose
+// code is no_tool or not_a_read when it surely hasn't; 200 {tool, checked: false} when the list
+// couldn't be read now. tafs cloud asks it with a version's check before that version goes live.
+func (s *Server) checkTool(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	var body checkToolBody
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		return 0, nil, bad("the body is {tool}: %v", err)
+	}
+	t := strings.TrimSpace(body.Tool)
+	if t == "" || len(t) > 128 {
+		return 0, nil, bad("tool is the read a check makes, 1 to 128 characters")
+	}
+	id := r.PathValue("id")
+	if _, err := s.Agents.Get(ctx, c.Tenant, id); err != nil {
+		return 0, nil, err
+	}
+	if s.Schedules == nil {
+		return http.StatusOK, map[string]any{"tool": t, "checked": false}, nil
+	}
+	checked, ce := s.Schedules.ToolChecked(ctx, c.Tenant, id, t)
+	switch {
+	case ce != nil:
+		return 0, nil, conflict(string(ce.Reason), checkToolWords(ce, t))
+	case !checked:
+		return http.StatusOK, map[string]any{"tool": t, "checked": false}, nil
+	}
+	return http.StatusOK, map[string]any{"tool": t, "has": true}, nil
+}
+
+// checkToolWords says why a check's read can't be made, for whoever sets the check to fix.
+func checkToolWords(ce *schedule.CheckError, tool string) string {
+	if ce.Reason == schedule.ReasonNotARead {
+		return fmt.Sprintf("the check reads %s, which isn't a read through the gateway: name a read the agent has", tool)
+	}
+	return fmt.Sprintf("the check reads %s, which none of the agent's connections has now: name a read it has", tool)
 }
 
 func (s *Server) deleteSchedule(ctx context.Context, c Caller, r *http.Request) (int, any, error) {

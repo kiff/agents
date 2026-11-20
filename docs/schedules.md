@@ -167,6 +167,20 @@ read from the service's logs: `{"msg": "check_failed", "agent", "tool",
 
 The line never carries the read's text, the vendor's words or ids, or the tenant.
 
+A check's read is asked before it's set, from the same list a firing reads with
+(the agent's tools as its gateway lists them now), without making the read:
+- **`POST /agents/{id}/check-tool {tool}`** answers `{tool, has: true}`, a 409
+  whose `error` is `no_tool` or `not_a_read` and whose `message` names the read,
+  or `{tool, checked: false}` when the list couldn't be read now. tafs cloud asks
+  it with a version's check before that version goes live, so a version that
+  moved a taf to another connection while its check kept the old read never
+  goes live to fail at every firing.
+- **An update that sets a check to another read** (or moves the schedule to
+  another agent) is refused the same way, a 409 `no_tool` or `not_a_read`, and
+  the schedule stays as it was. One that keeps reading what it read is never
+  refused, so a schedule whose read is gone can still be paused or moved, and
+  a list that can't be read now never refuses either.
+
 A schedule keeps its last firing that waited for credits, kept by the service
 and shown on every read: `waited: {due, why}`, why being KIFF's code
 (`credits_used_up`, `limit_reached` or `no_plan`). A run that starts unsets it,
