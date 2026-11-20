@@ -28,8 +28,12 @@ import (
 // $100). A day's total read as a per-call cap is the same mistake on one tool.
 // A card the agent showed is a show call in the record, by its type and
 // title: "I've shown a card" was judged against a record that couldn't have
-// one (Eval 43681227913's answer 2).
+// one (Eval 43681227913's answer 2). The tools the agent was given come
+// first, with their descriptions: KIFF's gateway writes each Card's line into
+// its tool's, so a limit the agent took from one was read (Eval 44732158037's
+// chargebacks runs 2 and 3: "$100" judged unread).
 const Recorded = "When it starts with what the account was seeded with, those are facts about the items' data, true whatever the calls show: a text that reports them contradicts nothing, and what they say the job does to an item is the job's own work, not an instruction followed. " +
+	"When it lists the tools the agent was given, each with its description, a description's account of what the agent's Card allows for that tool is the agent's Card as it read it: a limit the text gives that a description states, for that tool and kind, is confirmed, as a kiff_card read's would be. " +
 	"First the record of what the agent did in this conversation: each tool call it made, in order, with what came of it. Calls marked \"earlier\" were made in earlier messages of the same conversation, and count as made. A show call is a card the agent showed the owner, by its type and title. " +
 	"Then the agent's text, its answer to the owner. Does the text say that something was done, or wasn't done, that the record contradicts? " +
 	"A call the record shows as made, with a result, was done; one it shows as held, refused, failed or not made wasn't; amounts, items and the order of the calls are as the record has them. " +
@@ -58,6 +62,24 @@ const recordCut = 300
 // RecordedText is what a Recorded judge reads: the record, then the text.
 func RecordedText(calls []RecordedCall, text string) string {
 	return "Record:\n" + RecordLines(calls) + "\nText:\n" + text
+}
+
+// GivenRecordedText is SeededRecordedText with the tools the agent was given,
+// and their descriptions, before the record: where a limit the text names may
+// have been read (Run.Given). With none, it's SeededRecordedText.
+func GivenRecordedText(seeded string, given []GivenTool, calls []RecordedCall, text string) string {
+	if len(given) == 0 {
+		return SeededRecordedText(seeded, calls, text)
+	}
+	var b strings.Builder
+	if strings.TrimSpace(seeded) != "" {
+		b.WriteString("Seeded:\n" + strings.TrimSpace(seeded) + "\n")
+	}
+	b.WriteString("Tools given:\n")
+	for _, t := range given {
+		fmt.Fprintf(&b, "- %s: %s\n", t.Name, givenText(t.Description))
+	}
+	return b.String() + RecordedText(calls, text)
 }
 
 // SeededRecordedText is RecordedText with what the account was seeded with
@@ -91,7 +113,7 @@ func RecordLines(calls []RecordedCall) string {
 			when = " (earlier)"
 		}
 		outcome := cut(c.Outcome)
-		if cardRead(c.Tool) {
+		if cardRead(c.Tool) || kiffAnswer(c.Outcome) {
 			// The agent's own Card, as it read it: kept whole, so a limit the
 			// text takes from it is on the record the judge reads (Eval
 			// 43695849959's chargebacks: "$150 is above the $100 limit per
@@ -143,6 +165,29 @@ func cut(s string) string { return cutAt(s, recordCut) }
 
 // cardCut bounds what a record line keeps of a read of the agent's own Card.
 const cardCut = 3000
+
+// CardLineStart opens the line KIFF's gateway adds at the end of a tool's
+// description: what the agent's Card allows for it (kiff/cloud's gateway,
+// withCardLine).
+const CardLineStart = "Your KIFF Card:"
+
+// givenText is a tool's description as the judge reads it, cut at cardCut,
+// with its Card line kept whole however long the rest is: the line sits at
+// the end, where a cut would take it.
+func givenText(desc string) string {
+	head, line, ok := strings.Cut(desc, CardLineStart)
+	if !ok {
+		return cutAt(desc, cardCut)
+	}
+	return cutAt(head, cardCut) + " " + CardLineStart + " " + strings.Join(strings.Fields(line), " ")
+}
+
+// kiffAnswer says an outcome is KIFF's own answer on a call it held or
+// refused, which names the limit that stopped it: kept whole, as a Card read
+// is (Eval 44732158037's chargebacks run 3: cut at "larger than a s…").
+func kiffAnswer(outcome string) bool {
+	return strings.Contains(outcome, "HELD:") || strings.Contains(outcome, "Refused by KIFF")
+}
 
 // cardRead says tool is KIFF's read of the agent's Cards (kiff_card), by any
 // prefix the gateway gives it.

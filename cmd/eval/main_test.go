@@ -172,7 +172,7 @@ func (s *script) Turn(_ context.Context, req model.Request, _ func(string)) (mod
 type refundTool struct{}
 
 func (refundTool) Spec() model.ToolSpec {
-	return model.ToolSpec{Name: "create_refund", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	return model.ToolSpec{Name: "create_refund", Description: "Refund a charge.\n\nYour KIFF Card: up to 50.00 EUR per call.", InputSchema: json.RawMessage(`{"type":"object"}`)}
 }
 func (refundTool) Access() tool.Access { return tool.Write }
 func (refundTool) Gateway() bool       { return true }
@@ -273,6 +273,10 @@ func TestARuntimeRunKeepsWhatTheChecksRead(t *testing.T) {
 	r, err := rt.Run(context.Background(), cases.Refunds)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The tools it was given, with their descriptions, the Card line in them, are kept for grading.
+	if want := []eval.GivenTool{{Name: "create_refund", Description: "Refund a charge.\n\nYour KIFF Card: up to 50.00 EUR per call."}}; !reflect.DeepEqual(r.Given, want) {
+		t.Errorf("given %+v, want %+v", r.Given, want)
 	}
 	calls, err := r.Calls()
 	if err != nil || r.Status != runs.Completed || len(calls) != 1 || calls[0].Tool != "create_refund" {

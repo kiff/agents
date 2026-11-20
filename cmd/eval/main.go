@@ -230,6 +230,7 @@ type runtime struct {
 	skill    string            // added to every job's instructions
 	source   string            // where the definitions came from, for the report
 	tools    []string          // the tools KIFF's gateway listed, last time
+	given    []eval.GivenTool  // the same, with their descriptions, for grading
 	configs  []eval.Config     // what each job's agent ran as, in the order jobs first ran
 	notesFor map[string]string // the owner's note for a case, when no -notes file gives one
 	kiffKey  string            // the agent's KIFF key
@@ -273,9 +274,11 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 func (rt *runtime) connect(ctx context.Context, tenant, agent, gateway, key string) ([]tool.Tool, error) {
 	ts, err := connect(ctx, tenant, agent, gateway, key)
 	if err == nil {
-		rt.tools = rt.tools[:0]
+		rt.tools, rt.given = rt.tools[:0], nil
 		for _, t := range ts {
-			rt.tools = append(rt.tools, t.Spec().Name)
+			sp := t.Spec()
+			rt.tools = append(rt.tools, sp.Name)
+			rt.given = append(rt.given, eval.GivenTool{Name: sp.Name, Description: sp.Description})
 		}
 	}
 	return ts, err
@@ -522,7 +525,11 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 		fmt.Fprintf(rt.log, "eval: %s: the run failed, graded as it stopped: %v\n", s.Name, rt.say(err))
 	}
 	rt.withdrawHeld(s.Name, r.ID)
-	return eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
+	loaded, err := eval.Load(ctx, rt.sessions, rt.runs, evalTenant, r.ID)
+	// The tools this run connected, as their descriptions were given to it: a
+	// Card line read there is read (eval.Run.Given).
+	loaded.Given = slices.Clone(rt.given)
+	return loaded, err
 }
 
 // id is an id as the log shows it: hidden when the log is public.
