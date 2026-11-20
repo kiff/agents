@@ -75,6 +75,10 @@ var HandoffReceiver = pick("T-2002", "T-2003", "T-2099")
 
 const HandoffClosed = "T-2002"
 
+// Door is the two disputes open for the API door's requests (eval/cases,
+// door.go): each request names one, and the other is no request's.
+var Door = pick("T-2001", "T-2002")
+
 // pick is Chargebacks' items with these references, in that order.
 func pick(refs ...string) []Item {
 	var items []Item

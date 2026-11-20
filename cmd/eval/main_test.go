@@ -1177,3 +1177,89 @@ func TestARuntimeOffersYourStep(t *testing.T) {
 		t.Fatalf("status %s", r.Status)
 	}
 }
+
+// A door's cases run as tafs cloud starts a door's run: the chargebacks taf,
+// given tafs' task around the request's fields, and offered request_outcome
+// with the door's outcomes alone. What it answers with is what the case
+// grades; a run that answers none, or another, fails it. Each case seeds two
+// of Chargebacks' disputes.
+func TestADoorsCasesRunAsTafsCloudStartsThem(t *testing.T) {
+	f := &closingStripe{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	old := stripeURL
+	stripeURL = srv.URL
+	t.Cleanup(func() { stripeURL = old })
+
+	defs := t.TempDir()
+	_ = os.WriteFile(filepath.Join(defs, "chargebacks.json"), []byte(`{"instructions": "You work the disputes.", "model": "claude-opus-5-5",
+		"price": {"Input": 4000000, "Output": 20000000, "CacheRead": 200000, "CacheWrite": 5000000}, "max_tokens": 16000, "effort": "high", "history": 10}`), 0o644)
+	door := func(file, dispute string) {
+		task := `{"task": "[door api · from Dispute desk]\nJob: answer the dispute.\ndispute: \"` + dispute + `\"\nWhen the work is done, answer the request with request_outcome.", "outcomes": ["evidence_submitted", "accepted", "needs_owner"]}`
+		_ = os.WriteFile(filepath.Join(defs, file+".json"), []byte(task), 0o644)
+	}
+	door("door-accept", "T-2002")
+	door("door-evidence", "T-2001")
+	vars := map[string]string{"ANTHROPIC_API_KEY": "k", "KIFF_AGENT_KEY": "kiff-k", "STRIPE_API_KEY": "sk_test_x"}
+	out := filepath.Join(t.TempDir(), "results.json")
+	args := []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-seed", "-out", out, "door-accept", "door-evidence"}
+
+	answer := func(id, value string) model.Reply {
+		return calls(call(id, "request_outcome", `{"value":"`+value+`"}`))
+	}
+	done := model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: "Done."}}, Stop: model.EndTurn}
+	// The first answers as its request came to; the second answers another outcome.
+	m := &script{replies: []model.Reply{answer("o1", "accepted"), done, answer("o2", "accepted"), done}}
+	withAgent(t, m)
+	var stderr bytes.Buffer
+	if err := run(context.Background(), args, io.Discard, &stderr, env(vars)); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	if len(m.asked) != 4 {
+		t.Fatalf("%d model turns for 2 runs", len(m.asked))
+	}
+	for i, want := range map[int]string{0: `dispute: \"T-2002\"`, 2: `dispute: \"T-2001\"`} {
+		b, _ := json.Marshal(m.asked[i].Messages)
+		if !strings.Contains(string(b), want) || !strings.Contains(string(b), "[door api · from Dispute desk]") {
+			t.Errorf("run %d was asked %s", i/2+1, b)
+		}
+		var offered string
+		for _, tl := range m.asked[i].Tools {
+			if tl.Name == "request_outcome" {
+				offered = string(tl.InputSchema)
+			}
+		}
+		if !strings.Contains(offered, `["evidence_submitted","accepted","needs_owner"]`) {
+			t.Errorf("run %d was offered request_outcome as %q", i/2+1, offered)
+		}
+	}
+	var results []eval.Result
+	if err := readJSON(out, &results); err != nil {
+		t.Fatal(err)
+	}
+	answered := map[string]eval.CheckResult{}
+	for _, r := range results {
+		for _, c := range r.Checks {
+			if c.Name == "answers the request with its outcome" {
+				answered[r.Case] = c
+			}
+		}
+	}
+	if !answered["door-accept"].Pass || answered["door-evidence"].Pass || !strings.Contains(answered["door-evidence"].Why, `answered "accepted"`) {
+		t.Errorf("graded %+v", answered)
+	}
+	if f.seeds != 2 {
+		t.Errorf("%d seeds for 2 cases", f.seeds)
+	}
+
+	// A door's case without tafs' definitions, or with a task that has no such outcome, runs nothing.
+	m.asked = nil
+	err := run(context.Background(), []string{"-run", "-model", "m", "-price", "1,1", "-jobs", defs, "door-accept"}, io.Discard, io.Discard, env(vars))
+	if err == nil || !strings.Contains(err.Error(), "give -definitions") || len(m.asked) != 0 {
+		t.Errorf("without -definitions: %v, %d turns", err, len(m.asked))
+	}
+	_ = os.WriteFile(filepath.Join(defs, "door-accept.json"), []byte(`{"task": "Answer it.", "outcomes": ["done"]}`), 0o644)
+	if err := run(context.Background(), []string{"-run", "-definitions", defs, "-gateway", "https://gateway.test/mcp", "-seed", "door-accept"}, io.Discard, io.Discard, env(vars)); err == nil || !strings.Contains(err.Error(), `no outcome "accepted"`) || len(m.asked) != 0 {
+		t.Errorf("a task without the outcome: %v, %d turns", err, len(m.asked))
+	}
+}

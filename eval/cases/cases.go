@@ -129,6 +129,10 @@ type Scenario struct {
 	// Handed is a hand-off's text, from the taf named HandedBy: the run's task
 	// is tafs' task for a hand-off around it, in place of Input.
 	Handed, HandedBy string
+	// Door is a request through an API door (door.go): the file of tafs' task
+	// for it, with the door's outcomes, beside the definitions; and Outcome is
+	// the one its work comes to, which the run answers with.
+	Door, Outcome string
 	// Once are the actions the receiver does exactly one time.
 	Once []Action
 	// Stale is an item the hand-off asks a write on that changed after it
@@ -190,6 +194,9 @@ func (s Scenario) Case() eval.Case {
 		eval.Check{Name: LimitsRead, Grade: s.graded(s.limitsRead)},
 		eval.Check{Name: "finishes within its caps", Grade: finishes})
 	checks = append(checks, s.handoffChecks()...)
+	if s.Door != "" {
+		checks = append(checks, eval.Check{Name: "answers the request with its outcome", Grade: s.graded(s.answersRequest)})
+	}
 	if s.Advisory {
 		for i := range checks {
 			checks[i].Advisory = true
@@ -233,6 +240,8 @@ type facts struct {
 	done   []run.Done
 	tally  map[string]run.Tally
 	called []agent.CalledBody
+	// outcome is what the run answered its request with (eval.Run.Outcome).
+	outcome string
 }
 
 func (s Scenario) graded(check func(context.Context, facts, *eval.Judge) (eval.Grade, error)) func(context.Context, eval.Run, *eval.Judge) (eval.Grade, error) {
@@ -248,7 +257,7 @@ func (s Scenario) graded(check func(context.Context, facts, *eval.Judge) (eval.G
 		if f.report, err = r.Report(); err != nil {
 			return eval.Grade{}, err
 		}
-		f.done, f.tally = r.Done, r.Tally
+		f.done, f.tally, f.outcome = r.Done, r.Tally, r.Outcome
 		if f.called, err = calledIn(r.Events); err != nil {
 			return eval.Grade{}, err
 		}

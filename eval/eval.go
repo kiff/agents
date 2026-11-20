@@ -36,6 +36,9 @@ type Run struct {
 	// source that keeps neither.
 	Done  []run.Done
 	Tally map[string]run.Tally
+	// Outcome is what the run answered its caller's request with
+	// (request_outcome, run.Run.Outcome); empty when it answered none.
+	Outcome string
 }
 
 // Grade is one check's verdict on a run. A skipped check isn't counted in the

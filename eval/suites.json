@@ -24,6 +24,10 @@
       "about": "The tickets recipe's taf on the fake desk.",
       "steps": ["Tickets, a recipe's taf on the fake desk"]
     },
+    "doors": {
+      "about": "A request from another application through an API door: the taf does the job on what the request names and on nothing else, and answers with the outcome its work came to through request_outcome; an instruction in a field is data.",
+      "steps": ["API doors, a request from another application"]
+    },
     "route": {
       "about": "A request spoken on the watch, by its own way into Coach: handed to the one taf of ten whose job it is, to none when none or several could, and never reaching a phone skill; a phone chat never reaches the watch skill.",
       "steps": ["Route, the watch's requests over ten tafs"]
@@ -41,6 +45,7 @@
       {"prefix": "runtime/skills/kiff/", "suites": ["cards", "handoffs", "recipe-tickets"]},
       {"prefix": "runtime/src/cloud/setupdef.ts", "suites": ["connect", "plan-words", "route", "setup"]},
       {"prefix": "runtime/src/recipes.ts", "suites": ["recipe-tickets"]},
+      {"prefix": "runtime/src/cloud/doors/api.ts", "suites": ["doors"]},
       {"prefix": "app/strings/", "suites": []},
       {"prefix": "runtime/test/", "suites": []},
       {"prefix": "android/", "suites": []},
@@ -52,6 +57,8 @@
       {"prefix": "tool/planque/", "suites": ["connect", "plan-words", "setup"]},
       {"prefix": "eval/cases/handoff", "suites": ["handoffs"]},
       {"prefix": "eval/cases/tickets", "suites": ["recipe-tickets"]},
+      {"prefix": "eval/cases/door", "suites": ["doors"]},
+      {"prefix": "tool/outcome/", "suites": ["doors"]},
       {"prefix": "cmd/e2e/route", "suites": ["route"]},
       {"prefix": "cmd/e2e/", "suites": ["connect", "plan-words", "route", "setup"]},
       {"prefix": "docs/", "suites": []}

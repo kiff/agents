@@ -38,6 +38,12 @@
 // infra/eval-definitions.sh writes beside the jobs' definitions. -seed seeds
 // each with a few of Chargebacks' items.
 //
+// A request through an API door is two more (door-accept, door-evidence:
+// eval/cases, door.go), for -run with -definitions only: the chargebacks taf,
+// started with tafs cloud's task around a request's fields and the door's
+// outcomes, as infra/eval-definitions.sh writes them. -seed seeds two of
+// Chargebacks' items for each.
+//
 // With -baseline, a case that scores lower than it did there fails the
 // command. -ids is the seed's Stripe ids by item reference.
 //
@@ -97,6 +103,7 @@ import (
 	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/kiff"
 	toolmemory "github.com/kiff/agents/tool/memory"
+	"github.com/kiff/agents/tool/outcome"
 )
 
 func main() {
@@ -250,6 +257,14 @@ func newRuntime(m model.Model, kiffKey string, base registry.Definition, jobs, s
 		// As the Lambda does: a job whose definition asks for your_step (kiff/tafs with TAFS_YOUR_STEP=on) gets it, with
 		// its own key, at the KIFF API this run uses.
 		YourStep: func(key string) tool.Tool { return kiff.NewYourStep(rt.kiffAPI, key, nil) },
+		// As the Lambda does: a run started with outcomes (a door's request, eval/cases door.go) answers with one of them.
+		Outcome: func(ctx context.Context, tenant, _, runID string) (tool.Tool, error) {
+			r, err := rt.runs.Get(ctx, tenant, runID)
+			if err != nil || len(r.Outcomes) == 0 {
+				return nil, err
+			}
+			return outcome.New(r.Outcomes), nil
+		},
 	}}
 	return rt
 }
@@ -419,6 +434,24 @@ func (rt *runtime) input(s cases.Scenario) (string, error) {
 	return strings.NewReplacer(markFrom, s.HandedBy, markHandoff, s.Handed, markFence, fence).Replace(t.Task), nil
 }
 
+// door is a request through an API door's task and outcomes, as kiff/tafs
+// writes them (<definitions>/<door>.json): tafs cloud's own task around the
+// request's fields, and what the door answers with, which the run is started
+// with as tafs cloud starts it.
+func (rt *runtime) door(s cases.Scenario) (string, []string, error) {
+	var d struct {
+		Task     string   `json:"task"`
+		Outcomes []string `json:"outcomes"`
+	}
+	if err := readJSON(filepath.Join(rt.defs, s.Door+".json"), &d); err != nil {
+		return "", nil, fmt.Errorf("%s: tafs' task for a door's request: %w", s.Name, err)
+	}
+	if d.Task == "" || !slices.Contains(d.Outcomes, s.Outcome) {
+		return "", nil, fmt.Errorf("%s: tafs' task for a door's request has no task, or no outcome %q", s.Name, s.Outcome)
+	}
+	return d.Task, d.Outcomes, nil
+}
+
 // cancel asks a run to stop, re-reading it if it changed meanwhile.
 func (rt *runtime) cancel(tenant, id string) {
 	ctx := context.Background()
@@ -451,13 +484,19 @@ func (rt *runtime) Run(ctx context.Context, s cases.Scenario) (eval.Run, error) 
 	if err != nil {
 		return eval.Run{}, err
 	}
+	var outcomes []string
+	if s.Door != "" {
+		if input, outcomes, err = rt.door(s); err != nil {
+			return eval.Run{}, err
+		}
+	}
 	if err := rt.note(ctx, s.Name); err != nil {
 		return eval.Run{}, err
 	}
 	// What an earlier run left open at KIFF would be this run's to find:
 	// each run starts from the same fixture, with none.
 	rt.clearPending(s.Name, "before the run")
-	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: input})
+	r, err := rt.rn.Start(ctx, server.Start{Tenant: evalTenant, Agent: d.ID, Trigger: runs.ByEval, Input: input, Outcomes: outcomes})
 	if err != nil {
 		return eval.Run{}, fmt.Errorf("%s: %w", s.Name, err)
 	}
@@ -645,7 +684,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 	}
 
 	scenarios := map[string]cases.Scenario{"refunds": cases.Refunds, "chargebacks": cases.Chargebacks, "tickets": cases.Tickets}
-	for _, s := range cases.Handoffs() {
+	for _, s := range append(cases.Handoffs(), cases.Doors()...) {
 		scenarios[s.Name] = s
 	}
 	known := strings.Join(slices.Sorted(maps.Keys(scenarios)), ", ")
@@ -695,6 +734,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 				return fmt.Errorf("-seed: %s has no seeder yet: give -ids", arg)
 			case (s.Definition != "" || s.Handed != "") && *defsDir == "":
 				return fmt.Errorf("%s: a hand-off's taf and task are kiff/tafs' own: give -definitions", arg)
+			case s.Door != "" && *defsDir == "":
+				return fmt.Errorf("%s: a door's task and outcomes are kiff/tafs' own: give -definitions", arg)
 			}
 		}
 		base := registry.Definition{Tenant: evalTenant, Gateway: *gateway, KeyRef: "KIFF_AGENT_KEY", MaxCost: int64(*maxCost * 1_000_000)}
@@ -1012,6 +1053,12 @@ var seeders = map[string]func(ctx context.Context, key, account string) (map[str
 	},
 	cases.HandoffReceiver.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
 		return seedDisputes(ctx, key, account, seed.HandoffReceiver, seed.HandoffClosed)
+	},
+	cases.DoorAccept.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
+		return seedDisputes(ctx, key, account, seed.Door, "")
+	},
+	cases.DoorEvidence.Name: func(ctx context.Context, key, account string) (map[string][]string, int, error) {
+		return seedDisputes(ctx, key, account, seed.Door, "")
 	},
 }
 
