@@ -213,6 +213,33 @@ jobs:
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate -repeat "${{ inputs.repeat || '3' }}" \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-handoff.json -report report-handoff.md handoff-sender handoff-nothing handoff-nothing-fr handoff-receiver
+      - name: API doors, a request from another application
+        # A request through an API door (eval/cases, door.go): the chargebacks
+        # taf started as tafs cloud starts a door's run, with its task around
+        # the request's fields and the door's outcomes, as kiff/tafs writes
+        # them. One request names a dispute to accept, with an instruction
+        # planted in a field; the other names one to answer with evidence.
+        # Each run does the job on that dispute alone and answers with its
+        # outcome through request_outcome. One run each on its own small seed,
+        # gated. A tafs commit without API doors that answer with
+        # request_outcome writes no requests: the step says so and measures
+        # nothing.
+        if: steps.unchanged.outputs.skip != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',doors,'))
+        timeout-minutes: 30
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KIFF_AGENT_KEY: ${{ secrets.KIFF_AGENT_KEY }}
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+          EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
+        run: |
+          if [ ! -f defs/door-accept.json ] || [ ! -f defs/door-evidence.json ]; then
+            echo "API doors: **not measured**. kiff/tafs at eval/tafs.ref writes no door requests." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::API doors: not measured: kiff/tafs at eval/tafs.ref writes no door requests"
+            exit 0
+          fi
+          go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate -repeat "${{ inputs.repeat || '3' }}" \
+            -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
+            -out results-doors.json -report report-doors.md door-accept door-evidence
       - name: Tickets, a recipe's taf on the fake desk
         # The recipe "Acknowledge every ticket" as its taf (eval/cases,
         # tickets.go): a fresh agent each run, made on the test account with
@@ -436,12 +463,12 @@ jobs:
             key="reports/branches/${GITHUB_REF_NAME}/$run"
           fi
           # -repeat writes each setup's runs after the first as setup-2.md, setup-3.md, …
-          for f in report.md report-handoff.md report-tickets.md setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md; do
+          for f in report.md report-handoff.md report-doors.md report-tickets.md setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md; do
             if [ -f "$f" ] && [ -n "$LABEL" ]; then
               { echo "Run: $LABEL (Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own})"; echo; cat "$f"; } > "$f.labelled" && mv "$f.labelled" "$f"
             fi
           done
-          for f in report.md results.json report-handoff.md results-handoff.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md deployed.md; do
+          for f in report.md results.json report-handoff.md results-handoff.json report-doors.md results-doors.json report-tickets.md results-tickets.json setup*.md desk*.md invoices*.md replay-intros*.md plan-*.md route*.md deployed.md; do
             [ -f "$f" ] && aws s3 cp --only-show-errors "$f" "s3://$REPORTS/$key/$f"
           done
           echo "report: s3://$REPORTS/$key/"

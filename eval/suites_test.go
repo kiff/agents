@@ -77,7 +77,7 @@ func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
 
 	// Eval 19: everything held but intros; a run of connect now carries the rest.
 	from, short := s.Carry([]string{"connect"}, []EarlierRun{skipped, full(19, "failure")})
-	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || from["plan-words"] != 19 || len(from) != 6 {
+	if len(short) != 0 || from["cards"] != 19 || from["setup"] != 19 || from["plan-words"] != 19 || len(from) != 7 {
 		t.Errorf("connect after Eval 19: from %v, short %v", from, short)
 	}
 	// A run of setup alone can't carry connect: it failed there.
@@ -97,7 +97,7 @@ func TestARunOfSomeSuitesCarriesOnlyUntouchedPasses(t *testing.T) {
 	if _, short := s.Carry([]string{"connect"}, []EarlierRun{partial, full(19, "success")}); short["handoffs"] != "it failed in run 20" {
 		t.Errorf("an older pass outvoted a newer failure: %v", short)
 	}
-	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 6 {
+	if _, short := s.Carry([]string{"connect"}, nil); len(short) != 7 {
 		t.Errorf("no earlier run: %v", short)
 	}
 }
