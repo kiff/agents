@@ -376,3 +376,23 @@ func TestSteerKeyedKeepsAKeyedMessageOnce(t *testing.T) {
 		t.Fatalf("without a key: %d messages, want 3", len(got.Steering))
 	}
 }
+
+// What a run may answer its request with is its caller's, fixed at its start:
+// a change can set the outcome it answered, never its list of outcomes.
+func TestARunsOutcomesAreFixed(t *testing.T) {
+	ctx := context.Background()
+	runs := memory.NewRuns()
+	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+	r := run.New("t1", "rae", "s1", run.ByOwner, "refund 42", now)
+	r.Outcomes = []string{"refunded", "refused"}
+	if err := runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Change(ctx, runs, r, now, func(n *run.Run) error { n.Outcomes = []string{"refunded"}; return nil }); !errors.Is(err, run.ErrFixed) {
+		t.Errorf("changing a run's outcomes: %v, want ErrFixed", err)
+	}
+	got, err := run.Change(ctx, runs, r, now, func(n *run.Run) error { n.Outcome = "refused"; return nil })
+	if err != nil || got.Outcome != "refused" {
+		t.Errorf("setting the outcome it answered: %q, %v", got.Outcome, err)
+	}
+}

@@ -2,12 +2,14 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool"
 	"github.com/kiff/agents/tool/outcome"
 )
 
@@ -61,5 +63,45 @@ func TestTheOutcomeToolOffersOnlyTheRunsOutcomes(t *testing.T) {
 	}
 	if res, _ := o.Call(context.Background(), []byte(`{"value":"refused"}`)); res.IsError {
 		t.Errorf("an outcome in the list was refused: %+v", res)
+	}
+}
+
+// The last outcome the tool accepted is the run's: a model may correct itself
+// ("refunded", then "refused" once the refund was refused).
+func TestTheLastAcceptedOutcomeWins(t *testing.T) {
+	m := &script{replies: []model.Reply{
+		use("c1", outcome.Name, `{"value":"refunded"}`),
+		use("c2", outcome.Name, `{"value":"refused"}`),
+		say("Done."),
+	}}
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m, outcome.New([]string{"refunded", "refused"})), r, nil, "Check A-1047.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.RequestOutcome != "refused" {
+		t.Errorf("the request's outcome: %q, want refused, the later of two accepted", out.RequestOutcome)
+	}
+}
+
+// erringOutcome is the outcome tool whose call errs whatever it's given: a
+// call that errored answers nothing, even with a value in the list.
+type erringOutcome struct{ *outcome.Tool }
+
+func (e erringOutcome) Call(context.Context, json.RawMessage) (tool.Result, error) {
+	return tool.Result{Text: "the call failed", IsError: true}, nil
+}
+
+// A request_outcome call that errored sets no outcome: only a call that went
+// through answers the request.
+func TestAnErroredOutcomeCallAnswersNothing(t *testing.T) {
+	m := &script{replies: []model.Reply{use("c1", outcome.Name, `{"value":"refused"}`), say("Done.")}}
+	_, r := start(t, session.KindRun)
+	out, _, err := agent.Run(context.Background(), newAgent(m, erringOutcome{outcome.New([]string{"refunded", "refused"})}), r, nil, "Check A-1047.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.RequestOutcome != "" {
+		t.Errorf("an errored call answered %q, want none", out.RequestOutcome)
 	}
 }
