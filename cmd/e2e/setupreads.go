@@ -108,7 +108,15 @@ func readsOnRecord(calls []setupCall, agent string, reads []string) error {
 		}
 	}
 	if len(seen) == 0 {
-		return fmt.Errorf("none of Setup's reads (%s) is on KIFF's record: they didn't go through KIFF", strings.Join(reads, ", "))
+		// KIFF's record can't tell a read that skipped it from no read at all (a run whose draft was refused before
+		// Setup read anything): the message says both, and how many other calls of Setup's KIFF has.
+		others := 0
+		for _, c := range calls {
+			if c.Actor == agent {
+				others++
+			}
+		}
+		return fmt.Errorf("none of Setup's reads (%s) is on KIFF's record, which has %d other calls by Setup: Setup made no read, or its reads didn't go through KIFF", strings.Join(reads, ", "), others)
 	}
 	return nil
 }
