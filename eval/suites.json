@@ -64,6 +64,11 @@
       {"prefix": "docs/", "suites": []}
     ],
     "kiff/planque": [
+      {"prefix": "deploy/guides/", "suites": ["connect", "plan-words", "setup"]},
+      {"prefix": "docs/", "suites": []},
+      {"prefix": "CHANGELOG.md", "suites": []},
+      {"prefix": "README.md", "suites": []},
+      {"prefix": "AGENTS.md", "suites": []},
       {"prefix": "", "suites": ["connect", "plan-words", "recipe-tickets", "setup"]}
     ]
   }

@@ -831,14 +831,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 					break
 				}
 				s := s.WithIDs(ids)
+				var took phases
 				if *seedEach {
+					seedClock = func(closing, making time.Duration) { took.close, took.create = closing, making }
 					seeded, _, err := seeders[arg](ctx, env("STRIPE_API_KEY"), env("EVAL_STRIPE_ACCOUNT"))
+					seedClock = nil
 					if err != nil {
 						return fmt.Errorf("%s: seed: %w", s.Name, err)
 					}
 					s = s.WithIDs(seeded)
 				}
 				var r eval.Run
+				started := time.Now()
 				if s.Desk {
 					r, s, err = rt.runDesk(ctx, account, s)
 				} else {
@@ -847,12 +851,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, env func(
 				if err != nil {
 					return err
 				}
+				took.run = time.Since(started)
+				started = time.Now()
 				res, err := s.Case().Grade(ctx, r, judge)
 				if err != nil {
 					return err
 				}
+				took.grade = time.Since(started)
 				results = append(results, res)
 				printResult(stderr, res, *public)
+				printPhases(stderr, took, *seedEach)
 			}
 			continue
 		}
@@ -978,6 +986,26 @@ func gateFailures(results []eval.Result) []string {
 // session, no check's reason and no cost: the reason is the judge's prose
 // about the run, which can quote its ids and amounts, and a run's AI cost
 // stays in the private report (-out, -report), where it's read.
+// phases is how long one run's parts took, for the log: closing what an
+// earlier seed left open, making this run's seed, the run with what clears
+// around it, and grading. A suite's time can then be read by part, not
+// guessed (the hand-offs suite took 44 of a night's 100 minutes).
+type phases struct{ close, create, run, grade time.Duration }
+
+// seedClock, while a run is seeded, is told how long seedDisputes took to
+// close and to create.
+var seedClock func(closing, making time.Duration)
+
+// printPhases writes one run's phases on one line, in seconds.
+func printPhases(stderr io.Writer, p phases, seeded bool) {
+	secs := func(d time.Duration) string { return fmt.Sprintf("%.1fs", d.Seconds()) }
+	seed := ""
+	if seeded {
+		seed = fmt.Sprintf("seed: close %s, create %s · ", secs(p.close), secs(p.create))
+	}
+	fmt.Fprintf(stderr, "  time: %srun %s · grade %s\n", seed, secs(p.run), secs(p.grade))
+}
+
 func printResult(stderr io.Writer, res eval.Result, public bool) {
 	if public {
 		fmt.Fprintf(stderr, "%s  %d/%d  (…)\n", res.Case, res.Passed, res.Graded)
@@ -1088,9 +1116,14 @@ func seedDisputes(ctx context.Context, key, account string, items []seed.Item, a
 	if err := c.Only(ctx, account); err != nil {
 		return nil, 0, err
 	}
+	began := time.Now()
 	closed, err := c.Close(ctx, "chargebacks")
 	if err != nil {
 		return nil, closed, err
+	}
+	closedAt := time.Now()
+	if seedClock != nil {
+		defer func() { seedClock(closedAt.Sub(began), time.Since(closedAt)) }()
 	}
 	ids, err := c.Disputes(ctx, "chargebacks", items)
 	if err != nil || accepted == "" {

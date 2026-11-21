@@ -15,8 +15,10 @@
 #     every path changed on tafs' main since that run started: tafs cloud
 #     deploys from main, not from the ref, and the setups call it live;
 #   - kiff/agents, from that run's commit to this one;
-#   - kiff/planque, when its main has a commit since that run started (its
-#     deploys follow main; suites.json maps all of it to the same suites).
+#   - kiff/planque, every path changed on its main since that run started
+#     (its deploys follow main): its guides touch Coach's suites, its docs
+#     none, the rest every planque suite. When the paths can't be read (no
+#     commit before that run, or GitHub's 300-file cap), every planque suite.
 # Only runs of the last 7 days carry, which bounds what no diff sees (KIFF,
 # the model provider).
 set -euo pipefail
@@ -39,11 +41,19 @@ while read -r id sha started; do
   if git cat-file -e "$sha^{commit}" 2>/dev/null && their=$(git show "$sha:eval/tafs.ref" 2>/dev/null | tr -d '[:space:]') \
     && git -C tafs cat-file -e "$their^{commit}" 2>/dev/null; then
     planque=$(gh api "repos/kiff/planque/commits?sha=main&since=$started&per_page=1" --jq length)
+    planque_paths=main
+    if [ "$planque" != 0 ]; then
+      before=$(gh api "repos/kiff/planque/commits?sha=main&until=$started&per_page=1" --jq '.[0].sha // empty')
+      if [ -n "$before" ]; then
+        changed=$(gh api "repos/kiff/planque/compare/$before...main" --jq '.files | if length < 300 then .[].filename else "main" end')
+        [ -z "$changed" ] || planque_paths=$changed
+      fi
+    fi
     touched=$({ { git -C tafs diff --name-only "$their" "$ref"
         git -C tafs log --format= --name-only --since="$started" origin/main; } | sort -u | "$bin" -repo kiff/tafs
       git diff --name-only "$sha" HEAD | "$bin" -repo kiff/agents
-      # Any planque commit: every planque path maps to the same suites.
-      [ "$planque" = 0 ] || echo main | "$bin" -repo kiff/planque; } | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -s .)
+      # "main" maps as any planque path: what can't be read touches every planque suite.
+      [ "$planque" = 0 ] || echo "$planque_paths" | "$bin" -repo kiff/planque; } | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -s .)
   else
     touched='["all"]' # its commit or its tafs ref can't be read: nothing carries from it
   fi
