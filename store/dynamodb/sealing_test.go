@@ -92,8 +92,8 @@ func TestAnUnreadOldSealingKeyIsNeverReplaced(t *testing.T) {
 	}
 }
 
-// Without KMS nothing is read or written; a key sealed for one tenant
-// doesn't open for another; an erase leaves the next read a new key.
+// Without KMS nothing is read or written; after an erase no key is read or
+// made while its mark lasts.
 func TestSealingKeysFailClosedAndErase(t *testing.T) {
 	s, k, _ := sealingStore(t)
 	s.Old = func(context.Context, string) ([]byte, error) { return nil, dynamodb.ErrSealingKeyNotFound }
@@ -109,10 +109,36 @@ func TestSealingKeysFailClosedAndErase(t *testing.T) {
 	if err := s.Erase(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := s.Key(ctx, "t1"); err != nil || bytes.Equal(again, first) {
+	if again, err := s.Key(ctx, "t1"); !errors.Is(err, dynamodb.ErrSealingKeyErased) || bytes.Equal(again, first) {
 		t.Fatalf("after the erase: %v, same key %v", err, bytes.Equal(again, first))
 	}
 	if _, err := s.Key(ctx, "t1|x"); err == nil {
 		t.Fatal("a tenant that isn't one segment")
+	}
+}
+
+// An account's erase that lands while a read is moving the old key (it read
+// the old secret, the erase deleted it, then the read writes the table) never
+// lets the erased key back: the erase's mark takes the item, the move finds
+// it taken, and the read answers erased.
+func TestAnEraseDuringAMoveKeepsTheKeyErased(t *testing.T) {
+	s, _, raw := sealingStore(t)
+	s.Old = func(ctx context.Context, tenant string) ([]byte, error) {
+		// The old secret is read, then the account's erase runs before the
+		// read writes it to the table.
+		if err := s.Erase(ctx, tenant); err != nil {
+			t.Fatal(err)
+		}
+		return oldKey(7), nil
+	}
+	if got, err := s.Key(ctx, "t1"); !errors.Is(err, dynamodb.ErrSealingKeyErased) || got != nil {
+		t.Fatalf("the move answered %x, %v", got, err)
+	}
+	if b := raw("t1"); bytes.Contains(b, []byte("sealed")) {
+		t.Fatalf("the erased key was written back: %s", b)
+	}
+	s.Old = func(context.Context, string) ([]byte, error) { return oldKey(7), nil }
+	if _, err := s.Key(ctx, "t1"); !errors.Is(err, dynamodb.ErrSealingKeyErased) {
+		t.Fatalf("a later read: %v", err)
 	}
 }

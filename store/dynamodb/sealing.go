@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -19,7 +20,8 @@ import (
 // item each, sealed by KMS, so a key costs nothing of its own while it's
 // kept:
 //
-//	key  pk=S2|tenant  sk=sealing  the 32 bytes, sealed in "sealed"
+//	key     pk=S2|tenant  sk=sealing  the 32 bytes, sealed in "sealed"
+//	erased  pk=S2|tenant  sk=sealing  "erased": the account was deleted
 //
 // Its own partition, apart from the tafs' keys (K2), so no key reference can
 // name it. It's sealed under the encryption context {purpose, tenant}, taken
@@ -29,11 +31,20 @@ import (
 // it and the key is written here create-only, never made anew while an old
 // one may exist, since every read sealed under the old key would be lost.
 // The old secret is left as it is, deleted on its own once each key is here.
+//
+// An account's erase writes an erased mark over the key, never just deletes
+// it: a read that took the old secret just before the erase deleted it, and
+// writes it here after, finds the mark taken and answers ErrSealingKeyErased,
+// so an erased key never comes back. The mark holds the tenant alone and
+// lapses after ErasedFor.
 type SealingKeys struct {
 	db    API
 	table string
 	kms   KMS
 	keyID string
+	now   func() time.Time
+	// ErasedFor is how long an erase's mark is kept.
+	ErasedFor time.Duration
 	// Old is the tenant's key from where it was kept before, or
 	// ErrSealingKeyNotFound when it has none there; nil: nowhere.
 	Old func(ctx context.Context, tenant string) ([]byte, error)
@@ -42,10 +53,18 @@ type SealingKeys struct {
 // ErrSealingKeyNotFound is a tenant with no sealing key kept.
 var ErrSealingKeyNotFound = errors.New("dynamodb: no sealing key")
 
+// ErrSealingKeyErased is a tenant whose account was erased: no key is read
+// or made for it while the erase's mark lasts.
+var ErrSealingKeyErased = errors.New("dynamodb: the tenant's sealing key was erased")
+
+// SealingErasedFor is how long an erase's mark is kept, by default: past the
+// erase of the old secret, which runs just before it.
+const SealingErasedFor = 24 * time.Hour
+
 // NewSealingKeys returns the sealing keys on table, sealed with the KMS key
 // keyID.
 func NewSealingKeys(db API, table string, k KMS, keyID string) *SealingKeys {
-	return &SealingKeys{db: db, table: table, kms: k, keyID: keyID}
+	return &SealingKeys{db: db, table: table, kms: k, keyID: keyID, now: time.Now, ErasedFor: SealingErasedFor}
 }
 
 func sealingPK(tenant string) string { return key("S2", tenant) }
@@ -105,6 +124,9 @@ func (k *SealingKeys) get(ctx context.Context, tenant string) ([]byte, error) {
 	if out.Item == nil {
 		return nil, ErrSealingKeyNotFound
 	}
+	if _, erased := out.Item["erased"]; erased {
+		return nil, ErrSealingKeyErased
+	}
 	sealed, _ := out.Item["sealed"].(*types.AttributeValueMemberB)
 	if sealed == nil || len(sealed.Value) == 0 {
 		return nil, errors.New("dynamodb: the sealing key is not sealed")
@@ -137,13 +159,17 @@ func (k *SealingKeys) create(ctx context.Context, tenant string, key []byte) err
 	return nil
 }
 
-// Erase deletes the tenant's sealing key, when its account is deleted:
-// every read sealed under it is then unreadable.
+// Erase replaces the tenant's sealing key with an erased mark, when its
+// account is deleted: every read sealed under it is then unreadable, and no
+// read in flight can write the key back.
 func (k *SealingKeys) Erase(ctx context.Context, tenant string) error {
 	if err := keys.Valid(tenant, sealingSK); err != nil {
 		return err
 	}
-	if _, err := k.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &k.table, Key: pkey(sealingPK(tenant), sealingSK)}); err != nil {
+	item := pkey(sealingPK(tenant), sealingSK)
+	item["erased"] = &types.AttributeValueMemberBOOL{Value: true}
+	item["ttl"] = ttl(k.now().Add(k.ErasedFor))
+	if _, err := k.db.PutItem(ctx, &ddb.PutItemInput{TableName: &k.table, Item: item}); err != nil {
 		return fmt.Errorf("dynamodb: erasing the sealing key: %w", err)
 	}
 	return nil
