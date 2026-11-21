@@ -1004,3 +1004,50 @@ func TestASummarizedTurnHasNoProgressNotes(t *testing.T) {
 		t.Fatalf("notes %q, thinking %q", notes, thoughts)
 	}
 }
+
+// A tool call's input comes back from the store as it left the turn: the
+// streamed input keeps the model's spacing, and encoding/json compacts and
+// escapes a RawMessage when a run is stored. If the two differ, the chat's
+// next run sends other bytes for the same turn and the prompt cache writes
+// the whole chat again.
+func TestAToolCallsInputIsTheSameBytesAfterTheStore(t *testing.T) {
+	spaced := []string{
+		stream[0],
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"gmail_search","input":{}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\": \"is:unread <b> & co\",  \"max\": 5}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":12}}`,
+		`{"type":"message_stop"}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range spaced {
+			var head struct{ Type string }
+			_ = json.Unmarshal([]byte(ev), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, ev)
+		}
+	}))
+	defer srv.Close()
+	m := anthropic.New(option.WithBaseURL(srv.URL), option.WithAPIKey("test"), option.WithMaxRetries(0))
+	reply, err := m.Turn(context.Background(), model.Request{Model: "test-model", MaxTokens: 64,
+		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: "Find it."}}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reply.Blocks[0].Input
+	stored, err := json.Marshal(reply.Blocks[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back model.Block
+	if err := json.Unmarshal(stored, &back); err != nil {
+		t.Fatal(err)
+	}
+	if string(back.Input) != string(got) {
+		t.Fatalf("input from the turn %s, read back from the store %s", got, back.Input)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(got, &v); err != nil || v["query"] != "is:unread <b> & co" || v["max"] != float64(5) {
+		t.Fatalf("input %s doesn't hold the call's arguments: %v", got, err)
+	}
+}

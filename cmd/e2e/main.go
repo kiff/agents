@@ -432,7 +432,9 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		t.people = ps
 	}
 	defer t.cleanup()
-	return t.scenario(ctx, anthropic.New())
+	m := &spending{Model: anthropic.New()}
+	defer t.chatCost(m)
+	return t.scenario(ctx, m)
 }
 
 // test is one run of the scenario, and what it must clean up.
