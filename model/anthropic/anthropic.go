@@ -570,7 +570,7 @@ func fromMessage(msg sdk.Message) model.Reply {
 		case sdk.TextBlock:
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.Text, Text: b.Text})
 		case sdk.ToolUseBlock:
-			r.Blocks = append(r.Blocks, model.Block{Kind: model.ToolUse, CallID: b.ID, Tool: b.Name, Input: b.Input})
+			r.Blocks = append(r.Blocks, model.Block{Kind: model.ToolUse, CallID: b.ID, Tool: b.Name, Input: storedForm(b.Input)})
 		case sdk.ThinkingBlock:
 			r.Blocks = append(r.Blocks, model.Block{Kind: model.Thinking, Text: b.Thinking, Signature: b.Signature})
 		case sdk.RedactedThinkingBlock:
@@ -670,4 +670,19 @@ func fileBlock(b model.Block) (sdk.ContentBlockParamUnion, error) {
 		return d, nil
 	}
 	return sdk.ContentBlockParamUnion{}, fmt.Errorf("anthropic: a file of type %q", b.MediaType)
+}
+
+// storedForm is a tool call's input as it reads back from a stored run.
+// encoding/json compacts (and escapes) a RawMessage when it marshals one, so
+// the streamed input, which keeps the model's own spacing, came back shorter
+// at the next run of the same chat: the turn sent from memory and the same
+// turn read back from the store differed, and the prompt cache wrote the
+// whole chat again there (an Eval's setup chat, ~29k tokens at each run's
+// first turn). Kept in that form from the start, the two are the same bytes.
+func storedForm(in json.RawMessage) json.RawMessage {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return in
+	}
+	return b
 }
