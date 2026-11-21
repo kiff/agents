@@ -17,6 +17,8 @@
 //	AGENTS_TABLE           the DynamoDB table (store/dynamodb's), for the runs
 //	KIFF_ACCOUNTS_PREFIX   the name prefix of the KIFF accounts' secrets (registry/secretsmanager.Accounts)
 //	AGENTS_SECRETS_PREFIX  the agents' key prefix, which KIFF_ACCOUNTS_PREFIX must stay apart from
+//	AGENTS_ALERTS_KMS_KEY  optional: the KMS key the alert secrets are sealed with in the table
+//	                       (dynamodb.AlertSecrets), read there first, else from their old secret
 //
 // Its role must hold no more than this:
 //
@@ -27,6 +29,9 @@
 //     The table also holds every tenant's agents, sessions, notes and
 //     schedules: this role must reach none of them.
 //   - secretsmanager:GetSecretValue on KIFF_ACCOUNTS_PREFIX only.
+//   - With AGENTS_ALERTS_KMS_KEY: GetItem on A2|* (the alert secrets), and
+//     kms:Decrypt on that key for the purpose "kiff/agents alert secret v1"
+//     only. Never a write: tafs cloud writes them through the agents API.
 //   - No lambda:InvokeFunction on the agents function. A direct invoke there
 //     can send any event, a made-up function URL request for any tenant
 //     included, and this function's URL is open to anyone.
@@ -52,6 +57,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"github.com/kiff/agents/registry/secretsmanager"
@@ -97,8 +103,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newFunction(secretsmanager.NewAccounts(sm.NewFromConfig(cfg), accounts),
-		dynamodb.NewRuns(ddb.NewFromConfig(cfg), table), log), nil
+	db := ddb.NewFromConfig(cfg)
+	var from kiffalert.Accounts = secretsmanager.NewAccounts(sm.NewFromConfig(cfg), accounts)
+	if kk := strings.TrimSpace(os.Getenv("AGENTS_ALERTS_KMS_KEY")); kk != "" {
+		from = tableFirst{table: dynamodb.NewAlertSecrets(db, table, kms.NewFromConfig(cfg), kk), old: from}
+	}
+	return newFunction(from, dynamodb.NewRuns(db, table), log), nil
 }
 
 // apart refuses an accounts prefix that overlaps the agents' key prefix: an

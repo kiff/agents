@@ -162,6 +162,18 @@ stores, with the registry's `Builder`:
   own once the table holds each. It answers `{listed, copied, already,
   failed}`, logs each by tenant and reference, never a key, and run again it
   copies only what's missing.
+- **Each tenant's KIFF alert secret** (what kiffalerts checks that tenant's
+  alerts with; the KIFF account sending them is the tenant itself), with
+  `AGENTS_ALERTS_KMS_KEY`, is kept in the table too: `A2|tenant` / `alert`,
+  sealed under `{purpose: "kiff/agents alert secret v1", tenant}`. tafs cloud
+  writes it through `PUT /tenant/alert-secret` (body `{"secret": …}`,
+  replacing any) and `DELETE /tenant/alert-secret`, by the same
+  `AGENTS_KEY_WRITERS`; an account's erase deletes it last. kiffalerts reads
+  it there first, else from its old secret (`KIFF_ACCOUNTS_PREFIX` +
+  account), and writes nothing. The one-off `{"move_old_accounts":{}}` copies
+  each old secret to its own tenant, create-only, touching none: run it only
+  once tafs cloud writes through the API, or a secret written to the old
+  store after it would be hidden by the table's copy.
 - **The model's key** is the secret named `AGENTS_MODEL_KEY_SECRET`, read the
   first time a model turn needs it and kept in memory. A failed read fails
   that turn (the run is stored ERROR) and the next turn reads again. Setup
@@ -337,6 +349,8 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_SECRETS_PREFIX` | The name prefix of the agents' KIFF keys in Secrets Manager |
 | `AGENTS_KEYS_KMS_KEY` | Optional: the KMS key the agents' KIFF keys are sealed with in the table, another than the drafts' one. Set, keys are written there only, and secrets under the prefix are moved and deleted |
 | `AGENTS_KEY_WRITERS` | With `AGENTS_KEYS_KMS_KEY`: the caller roles that may write keys, each one of `AGENTS_CALLERS` |
+| `AGENTS_ALERTS_KMS_KEY` | Optional, with `AGENTS_KEY_WRITERS`: the KMS key the tenants' alert secrets are sealed with in the table; set, `PUT`/`DELETE /tenant/alert-secret` are served. kiffalerts takes the same key to read them |
+| `KIFF_ACCOUNTS_PREFIX` | With `AGENTS_ALERTS_KMS_KEY`: the old alert secrets' prefix, which `move_old_accounts` copies from; apart from `AGENTS_SECRETS_PREFIX` |
 | `AGENTS_MODEL_KEY_SECRET` | The name of the secret holding the model provider's key; not under the prefix |
 | `AWS_LAMBDA_FUNCTION_NAME` | Set by Lambda: where background runs are sent |
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -65,4 +66,29 @@ func (a *Accounts) Account(ctx context.Context, kiffAccount string) (tenant, sec
 		return "", "", errors.New("secretsmanager: the KIFF account's secret names no tenant or no signing secret")
 	}
 	return v.Tenant, v.Secret, nil
+}
+
+// List is every account with a secret under a.Prefix that isn't being
+// deleted: what a migration copies to the table. A name past the prefix
+// that isn't one segment is left out.
+func (a *Accounts) List(ctx context.Context, api ListAPI) ([]string, error) {
+	in := &sm.ListSecretsInput{Filters: []types.Filter{{Key: types.FilterNameStringTypeName, Values: []string{a.Prefix}}}}
+	var out []string
+	for {
+		page, err := api.ListSecrets(ctx, in)
+		if err != nil {
+			return nil, fmt.Errorf("secretsmanager: listing the accounts' secrets: %w", err)
+		}
+		for _, e := range page.SecretList {
+			name := aws.ToString(e.Name)
+			if e.DeletedDate != nil || !strings.HasPrefix(name, a.Prefix) || !segment(strings.TrimPrefix(name, a.Prefix)) {
+				continue
+			}
+			out = append(out, strings.TrimPrefix(name, a.Prefix))
+		}
+		if page.NextToken == nil {
+			return out, nil
+		}
+		in.NextToken = page.NextToken
+	}
 }

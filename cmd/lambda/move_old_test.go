@@ -67,3 +67,80 @@ func TestTheMoveOldKeysEvent(t *testing.T) {
 		t.Errorf("answered %s", b)
 	}
 }
+
+type oldAlertAccounts map[string][2]string
+
+func (o oldAlertAccounts) Account(_ context.Context, account string) (string, string, error) {
+	if v, ok := o[account]; ok {
+		return v[0], v[1], nil
+	}
+	return "", "", errors.New("no such secret")
+}
+
+// alertTable is the table's create-only write, in memory.
+type alertTable map[string]string
+
+func (a alertTable) Create(_ context.Context, tenant, secret string) (bool, error) {
+	if _, ok := a[tenant]; ok {
+		return false, nil
+	}
+	a[tenant] = secret
+	return true, nil
+}
+
+// move_old_accounts copies each account's secret to its own tenant,
+// create-only: one the API already wrote stays, one naming another tenant
+// isn't copied, an unreadable one is counted failed; no secret is logged.
+func TestMoveOldAccountsCopiesEachToItsOwnTenant(t *testing.T) {
+	var logs bytes.Buffer
+	table := alertTable{"t2": "whsec_from_api"}
+	move := moveOldAccounts(func(context.Context) ([]string, error) { return []string{"t1", "t2", "t3", "t4"}, nil },
+		oldAlertAccounts{"t1": {"t1", "whsec_one"}, "t2": {"t2", "whsec_old"}, "t3": {"t9", "whsec_three"}},
+		table, slog.New(slog.NewTextHandler(&logs, nil)))
+	got, err := move(ctx)
+	if err == nil {
+		t.Error("two failures, no error")
+	}
+	if got != (moveCounts{Listed: 4, Copied: 1, Already: 1, Failed: 2}) {
+		t.Errorf("counts: %+v", got)
+	}
+	if table["t1"] != "whsec_one" || table["t2"] != "whsec_from_api" || table["t9"] != "" || len(table) != 2 {
+		t.Errorf("table: %v", table)
+	}
+	if strings.Contains(logs.String(), "whsec_") || (err != nil && strings.Contains(err.Error(), "whsec_")) {
+		t.Errorf("a secret was logged or returned: %s %v", logs.String(), err)
+	}
+}
+
+// The event is refused where the alert secrets aren't kept in the table.
+func TestTheMoveOldAccountsEvent(t *testing.T) {
+	f, _, _ := newFunction(t)
+	if _, err := f.handle(ctx, json.RawMessage(`{"move_old_accounts":{}}`)); err == nil {
+		t.Error("ran with no table for the alert secrets")
+	}
+	f.moveOldAccounts = func(context.Context) (moveCounts, error) { return moveCounts{Listed: 7, Copied: 7}, nil }
+	if out, err := f.handle(ctx, json.RawMessage(`{"move_old_accounts":{}}`)); err != nil || out != (moveCounts{Listed: 7, Copied: 7}) {
+		t.Errorf("answered %v, %v", out, err)
+	}
+}
+
+// thenErase runs the next erase only after the first succeeded.
+func TestThenEraseStopsAtAFailure(t *testing.T) {
+	var ran []string
+	step := func(name string, fail bool) func(context.Context, string) error {
+		return func(context.Context, string) error {
+			ran = append(ran, name)
+			if fail {
+				return errors.New(name + " failed")
+			}
+			return nil
+		}
+	}
+	if err := thenErase(step("first", true), step("alerts", false))(ctx, "t1"); err == nil || strings.Join(ran, ",") != "first" {
+		t.Errorf("after a failure: %v, ran %v", err, ran)
+	}
+	ran = nil
+	if err := thenErase(nil, step("alerts", false))(ctx, "t1"); err != nil || strings.Join(ran, ",") != "alerts" {
+		t.Errorf("alone: %v, ran %v", err, ran)
+	}
+}

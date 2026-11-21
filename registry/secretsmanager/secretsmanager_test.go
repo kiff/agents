@@ -187,3 +187,19 @@ func TestListReadsEveryKeysSecretAcrossPages(t *testing.T) {
 		t.Error("a failed page listed nothing and no error")
 	}
 }
+
+// The accounts' secrets are listed by account, across pages: one being
+// deleted, or a name past the prefix that isn't one segment, is left out.
+func TestAccountsListReadsEveryAccountsSecret(t *testing.T) {
+	l := &lister{pages: [][]types.SecretListEntry{
+		{entry("agents-accounts/t1", false), entry("agents-accounts/t2", true)},
+		{entry("agents-accounts/t3", false), entry("agents-accounts/t4/x", false), entry("agents-accountsX", false)},
+	}}
+	got, err := secretsmanager.NewAccounts(nil, "agents-accounts/").List(ctx, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != "[t1 t3]" {
+		t.Errorf("listed %v", got)
+	}
+}
