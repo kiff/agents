@@ -37,8 +37,13 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 		{"kiff/agents", []string{"cmd/e2e/planwords.go"}, []string{"connect", "plan-words", "route", "setup"}},
 		// The tickets recipe's taf calls through the connection server at run time, not only at setup.
 		{"kiff/planque", []string{"internal/gateway/proxy.go"}, []string{"connect", "plan-words", "recipe-tickets", "setup"}},
-		// eval-carry.sh's stand-in for "a planque commit since": any path maps the same.
+		// eval-carry.sh's stand-in when planque's paths can't be read: every planque suite.
 		{"kiff/planque", []string{"main"}, []string{"connect", "plan-words", "recipe-tickets", "setup"}},
+		// A guide is what Coach reads to connect an app: Coach's suites, not the tickets taf's run.
+		{"kiff/planque", []string{"deploy/guides/typeform.md"}, []string{"connect", "plan-words", "setup"}},
+		// planque's docs and changelog: nothing deployed reads them.
+		{"kiff/planque", []string{"docs/scopes.md", "CHANGELOG.md"}, nil},
+		{"kiff/planque", []string{"CHANGELOG.md", "internal/gateway/proxy.go"}, []string{"connect", "plan-words", "recipe-tickets", "setup"}},
 		{"kiff/elsewhere", []string{"main.go"}, []string{All}},
 	} {
 		if got := s.For(c.repo, c.paths); !slices.Equal(got, c.want) {
