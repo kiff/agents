@@ -210,6 +210,31 @@ fi
 
 # --- Attached files (kiff/tafs#209) ------------------------------------------
 
+# Every bucket here blocks all public access, set once: a new bucket has it on
+# already, and the Infra workflow's role may never change it (nor delete a
+# bucket's policy). So it's written only when it isn't all on, and a bucket
+# that lost it stops the run for a person to set it again.
+private_bucket() {
+  [ "$(aws s3api get-public-access-block --bucket "$1" --query 'PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]' 2>/dev/null)" = "$(printf 'True\tTrue\tTrue\tTrue')" ] && return
+  aws s3api put-public-access-block --bucket "$1" --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true || {
+    echo "bucket $1 doesn't block all public access, and this role may not change that: a person sets all four" >&2; exit 1; }
+  say "bucket $1: public access blocked"
+}
+
+# A bucket's policy too: the Infra workflow's role may never write one (a
+# policy can grant another account without being public), so it's written only
+# when it isn't already this script's, and a bucket whose policy differs stops
+# the run for a person.
+bucket_policy() { # bucket, policy JSON
+  local live
+  live=$(aws s3api get-bucket-policy --bucket "$1" --query Policy 2>/dev/null || true)
+  [ -n "$live" ] && [ "$(jq -S -c . <<<"$live")" = "$(jq -S -c . <<<"$2")" ] && return
+  aws s3api put-bucket-policy --bucket "$1" --policy "$2" || {
+    echo "bucket $1's policy isn't the one this script writes, and this role may not change it: a person sets it" >&2; exit 1; }
+  say "bucket $1: policy written"
+}
+
 # The app uploads and downloads through presigned URLs only: nothing in the
 # bucket is public, and S3 refuses any request not over TLS.
 if ! aws s3api head-bucket --bucket "$ATTACHMENTS" >/dev/null 2>&1; then
@@ -220,14 +245,13 @@ fi
 # bucket of that name anywhere else stops here.
 where=$(aws s3api get-bucket-location --bucket "$ATTACHMENTS" --query LocationConstraint)
 [ "$where" = "$REGION" ] || { echo "bucket $ATTACHMENTS is in $where, not $REGION" >&2; exit 1; }
-aws s3api put-public-access-block --bucket "$ATTACHMENTS" --public-access-block-configuration \
-  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+private_bucket "$ATTACHMENTS"
 aws s3api put-bucket-ownership-controls --bucket "$ATTACHMENTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
 aws s3api put-bucket-encryption --bucket "$ATTACHMENTS" --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 aws s3api put-bucket-lifecycle-configuration --bucket "$ATTACHMENTS" --lifecycle-configuration \
   '{"Rules":[{"ID":"leftovers-38-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":38},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"delivered-31-days","Status":"Enabled","Filter":{"Prefix":"delivered/"},"Expiration":{"Days":31}}]}'
-aws s3api put-bucket-policy --bucket "$ATTACHMENTS" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"tls-only","Effect":"Deny","Principal":"*","Action":"s3:*",
+bucket_policy "$ATTACHMENTS" '{"Version":"2012-10-17","Statement":[{"Sid":"tls-only","Effect":"Deny","Principal":"*","Action":"s3:*",
  "Resource":["arn:aws:s3:::'"$ATTACHMENTS"'","arn:aws:s3:::'"$ATTACHMENTS"'/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
 
 # --- The model key ---------------------------------------------------------
@@ -477,8 +501,7 @@ if ! aws s3api head-bucket --bucket "$REPORTS" >/dev/null 2>&1; then
   aws s3api create-bucket --bucket "$REPORTS" --create-bucket-configuration LocationConstraint="$REGION" >/dev/null
   say "created bucket $REPORTS"
 fi
-aws s3api put-public-access-block --bucket "$REPORTS" --public-access-block-configuration \
-  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+private_bucket "$REPORTS"
 aws s3api put-bucket-ownership-controls --bucket "$REPORTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
 aws s3api put-bucket-encryption --bucket "$REPORTS" --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'

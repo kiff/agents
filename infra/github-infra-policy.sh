@@ -54,7 +54,9 @@ POLICY
 # person does: infra/aws.sh leaves an unchanged trust alone), remove or
 # replace a boundary, attach a managed policy, or touch its own role. It may
 # pass only the two functions' roles to Lambda and the scheduler's to the
-# scheduler. So no run can give any role more than the boundary.
+# scheduler. So no run can give any role more than the boundary. Nor can it open
+# either bucket to anyone: it may never change a bucket's public access block or
+# its policy, only read them.
 infra_role_policy() {
   local region=$1 account=$2 reports=$3 attachments=$4
   local role="arn:aws:iam::$account:role"
@@ -86,8 +88,10 @@ infra_role_policy() {
    "arn:aws:secretsmanager:$region:$account:secret:agents-model/*"]},
  {"Effect":"Allow","Action":["scheduler:GetScheduleGroup","scheduler:CreateScheduleGroup"],"Resource":"arn:aws:scheduler:$region:$account:schedule-group/agents"},
  {"Effect":"Allow","Action":["scheduler:GetSchedule","scheduler:CreateSchedule","scheduler:UpdateSchedule"],"Resource":"arn:aws:scheduler:$region:$account:schedule/agents/*"},
- {"Effect":"Allow","Action":["s3:CreateBucket","s3:ListBucket","s3:GetBucketLocation","s3:PutBucketPublicAccessBlock","s3:PutBucketOwnershipControls",
-   "s3:PutEncryptionConfiguration","s3:PutLifecycleConfiguration","s3:PutBucketPolicy"],
+ {"Effect":"Allow","Action":["s3:CreateBucket","s3:ListBucket","s3:GetBucketLocation","s3:GetBucketPublicAccessBlock","s3:PutBucketOwnershipControls",
+   "s3:PutEncryptionConfiguration","s3:PutLifecycleConfiguration","s3:GetBucketPolicy"],
+  "Resource":["arn:aws:s3:::$reports","arn:aws:s3:::$attachments"]},
+ {"Sid":"BucketsStayPrivate","Effect":"Deny","Action":["s3:PutBucketPublicAccessBlock","s3:PutBucketPolicy","s3:DeleteBucketPolicy"],
   "Resource":["arn:aws:s3:::$reports","arn:aws:s3:::$attachments"]},
  {"Effect":"Allow","Action":["logs:CreateLogGroup","logs:PutRetentionPolicy"],"Resource":"arn:aws:logs:$region:$account:log-group:/aws/lambda/agents*"}
 ]}
