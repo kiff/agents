@@ -260,7 +260,8 @@ own decisions stay in app.kiff.dev, linked from here, not copied.
 - **What a chat read** can be kept for its next messages (#172): a read-only
   call and its result, as one `kept_read` event, with the `UntilIdle` rule.
   Only in chats, only reads, sealed with the tenant's own key before it is
-  stored (`session.Sealer`), used while the chat goes on (its `Retention`,
+  stored (`session.Sealer`; the key in the table, sealed by KMS, with
+  `AGENTS_SEALING_KMS_KEY`, else a secret of its own), used while the chat goes on (its `Retention`,
   idle) and never longer than its `Max` after the read; a disconnected tool's
   reads aren't used. No view of a session shows them. Each comes with its age.
 - **Where things stand now**: a tool that holds what it made outside the

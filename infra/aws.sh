@@ -292,6 +292,10 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
   "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents taf key v1"},
    "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant","ref"]},
    "Null":{"kms:EncryptionContext:tenant":"false","kms:EncryptionContext:ref":"false"}}},
+ {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"$KEYS_KEY",
+  "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents sealing key v1"},
+   "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant"]},
+   "Null":{"kms:EncryptionContext:tenant":"false"}}},
  {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*","$ARN_SECRET:${SECRETS_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:RestoreSecret","Resource":"$ARN_SECRET:${SECRETS_PREFIX}*"},
  {"Effect":"Allow","Action":"secretsmanager:ListSecrets","Resource":"*"},
@@ -341,7 +345,7 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_KEYS_KMS_KEY":"$KEYS_KEY","AGENTS_KEY_WRITERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_KEYS_KMS_KEY":"$KEYS_KEY","AGENTS_KEY_WRITERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX","AGENTS_SEALING_KMS_KEY":"$KEYS_KEY",
  "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"$BEDROCK_ENV}}
 EOF
 )
