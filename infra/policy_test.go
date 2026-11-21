@@ -241,3 +241,37 @@ func TestTheBoundaryHoldsAgentsOwnResourcesOnly(t *testing.T) {
 		{"bedrock:InvokeModel", "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5", nil, false},
 	})
 }
+
+// deniedOutright says an explicit Deny in p matches: a refusal no Allow added
+// later can undo, unlike an action that's only missing from the Allows.
+func (p policy) deniedOutright(t *testing.T, action, resource string) bool {
+	t.Helper()
+	for _, s := range p.Statement {
+		if s.Effect == "Deny" && s.matches(t, action, resource, nil) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestTheInfraRoleNeverMakesABucketPublic(t *testing.T) {
+	p := render(t, "infra_role_policy")
+	for _, bucket := range []string{"arn:aws:s3:::kiff-agents-eval-reports", "arn:aws:s3:::kiff-agents-attachments"} {
+		for _, action := range []string{"s3:PutBucketPublicAccessBlock", "s3:DeleteBucketPolicy"} {
+			if !p.deniedOutright(t, action, bucket) {
+				t.Errorf("%s on %s isn't denied outright", action, bucket)
+			}
+		}
+		// What infra/aws.sh still does to each bucket: read the block, and write
+		// its own (TLS-only) policy, which S3 refuses while the block is on if it
+		// would make the bucket public.
+		check(t, p, []try{
+			{"s3:GetBucketPublicAccessBlock", bucket, nil, true},
+			{"s3:PutBucketPolicy", bucket, nil, true},
+			{"s3:PutBucketPublicAccessBlock", bucket, nil, false},
+			{"s3:DeleteBucketPolicy", bucket, nil, false},
+		})
+	}
+	// Any other bucket, not at all.
+	check(t, p, []try{{"s3:PutBucketPolicy", "arn:aws:s3:::kiff-videos-eu", nil, false}})
+}

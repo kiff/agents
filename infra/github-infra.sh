@@ -3,8 +3,9 @@
 # with, in place of a person's long-lived key. Run once by a person allowed to
 # change IAM; after that, infra/aws.sh runs only through the workflow.
 #
-# Trusted only from this repository's GitHub environment "infra", which takes
-# two required reviewers, so every run is a reviewed one. Its policy is what
+# Trusted only from this repository's GitHub environment "infra": main only, and
+# a run waits for one of its two reviewers, never the one who started it, so every
+# run is a reviewed one. Its policy is what
 # infra/aws.sh does, on agents' own names alone (infra/github-infra-policy.sh):
 # the six roles infra/aws.sh makes, by name, each written only while it
 # carries the permissions boundary agents-boundary, which this script alone

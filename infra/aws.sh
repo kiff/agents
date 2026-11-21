@@ -210,6 +210,18 @@ fi
 
 # --- Attached files (kiff/tafs#209) ------------------------------------------
 
+# Every bucket here blocks all public access, set once: a new bucket has it on
+# already, and the Infra workflow's role may never change it (nor delete a
+# bucket's policy). So it's written only when it isn't all on, and a bucket
+# that lost it stops the run for a person to set it again.
+private_bucket() {
+  [ "$(aws s3api get-public-access-block --bucket "$1" --query 'PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]' 2>/dev/null)" = "$(printf 'True\tTrue\tTrue\tTrue')" ] && return
+  aws s3api put-public-access-block --bucket "$1" --public-access-block-configuration \
+    BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true || {
+    echo "bucket $1 doesn't block all public access, and this role may not change that: a person sets all four" >&2; exit 1; }
+  say "bucket $1: public access blocked"
+}
+
 # The app uploads and downloads through presigned URLs only: nothing in the
 # bucket is public, and S3 refuses any request not over TLS.
 if ! aws s3api head-bucket --bucket "$ATTACHMENTS" >/dev/null 2>&1; then
@@ -220,8 +232,7 @@ fi
 # bucket of that name anywhere else stops here.
 where=$(aws s3api get-bucket-location --bucket "$ATTACHMENTS" --query LocationConstraint)
 [ "$where" = "$REGION" ] || { echo "bucket $ATTACHMENTS is in $where, not $REGION" >&2; exit 1; }
-aws s3api put-public-access-block --bucket "$ATTACHMENTS" --public-access-block-configuration \
-  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+private_bucket "$ATTACHMENTS"
 aws s3api put-bucket-ownership-controls --bucket "$ATTACHMENTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
 aws s3api put-bucket-encryption --bucket "$ATTACHMENTS" --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
@@ -477,8 +488,7 @@ if ! aws s3api head-bucket --bucket "$REPORTS" >/dev/null 2>&1; then
   aws s3api create-bucket --bucket "$REPORTS" --create-bucket-configuration LocationConstraint="$REGION" >/dev/null
   say "created bucket $REPORTS"
 fi
-aws s3api put-public-access-block --bucket "$REPORTS" --public-access-block-configuration \
-  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+private_bucket "$REPORTS"
 aws s3api put-bucket-ownership-controls --bucket "$REPORTS" --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
 aws s3api put-bucket-encryption --bucket "$REPORTS" --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'

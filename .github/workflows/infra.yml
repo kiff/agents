@@ -2,7 +2,8 @@ name: Infra
 # Runs infra/aws.sh, which makes and repairs everything around the two
 # functions (roles, table, schedules, buckets, settings), in place of a
 # person's long-lived key. By hand only, on main, in the GitHub environment
-# "infra": it takes two required reviewers, and only it holds the secret
+# "infra": a run waits for one of its two reviewers (gabosarmiento, kiff-qa),
+# never the one who started it, and only it holds the secret
 # AWS_INFRA_ROLE, the role infra/github-infra.sh made, which trusts that
 # environment alone and may never change its own role.
 #
