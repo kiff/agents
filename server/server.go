@@ -63,6 +63,9 @@ type Server struct {
 	// the caller roles that may: nil Keys serves no key route.
 	Keys       KeyStore
 	KeyWriters []string
+	// AlertSecrets is where tafs cloud writes each tenant's KIFF alert
+	// secret, by the same KeyWriters: nil serves no alert secret route.
+	AlertSecrets AlertSecretStore
 
 	Agents    registry.Agents
 	Sessions  session.Store
@@ -254,6 +257,10 @@ func (s *Server) Handler() http.Handler {
 	if s.Keys != nil {
 		route("PUT /tenant/keys/{ref...}", s.putKey)
 		route("DELETE /tenant/keys/{ref...}", s.removeKey)
+	}
+	if s.AlertSecrets != nil {
+		route("PUT /tenant/alert-secret", s.putAlertSecret)
+		route("DELETE /tenant/alert-secret", s.removeAlertSecret)
 	}
 	if s.Drafts != nil {
 		route("POST /drafts/{draft_id}/claim", s.claimDraft)

@@ -282,7 +282,7 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
 {"Version":"2012-10-17","Statement":[
  $LOGS,
  {"Effect":"Allow","Action":[$ITEMS],"Resource":"$ARN_TABLE"},
- {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${MODEL_SECRET}-??????","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
+ {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${MODEL_SECRET}-??????","$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*","$ARN_SECRET:${ACCOUNTS_PREFIX}*"]},
  {"Effect":"Allow","Action":"secretsmanager:CreateSecret","Resource":["$ARN_SECRET:${SECRETS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*"]},
  {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"$DRAFTS_KEY",
   "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents draft record v1"},
@@ -294,6 +294,10 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name agents --policy-docume
    "Null":{"kms:EncryptionContext:tenant":"false","kms:EncryptionContext:ref":"false"}}},
  {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"$KEYS_KEY",
   "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents sealing key v1"},
+   "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant"]},
+   "Null":{"kms:EncryptionContext:tenant":"false"}}},
+ {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"$KEYS_KEY",
+  "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents alert secret v1"},
    "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant"]},
    "Null":{"kms:EncryptionContext:tenant":"false"}}},
  {"Effect":"Allow","Action":"secretsmanager:DeleteSecret","Resource":["$ARN_SECRET:${DRAFTS_PREFIX}*","$ARN_SECRET:${SEALING_PREFIX}*","$ARN_SECRET:${SECRETS_PREFIX}*"]},
@@ -318,6 +322,12 @@ aws iam put-role-policy --role-name "$ALERTS_ROLE" --policy-name agents-kiffaler
  $LOGS,
  {"Effect":"Allow","Action":["dynamodb:GetItem","dynamodb:Query","dynamodb:PutItem","dynamodb:UpdateItem","dynamodb:DeleteItem","dynamodb:ConditionCheckItem"],
   "Resource":"$ARN_TABLE","Condition":{"ForAllValues:StringLike":{"dynamodb:LeadingKeys":["R|*","H|*","L|*","O|*","W","WP"]}}},
+ {"Effect":"Allow","Action":"dynamodb:GetItem",
+  "Resource":"$ARN_TABLE","Condition":{"ForAllValues:StringLike":{"dynamodb:LeadingKeys":["A2|*"]}}},
+ {"Effect":"Allow","Action":"kms:Decrypt","Resource":"$KEYS_KEY",
+  "Condition":{"StringEquals":{"kms:EncryptionContext:purpose":"kiff/agents alert secret v1"},
+   "ForAllValues:StringEquals":{"kms:EncryptionContextKeys":["purpose","tenant"]},
+   "Null":{"kms:EncryptionContext:tenant":"false"}}},
  {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":"$ARN_SECRET:${ACCOUNTS_PREFIX}*"}
 ]}
 EOF
@@ -345,11 +355,11 @@ ENV_FN=$(cat <<EOF
 {"Variables":{"AGENTS_TABLE":"$TABLE","AGENTS_CALLERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/",
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
- "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_KEYS_KMS_KEY":"$KEYS_KEY","AGENTS_KEY_WRITERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX","AGENTS_SEALING_KMS_KEY":"$KEYS_KEY",
+ "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_KEYS_KMS_KEY":"$KEYS_KEY","AGENTS_KEY_WRITERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX","AGENTS_SEALING_KMS_KEY":"$KEYS_KEY","AGENTS_ALERTS_KMS_KEY":"$KEYS_KEY","KIFF_ACCOUNTS_PREFIX":"$ACCOUNTS_PREFIX",
  "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"$BEDROCK_ENV}}
 EOF
 )
-ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'
+ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'","AGENTS_ALERTS_KMS_KEY":"'"$KEYS_KEY"'"}}'
 
 function_up() { # name, role, zip, timeout, memory, environment
   if ! aws lambda get-function --function-name "$1" >/dev/null 2>&1; then

@@ -97,6 +97,8 @@ func TestAKeysTenantIsTheSignedOne(t *testing.T) {
 		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"kiff_key_x","tenant":"t2"}`},
 		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"  "}`},
 		{"PUT", "/tenant/keys/kiff/taf_1", `not json`},
+		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"kiff_key_x"}{"key":"kiff_key_y"}`},
+		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"kiff_key_x"} trailing`},
 		{"PUT", "/tenant/keys/kiff/../t2/kiff/taf_1", `{"key":"kiff_key_x"}`},
 		{"PUT", "/tenant/keys/kiff//taf_1", `{"key":"kiff_key_x"}`},
 		{"DELETE", "/tenant/keys/kiff/%2e%2e", ""},
@@ -117,5 +119,62 @@ func TestNoKeyRoutesWithoutAStore(t *testing.T) {
 	defer srv.Close()
 	if got := keyCall(t, srv, "PUT", "/tenant/keys/kiff/taf_1", tafsCloud, `{"key":"k"}`); got != http.StatusNotFound {
 		t.Fatalf("%d", got)
+	}
+}
+
+// alertWrites records what reaches the alert secrets store.
+type alertWrites struct{ calls []string }
+
+func (a *alertWrites) Put(_ context.Context, tenant, secret string) error {
+	a.calls = append(a.calls, "put "+tenant+" "+secret)
+	return nil
+}
+
+func (a *alertWrites) Remove(_ context.Context, tenant string) error {
+	a.calls = append(a.calls, "remove "+tenant)
+	return nil
+}
+
+// Only tafs cloud's role writes an alert secret, always its signed tenant's,
+// with the secret alone in the body; without a store there's no route.
+func TestOnlyTheKeyWritersRoleWritesAnAlertSecret(t *testing.T) {
+	a := &alertWrites{}
+	s := &server.Server{AlertSecrets: a, KeyWriters: []string{tafsCloud}, Auth: func(r *http.Request) (server.Caller, error) {
+		return server.Caller{Tenant: r.Header.Get("Test-Tenant"), Role: r.Header.Get("Test-Role")}, nil
+	}}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	for _, role := range []string{"", "arn:aws:sts::000000000000:assumed-role/agents-lambda/"} {
+		if got := keyCall(t, srv, "PUT", "/tenant/alert-secret", role, `{"secret":"whsec_x"}`); got != http.StatusUnauthorized {
+			t.Errorf("PUT as %q: %d", role, got)
+		}
+		if got := keyCall(t, srv, "DELETE", "/tenant/alert-secret", role, ""); got != http.StatusUnauthorized {
+			t.Errorf("DELETE as %q: %d", role, got)
+		}
+	}
+	for _, body := range []string{`{"secret":"whsec_x","tenant":"t2"}`, `{"secret":" "}`, `not json`, `{"secret":"whsec_x"}{"secret":"whsec_y"}`, `{"secret":"whsec_x"} x`} {
+		if got := keyCall(t, srv, "PUT", "/tenant/alert-secret", tafsCloud, body); got != http.StatusBadRequest {
+			t.Errorf("PUT %s: %d", body, got)
+		}
+	}
+	if len(a.calls) != 0 {
+		t.Fatalf("reached the store: %v", a.calls)
+	}
+	if got := keyCall(t, srv, "PUT", "/tenant/alert-secret", tafsCloud, `{"secret":"whsec_x"}`); got != http.StatusNoContent {
+		t.Fatalf("PUT as tafs cloud: %d", got)
+	}
+	if got := keyCall(t, srv, "DELETE", "/tenant/alert-secret", tafsCloud, ""); got != http.StatusNoContent {
+		t.Fatalf("DELETE as tafs cloud: %d", got)
+	}
+	if want := "put t1 whsec_x;remove t1"; strings.Join(a.calls, ";") != want {
+		t.Fatalf("store calls %v, want %s", a.calls, want)
+	}
+
+	none := httptest.NewServer((&server.Server{KeyWriters: []string{tafsCloud}, Auth: func(*http.Request) (server.Caller, error) {
+		return server.Caller{Tenant: "t1", Role: tafsCloud}, nil
+	}}).Handler())
+	defer none.Close()
+	if got := keyCall(t, none, "PUT", "/tenant/alert-secret", tafsCloud, `{"secret":"whsec_x"}`); got != http.StatusNotFound {
+		t.Fatalf("no store: %d", got)
 	}
 }

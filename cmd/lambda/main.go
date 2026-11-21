@@ -154,6 +154,9 @@ type function struct {
 	// secrets for their deletion (the move_old_keys event); nil: keys aren't
 	// kept in the table.
 	moveOld func(ctx context.Context) (moveCounts, error)
+	// moveOldAccounts copies each KIFF account's old alert secret into the
+	// table (the move_old_accounts event); nil: they aren't kept there.
+	moveOldAccounts func(ctx context.Context) (moveCounts, error)
 	// now is the clock; nil is time.Now.
 	now func() time.Time
 	log *slog.Logger
@@ -435,6 +438,24 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		sealingTable = sealingRecords
 	}
 	f.api.Erase = accountErase(secrets, strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")), prefix, draftsTable, keysTable, sealingTable)
+	// Each tenant's KIFF alert secret, kept in the table with a KMS key of
+	// its own purpose: tafs cloud writes it through the API, kiffalerts reads
+	// it, and an account's erase deletes it after the rest.
+	if ak := strings.TrimSpace(os.Getenv("AGENTS_ALERTS_KMS_KEY")); ak != "" {
+		if len(keyWriters) == 0 {
+			return nil, errors.New("lambda: AGENTS_ALERTS_KMS_KEY needs AGENTS_KEY_WRITERS: no caller could write an alert secret")
+		}
+		alertRecords := dynamodb.NewAlertSecrets(db, table, kms.NewFromConfig(cfg), ak)
+		f.api.AlertSecrets, f.api.KeyWriters = alertRecords, keyWriters
+		f.api.Erase = thenErase(f.api.Erase, alertRecords.Erase)
+		if ap := strings.TrimSpace(os.Getenv("KIFF_ACCOUNTS_PREFIX")); ap != "" {
+			if strings.HasPrefix(ap, prefix) || strings.HasPrefix(prefix, ap) {
+				return nil, fmt.Errorf("lambda: KIFF_ACCOUNTS_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap", ap, prefix)
+			}
+			oldAccounts := secretsmanager.NewAccounts(secrets, ap)
+			f.moveOldAccounts = moveOldAccounts(func(ctx context.Context) ([]string, error) { return oldAccounts.List(ctx, secrets) }, oldAccounts, alertRecords, log)
+		}
+	}
 	// The sweep ends a trial idle for a week in KIFF first, with the agent's
 	// own key, which may end only its own trials (kiff/tafs#173).
 	f.api.EndKIFFTrial = kiff.TrialEnder(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
@@ -571,11 +592,12 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		RequestContext *struct {
 			HTTP *struct{} `json:"http"`
 		} `json:"requestContext"`
-		Run      json.RawMessage `json:"run"`
-		Sweep    json.RawMessage `json:"sweep"`
-		MoveOld  json.RawMessage `json:"move_old_keys"`
-		Schedule string          `json:"schedule"`
-		Due      string          `json:"due"`
+		Run             json.RawMessage `json:"run"`
+		Sweep           json.RawMessage `json:"sweep"`
+		MoveOld         json.RawMessage `json:"move_old_keys"`
+		MoveOldAccounts json.RawMessage `json:"move_old_accounts"`
+		Schedule        string          `json:"schedule"`
+		Due             string          `json:"due"`
 	}
 	if err := json.Unmarshal(raw, &shape); err != nil {
 		return nil, fmt.Errorf("lambda: the event is not JSON: %w", err)
@@ -601,6 +623,13 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		}
 		counts, err := f.moveOld(ctx)
 		f.log.InfoContext(ctx, "old keys moved", "listed", counts.Listed, "copied", counts.Copied, "already", counts.Already, "failed", counts.Failed)
+		return counts, err
+	case len(shape.MoveOldAccounts) > 0:
+		if f.moveOldAccounts == nil {
+			return nil, errors.New("lambda: the alert secrets aren't kept in the table here")
+		}
+		counts, err := f.moveOldAccounts(ctx)
+		f.log.InfoContext(ctx, "old alert secrets moved", "listed", counts.Listed, "copied", counts.Copied, "already", counts.Already, "failed", counts.Failed)
 		return counts, err
 	case shape.Schedule != "" && shape.Due != "":
 		tenant, id, due, err := eventbridge.ParseEvent(raw)

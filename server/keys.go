@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -42,7 +43,7 @@ func (s *Server) putKey(ctx context.Context, c Caller, r *http.Request) (int, an
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
+	if err := dec.Decode(&in); err != nil || dec.Decode(new(json.RawMessage)) != io.EOF {
 		return 0, nil, bad("the body is {\"key\": …} and nothing else")
 	}
 	if strings.TrimSpace(in.Key) == "" {
@@ -65,6 +66,56 @@ func (s *Server) removeKey(ctx context.Context, c Caller, r *http.Request) (int,
 		return 0, nil, bad("%v", err)
 	}
 	if err := s.Keys.Remove(ctx, c.Tenant, ref); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusNoContent, nil, nil
+}
+
+// AlertSecretStore is where tafs cloud writes each tenant's KIFF alert
+// secret, the one kiffalerts checks that tenant's alerts with
+// (dynamodb.AlertSecrets).
+type AlertSecretStore interface {
+	Put(ctx context.Context, tenant, secret string) error
+	Remove(ctx context.Context, tenant string) error
+}
+
+// putAlertSecret is PUT /tenant/alert-secret: the caller's tenant's alert
+// secret, replacing any. Like a key: only a key writer, the tenant the
+// signed one, the body the secret alone.
+func (s *Server) putAlertSecret(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	if err := s.keyWriter(c); err != nil {
+		return 0, nil, errors.Join(ErrUnauthorized, err)
+	}
+	if err := keys.Valid(c.Tenant, "alert"); err != nil {
+		return 0, nil, bad("%v", err)
+	}
+	var in struct {
+		Secret string `json:"secret"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil || dec.Decode(new(json.RawMessage)) != io.EOF {
+		return 0, nil, bad("the body is {\"secret\": …} and nothing else")
+	}
+	if strings.TrimSpace(in.Secret) == "" {
+		return 0, nil, bad("no secret")
+	}
+	if err := s.AlertSecrets.Put(ctx, c.Tenant, in.Secret); err != nil {
+		return 0, nil, err
+	}
+	return http.StatusNoContent, nil, nil
+}
+
+// removeAlertSecret is DELETE /tenant/alert-secret: the caller's tenant's
+// alert secret, removed. None there is not an error.
+func (s *Server) removeAlertSecret(ctx context.Context, c Caller, _ *http.Request) (int, any, error) {
+	if err := s.keyWriter(c); err != nil {
+		return 0, nil, errors.Join(ErrUnauthorized, err)
+	}
+	if err := keys.Valid(c.Tenant, "alert"); err != nil {
+		return 0, nil, bad("%v", err)
+	}
+	if err := s.AlertSecrets.Remove(ctx, c.Tenant); err != nil {
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
