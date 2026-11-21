@@ -1,0 +1,59 @@
+name: Infra
+# Runs infra/aws.sh, which makes and repairs everything around the two
+# functions (roles, table, schedules, buckets, settings), in place of a
+# person's long-lived key. By hand only, on main, in the GitHub environment
+# "infra": it takes two required reviewers, and only it holds the secret
+# AWS_INFRA_ROLE, the role infra/github-infra.sh made, which trusts that
+# environment alone and may never change its own role.
+#
+# Each input is one of infra/aws.sh's settings; left empty, the script keeps
+# the function's own, as on any rerun.
+on:
+  workflow_dispatch:
+    inputs:
+      model_key_secret:
+        description: AGENTS_MODEL_KEY_SECRET, the secret holding the model's key (empty keeps the function's)
+        required: false
+        default: ""
+      model_source:
+        description: AGENTS_MODEL_SOURCE (empty keeps the function's)
+        required: false
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: infra
+  cancel-in-progress: false
+jobs:
+  infra:
+    if: github.ref == 'refs/heads/main'
+    environment: infra
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+      # infra/aws.sh reads this repository's OIDC subject prefix.
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_ROLE }}
+          aws-region: eu-west-1
+      - name: infra/aws.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL_KEY_SECRET: ${{ inputs.model_key_secret }}
+          MODEL_SOURCE: ${{ inputs.model_source }}
+        run: |
+          # An input given is a setting; one left empty stays unset, so the
+          # script keeps the function's.
+          [ -n "$MODEL_KEY_SECRET" ] && export AGENTS_MODEL_KEY_SECRET="$MODEL_KEY_SECRET"
+          [ -n "$MODEL_SOURCE" ] && export AGENTS_MODEL_SOURCE="$MODEL_SOURCE"
+          infra/aws.sh

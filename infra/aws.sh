@@ -247,12 +247,26 @@ fi
 
 # --- Roles -----------------------------------------------------------------
 
+# Each role carries the permissions boundary agents-boundary once
+# infra/github-infra.sh has made it: the most the role may ever do, whatever
+# its own policy says. The Infra workflow's role may write a role only while
+# it carries it, and may never change a trust, so a trust is written only
+# when it differs (by a person) and the boundary before any policy.
+BOUNDARY="arn:aws:iam::$ACCOUNT:policy/agents-boundary"
+aws iam get-policy --policy-arn "$BOUNDARY" >/dev/null 2>&1 || BOUNDARY=""
 role() { # name, trust policy JSON
   if ! aws iam get-role --role-name "$1" >/dev/null 2>&1; then
-    aws iam create-role --role-name "$1" --assume-role-policy-document "$2" >/dev/null
+    aws iam create-role --role-name "$1" --assume-role-policy-document "$2" ${BOUNDARY:+--permissions-boundary "$BOUNDARY"} >/dev/null
     say "created role $1"
-  else
+    return
+  fi
+  if [ "$(aws iam get-role --role-name "$1" --query Role.AssumeRolePolicyDocument --output json | jq -S -c .)" != "$(jq -S -c . <<<"$2")" ]; then
     aws iam update-assume-role-policy --role-name "$1" --policy-document "$2"
+    say "role $1: trust updated"
+  fi
+  if [ -n "$BOUNDARY" ] && [ "$(aws iam get-role --role-name "$1" --query Role.PermissionsBoundary.PermissionsBoundaryArn)" != "$BOUNDARY" ]; then
+    aws iam put-role-permissions-boundary --role-name "$1" --permissions-boundary "$BOUNDARY"
+    say "role $1: boundary agents-boundary"
   fi
 }
 
