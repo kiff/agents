@@ -16,8 +16,8 @@ type alertSecret interface {
 }
 
 // tableFirst reads an account's alert secret from the table, where tafs
-// cloud writes it through the API, and from its old secret while the table
-// has none for it. The KIFF account that sends a tenant's alerts is the
+// cloud writes it through the API, and from its old secret only while the
+// table has nothing for it: a removed secret's mark answers unknown. The KIFF account that sends a tenant's alerts is the
 // tenant itself.
 type tableFirst struct {
 	table alertSecret
@@ -34,6 +34,9 @@ func (t tableFirst) Account(ctx context.Context, kiffAccount string) (tenant, se
 		return kiffAccount, secret, nil
 	case errors.Is(err, dynamodb.ErrNoAlertSecret):
 		return t.old.Account(ctx, kiffAccount)
+	case errors.Is(err, dynamodb.ErrAlertSecretRemoved):
+		// Removed: never the old secret, which may still be kept.
+		return "", "", kiffalert.ErrUnknownAccount
 	default:
 		return "", "", err
 	}

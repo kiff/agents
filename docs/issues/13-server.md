@@ -168,9 +168,11 @@ stores, with the registry's `Builder`:
   sealed under `{purpose: "kiff/agents alert secret v1", tenant}`. tafs cloud
   writes it through `PUT /tenant/alert-secret` (body `{"secret": …}`,
   replacing any) and `DELETE /tenant/alert-secret`, by the same
-  `AGENTS_KEY_WRITERS`; an account's erase deletes it last. kiffalerts reads
-  it there first, else from its old secret (`KIFF_ACCOUNTS_PREFIX` +
-  account), and writes nothing. The one-off `{"move_old_accounts":{}}` copies
+  `AGENTS_KEY_WRITERS`. A removal, and an account's erase (last), leave a
+  removed mark holding the tenant alone, which only a new `PUT` replaces.
+  kiffalerts reads the table first, else the old secret
+  (`KIFF_ACCOUNTS_PREFIX` + account) only while the table has nothing for
+  the tenant: a removed mark answers unknown. It writes nothing. The one-off `{"move_old_accounts":{}}` copies
   each old secret to its own tenant, create-only, touching none: run it only
   once tafs cloud writes through the API, or a secret written to the old
   store after it would be hidden by the table's copy.

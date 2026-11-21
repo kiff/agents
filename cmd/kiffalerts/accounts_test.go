@@ -13,8 +13,11 @@ type tableSecrets map[string]string
 
 func (t tableSecrets) Get(_ context.Context, tenant string) (string, error) {
 	if v, ok := t[tenant]; ok {
-		if v == "fail" {
+		switch v {
+		case "fail":
 			return "", errors.New("kms: throttled")
+		case "removed":
+			return "", dynamodb.ErrAlertSecretRemoved
 		}
 		return v, nil
 	}
@@ -30,8 +33,9 @@ func (o oldAccounts) Account(_ context.Context, account string) (string, string,
 	return "", "", kiffalert.ErrUnknownAccount
 }
 
-// The table's secret wins; with none there the old secret answers; a table
-// that fails is an error, never the old (possibly stale) secret; an account
+// The table's secret wins; with none there the old secret answers; a
+// removed mark is unknown, never the old secret; a table that fails is an
+// error, never the old (possibly stale) secret; an account
 // that isn't one segment is unknown before anything is read.
 func TestAnAlertSecretIsReadFromTheTableFirst(t *testing.T) {
 	a := tableFirst{
@@ -49,6 +53,11 @@ func TestAnAlertSecretIsReadFromTheTableFirst(t *testing.T) {
 	}
 	if _, _, err := a.Account(ctx, "t4"); !errors.Is(err, kiffalert.ErrUnknownAccount) {
 		t.Errorf("t4, nowhere: %v", err)
+	}
+	// Removed in the table: never the old secret, still kept for t5.
+	b := tableFirst{table: tableSecrets{"t5": "removed"}, old: oldAccounts{"t5": {"t5", "whsec_five"}}}
+	if _, secret, err := b.Account(ctx, "t5"); !errors.Is(err, kiffalert.ErrUnknownAccount) || secret != "" {
+		t.Errorf("t5, removed: %q %v", secret, err)
 	}
 	for _, bad := range []string{"", "t1/x", "..", "t1|x"} {
 		if _, _, err := a.Account(ctx, bad); !errors.Is(err, kiffalert.ErrUnknownAccount) {

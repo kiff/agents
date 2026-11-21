@@ -17,12 +17,18 @@ import (
 // an alert's signature with) on the store's table, one item each, sealed by
 // KMS, so it costs nothing of its own while it's kept:
 //
-//	secret  pk=A2|tenant  sk=alert  the secret, sealed in "sealed"
+//	secret   pk=A2|tenant  sk=alert  the secret, sealed in "sealed"
+//	removed  pk=A2|tenant  sk=alert  "removed": the tenant's secret was removed
 //
 // The KIFF account that sends a tenant's alerts is the tenant itself (tafs
 // cloud registers each account's alert target under its own tenant). tafs
 // cloud writes it through the API (PUT and DELETE /tenant/alert-secret);
 // kiffalerts only reads it.
+//
+// A removed secret leaves a mark, so it never comes back from where it was
+// kept before (kiffalerts reads its old secret only while the table has
+// nothing for the tenant), nor from a move (Create never writes over it).
+// The mark holds the tenant alone. Put replaces it.
 //
 // It's sealed under the encryption context {purpose, tenant}, taken from the
 // call, never from the item, so a secret copied to another tenant doesn't
@@ -37,6 +43,10 @@ type AlertSecrets struct {
 
 // ErrNoAlertSecret is a tenant with no alert secret kept here.
 var ErrNoAlertSecret = errors.New("dynamodb: no alert secret")
+
+// ErrAlertSecretRemoved is a tenant whose alert secret was removed: no
+// alert of theirs is checked, by this secret or an older one.
+var ErrAlertSecretRemoved = errors.New("dynamodb: the alert secret was removed")
 
 // NewAlertSecrets returns the alert secrets on table, sealed with the KMS
 // key keyID.
@@ -68,7 +78,8 @@ func (a *AlertSecrets) sealed(ctx context.Context, tenant, secret string) (map[s
 	return item, nil
 }
 
-// Get opens the tenant's alert secret; ErrNoAlertSecret if none is kept.
+// Get opens the tenant's alert secret; ErrNoAlertSecret if none is kept,
+// ErrAlertSecretRemoved if it was removed.
 func (a *AlertSecrets) Get(ctx context.Context, tenant string) (string, error) {
 	if err := keys.Valid(tenant, alertSK); err != nil {
 		return "", err
@@ -79,6 +90,9 @@ func (a *AlertSecrets) Get(ctx context.Context, tenant string) (string, error) {
 	}
 	if out.Item == nil {
 		return "", ErrNoAlertSecret
+	}
+	if _, removed := out.Item["removed"]; removed {
+		return "", ErrAlertSecretRemoved
 	}
 	sealed, _ := out.Item["sealed"].(*types.AttributeValueMemberB)
 	if sealed == nil || len(sealed.Value) == 0 {
@@ -106,9 +120,10 @@ func (a *AlertSecrets) Put(ctx context.Context, tenant, secret string) error {
 	return nil
 }
 
-// Create stores the tenant's alert secret where none is kept: a migration's
-// step, so a secret written through the API meanwhile is never written over.
-// copied is false when one was there.
+// Create stores the tenant's alert secret where nothing is kept, a removed
+// mark included: a migration's step, so a secret written through the API
+// meanwhile is never written over, and a removed one never comes back.
+// copied is false when something was there.
 func (a *AlertSecrets) Create(ctx context.Context, tenant, secret string) (copied bool, err error) {
 	item, err := a.sealed(ctx, tenant, secret)
 	if err != nil {
@@ -125,16 +140,20 @@ func (a *AlertSecrets) Create(ctx context.Context, tenant, secret string) (copie
 	return true, nil
 }
 
-// Remove deletes the tenant's alert secret; none there is not an error.
+// Remove replaces the tenant's alert secret with a removed mark; none there
+// is not an error.
 func (a *AlertSecrets) Remove(ctx context.Context, tenant string) error {
 	if err := keys.Valid(tenant, alertSK); err != nil {
 		return err
 	}
-	if _, err := a.db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &a.table, Key: pkey(alertPK(tenant), alertSK)}); err != nil {
+	item := pkey(alertPK(tenant), alertSK)
+	item["removed"] = &types.AttributeValueMemberBOOL{Value: true}
+	if _, err := a.db.PutItem(ctx, &ddb.PutItemInput{TableName: &a.table, Item: item}); err != nil {
 		return fmt.Errorf("dynamodb: removing the alert secret: %w", err)
 	}
 	return nil
 }
 
-// Erase is Remove, when the tenant's account is deleted.
+// Erase is Remove, when the tenant's account is deleted: the mark stays,
+// so the account's old secret, if it's still kept, never checks an alert.
 func (a *AlertSecrets) Erase(ctx context.Context, tenant string) error { return a.Remove(ctx, tenant) }
