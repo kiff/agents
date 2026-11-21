@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeStripe keeps what a seed makes, and opens a dispute on a payment the
@@ -55,8 +57,12 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"id": "acct_evals"}`)
 	case r.Method == "GET" && r.URL.Path == "/v1/disputes":
 		pi := r.Form.Get("payment_intent")
+		since, _ := strconv.ParseInt(r.Form.Get("created[gte]"), 10, 64)
 		var out []string
 		for _, d := range f.disputes {
+			if made, _ := strconv.ParseInt(d["created"], 10, 64); since != 0 && d["created"] != "" && made < since {
+				continue
+			}
 			if pi != "" {
 				if d["payment_intent"] != pi {
 					continue
@@ -144,7 +150,7 @@ func TestDisputes(t *testing.T) {
 	// A second seed closes what the first left open, and only that.
 	f.disputes = append(f.disputes, map[string]string{"id": "dp_other", "status": "needs_response", "tag": "refunds"})
 	f.disputes = append(f.disputes, map[string]string{"id": "dp_done", "status": "under_review", "tag": "chargebacks"})
-	n, err := c.Close(context.Background(), "chargebacks")
+	n, err := c.Close(context.Background(), "chargebacks", time.Time{})
 	if err != nil || n != 3 || len(f.closed) != 3 {
 		t.Fatalf("closed %d (%v), %v", n, f.closed, err)
 	}
@@ -166,7 +172,7 @@ func TestCloseFindsADisputeTheSeedNeverTagged(t *testing.T) {
 	}
 	f.failTag = false
 	f.disputes = append(f.disputes, map[string]string{"id": "dp_theirs", "status": "needs_response", "payment_intent": "pi_theirs", "tag": ""})
-	n, err := c.Close(context.Background(), "chargebacks")
+	n, err := c.Close(context.Background(), "chargebacks", time.Time{})
 	if err != nil || n != 1 || len(f.closed) != 1 || f.closed[0] == "dp_theirs" {
 		t.Fatalf("closed %d (%v), %v", n, f.closed, err)
 	}
@@ -217,5 +223,24 @@ func TestOnlyTheEvalsOwnAccountIsSeeded(t *testing.T) {
 	err := c.Only(ctx, "acct_other")
 	if err == nil || !strings.Contains(err.Error(), "acct_evals") || !strings.Contains(err.Error(), "nothing was seeded") {
 		t.Fatalf("another account: %v", err)
+	}
+}
+
+// A run's Close reads only the disputes made since its window began: the test
+// account keeps every dispute, and reading them all took ~200s a case. An
+// older one is left for the end of the Eval run, which closes with no bound.
+func TestCloseReadsOnlyRecentDisputesUnlessToldOtherwise(t *testing.T) {
+	c, f := client(t, "sk_test_ok")
+	old := strconv.FormatInt(time.Now().Add(-30*24*time.Hour).Unix(), 10)
+	f.disputes = append(f.disputes,
+		map[string]string{"id": "dp_new", "status": "needs_response", "tag": "chargebacks"},
+		map[string]string{"id": "dp_old", "status": "needs_response", "tag": "chargebacks", "created": old})
+	n, err := c.Close(context.Background(), "chargebacks", time.Now().Add(-Recent))
+	if err != nil || n != 1 || len(f.closed) != 1 || f.closed[0] != "dp_new" {
+		t.Fatalf("within the window: closed %d (%v), %v", n, f.closed, err)
+	}
+	n, err = c.Close(context.Background(), "chargebacks", time.Time{})
+	if err != nil || n != 2 || f.closed[len(f.closed)-1] != "dp_old" {
+		t.Fatalf("with no bound: closed %d (%v), %v", n, f.closed, err)
 	}
 }

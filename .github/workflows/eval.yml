@@ -467,6 +467,16 @@ jobs:
           E2E_KIFF_SESSION: ${{ secrets.E2E_KIFF_SESSION }}
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
         run: go run ./cmd/e2e -sweep
+      # Each run's seed closes only the last 48 hours' leftover disputes (seed.Recent), since reading every dispute
+      # the test account ever had took ~200s a case. This closes any older one a cut-off run left open, once per
+      # Eval run. It prints only a count and never decides the run.
+      - name: The sweep, the test account's open disputes
+        if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always())
+        continue-on-error: true
+        env:
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+          EVAL_STRIPE_ACCOUNT: ${{ vars.EVAL_STRIPE_ACCOUNT }}
+        run: go run ./cmd/eval seed -close-all chargebacks
       - name: What's deployed, at the end
         # The same read as at the start. A deploy that finished between the
         # two, one still under way, or a side that couldn't be read makes the
