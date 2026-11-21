@@ -1043,11 +1043,24 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer, env f
 	fs := flag.NewFlagSet("eval seed", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	outPath := fs.String("out", "", "also write the ids here (JSON)")
+	closeAll := fs.Bool("close-all", false, "seed nothing: close every dispute a seed left open, however old (the end of an Eval run)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 || fs.Arg(0) != "chargebacks" {
 		return errors.New("eval seed: name one case to seed: chargebacks")
+	}
+	if *closeAll {
+		c, err := seed.New(stripeURL, env("STRIPE_API_KEY"), nil)
+		if err != nil {
+			return err
+		}
+		if err := c.Only(ctx, env("EVAL_STRIPE_ACCOUNT")); err != nil {
+			return err
+		}
+		closed, err := c.Close(ctx, "chargebacks", time.Time{})
+		fmt.Fprintf(stderr, "closed %d disputes a seed left open\n", closed)
+		return err
 	}
 	ids, closed, err := seedChargebacks(ctx, env("STRIPE_API_KEY"), env("EVAL_STRIPE_ACCOUNT"))
 	if err != nil {
@@ -1117,7 +1130,7 @@ func seedDisputes(ctx context.Context, key, account string, items []seed.Item, a
 		return nil, 0, err
 	}
 	began := time.Now()
-	closed, err := c.Close(ctx, "chargebacks")
+	closed, err := c.Close(ctx, "chargebacks", time.Now().Add(-seed.Recent))
 	if err != nil {
 		return nil, closed, err
 	}

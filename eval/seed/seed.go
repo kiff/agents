@@ -253,6 +253,10 @@ func (d object) seededBy() string {
 	return pi.Metadata[Tag]
 }
 
+// Recent is how far back a run's Close reads: a seed's leftovers are from
+// the run before, minutes old.
+const Recent = 48 * time.Hour
+
 type list struct {
 	Data    []object `json:"data"`
 	HasMore bool     `json:"has_more"`
@@ -261,11 +265,18 @@ type list struct {
 // Close accepts every dispute an earlier seed of this case left needing a
 // response, and returns how many. It knows a seed's dispute by its tag, or
 // by its payment's, so a seed interrupted before it tagged a dispute
-// leaves nothing open.
-func (c *Client) Close(ctx context.Context, name string) (int, error) {
+// leaves nothing open. With since set, it reads only the disputes made
+// since then: the test account keeps every dispute every run ever made, and
+// reading them all took ~200s a case (Eval 44874161275, hand-offs). A run's
+// leftovers are minutes old, so Recent covers them; the end of an Eval run
+// closes with no bound (seed -close-all), for anything older.
+func (c *Client) Close(ctx context.Context, name string, since time.Time) (int, error) {
 	closed, after := 0, ""
 	for {
 		q := url.Values{"limit": {"100"}, "expand[]": {"data.payment_intent"}}
+		if !since.IsZero() {
+			q.Set("created[gte]", strconv.FormatInt(since.Unix(), 10))
+		}
 		if after != "" {
 			q.Set("starting_after", after)
 		}
