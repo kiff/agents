@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -42,7 +43,7 @@ func (s *Server) putKey(ctx context.Context, c Caller, r *http.Request) (int, an
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
+	if err := dec.Decode(&in); err != nil || dec.Decode(new(json.RawMessage)) != io.EOF {
 		return 0, nil, bad("the body is {\"key\": …} and nothing else")
 	}
 	if strings.TrimSpace(in.Key) == "" {
@@ -93,7 +94,7 @@ func (s *Server) putAlertSecret(ctx context.Context, c Caller, r *http.Request) 
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
+	if err := dec.Decode(&in); err != nil || dec.Decode(new(json.RawMessage)) != io.EOF {
 		return 0, nil, bad("the body is {\"secret\": …} and nothing else")
 	}
 	if strings.TrimSpace(in.Secret) == "" {

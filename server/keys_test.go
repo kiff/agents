@@ -97,6 +97,8 @@ func TestAKeysTenantIsTheSignedOne(t *testing.T) {
 		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"kiff_key_x","tenant":"t2"}`},
 		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"  "}`},
 		{"PUT", "/tenant/keys/kiff/taf_1", `not json`},
+		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"kiff_key_x"}{"key":"kiff_key_y"}`},
+		{"PUT", "/tenant/keys/kiff/taf_1", `{"key":"kiff_key_x"} trailing`},
 		{"PUT", "/tenant/keys/kiff/../t2/kiff/taf_1", `{"key":"kiff_key_x"}`},
 		{"PUT", "/tenant/keys/kiff//taf_1", `{"key":"kiff_key_x"}`},
 		{"DELETE", "/tenant/keys/kiff/%2e%2e", ""},
@@ -150,7 +152,7 @@ func TestOnlyTheKeyWritersRoleWritesAnAlertSecret(t *testing.T) {
 			t.Errorf("DELETE as %q: %d", role, got)
 		}
 	}
-	for _, body := range []string{`{"secret":"whsec_x","tenant":"t2"}`, `{"secret":" "}`, `not json`} {
+	for _, body := range []string{`{"secret":"whsec_x","tenant":"t2"}`, `{"secret":" "}`, `not json`, `{"secret":"whsec_x"}{"secret":"whsec_y"}`, `{"secret":"whsec_x"} x`} {
 		if got := keyCall(t, srv, "PUT", "/tenant/alert-secret", tafsCloud, body); got != http.StatusBadRequest {
 			t.Errorf("PUT %s: %d", body, got)
 		}
