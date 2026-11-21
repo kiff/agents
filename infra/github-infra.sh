@@ -22,7 +22,10 @@ REPO=kiff/agents
 INFRA_ROLE=agents-github-infra
 REPORTS=${AGENTS_EVAL_BUCKET:-kiff-agents-eval-reports}
 ATTACHMENTS=${AGENTS_ATTACHMENTS_BUCKET:-kiff-agents-attachments}
-aws() { command aws --region "$REGION" --output text "$@"; }
+# The aws binary by its path, not `command aws`: macOS's bash 3.2 exits under
+# set -e when a `command` call fails inside a function, even before `|| true`.
+AWS_BIN=$(type -P aws)
+aws() { "$AWS_BIN" --region "$REGION" --output text "$@"; }
 # shellcheck source=infra/github-infra-policy.sh
 . "$(dirname "$0")/github-infra-policy.sh"
 
@@ -49,7 +52,7 @@ fi
 BOUNDARY="arn:aws:iam::$ACCOUNT:policy/agents-boundary"
 BOUNDARY_DOC=$(agents_boundary_policy "$REGION" "$ACCOUNT" "$REPORTS" "$ATTACHMENTS")
 if current=$(aws iam get-policy --policy-arn "$BOUNDARY" --query Policy.DefaultVersionId 2>/dev/null); then
-  live=$(command aws --region "$REGION" iam get-policy-version --policy-arn "$BOUNDARY" --version-id "$current" \
+  live=$(aws iam get-policy-version --policy-arn "$BOUNDARY" --version-id "$current" \
     --query PolicyVersion.Document --output json)
   if [ "$(jq -S -c . <<<"$live")" != "$(jq -S -c . <<<"$BOUNDARY_DOC")" ]; then
     if [ "$(aws iam list-policy-versions --policy-arn "$BOUNDARY" --query 'length(Versions)')" -ge 5 ]; then
