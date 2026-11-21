@@ -156,6 +156,12 @@ stores, with the registry's `Builder`:
   still in a secret is moved on its first read (written create-only, its
   secret then deleted); a write deletes its old secret; a removal deletes the
   old secret first and leaves a mark, so a removed key never comes back.
+  A key nobody reads stays a secret: the one-off event `{"move_old_keys":{}}`
+  copies every secret under the prefix (being deleted left out) to the
+  table, create-only, and touches no secret, so they can be deleted on their
+  own once the table holds each. It answers `{listed, copied, already,
+  failed}`, logs each by tenant and reference, never a key, and run again it
+  copies only what's missing.
 - **The model's key** is the secret named `AGENTS_MODEL_KEY_SECRET`, read the
   first time a model turn needs it and kept in memory. A failed read fails
   that turn (the run is stored ERROR) and the next turn reads again. Setup

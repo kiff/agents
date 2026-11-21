@@ -323,3 +323,43 @@ func TestAReferenceStaysInItsTenant(t *testing.T) {
 		t.Fatalf("reached a store: %v %v %d %d", tb.keys, tb.removed, old.deletes, old.retires)
 	}
 }
+
+// A migration's copy writes the old secret's key to the table and leaves the
+// old secret as it is: no retire, no delete, so nothing is lost if the run
+// stops halfway. A key the table has, or removed, is never written over.
+func TestACopyLeavesTheOldSecretAndNeverWritesOver(t *testing.T) {
+	m, tab, old, _ := moving(map[string]string{"t1/a": "key-a", "t1/b": "key-b-old", "t1/c": "key-c"})
+	tab.keys["t1|b"] = "key-b-new"
+	tab.removed["t1|c"] = true
+
+	if copied, err := m.Copy(ctx, "t1", "a"); err != nil || !copied {
+		t.Fatalf("a: copied %v, %v", copied, err)
+	}
+	if tab.keys["t1|a"] != "key-a" {
+		t.Errorf("a in the table: %q", tab.keys["t1|a"])
+	}
+	if copied, err := m.Copy(ctx, "t1", "b"); err != nil || copied {
+		t.Fatalf("b, already in the table: copied %v, %v", copied, err)
+	}
+	if tab.keys["t1|b"] != "key-b-new" {
+		t.Errorf("b was written over: %q", tab.keys["t1|b"])
+	}
+	if copied, err := m.Copy(ctx, "t1", "c"); err != nil || copied {
+		t.Fatalf("c, removed: copied %v, %v", copied, err)
+	}
+	if _, ok := tab.keys["t1|c"]; ok || !tab.removed["t1|c"] {
+		t.Error("a removed key came back from its old secret")
+	}
+	if old.retires != 0 || old.deletes != 0 || len(old.keys) != 3 {
+		t.Errorf("the old secrets were touched: %d retires, %d deletes, %d left", old.retires, old.deletes, len(old.keys))
+	}
+	if copied, err := m.Copy(ctx, "t1", "a"); err != nil || copied {
+		t.Errorf("a again: copied %v, %v", copied, err)
+	}
+	if _, err := m.Copy(ctx, "t1", "gone"); !errors.Is(err, keys.ErrNotFound) {
+		t.Errorf("no old secret: %v", err)
+	}
+	if _, err := m.Copy(ctx, "t1", "../t2/a"); err == nil {
+		t.Error("copied a reference outside its tenant")
+	}
+}

@@ -120,6 +120,32 @@ func (m Moving) Key(ctx context.Context, tenant, ref string) (string, error) {
 	return key, nil
 }
 
+// Copy puts the tenant's old secret by ref into the new store, create-only,
+// and leaves the old secret as it is: a migration's step, so every key is in
+// the new store before any old secret goes (those are deleted on their own
+// say-so). copied is false when the new store already had the key or its
+// removed mark: nothing is written over it.
+func (m Moving) Copy(ctx context.Context, tenant, ref string) (copied bool, err error) {
+	if err := Valid(tenant, ref); err != nil {
+		return false, err
+	}
+	if m.Old == nil {
+		return false, errors.New("keys: no old store to copy from")
+	}
+	key, err := m.Old.Key(ctx, tenant, ref)
+	if err != nil {
+		return false, err
+	}
+	switch err := m.New.Create(ctx, tenant, ref, key); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrTaken):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
 // Put stores the tenant's key by ref, replacing any, and retires its old
 // secret.
 func (m Moving) Put(ctx context.Context, tenant, ref, key string) error {
