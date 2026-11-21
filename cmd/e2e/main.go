@@ -43,6 +43,7 @@ package main
 
 import (
 	"cmp"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/kiff/agents/cmd/internal/testaccount"
 
 	"context"
@@ -54,6 +55,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -70,6 +72,7 @@ import (
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
+	"github.com/kiff/agents/model/bedrock"
 	"github.com/kiff/agents/registry"
 	runs "github.com/kiff/agents/run"
 	"github.com/kiff/agents/runner"
@@ -164,7 +167,39 @@ func judgeFrom(modelID, price string) (*eval.Judge, error) {
 	if _, err := fmt.Sscanf(price, "%d,%d", &in, &out); err != nil || in <= 0 || out <= 0 {
 		return nil, fmt.Errorf("-judge-price %q: input,output", price)
 	}
-	return &eval.Judge{Model: anthropic.New(), ModelID: modelID, Price: model.Price{Input: in, Output: out}}, nil
+	return &eval.Judge{Model: newModel(), ModelID: modelID, Price: model.Price{Input: in, Output: out}}, nil
+}
+
+// newModel makes every model e2e runs, the setup agent's and the judges':
+// the Claude API, unless -model-source bedrock (onBedrock).
+var newModel = func() model.Model { return anthropic.New() }
+
+// runsOn is where those turns run, said at the start, so a pass on the
+// backup is never read as a pass on the Claude API.
+var runsOn = "Claude API"
+
+// useModelSource makes every model e2e makes run where source says, as
+// cmd/eval's -model-source: anthropic (the default), or bedrock, Claude in
+// Amazon Bedrock through our AWS account's EU profiles, with AWS's default
+// credentials, in AWS_REGION (eu-west-1 when unset). It says whether turns
+// need the Claude API's key.
+func useModelSource(ctx context.Context, source string) (needsKey bool, err error) {
+	switch source {
+	case "", "anthropic":
+		return true, nil
+	case "bedrock":
+		cfg, err := awsconfig.LoadDefaultConfig(ctx)
+		if err != nil {
+			return false, fmt.Errorf("-model-source bedrock: AWS's credentials: %w", err)
+		}
+		if cfg.Region == "" {
+			cfg.Region = "eu-west-1"
+		}
+		newModel = func() model.Model { return bedrock.New(cfg) }
+		runsOn = "Amazon Bedrock, " + cfg.Region + ", EU inference profiles"
+		return false, nil
+	}
+	return false, fmt.Errorf("-model-source is anthropic or bedrock, not %q", source)
 }
 
 func run(ctx context.Context, args []string, stdout *redacting, env func(string) string) error {
@@ -179,6 +214,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, concise messages, no ids asked, the agent's name, choices")
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
+	modelSource := fs.String("model-source", env("AGENTS_MODEL_SOURCE"), "where the setup agent's and the judges' turns run: anthropic (the default) or bedrock, our AWS account's EU profiles")
 	regradeFile := fs.String("regrade", "", "a transcript a run wrote (-transcript): grade the taf's answers in it again with this head's judges "+
 		"(the taf's concise and after-approval rules, with -judge-model and -judge-price), and run nothing else. Needs ANTHROPIC_API_KEY. "+
 		"Its verdicts quote the chat, so never in CI")
@@ -233,6 +269,16 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	needsKey, err := useModelSource(ctx, *modelSource)
+	if err != nil {
+		return err
+	}
+	stdout.Write([]byte("turns run on: " + runsOn + "\n"))
+	// The Claude API's key, when turns go there.
+	modelKey := map[string]string{}
+	if needsKey {
+		modelKey["ANTHROPIC_API_KEY"] = env("ANTHROPIC_API_KEY")
+	}
 	if *weeklySheetsRun {
 		return runWeeklySheets(ctx, stdout, env)
 	}
@@ -277,7 +323,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		if stdout.ci {
 			return errors.New("-regrade prints verdicts that quote the chat: run it where the transcript is, not in CI")
 		}
-		if env("ANTHROPIC_API_KEY") == "" {
+		if needsKey && env("ANTHROPIC_API_KEY") == "" {
 			return errors.New("-regrade: ANTHROPIC_API_KEY is required")
 		}
 		j, err := judgeFrom(*judgeModel, *judgePrice)
@@ -405,11 +451,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	if cfg.cloud = env("E2E_TAFS_CLOUD"); cfg.cloud == "" {
 		cfg.cloud = "https://cloud.tafs.kiff.dev"
 	}
-	required := map[string]string{"ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY"), "E2E_KIFF_SESSION": cfg.session,
+	required := map[string]string{"E2E_KIFF_SESSION": cfg.session,
 		"E2E_SETUP_KEY": cfg.setupKey, "E2E_PHONE_KEY": cfg.phone, "E2E_VENDOR": cfg.vendor}
 	if cfg.route {
-		required = map[string]string{"ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY")} // nothing reaches the account
+		required = map[string]string{} // nothing reaches the account
 	}
+	maps.Copy(required, modelKey)
 	for name, v := range required {
 		if v == "" {
 			return fmt.Errorf("%s is required", name)
@@ -432,7 +479,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		t.people = ps
 	}
 	defer t.cleanup()
-	m := &spending{Model: anthropic.New()}
+	m := &spending{Model: newModel()}
 	defer t.chatCost(m)
 	return t.scenario(ctx, m)
 }
