@@ -102,7 +102,10 @@ RUN_GRANTS=${AGENTS_RUN_GRANTS:-}
 TOTALS=${AGENTS_TOTALS:-}
 ATTACHMENTS=${AGENTS_ATTACHMENTS_BUCKET:-kiff-agents-attachments}
 
-aws() { command aws --region "$REGION" --output text "$@"; }
+# The aws binary by its path, not `command aws`: macOS's bash 3.2 exits under
+# set -e when a `command` call fails, even on the left of `|| true`.
+AWS_BIN=$(type -P aws)
+aws() { "$AWS_BIN" --region "$REGION" --output text "$@"; }
 say() { echo "• $*" >&2; }
 
 # An existing function keeps the model key's secret it already reads: a rerun
@@ -133,11 +136,12 @@ if [ -z "${AGENTS_TOTALS+set}" ]; then
     --query 'Environment.Variables.AGENTS_TOTALS' 2>/dev/null || true)
   if [ -n "$current" ] && [ "$current" != "None" ]; then TOTALS=$current; fi
 fi
-# And the Bedrock backup's settings (docs/runs.md): one given is set (empty
-# removes it), one not given is kept as the function has it, so a rerun never
-# turns the backup on or off by itself.
+# And the Bedrock backup's settings (docs/runs.md), and whether delivered files
+# are shown (AGENTS_FILES_SHOWN): one given is set (empty removes it), one not
+# given is kept as the function has it, so a rerun never turns either on or off
+# by itself.
 BEDROCK_ENV=""
-for k in AGENTS_MODEL_SOURCE AGENTS_BEDROCK_FALLBACK AGENTS_BEDROCK_DAILY_USD; do
+for k in AGENTS_MODEL_SOURCE AGENTS_BEDROCK_FALLBACK AGENTS_BEDROCK_DAILY_USD AGENTS_FILES_SHOWN; do
   if [ -n "${!k+set}" ]; then
     v=${!k}
   else
