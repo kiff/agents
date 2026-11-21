@@ -80,7 +80,7 @@ func eraseFixture() (*eraseSecrets, *eraseTable, *eraseTable, *[]string) {
 // t10's, whose name starts the same), after its drafts and sealing key.
 func TestAnAccountsEraseTakesBothKeyStores(t *testing.T) {
 	s, drafts, keys, order := eraseFixture()
-	erase := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, keys)
+	erase := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, keys, nil)
 	if err := erase(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestAnAccountsEraseTakesBothKeyStores(t *testing.T) {
 // leaves them, and touches no keys table.
 func TestWithoutTheKeysStoreTheEraseLeavesTheirSecrets(t *testing.T) {
 	s, drafts, _, order := eraseFixture()
-	if err := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, nil)(ctx, "t1"); err != nil {
+	if err := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, nil, nil)(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"agents/t1/kiff/a", "agents/t1/kiff/b"} {
@@ -121,20 +121,49 @@ func TestWithoutTheKeysStoreTheEraseLeavesTheirSecrets(t *testing.T) {
 func TestAnAccountsEraseFailsClosed(t *testing.T) {
 	s, drafts, keys, order := eraseFixture()
 	drafts.fail = true
-	if err := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, keys)(ctx, "t1"); err == nil {
+	if err := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, keys, nil)(ctx, "t1"); err == nil {
 		t.Fatal("a failed step answered done")
 	}
 	if !slices.Equal(*order, []string{"drafts"}) || !s.names["agents/t1/kiff/a"] {
 		t.Fatalf("went on after a failure: %v, secrets %v", *order, s.left())
 	}
 	s, drafts, keys, order = eraseFixture()
-	if err := accountErase(s, "", "", "", drafts, keys)(ctx, "t1"); err == nil {
+	if err := accountErase(s, "", "", "", drafts, keys, nil)(ctx, "t1"); err == nil {
 		t.Fatal("the table's keys were erased with no prefix for their old secrets")
 	}
 	if _, ok := keys.items["t1"]; !ok || slices.Contains(*order, "keys") {
 		t.Fatalf("the keys table was erased: %v", *order)
 	}
-	if accountErase(s, "", "", "", nil, nil) != nil {
+	if accountErase(s, "", "", "", nil, nil, nil) != nil {
 		t.Fatal("nothing to erase made an erase")
+	}
+}
+
+// With the sealing keys in the table, an account's erase takes its old
+// sealing secret first, then the table's, so the key never moves back in
+// between; and never the table's without the old secrets' prefix.
+func TestAnAccountsEraseTakesTheSealingKeyFromBothStores(t *testing.T) {
+	s, drafts, keys, order := eraseFixture()
+	sealing := &eraseTable{name: "sealing", items: map[string]int{"t1": 1, "t10": 1}, order: order}
+	if err := accountErase(s, "agents-sealing/", "agents-drafts/", "agents/", drafts, keys, sealing)(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if s.names["agents-sealing/t1"] || !s.names["agents-sealing/t10"] {
+		t.Fatalf("sealing secrets left %v", s.left())
+	}
+	if _, ok := sealing.items["t1"]; ok || sealing.items["t10"] != 1 {
+		t.Fatalf("sealing keys left %v", sealing.items)
+	}
+	if !slices.Equal(*order, []string{"drafts", "keys", "sealing"}) {
+		t.Fatalf("order %v", *order)
+	}
+
+	s, drafts, _, order = eraseFixture()
+	sealing = &eraseTable{name: "sealing", items: map[string]int{"t1": 1}, order: order}
+	if err := accountErase(s, "", "agents-drafts/", "", drafts, nil, sealing)(ctx, "t1"); err == nil {
+		t.Fatal("the table's sealing key was erased with no prefix for its old secret")
+	}
+	if _, ok := sealing.items["t1"]; !ok {
+		t.Fatalf("the sealing key was erased: %v", *order)
 	}
 }

@@ -317,11 +317,27 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Allowance: kiff.AllowanceChecker(agents, keys, &http.Client{Timeout: allowanceTimeout}, kiffAPI, nil)}
 	// What a chat keeps of its reads for its next messages, sealed under the
 	// tenant's own key (#172): off unless set, so nothing is kept by default.
+	var sealingRecords *dynamodb.SealingKeys
 	if sp := strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")); sp != "" {
 		if strings.HasPrefix(sp, prefix) || strings.HasPrefix(prefix, sp) {
 			return nil, fmt.Errorf("lambda: AGENTS_SEALING_PREFIX %q and AGENTS_SECRETS_PREFIX %q must not overlap: a key reference could name a sealing key", sp, prefix)
 		}
-		rn.Sealer = &session.KeySealer{Keys: secretsmanager.NewSealingKeys(secrets, sp).Key}
+		oldSealing := secretsmanager.NewSealingKeys(secrets, sp)
+		rn.Sealer = &session.KeySealer{Keys: oldSealing.Key}
+		// With a KMS key of their own purpose, the sealing keys are kept in
+		// the table instead: a tenant's old secret is moved there, its same
+		// bytes, on its first read, and left for its deletion.
+		if sk := strings.TrimSpace(os.Getenv("AGENTS_SEALING_KMS_KEY")); sk != "" {
+			sealingRecords = dynamodb.NewSealingKeys(db, table, kms.NewFromConfig(cfg), sk)
+			sealingRecords.Old = func(ctx context.Context, tenant string) ([]byte, error) {
+				key, err := oldSealing.Existing(ctx, tenant)
+				if errors.Is(err, secretsmanager.ErrNotFound) {
+					return nil, dynamodb.ErrSealingKeyNotFound
+				}
+				return key, err
+			}
+			rn.Sealer = &session.KeySealer{Keys: sealingRecords.Key}
+		}
 	}
 	scheduleStore := dynamodb.NewSchedules(db, table)
 	schedules := &schedule.Service{
@@ -411,14 +427,17 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	// Deleting an account erases its sealing key and its drafts' records
 	// too (kiff/tafs#185), and its tafs' keys once they're kept here
 	// (accountErase). Its alert secret is tafs cloud's to delete.
-	var draftsTable, keysTable tenantEraser
+	var draftsTable, keysTable, sealingTable tenantEraser
 	if draftRecords != nil {
 		draftsTable = draftRecords
 	}
 	if keyRecords != nil {
 		keysTable = keyRecords
 	}
-	f.api.Erase = accountErase(secrets, strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")), prefix, draftsTable, keysTable)
+	if sealingRecords != nil {
+		sealingTable = sealingRecords
+	}
+	f.api.Erase = accountErase(secrets, strings.TrimSpace(os.Getenv("AGENTS_SEALING_PREFIX")), strings.TrimSpace(os.Getenv("AGENTS_DRAFTS_PREFIX")), prefix, draftsTable, keysTable, sealingTable)
 	// Each tenant's KIFF alert secret, kept in the table with a KMS key of
 	// its own purpose: tafs cloud writes it through the API, kiffalerts reads
 	// it, and an account's erase deletes it after the rest.
@@ -641,7 +660,7 @@ type tenantEraser interface {
 //
 // The old secrets go before the table's keys, so no key moves back in
 // between. Nil: nothing to erase.
-func accountErase(sm secretsmanager.EraseAPI, sealingPrefix, draftsPrefix, keysPrefix string, draftsTable, keysTable tenantEraser) func(context.Context, string) error {
+func accountErase(sm secretsmanager.EraseAPI, sealingPrefix, draftsPrefix, keysPrefix string, draftsTable, keysTable, sealingTable tenantEraser) func(context.Context, string) error {
 	var steps []func(context.Context, string) error
 	if draftsTable != nil {
 		steps = append(steps, draftsTable.Erase)
@@ -661,6 +680,15 @@ func accountErase(sm secretsmanager.EraseAPI, sealingPrefix, draftsPrefix, keysP
 	}
 	if keysTable != nil {
 		steps = append(steps, keysTable.Erase)
+	}
+	if sealingTable != nil {
+		if sealingPrefix == "" {
+			// Never the table's sealing key without its old secret: refuse.
+			steps = append(steps, func(context.Context, string) error {
+				return errors.New("lambda: the sealing keys are kept in the table, but their old secrets' prefix is unknown")
+			})
+		}
+		steps = append(steps, sealingTable.Erase)
 	}
 	if len(steps) == 0 {
 		return nil

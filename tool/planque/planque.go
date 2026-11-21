@@ -106,6 +106,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
 			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, taf_name, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
 			"a provider's app (entry) is reused with tools: [] and nothing more (no entry, uses or setup_reads), its tools picked after from catalog {grant}; " +
+			"A taf that works on websites: request {entry: \"browser@1\", name or agent, taf_name, browser: {sites, currency?}, tools}, where sites are only the hosts the owner named, currency only with browse_pay, and tools are planque's browse_open, browse_read, browse_act, browse_checkout and browse_pay, each {tool, title}. " +
 			"ask for a new sign-in or key only when there's none, planque refuses the reuse, or the owner wants another account at the app: request {entry, new_sign_in: true} (planque reuses a held sign-in to the app otherwise, the same account). Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
@@ -178,6 +179,7 @@ func (t *Tool) Spec() model.ToolSpec {
 			`"apps":{"type":"array","description":"the apps to search in, by their app slugs; none searches every app (search)","items":{"type":"string"}},` +
 			`"entry":{"type":"string","description":"a catalog entry from search, such as connector:composio:gmail: the app to connect (request, instead of server or api), or whose events to list before connecting (events; or grant, once connected), or whose guide to read (guide)"},` +
 			`"uses":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"with request {entry}: the slugs of the app's tools the taf will use, as search named them: the sign-in asks only for what they need"},` +
+			`"browser":{"type":"object","description":"with request {entry: browser@1}: the sites the taf's browser may open, only the hosts the owner named, and the one currency browse_pay pays in","properties":{"sites":{"type":"array","items":{"type":"string"},"maxItems":20},"currency":{"type":"string"}}},` +
 			`"new_sign_in":{"type":"boolean","description":"with request {entry} for a provider's app: a sign-in of its own, so the owner can choose another account at the app; without it, a sign-in the account already holds to the app is reused"},` +
 			`"setup_reads":{"type":"array","items":{"type":"string"},"maxItems":10,"description":"with a first request that connects first, {entry} or {server} with tools []: your own setup reads, by the vendor's tool names; the owner approves them with the sign-in"},` +
 			`"arguments":{"type":"object","description":"the read's arguments (read)"},` +
@@ -252,6 +254,9 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		NewSignIn bool `json:"new_sign_in"`
 		// Profile is a managed app's drafted profile, with tools (tools).
 		Profile json.RawMessage `json:"profile"`
+		// Browser is a website taf's sites and currency, with request
+		// {entry: browser@1}: planque's browser opens only those sites.
+		Browser json.RawMessage `json:"browser"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return tool.Result{Text: "the input must be {action, …}", IsError: true}, nil
@@ -289,6 +294,45 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if in.Name != "" && tafName(in.TafName) == "" {
 			// The approval names a new taf by it, never by its agent id.
 			return tool.Result{Text: NoTafName, IsError: true}, nil
+		}
+		hasBrowser := len(in.Browser) > 0 && string(in.Browser) != "null"
+		if hasBrowser != (in.Entry == BrowserEntry) {
+			return tool.Result{Text: "browser {sites, currency?} goes with request {entry: \"" + BrowserEntry + "\"}, and that entry needs it", IsError: true}, nil
+		}
+		if in.Entry == BrowserEntry {
+			// A website taf: planque's browser, limited to the sites the owner
+			// named, with planque's own tools and profile.
+			var b struct {
+				Sites    []string `json:"sites"`
+				Currency string   `json:"currency"`
+			}
+			if json.Unmarshal(in.Browser, &b) != nil || len(b.Sites) == 0 {
+				return tool.Result{Text: "browser.sites are the hosts the owner named (e.g. [\"shop.example\"]); planque's browser opens only those", IsError: true}, nil
+			}
+			if len(in.Tools) == 0 || string(in.Tools) == "null" || string(in.Tools) == "[]" {
+				return tool.Result{Text: "a website taf names its tools: browse_open and browse_read to read, browse_act to fill in and click, browse_checkout and browse_pay to pay, each {tool, title}", IsError: true}, nil
+			}
+			agent := newAgent(in.Agent, in.Name, in.TafName)
+			ask := map[string]any{"agent": agent, "browser": in.Browser, "tools": in.Tools}
+			if n := tafName(in.TafName); n != "" {
+				ask["agent_name"] = n
+			}
+			body, _ := json.Marshal(ask)
+			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(BrowserEntry)+"/grants", body)
+			if err != nil || refused != nil {
+				return deref(refused), err
+			}
+			var made struct {
+				Grant grantView `json:"grant"`
+			}
+			if err := json.Unmarshal(raw, &made); err != nil || made.Grant.ID == "" {
+				if json.Unmarshal(raw, &made.Grant) != nil || made.Grant.ID == "" {
+					return tool.Result{}, fmt.Errorf("planque: an answer that isn't a grant")
+				}
+			}
+			made.Grant.Agent = agent
+			b2, _ := json.Marshal(made.Grant)
+			return tool.Result{Text: string(b2)}, nil
 		}
 		if in.Entry != "" {
 			// An app from search is connected by its catalog entry: planque
@@ -553,6 +597,10 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 // NoKeyTools refuses a key request with no tools: it would never be
 // declared, and the owner would approve the key, then the Card.
 const NoKeyTools = "a key request (api) names the job's operations as tools, by the names describe {api} gives, never none: only then is it declared, and the owner approves the key and the Card in one approval. Call describe with the same api first"
+
+// BrowserEntry is planque's browser in its catalog: a taf that works on
+// websites, limited to the sites the owner named.
+const BrowserEntry = "browser@1"
 
 // NoTafName is the refusal of a new taf's request without taf_name.
 const NoTafName = "request with name (a new taf) also needs taf_name, the taf's name as the owner will read it (e.g. Refunds): the approval names the taf by it, never by its agent id. Nothing was sent: add it and ask again."

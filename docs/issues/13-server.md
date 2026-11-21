@@ -353,6 +353,7 @@ Everything account-specific comes from the environment, never from code:
 | `AGENTS_KEY_WRITERS` | With `AGENTS_KEYS_KMS_KEY`: the caller roles that may write keys, each one of `AGENTS_CALLERS` |
 | `AGENTS_ALERTS_KMS_KEY` | Optional, with `AGENTS_KEY_WRITERS`: the KMS key the tenants' alert secrets are sealed with in the table; set, `PUT`/`DELETE /tenant/alert-secret` are served. kiffalerts takes the same key to read them |
 | `KIFF_ACCOUNTS_PREFIX` | With `AGENTS_ALERTS_KMS_KEY`: the old alert secrets' prefix, which `move_old_accounts` copies from; apart from `AGENTS_SECRETS_PREFIX` |
+| `AGENTS_SEALING_KMS_KEY` | Optional, with `AGENTS_SEALING_PREFIX`: the KMS key each tenant's sealing key is kept under in the table (`S2\|tenant` / `sealing`, purpose `kiff/agents sealing key v1`), instead of a secret of its own. A tenant's old secret is moved there, its same bytes, on its first read, never made anew while it may exist, and left for its deletion; an account's erase deletes the old secret, then writes an erased mark over the table's (the tenant alone, kept a day), so a read moving the old key at that moment can't write it back |
 | `AGENTS_MODEL_KEY_SECRET` | The name of the secret holding the model provider's key; not under the prefix |
 | `AWS_LAMBDA_FUNCTION_NAME` | Set by Lambda: where background runs are sent |
 
