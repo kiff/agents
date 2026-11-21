@@ -87,10 +87,10 @@ jobs:
     # 40 for the hand-offs and 25 for the first setup. Each suite's step has a
     # limit of its own, about twice its longest run at three (Eval 19): a stuck
     # suite fails its own step, and the steps after it, the sweep and the
-    # report included, still run. The job's limit is above their sum (255,
+    # report included, still run. The job's limit is above their sum (270,
     # with the three plan steps, the route step and the API doors step) so it is never the one that stops a run. A run with
     # -repeat above 3 may pass a suite's limit: that suite's step fails, and says so.
-    timeout-minutes: 270
+    timeout-minutes: 285
     env:
       REPORTS: kiff-agents-eval-reports
       # Each taf a run makes, for the sweep at the end (cmd/e2e -made).
