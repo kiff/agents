@@ -345,6 +345,11 @@ func TestSetupReadsOnRecord(t *testing.T) {
 			t.Errorf("%s: %v, want ok=%v", name, err, c.ok)
 		}
 	}
+	// No read at all isn't said to have skipped KIFF: the message gives both, and Setup's other calls on the record.
+	err := readsOnRecord([]setupCall{{Actor: "setup", Action: "create_refund", Outcome: "allowed", Receipt: receipt}}, "setup", reads)
+	if err == nil || !strings.Contains(err.Error(), "which has 1 other calls by Setup: Setup made no read, or its reads didn't go through KIFF") {
+		t.Errorf("no read on the record: %v", err)
+	}
 	g := grant{}
 	g.Request.Tools = []grantTool{{Tool: "list_accounts", SetupReads: true}, {Tool: "stripe_api_details", Name: "details", SetupReads: true}, {Tool: "create_refund"}}
 	if got := setupReadTools(g); !slices.Equal(got, []string{"list_accounts", "details"}) {
