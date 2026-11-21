@@ -70,3 +70,12 @@ func (k *SealingKeys) read(ctx context.Context, name string) ([]byte, error) {
 	}
 	return key, nil
 }
+
+// Existing is the tenant's data key if it has one, ErrNotFound if not; it
+// never makes one: what a move to another store reads.
+func (k *SealingKeys) Existing(ctx context.Context, tenant string) ([]byte, error) {
+	if !segment(tenant) {
+		return nil, errors.New("secretsmanager: a tenant is one name segment")
+	}
+	return k.read(ctx, k.Prefix+tenant)
+}
