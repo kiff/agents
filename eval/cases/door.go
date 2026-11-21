@@ -3,6 +3,7 @@ package cases
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/kiff/agents/eval"
 )
@@ -42,7 +43,7 @@ var DoorAccept = Scenario{
 	Outcome:  "accepted",
 	Items:    1,
 	Gateway:  "kiff",
-	Local:    fileTools,
+	Local:    doorTools,
 	Services: []string{"stripe", "kiff"},
 	ReadOps:  []string{"pending"},
 	Expect:   []Action{{Ops: accept, Target: "T-2002", Done: true}},
@@ -64,7 +65,7 @@ var DoorEvidence = Scenario{
 	Outcome:  "evidence_submitted",
 	Items:    1,
 	Gateway:  "kiff",
-	Local:    fileTools,
+	Local:    doorTools,
 	Services: []string{"stripe", "kiff"},
 	ReadOps:  []string{"pending"},
 	Expect:   []Action{{Ops: evidence, Target: "T-2001", Args: submitted, Done: true}},
@@ -97,3 +98,10 @@ func (s Scenario) answersRequest(_ context.Context, f facts, _ *eval.Judge) (eva
 	}
 	return eval.Grade{Pass: true}, nil
 }
+
+// doorTools are a door case's own tools, outside KIFF's gateway: the file
+// tools, and request_outcome, which answers the request. Its answer is the
+// door's to give, not a write to the company's systems: without it, "writes
+// only through KIFF" failed every door run that answered right (Eval
+// 44829253552).
+var doorTools = append(slices.Clone(fileTools), "request_outcome")
