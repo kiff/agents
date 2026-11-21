@@ -155,3 +155,43 @@ func (o *OldKeys) Delete(ctx context.Context, tenant, ref string) error {
 	}
 	return nil
 }
+
+// ListAPI is the part of the Secrets Manager client List uses.
+type ListAPI interface {
+	ListSecrets(context.Context, *sm.ListSecretsInput, ...func(*sm.Options)) (*sm.ListSecretsOutput, error)
+}
+
+// OldKey is one key's old secret, by its tenant and reference.
+type OldKey struct{ Tenant, Ref string }
+
+// List is every key's secret under s.Prefix that isn't being deleted, by
+// tenant and reference: what a migration copies to the table. A name that
+// isn't prefix + tenant + "/" + reference is left out.
+func (s *Secrets) List(ctx context.Context, api ListAPI) ([]OldKey, error) {
+	in := &sm.ListSecretsInput{Filters: []types.Filter{{Key: types.FilterNameStringTypeName, Values: []string{s.Prefix}}}}
+	var out []OldKey
+	for {
+		page, err := api.ListSecrets(ctx, in)
+		if err != nil {
+			return nil, fmt.Errorf("secretsmanager: listing the keys' secrets: %w", err)
+		}
+		for _, e := range page.SecretList {
+			name := aws.ToString(e.Name)
+			if e.DeletedDate != nil || !strings.HasPrefix(name, s.Prefix) {
+				continue
+			}
+			tenant, ref, ok := strings.Cut(strings.TrimPrefix(name, s.Prefix), "/")
+			if !ok || !segment(tenant) || ref == "" {
+				continue
+			}
+			if n, err := s.Name(tenant, ref); err != nil || n != name {
+				continue
+			}
+			out = append(out, OldKey{Tenant: tenant, Ref: ref})
+		}
+		if page.NextToken == nil {
+			return out, nil
+		}
+		in.NextToken = page.NextToken
+	}
+}

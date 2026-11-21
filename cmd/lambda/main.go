@@ -150,6 +150,10 @@ type function struct {
 	// kiffAPI is the KIFF API Withdraw goes to; setup keeps it so its wiring
 	// can be read.
 	kiffAPI string
+	// moveOld copies every key's old secret into the table, leaving the old
+	// secrets for their deletion (the move_old_keys event); nil: keys aren't
+	// kept in the table.
+	moveOld func(ctx context.Context) (moveCounts, error)
 	// now is the clock; nil is time.Now.
 	now func() time.Time
 	log *slog.Logger
@@ -397,6 +401,9 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	f.api.ResolveReadGrant = kiff.ReadGrantResolver(agents, keys, &http.Client{Timeout: withdrawTimeout}, f.kiffAPI)
 	if keyRecords != nil {
 		f.api.Keys, f.api.KeyWriters = movingKeys, keyWriters
+		// A key never read since the table came stays a secret of its own:
+		// move_old_keys copies each, so the old secrets can go.
+		f.moveOld = moveOldKeys(func(ctx context.Context) ([]secretsmanager.OldKey, error) { return oldKeys.List(ctx, secrets) }, movingKeys, log)
 	}
 	// Deleting an account erases its sealing key and its drafts' records
 	// too (kiff/tafs#185), and its tafs' keys once they're kept here
@@ -547,6 +554,7 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		} `json:"requestContext"`
 		Run      json.RawMessage `json:"run"`
 		Sweep    json.RawMessage `json:"sweep"`
+		MoveOld  json.RawMessage `json:"move_old_keys"`
 		Schedule string          `json:"schedule"`
 		Due      string          `json:"due"`
 	}
@@ -568,6 +576,13 @@ func (f *function) handle(ctx context.Context, raw json.RawMessage) (any, error)
 		return nil, f.execute(ctx, e.Run.Tenant, e.Run.ID)
 	case len(shape.Sweep) > 0:
 		return nil, f.sweep(ctx)
+	case len(shape.MoveOld) > 0:
+		if f.moveOld == nil {
+			return nil, errors.New("lambda: the tafs' keys aren't kept in the table here")
+		}
+		counts, err := f.moveOld(ctx)
+		f.log.InfoContext(ctx, "old keys moved", "listed", counts.Listed, "copied", counts.Copied, "already", counts.Already, "failed", counts.Failed)
+		return counts, err
 	case shape.Schedule != "" && shape.Due != "":
 		tenant, id, due, err := eventbridge.ParseEvent(raw)
 		if err != nil {

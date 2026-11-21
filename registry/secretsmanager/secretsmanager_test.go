@@ -3,8 +3,10 @@ package secretsmanager_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -127,5 +129,61 @@ func TestName(t *testing.T) {
 	got, err := s.Name("org_1", "kiff/refunds.v2")
 	if err != nil || got != "prod/agents/org_1/kiff/refunds.v2" {
 		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+// lister answers ListSecrets a page at a time, and keeps each filter asked.
+type lister struct {
+	pages   [][]types.SecretListEntry
+	filters [][]types.Filter
+	fail    error
+}
+
+func (l *lister) ListSecrets(_ context.Context, in *sm.ListSecretsInput, _ ...func(*sm.Options)) (*sm.ListSecretsOutput, error) {
+	if l.fail != nil {
+		return nil, l.fail
+	}
+	l.filters = append(l.filters, in.Filters)
+	i := 0
+	if in.NextToken != nil {
+		i = int(aws.ToString(in.NextToken)[0] - '0')
+	}
+	out := &sm.ListSecretsOutput{SecretList: l.pages[i]}
+	if i+1 < len(l.pages) {
+		out.NextToken = aws.String(string(rune('0' + i + 1)))
+	}
+	return out, nil
+}
+
+func entry(name string, deleting bool) types.SecretListEntry {
+	e := types.SecretListEntry{Name: aws.String(name)}
+	if deleting {
+		e.DeletedDate = aws.Time(time.Now())
+	}
+	return e
+}
+
+// A migration lists every key's secret under the prefix, across pages, by
+// tenant and reference: one being deleted, another prefix's, or a name that
+// isn't tenant/reference is left out.
+func TestListReadsEveryKeysSecretAcrossPages(t *testing.T) {
+	l := &lister{pages: [][]types.SecretListEntry{
+		{entry("agents/t1/kiff", false), entry("agents/t1/gone", true), entry("agents-sealing/t1", false)},
+		{entry("agents/t2/apps/stripe", false), entry("agents/t3", false), entry("agents/t4/..", false), entry("agents/t5/a b", false)},
+	}}
+	got, err := (&secretsmanager.Secrets{Prefix: "agents/"}).List(ctx, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []secretsmanager.OldKey{{Tenant: "t1", Ref: "kiff"}, {Tenant: "t2", Ref: "apps/stripe"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("listed %v, want %v", got, want)
+	}
+	if len(l.filters) != 2 || len(l.filters[0]) != 1 || l.filters[0][0].Key != types.FilterNameStringTypeName || l.filters[0][0].Values[0] != "agents/" {
+		t.Errorf("filters asked: %v", l.filters)
+	}
+	l.fail = errors.New("throttled")
+	if _, err := (&secretsmanager.Secrets{Prefix: "agents/"}).List(ctx, l); err == nil {
+		t.Error("a failed page listed nothing and no error")
 	}
 }
