@@ -66,6 +66,7 @@
 # take; require; AGENTS_TOTALS (as the function has it, else unset), record
 # totals: "record" turns them on (runner.Runner.RecordTotals), anything else off.
 set -euo pipefail
+. "$(dirname "$0")/bedrock-policy.sh"
 
 REGION=${AGENTS_REGION:-eu-west-1}
 CALLER_ROLE=${AGENTS_CALLER_ROLE:-tafs-cloud-lambda}
@@ -132,6 +133,22 @@ if [ -z "${AGENTS_TOTALS+set}" ]; then
     --query 'Environment.Variables.AGENTS_TOTALS' 2>/dev/null || true)
   if [ -n "$current" ] && [ "$current" != "None" ]; then TOTALS=$current; fi
 fi
+# And the Bedrock backup's settings (docs/runs.md): one given is set (empty
+# removes it), one not given is kept as the function has it, so a rerun never
+# turns the backup on or off by itself.
+BEDROCK_ENV=""
+for k in AGENTS_MODEL_SOURCE AGENTS_BEDROCK_FALLBACK AGENTS_BEDROCK_DAILY_USD; do
+  if [ -n "${!k+set}" ]; then
+    v=${!k}
+  else
+    v=$(aws lambda get-function-configuration --function-name "$FN" --query "Environment.Variables.$k" 2>/dev/null || true)
+    [ "$v" = "None" ] && v=""
+  fi
+  if [ -n "$v" ]; then
+    case "$v" in *[!A-Za-z0-9.]*) echo "$k is letters, digits and a dot, not \"$v\"" >&2; exit 1 ;; esac
+    BEDROCK_ENV="$BEDROCK_ENV,\"$k\":\"$v\""
+  fi
+done
 
 ACCOUNT=$(aws sts get-caller-identity --query Account)
 ARN_FN="arn:aws:lambda:$REGION:$ACCOUNT:function:$FN"
@@ -325,7 +342,7 @@ ENV_FN=$(cat <<EOF
  "SCHEDULE_GROUP":"$GROUP","SCHEDULE_TARGET":"$ARN_FN","SCHEDULE_ROLE":"arn:aws:iam::$ACCOUNT:role/$SCHED_ROLE",
  "AGENTS_SECRETS_PREFIX":"$SECRETS_PREFIX","AGENTS_MODEL_KEY_SECRET":"$MODEL_SECRET",
  "AGENTS_PLANQUES":"$PLANQUES","AGENTS_NOTIFY_URLS":"$NOTIFY_URLS","AGENTS_DRAFTS_PREFIX":"$DRAFTS_PREFIX","AGENTS_DRAFTS_KMS_KEY":"$DRAFTS_KEY","AGENTS_KEYS_KMS_KEY":"$KEYS_KEY","AGENTS_KEY_WRITERS":"arn:aws:sts::$ACCOUNT:assumed-role/$CALLER_ROLE/","AGENTS_SEALING_PREFIX":"$SEALING_PREFIX",
- "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"}}
+ "AGENTS_RUN_GRANTS":"$RUN_GRANTS","AGENTS_TOTALS":"$TOTALS","AGENTS_ATTACHMENTS_BUCKET":"$ATTACHMENTS"$BEDROCK_ENV}}
 EOF
 )
 ENV_ALERTS='{"Variables":{"AGENTS_TABLE":"'"$TABLE"'","KIFF_ACCOUNTS_PREFIX":"'"$ACCOUNTS_PREFIX"'","AGENTS_SECRETS_PREFIX":"'"$SECRETS_PREFIX"'"}}'
@@ -482,39 +499,18 @@ fi
 say "checked: notify URL, attachments bucket and run grants are as expected"
 
 # The Bedrock backup (model/bedrock, cmd/lambda's sourceConfig): permission for
-# the API function and the two Eval roles to call Claude through the EU
-# inference profiles, and nothing broader. Off unless AGENTS_BEDROCK=on, so
-# running this script turns nothing on by itself; the function's own settings
+# the API function to call Claude through the EU inference profiles, and
+# nothing broader. Main's Eval role gets it from infra/eval-bedrock.sh alone,
+# and the branches' Eval role never: a branch's Eval stays on the Claude API.
+# Off unless AGENTS_BEDROCK=on, so running this script turns nothing on by
+# itself; the function's own settings
 # (AGENTS_MODEL_SOURCE, AGENTS_BEDROCK_FALLBACK, AGENTS_BEDROCK_DAILY_USD)
 # decide whether any turn goes there.
-#   - InvokeModel and InvokeModelWithResponseStream only;
-#   - on the two eu. profiles in $REGION, and on the models in the EU regions
-#     those profiles route to, only through a profile (a model can't be called
-#     directly in another region).
+# The document is infra/bedrock-policy.sh's.
 if [ "${AGENTS_BEDROCK:-}" = "on" ]; then
-  BEDROCK_EU_REGIONS="eu-central-1 eu-north-1 eu-south-1 eu-south-2 eu-west-1 eu-west-3"
-  models=""
-  for r in $BEDROCK_EU_REGIONS; do
-    for m in anthropic.claude-sonnet-5-5 anthropic.claude-opus-5-5; do
-      models="$models\"arn:aws:bedrock:$r::foundation-model/$m\","
-    done
-  done
-  models=${models%,}
-  bedrock_policy=$(cat <<EOF
-{"Version":"2012-10-17","Statement":[
- {"Sid":"Profiles","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
-  "Resource":["arn:aws:bedrock:$REGION:$ACCOUNT:inference-profile/eu.anthropic.claude-sonnet-5-5",
-              "arn:aws:bedrock:$REGION:$ACCOUNT:inference-profile/eu.anthropic.claude-opus-5-5"]},
- {"Sid":"ModelsThroughAProfile","Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
-  "Resource":[$models],
-  "Condition":{"StringLike":{"bedrock:InferenceProfileArn":"arn:aws:bedrock:$REGION:$ACCOUNT:inference-profile/eu.anthropic.claude-*-5-5"}}}
-]}
-EOF
-)
-  for r in "$ROLE" "$EVAL_ROLE" "$EVAL_BRANCH_ROLE"; do
-    aws iam put-role-policy --role-name "$r" --policy-name bedrock-backup --policy-document "$bedrock_policy"
-  done
-  say "Bedrock backup: $ROLE and the Eval roles may call the eu. Claude profiles"
+  bedrock_policy=$(bedrock_policy "$REGION" "$ACCOUNT")
+  aws iam put-role-policy --role-name "$ROLE" --policy-name bedrock-backup --policy-document "$bedrock_policy"
+  say "Bedrock backup: $ROLE may call the eu. Claude profiles (main's Eval role: infra/eval-bedrock.sh)"
 fi
 
 echo "api:    $(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl)"

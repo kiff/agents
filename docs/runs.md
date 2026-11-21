@@ -154,7 +154,9 @@ settings turn it on:
   from the function's region, through the EU inference profiles
   (`eu.anthropic.claude-sonnet-5-5`, `eu.anthropic.claude-opus-5-5`), signed with
   the function's own role. `infra/aws.sh` grants exactly that, with
-  `AGENTS_BEDROCK=on`.
+  `AGENTS_BEDROCK=on` (the document is `infra/bedrock-policy.sh`'s). A rerun of
+  `infra/aws.sh` keeps the three settings as the function has them; one given
+  is set, and an empty one removes it.
 - **A run stays where it started.** Only a new run's first turn falls back, and
   only before anything of it streamed. A run under way that the Claude API
   refuses fails with its reason, as it would without a backup. That holds for a
@@ -199,7 +201,14 @@ settings turn it on:
   signatures) taken out of their text before they're logged.
 - **The Eval** runs on Bedrock with `-model-source bedrock` (or
   `AGENTS_MODEL_SOURCE=bedrock`), its judge too, without the daily cap, and its
-  report names where the turns ran.
+  report names where the turns ran. `cmd/e2e` takes the same flag for the setup
+  agent and its judges, and says at the start where its turns run.
+  - **In the workflow:** `eval.yml` sets `AGENTS_MODEL_SOURCE=bedrock` only on
+    main, and only once the repository variable `EVAL_MODEL_SOURCE` is
+    `bedrock`. Main's Eval role may call the EU profiles once
+    `infra/eval-bedrock.sh` has run (the same document, that role alone).
+    Each suite's step takes fresh credentials first, since the role's sessions
+    last an hour. A branch's run stays on the Claude API.
 
 ## Statuses
 

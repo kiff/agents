@@ -97,6 +97,13 @@ jobs:
       E2E_MADE: e2e-made.txt
       MODEL: ${{ inputs.model }}
       EFFORT: ${{ inputs.effort }}
+      # Where the agents' and the judges' turns run (cmd/eval and cmd/e2e
+      # -model-source): Claude in Amazon Bedrock, through our account's EU
+      # profiles, only on main and only once the repository variable
+      # EVAL_MODEL_SOURCE is bedrock (main's Eval role may call them:
+      # infra/eval-bedrock.sh); else the Claude API, as before. A branch's
+      # run always stays on the Claude API: its role can't call Bedrock.
+      AGENTS_MODEL_SOURCE: ${{ vars.EVAL_MODEL_SOURCE == 'bedrock' && github.ref == 'refs/heads/main' && 'bedrock' || 'anthropic' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -205,6 +212,14 @@ jobs:
           echo "LABEL=$label" >> "$GITHUB_ENV"
           infra/eval-override.sh defs "$MODEL" "$EFFORT"
           echo "Override **$label**: Coach and the tafs on ${MODEL:-their own model}, effort ${EFFORT:-their own}. It doesn't count for the Upgrade gate." >> "$GITHUB_STEP_SUMMARY"
+      # On Bedrock, each suite's step gets fresh credentials first: the Eval
+      # role's sessions last an hour (its MaxSessionDuration), a full Eval
+      # longer. The suite's own condition decides whether it runs.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Chargebacks, two seeded runs
         if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',cards,'))
         timeout-minutes: 30
@@ -220,6 +235,11 @@ jobs:
             -baseline eval/baseline.json -gate \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results.json -report report.md chargebacks
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Hand-offs between tafs, a sender and a receiver
         # A hand-off from each side, one taf at a time (eval/cases, handoff.go;
         # kiff/tafs#760), as kiff/tafs writes the taf and the task. The sender
@@ -249,6 +269,11 @@ jobs:
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate -repeat "${{ inputs.repeat || '3' }}" \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-handoff.json -report report-handoff.md handoff-sender handoff-nothing handoff-nothing-fr handoff-receiver
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: API doors, a request from another application
         # A request through an API door (eval/cases, door.go): the chargebacks
         # taf started as tafs cloud starts a door's run, with its task around
@@ -278,6 +303,11 @@ jobs:
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -seed -gate -repeat "${{ inputs.repeat || '3' }}" \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-doors.json -report report-doors.md door-accept door-evidence
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Tickets, a recipe's taf on the fake desk
         # The recipe "Acknowledge every ticket" as its taf (eval/cases,
         # tickets.go): a fresh agent each run, made on the test account with
@@ -303,6 +333,11 @@ jobs:
           go run ./cmd/eval -run -public -definitions defs $([ -d defs/skills ] && echo -skills defs/skills) -gate -repeat "${{ inputs.repeat || '3' }}" \
             -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000 \
             -out results-tickets.json -report report-tickets.md tickets
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Setup with the taf, in English, graded
         # The setup agent as kiff/tafs defines it (setup.json), against prod
         # KIFF, planque and the fake vendor, with the test phone's signed
@@ -331,6 +366,11 @@ jobs:
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -taf defs/refunds.json -owner en -grade -improve -max-cost 4 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript setup.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Setup on the second vendor, a desk by its key
         # The same Setup on a vendor that isn't payments and has no MCP server
         # (kiff/agents#293): the fake vendor's support desk, by its REST API and
@@ -350,6 +390,11 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -desk -grade -max-cost 3 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript desk.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Setup on billing, invoices that stay drafts
         # A write whose argument decides whether it's final (kiff/tafs#771):
         # the fake vendor's billing, by its REST API and the key the phone
@@ -369,6 +414,11 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -invoices -grade -max-cost 3 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript invoices.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Replay, introductions from a list
         # A setup that failed an owner, run again (cmd/e2e -replay, replay.go):
         # a list of companies in the fake vendor's spreadsheet and drafts in
@@ -387,6 +437,11 @@ jobs:
           E2E_VENDOR_TOKEN: ${{ secrets.E2E_VENDOR_TOKEN }}
           E2E_DESK_KEY: ${{ secrets.E2E_DESK_KEY }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -replay intros -grade -max-cost 3 -owner-turns 14 -repeat "${{ inputs.repeat || '3' }}" -transcript replay-intros.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Plan words, Google Sheets in English
         # What Coach says about an app before the owner signs in to it
         # (cmd/e2e -plan, planwords.go; kiff/tafs#1229): the owner asks for a
@@ -407,6 +462,11 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan sheets -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-sheets.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Plan words, Google Sheets in French
         # The same in French: the words checked are French too.
         if: steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true' && (always()) && (contains(steps.suites.outputs.list, ',all,') || contains(steps.suites.outputs.list, ',plan-words,'))
@@ -418,6 +478,11 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan sheets -owner fr -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-sheets-fr.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Plan words, Gmail in English
         # Today's sign-in planque narrows (Gmail's, for reading mail): a rule
         # that always says "wider" fails here. Which app is wide or narrowed is
@@ -431,6 +496,11 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           E2E_VENDOR: ${{ secrets.E2E_VENDOR }}
         run: go run ./cmd/e2e $([ -d defs/skills ] && echo -skills defs/skills) -setup defs/setup.json -plan gmail -owner en -grade -max-cost 2 -owner-turns 8 -repeat "${{ inputs.repeat || '3' }}" -transcript plan-gmail.md -judge-model claude-sonnet-5-5 -judge-price 2000000,10000000
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && always() && steps.unchanged.outputs.skip != 'true' && steps.preflight.outputs.refused != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: Route, the watch's requests over ten tafs
         # A request spoken on the watch reaches Coach by its own way in
         # (cmd/e2e -route, route.go): a session that loads only the watch

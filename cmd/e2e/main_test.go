@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/kiff/agents/eval"
+	"github.com/kiff/agents/model/bedrock"
 )
 
 // The nightly log is public: neither the account nor the vendor's address
@@ -722,5 +723,42 @@ func TestTheAgreedGatesSkipSaysWhyAndItsFailStaysPrivate(t *testing.T) {
 	}
 	if !strings.Contains(transcript.String(), "WARN signs what was agreed (1 of 3 judges said not): the Card counts 20 drafts, the owner said 10\n") {
 		t.Fatalf("the transcript: %q", transcript.String())
+	}
+}
+
+// -model-source bedrock puts every model e2e makes, the setup agent's and the
+// judges', on Bedrock's EU profiles, and then turns need no Claude API key;
+// anthropic (or nothing) leaves them on the Claude API, and anything else is
+// refused.
+func TestTheModelSourceMovesEveryModelAndTheKeyItNeeds(t *testing.T) {
+	oldModel, oldRunsOn := newModel, runsOn
+	t.Cleanup(func() { newModel, runsOn = oldModel, oldRunsOn })
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	t.Setenv("AWS_REGION", "eu-west-1")
+	for _, source := range []string{"", "anthropic"} {
+		if needsKey, err := useModelSource(context.Background(), source); err != nil || !needsKey || runsOn != "Claude API" {
+			t.Fatalf("%q: %v %v %s", source, needsKey, err, runsOn)
+		}
+		if _, ok := newModel().(*bedrock.Model); ok {
+			t.Fatalf("%q made a Bedrock model", source)
+		}
+	}
+	needsKey, err := useModelSource(context.Background(), "bedrock")
+	if err != nil || needsKey || runsOn != "Amazon Bedrock, eu-west-1, EU inference profiles" {
+		t.Fatalf("bedrock: %v %v %s", needsKey, err, runsOn)
+	}
+	if _, ok := newModel().(*bedrock.Model); !ok {
+		t.Fatal("bedrock left the setup agent on the Claude API")
+	}
+	j, err := judgeFrom("claude-sonnet-5-5", "2000000,10000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := j.Model.(*bedrock.Model); !ok {
+		t.Fatal("bedrock left the judge on the Claude API")
+	}
+	if _, err := useModelSource(context.Background(), "vertex"); err == nil || !strings.Contains(err.Error(), "anthropic or bedrock") {
+		t.Fatalf("an unknown source: %v", err)
 	}
 }
