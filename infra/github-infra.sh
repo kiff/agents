@@ -5,11 +5,14 @@
 #
 # Trusted only from this repository's GitHub environment "infra", which takes
 # two required reviewers, so every run is a reviewed one. Its policy is what
-# infra/aws.sh does, on agents' own names alone (roles agents-*, the two
-# functions, the table, the schedule group, the two buckets, the model key's
-# secret, the functions' log groups), and it may never change its own role,
-# so it can't widen itself. It makes no KMS key: a missing one is made by a
-# person, as before. It reads no secret's value.
+# infra/aws.sh does, on agents' own names alone (infra/github-infra-policy.sh):
+# the six roles infra/aws.sh makes, by name, each written only while it
+# carries the permissions boundary agents-boundary, which this script alone
+# writes; the two functions, the table, the schedule group, the two buckets,
+# the model key's secret, the functions' log groups. It may never change its
+# own role, a role's trust or a boundary, so no run can give any role more
+# than the boundary. It makes no KMS key: a missing one is made by a person,
+# as before. It reads no secret's value.
 #
 #   infra/github-infra.sh
 set -euo pipefail
@@ -20,6 +23,8 @@ INFRA_ROLE=agents-github-infra
 REPORTS=${AGENTS_EVAL_BUCKET:-kiff-agents-eval-reports}
 ATTACHMENTS=${AGENTS_ATTACHMENTS_BUCKET:-kiff-agents-attachments}
 aws() { command aws --region "$REGION" --output text "$@"; }
+# shellcheck source=infra/github-infra-policy.sh
+. "$(dirname "$0")/github-infra-policy.sh"
 
 ACCOUNT=$(aws sts get-caller-identity --query Account)
 OIDC="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
@@ -37,32 +42,38 @@ else
   echo "created role $INFRA_ROLE" >&2
 fi
 
-ARN_ROLES="arn:aws:iam::$ACCOUNT:role/agents-*"
-ARN_SELF="arn:aws:iam::$ACCOUNT:role/$INFRA_ROLE"
-FNS="\"arn:aws:lambda:$REGION:$ACCOUNT:function:agents\",\"arn:aws:lambda:$REGION:$ACCOUNT:function:agents-kiffalerts\""
-aws iam put-role-policy --role-name "$INFRA_ROLE" --policy-name infra-agents --policy-document "$(cat <<EOF
-{"Version":"2012-10-17","Statement":[
- {"Effect":"Allow","Action":["iam:GetRole","iam:CreateRole","iam:UpdateAssumeRolePolicy","iam:PutRolePolicy"],"Resource":"$ARN_ROLES"},
- {"Effect":"Allow","Action":"iam:PassRole","Resource":"$ARN_ROLES",
-  "Condition":{"StringEquals":{"iam:PassedToService":["lambda.amazonaws.com","scheduler.amazonaws.com"]}}},
- {"Effect":"Deny","Action":"iam:*","Resource":"$ARN_SELF"},
- {"Effect":"Allow","Action":["lambda:GetFunction","lambda:GetFunctionConfiguration","lambda:CreateFunction","lambda:UpdateFunctionCode",
-   "lambda:UpdateFunctionConfiguration","lambda:GetFunctionUrlConfig","lambda:CreateFunctionUrlConfig","lambda:UpdateFunctionUrlConfig",
-   "lambda:AddPermission","lambda:GetPolicy","lambda:PutFunctionEventInvokeConfig","lambda:PutFunctionConcurrency"],"Resource":[$FNS]},
- {"Effect":"Allow","Action":["dynamodb:DescribeTable","dynamodb:CreateTable","dynamodb:UpdateTable","dynamodb:DescribeTimeToLive",
-   "dynamodb:UpdateTimeToLive","dynamodb:DescribeContinuousBackups","dynamodb:UpdateContinuousBackups"],
-  "Resource":"arn:aws:dynamodb:$REGION:$ACCOUNT:table/agents"},
- {"Effect":"Allow","Action":"kms:DescribeKey","Resource":"*"},
- {"Effect":"Allow","Action":"secretsmanager:DescribeSecret","Resource":["arn:aws:secretsmanager:$REGION:$ACCOUNT:secret:agents-??????",
-   "arn:aws:secretsmanager:$REGION:$ACCOUNT:secret:agents-model/*"]},
- {"Effect":"Allow","Action":["scheduler:GetScheduleGroup","scheduler:CreateScheduleGroup"],"Resource":"arn:aws:scheduler:$REGION:$ACCOUNT:schedule-group/agents"},
- {"Effect":"Allow","Action":["scheduler:GetSchedule","scheduler:CreateSchedule","scheduler:UpdateSchedule"],"Resource":"arn:aws:scheduler:$REGION:$ACCOUNT:schedule/agents/*"},
- {"Effect":"Allow","Action":["s3:CreateBucket","s3:ListBucket","s3:GetBucketLocation","s3:PutBucketPublicAccessBlock","s3:PutBucketOwnershipControls",
-   "s3:PutEncryptionConfiguration","s3:PutLifecycleConfiguration","s3:PutBucketPolicy"],
-  "Resource":["arn:aws:s3:::$REPORTS","arn:aws:s3:::$ATTACHMENTS"]},
- {"Effect":"Allow","Action":["logs:CreateLogGroup","logs:PutRetentionPolicy"],"Resource":"arn:aws:logs:$REGION:$ACCOUNT:log-group:/aws/lambda/agents*"}
-]}
-EOF
-)"
+# The boundary first: every role infra/aws.sh makes carries it, and the
+# Infra role may write a role only while it does. Only this script, run by a
+# person, writes it; a new version replaces the default one, and the oldest
+# one goes when IAM's five are kept.
+BOUNDARY="arn:aws:iam::$ACCOUNT:policy/agents-boundary"
+BOUNDARY_DOC=$(agents_boundary_policy "$REGION" "$ACCOUNT" "$REPORTS" "$ATTACHMENTS")
+if current=$(aws iam get-policy --policy-arn "$BOUNDARY" --query Policy.DefaultVersionId 2>/dev/null); then
+  live=$(command aws --region "$REGION" iam get-policy-version --policy-arn "$BOUNDARY" --version-id "$current" \
+    --query PolicyVersion.Document --output json)
+  if [ "$(jq -S -c . <<<"$live")" != "$(jq -S -c . <<<"$BOUNDARY_DOC")" ]; then
+    if [ "$(aws iam list-policy-versions --policy-arn "$BOUNDARY" --query 'length(Versions)')" -ge 5 ]; then
+      aws iam delete-policy-version --policy-arn "$BOUNDARY" \
+        --version-id "$(aws iam list-policy-versions --policy-arn "$BOUNDARY" --query 'sort_by(Versions[?!IsDefaultVersion], &CreateDate)[0].VersionId')"
+    fi
+    aws iam create-policy-version --policy-arn "$BOUNDARY" --policy-document "$BOUNDARY_DOC" --set-as-default >/dev/null
+    echo "updated the boundary agents-boundary" >&2
+  fi
+else
+  aws iam create-policy --policy-name agents-boundary --policy-document "$BOUNDARY_DOC" \
+    --description "The most any of agents' roles may do (infra/github-infra-policy.sh)" >/dev/null
+  echo "created the boundary agents-boundary" >&2
+fi
+# The roles infra/aws.sh made before the boundary get it now, so the Infra
+# role can write their policies.
+for r in agents-lambda agents-kiffalerts agents-scheduler agents-github-deploy agents-github-eval agents-github-eval-branches; do
+  if have=$(aws iam get-role --role-name "$r" --query Role.PermissionsBoundary.PermissionsBoundaryArn 2>/dev/null) && [ "$have" != "$BOUNDARY" ]; then
+    aws iam put-role-permissions-boundary --role-name "$r" --permissions-boundary "$BOUNDARY"
+    echo "role $r: boundary agents-boundary" >&2
+  fi
+done
+
+aws iam put-role-policy --role-name "$INFRA_ROLE" --policy-name infra-agents \
+  --policy-document "$(infra_role_policy "$REGION" "$ACCOUNT" "$REPORTS" "$ATTACHMENTS")"
 echo "infra role: set it as the infra environment's secret AWS_INFRA_ROLE:" >&2
 echo "  aws iam get-role --role-name $INFRA_ROLE --query Role.Arn --output text | gh secret set AWS_INFRA_ROLE --repo $REPO --env infra" >&2
