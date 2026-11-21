@@ -257,17 +257,18 @@ func (p policy) deniedOutright(t *testing.T, action, resource string) bool {
 func TestTheInfraRoleNeverMakesABucketPublic(t *testing.T) {
 	p := render(t, "infra_role_policy")
 	for _, bucket := range []string{"arn:aws:s3:::kiff-agents-eval-reports", "arn:aws:s3:::kiff-agents-attachments"} {
-		for _, action := range []string{"s3:PutBucketPublicAccessBlock", "s3:DeleteBucketPolicy"} {
+		for _, action := range []string{"s3:PutBucketPublicAccessBlock", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy"} {
 			if !p.deniedOutright(t, action, bucket) {
 				t.Errorf("%s on %s isn't denied outright", action, bucket)
 			}
 		}
-		// What infra/aws.sh still does to each bucket: read the block, and write
-		// its own (TLS-only) policy, which S3 refuses while the block is on if it
-		// would make the bucket public.
+		// What infra/aws.sh still does to each bucket: read the block and the
+		// policy. It never writes either: a policy can grant one other account
+		// without being public, so the block alone wouldn't stop it.
 		check(t, p, []try{
 			{"s3:GetBucketPublicAccessBlock", bucket, nil, true},
-			{"s3:PutBucketPolicy", bucket, nil, true},
+			{"s3:GetBucketPolicy", bucket, nil, true},
+			{"s3:PutBucketPolicy", bucket, nil, false},
 			{"s3:PutBucketPublicAccessBlock", bucket, nil, false},
 			{"s3:DeleteBucketPolicy", bucket, nil, false},
 		})

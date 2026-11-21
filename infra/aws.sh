@@ -222,6 +222,19 @@ private_bucket() {
   say "bucket $1: public access blocked"
 }
 
+# A bucket's policy too: the Infra workflow's role may never write one (a
+# policy can grant another account without being public), so it's written only
+# when it isn't already this script's, and a bucket whose policy differs stops
+# the run for a person.
+bucket_policy() { # bucket, policy JSON
+  local live
+  live=$(aws s3api get-bucket-policy --bucket "$1" --query Policy 2>/dev/null || true)
+  [ -n "$live" ] && [ "$(jq -S -c . <<<"$live")" = "$(jq -S -c . <<<"$2")" ] && return
+  aws s3api put-bucket-policy --bucket "$1" --policy "$2" || {
+    echo "bucket $1's policy isn't the one this script writes, and this role may not change it: a person sets it" >&2; exit 1; }
+  say "bucket $1: policy written"
+}
+
 # The app uploads and downloads through presigned URLs only: nothing in the
 # bucket is public, and S3 refuses any request not over TLS.
 if ! aws s3api head-bucket --bucket "$ATTACHMENTS" >/dev/null 2>&1; then
@@ -238,7 +251,7 @@ aws s3api put-bucket-encryption --bucket "$ATTACHMENTS" --server-side-encryption
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 aws s3api put-bucket-lifecycle-configuration --bucket "$ATTACHMENTS" --lifecycle-configuration \
   '{"Rules":[{"ID":"leftovers-38-days","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":38},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"delivered-31-days","Status":"Enabled","Filter":{"Prefix":"delivered/"},"Expiration":{"Days":31}}]}'
-aws s3api put-bucket-policy --bucket "$ATTACHMENTS" --policy '{"Version":"2012-10-17","Statement":[{"Sid":"tls-only","Effect":"Deny","Principal":"*","Action":"s3:*",
+bucket_policy "$ATTACHMENTS" '{"Version":"2012-10-17","Statement":[{"Sid":"tls-only","Effect":"Deny","Principal":"*","Action":"s3:*",
  "Resource":["arn:aws:s3:::'"$ATTACHMENTS"'","arn:aws:s3:::'"$ATTACHMENTS"'/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
 
 # --- The model key ---------------------------------------------------------
