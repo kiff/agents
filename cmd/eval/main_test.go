@@ -1267,3 +1267,18 @@ func TestADoorsCasesRunAsTafsCloudStartsThem(t *testing.T) {
 		t.Errorf("a task without the outcome: %v, %d turns", err, len(m.asked))
 	}
 }
+
+// A run's phases come on one line under its result, the seed's only when it
+// was seeded, so a suite's time can be read by part.
+func TestPrintPhases(t *testing.T) {
+	var b strings.Builder
+	printPhases(&b, phases{close: 95200 * time.Millisecond, create: 6100 * time.Millisecond, run: 48 * time.Second, grade: 12300 * time.Millisecond}, true)
+	if got, want := b.String(), "  time: seed: close 95.2s, create 6.1s · run 48.0s · grade 12.3s\n"; got != want {
+		t.Errorf("seeded: %q, want %q", got, want)
+	}
+	b.Reset()
+	printPhases(&b, phases{run: 2 * time.Second, grade: 500 * time.Millisecond}, false)
+	if got, want := b.String(), "  time: run 2.0s · grade 0.5s\n"; got != want {
+		t.Errorf("unseeded: %q, want %q", got, want)
+	}
+}
