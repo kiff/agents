@@ -499,19 +499,18 @@ fi
 say "checked: notify URL, attachments bucket and run grants are as expected"
 
 # The Bedrock backup (model/bedrock, cmd/lambda's sourceConfig): permission for
-# the API function and the two Eval roles to call Claude through the EU
-# inference profiles, and nothing broader. Off unless AGENTS_BEDROCK=on, so
-# running this script turns nothing on by itself; the function's own settings
+# the API function to call Claude through the EU inference profiles, and
+# nothing broader. Main's Eval role gets it from infra/eval-bedrock.sh alone,
+# and the branches' Eval role never: a branch's Eval stays on the Claude API.
+# Off unless AGENTS_BEDROCK=on, so running this script turns nothing on by
+# itself; the function's own settings
 # (AGENTS_MODEL_SOURCE, AGENTS_BEDROCK_FALLBACK, AGENTS_BEDROCK_DAILY_USD)
 # decide whether any turn goes there.
-# The document is infra/bedrock-policy.sh's; infra/eval-bedrock.sh gives it to
-# main's Eval role alone.
+# The document is infra/bedrock-policy.sh's.
 if [ "${AGENTS_BEDROCK:-}" = "on" ]; then
   bedrock_policy=$(bedrock_policy "$REGION" "$ACCOUNT")
-  for r in "$ROLE" "$EVAL_ROLE" "$EVAL_BRANCH_ROLE"; do
-    aws iam put-role-policy --role-name "$r" --policy-name bedrock-backup --policy-document "$bedrock_policy"
-  done
-  say "Bedrock backup: $ROLE and the Eval roles may call the eu. Claude profiles"
+  aws iam put-role-policy --role-name "$ROLE" --policy-name bedrock-backup --policy-document "$bedrock_policy"
+  say "Bedrock backup: $ROLE may call the eu. Claude profiles (main's Eval role: infra/eval-bedrock.sh)"
 fi
 
 echo "api:    $(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl)"
