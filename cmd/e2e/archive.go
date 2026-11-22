@@ -42,9 +42,11 @@ func runArchive(ctx context.Context, apiBase string, cfg config, prefix string, 
 // one, sends nothing.
 func archiveAgent(ctx context.Context, kiffc *testaccount.Client, prefix string, out io.Writer) error {
 	name := shortAgent(prefix)
-	if len(prefix) < len("agt_")+4 || len(prefix) > len("agt_")+8 || !strings.HasPrefix(prefix, "agt_") {
-		// A whole id given by mistake is refused too: nothing runs on it.
-		return fmt.Errorf("give the taf's first 8 characters (agt_ and 4 more), never its whole id")
+	// 8 to 12 characters of the id: agt_ and 4 to 8 more, or the start of
+	// an older taf's id, which KIFF named by its job ("refunds-…"). A whole
+	// id given by mistake is refused too: nothing runs on it.
+	if len(prefix) < 8 || len(prefix) > 12 || strings.ContainsAny(prefix, " /?#") {
+		return fmt.Errorf("give the taf's first 8 to 12 characters (agt_ and 4 more, or an older id's start), never its whole id")
 	}
 	there, setup, err := testaccount.PhoneAccess(ctx, kiffc)
 	if err != nil {
@@ -52,6 +54,9 @@ func archiveAgent(ctx context.Context, kiffc *testaccount.Client, prefix string,
 	}
 	var match []string
 	for id := range there {
+		if id == prefix {
+			return fmt.Errorf("give the taf's first characters, never its whole id")
+		}
 		if strings.HasPrefix(id, prefix) {
 			match = append(match, id)
 		}
