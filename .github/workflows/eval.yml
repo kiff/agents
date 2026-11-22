@@ -24,6 +24,9 @@ run-name: ${{ format('Eval{0}{1}{2}', inputs.suites != '' && inputs.suites != 'a
 # Every night and by hand. It doesn't gate pull requests: it spends money
 # and depends on live services.
 on:
+  # Off for now: this workflow is disabled in GitHub (disabled_manually),
+  # by the owner's pause of the provers on 21 Nov, so the schedule below
+  # doesn't fire. It runs again only once it's enabled, on the owner's word.
   schedule:
     - cron: "7 4 * * *"
   workflow_dispatch:
