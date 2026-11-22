@@ -28,11 +28,13 @@ name: Proofs
 # token: only the claims, which name this repository and this run, and a
 # fingerprint, which names a public key.
 on:
-  # By hand only. The weekly proof's schedule (Mondays 05:00 UTC, two real
-  # Coach chats, capped at US$3 each) is off: the owner paused the provers on
-  # 21 Nov, and a run that spends on the model goes only on their word. To
-  # put it back, add `schedule: [{cron: "0 5 * * 1"}]` here once they say so;
-  # the weekly job below still runs on a schedule event.
+  # Daily at 04:00 UTC: the proofs of every app (cmd/e2e -proof), no model, so
+  # each app's state in KIFF stays fresh (a green counts for 24 hours). The
+  # weekly proof (two real Coach chats, model spend) runs by hand only: the
+  # owner paused the provers on 21 Nov, and a run that spends on the model
+  # goes only on their word.
+  schedule:
+    - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       run:
@@ -59,7 +61,8 @@ permissions:
   id-token: write
 jobs:
   apps:
-    if: inputs.run == 'proof'
+    # A dispatch's proof, or the daily schedule's (every app, not dry).
+    if: inputs.run == 'proof' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -67,7 +70,7 @@ jobs:
     steps:
       - id: apps
         env:
-          APP: ${{ inputs.app }}
+          APP: ${{ inputs.app || 'all' }}
         run: |
           case "$APP" in
             all) echo 'apps=["moneybird","pipedrive","typeform"]' >> "$GITHUB_OUTPUT" ;;
@@ -153,7 +156,8 @@ jobs:
     # A real Coach chat per family on tafs cloud, its approval through the
     # component route alone (cmd/e2e -weekly, weekly_main.go). Main only, in
     # kiff-test, in the Eval's group: one run on the test account at a time.
-    if: ${{ (github.event_name == 'schedule' || inputs.run == 'weekly') && github.ref == 'refs/heads/main' }}
+    # By hand only: never on the daily schedule, which is model-free.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run == 'weekly' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: kiff-test
