@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 )
 
 // Disclosure is the line every call that writes to someone outside the
@@ -48,8 +47,8 @@ type DisclosureIn struct {
 // MaxDisclosureLine bounds the line: one sentence.
 const MaxDisclosureLine = 300
 
-// MaxDisclosureLines bounds Lines: a few languages, not a dictionary.
-const MaxDisclosureLines = 12
+// MaxDisclosureLines bounds Lines: the languages the apps speak (48 leaves room to grow), not a dictionary.
+const MaxDisclosureLines = 48
 
 // languageCode is an ISO 639-1 code, as Lines keys it.
 var languageCode = regexp.MustCompile(`^[a-z]{2}$`)
@@ -317,60 +316,6 @@ func quoted(text string, i int) bool {
 	}
 	lower := strings.ToLower(text[:i])
 	return strings.Count(lower, "<blockquote") > strings.Count(lower, "</blockquote")
-}
-
-// commonWords are frequent short words of each language whose line a
-// disclosure may have, enough to tell which one a message is written in.
-var commonWords = map[string]map[string]bool{
-	"en": wordSet("the and is are you your to of for with we our this that it was has have been will be not on at by from thanks thank order please"),
-	"es": wordSet("el la los las del de que y en por para con una un su sus tu tus te le es está están hemos ha han gracias pedido hola usted ya pero muy más"),
-	"pt": wordSet("o os as do da dos das de que e em por para com uma um seu sua você não é está foi obrigado obrigada pedido olá já mas muito mais"),
-	"fr": wordSet("le la les des du de et est pour pas vous nous une un que dans avec sur votre vos merci commande été sont bonjour déjà mais très plus"),
-	"de": wordSet("der die das und ist nicht sie ihr ihre ein eine mit für auf den dem des zu wir danke bestellung wurde bitte hallo schon aber sehr mehr"),
-	"it": wordSet("il lo gli della del di che e è per non una un con sono grazie ordine suo sua tuo tua ciao già ma molto più stato"),
-}
-
-// markup is an html tag, which language reads past.
-var markup = regexp.MustCompile(`<[^<>]*>`)
-
-// languageOrder is the order languages are compared in, so a tie is decided the same way every time.
-var languageOrder = []string{"en", "es", "pt", "fr", "de", "it"}
-
-func wordSet(words string) map[string]bool {
-	set := map[string]bool{}
-	for _, w := range strings.Fields(words) {
-		set[w] = true
-	}
-	return set
-}
-
-// language is the language text is written in, by ISO 639-1 code, when its
-// common words say so clearly: at least two of them, and more than any other
-// language's. Empty otherwise: a short or mixed text gets the default line.
-// It only picks which of a disclosure's lines heads the text.
-func language(text string) string {
-	counts := map[string]int{}
-	text = markup.ReplaceAllString(text, " ") // an html part's tags aren't its words
-	for _, w := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) }) {
-		for _, lang := range languageOrder {
-			if commonWords[lang][w] {
-				counts[lang]++
-			}
-		}
-	}
-	best, top, second := "", 0, 0
-	for _, lang := range languageOrder {
-		switch n := counts[lang]; {
-		case n > top:
-			best, top, second = lang, n, top
-		case n > second:
-			second = n
-		}
-	}
-	if top < 2 || top == second {
-		return ""
-	}
-	return best
 }
 
 // parentOf is the object holding path's last part in call, and that part;

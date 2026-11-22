@@ -268,9 +268,20 @@ func TestWithoutTakesOnlyTheLineOut(t *testing.T) {
 }
 
 func TestADisclosureIsChecked(t *testing.T) {
+	// One more than the most: the apps' languages and room to grow, never a dictionary.
 	many := map[string]string{}
-	for _, code := range strings.Fields("aa ab ac ad ae af ag ah ai aj ak al am") {
-		many[code] = line
+	for i := 0; len(many) <= MaxDisclosureLines; i++ {
+		many[string(rune('a'+i/26))+string(rune('a'+i%26))] = line
+	}
+	// The most is allowed: every language of the apps has a line.
+	most := map[string]string{}
+	for code := range many {
+		if len(most) < MaxDisclosureLines {
+			most[code] = line
+		}
+	}
+	if err := (&Disclosure{Line: line, In: evidence.In, Lines: most}).Check(); err != nil {
+		t.Errorf("%d languages: %v", MaxDisclosureLines, err)
 	}
 	for _, bad := range []*Disclosure{
 		{Line: "", In: evidence.In},
