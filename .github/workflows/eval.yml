@@ -21,11 +21,11 @@ run-name: ${{ format('Eval{0}{1}{2}', inputs.suites != '' && inputs.suites != 'a
 # written by a role that may only put reports there (infra/aws.sh). The log
 # names only the report's key.
 #
-# Every night and by hand. It doesn't gate pull requests: it spends money
+# Every Monday (04:07 UTC) and by hand. It doesn't gate pull requests: it spends money
 # and depends on live services.
 on:
   schedule:
-    - cron: "7 4 * * *"
+    - cron: "7 4 * * 1"
   workflow_dispatch:
     inputs:
       # Some of the Eval's suites (eval/suites.json), as a change touches them
