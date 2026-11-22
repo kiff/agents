@@ -73,6 +73,7 @@ SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET" --query AR
 # The function's role reads that one secret, nothing else in Secrets Manager.
 aws iam put-role-policy --role-name "$ROLE" --policy-name secret --policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":"'"$SECRET_ARN"'"}]}'
+sleep 10 # a new grant takes a moment to reach the role: the next cold start reads the secret
 # Its environment names the secret only: the values leave it on this run.
 ENV="$BUILD/env.json"
 printf '{"Variables":{"STRIPEMCP_SECRET":"%s"}}' "$SECRET_ARN" > "$ENV"
