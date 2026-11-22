@@ -574,6 +574,11 @@ type test struct {
 	taken map[string]*takenTexts
 	// setupSession is the setup chat's session, for its turns' timings.
 	setupSession string
+	// cardSession is the chat whose cards are being answered while the setup
+	// converses: its cards and answers go with each draft check
+	// (checkConversation), so tafs cloud checks the rules the owner agreed
+	// there, as the phone's read of the chat does. Empty elsewhere.
+	cardSession string
 	// result is Setup's result that waits for what came of the hand-over:
 	// answered, as tafs cloud does, once the taf or its version is made.
 	result *waitingResult
@@ -1274,7 +1279,7 @@ func cardAnswer(c show.Component, msg string) (json.RawMessage, error) {
 func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) {
 	// A free start opens with the setup's skills, as tafs cloud names them (kiff/tafs#525).
 	ch := &chat.Chat{Runner: t.rn, Tenant: t.tenant, Agent: "setup", Skills: t.startSkills("free", false)}
-	defer func() { t.setupSession = ch.Session }()
+	defer func() { t.setupSession, t.cardSession = ch.Session, "" }()
 	o := owners[t.cfg.owner]
 	// What an owner would say: the outcome, in their words and language.
 	msg := o.ask(t.cfg.vendor)
@@ -1320,6 +1325,7 @@ func (t *test) converse(ctx context.Context) (tafID, draftID string, err error) 
 		if r.Status != "COMPLETED" && r.Status != "PAUSED" {
 			return "", "", fmt.Errorf("the setup agent's run ended %s", r.Status)
 		}
+		t.cardSession = ch.Session
 		shown, text, err := t.latest(ctx, ch.Session, r.ID)
 		if err != nil {
 			return "", "", err

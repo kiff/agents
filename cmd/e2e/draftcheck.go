@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/kiff/agents/session"
 )
 
 // checkRoute is tafs cloud's check of a Card draft before it's signed, the
@@ -52,8 +54,16 @@ func (t *test) checkDraft(ctx context.Context, grant, draft, version string) (dr
 		return draftChecked{}, err
 	}
 	cloud := &client{Base: strings.TrimRight(t.cfg.cloud, "/"), HTTP: t.hc, Auth: bearerAuth(t.cfg.session)}
+	body := map[string]any{"draft": draft, "shown_draft": version, "can": appCan}
+	conversation, err := t.checkConversation(ctx)
+	if err != nil {
+		return draftChecked{}, err
+	}
+	if conversation != nil {
+		body["conversation"] = conversation
+	}
 	a, err := cloud.DoWith(ctx, http.MethodPost, "/v1/connect/grants/"+url.PathEscape(grant)+"/check",
-		map[string]any{"draft": draft, "shown_draft": version, "can": appCan}, http.Header{"Planque-Device-Signature": {proof}})
+		body, http.Header{"Planque-Device-Signature": {proof}})
 	if err != nil {
 		return draftChecked{}, fmt.Errorf("tafs cloud's check of the draft: %w", err)
 	}
@@ -61,6 +71,30 @@ func (t *test) checkDraft(ctx context.Context, grant, draft, version string) (dr
 		return draftChecked{}, fmt.Errorf("tafs cloud's check of the draft: %w", err)
 	}
 	return checkedFrom(a.Body)
+}
+
+// checkConversation is the conversation a draft check shows tafs cloud: the
+// cards and answers of the chat being answered (cardSession), in order, so
+// its check reads the rules the owner agreed there by its own rule (kiff/tafs
+// rulesAgreement), as the phone's read of the chat does (Eval 45028072347: a
+// confirm skipped and a notice whose words gave no figures were signed here,
+// where the phone would have sent them back to Coach). Nil outside the setup's
+// chat: the check then says it didn't check them (rules_unchecked).
+func (t *test) checkConversation(ctx context.Context) ([]session.Event, error) {
+	if t.cardSession == "" {
+		return nil, nil
+	}
+	_, events, err := t.sessions.Read(ctx, t.tenant, t.cardSession)
+	if err != nil {
+		return nil, fmt.Errorf("reading the chat for the draft's check: %w", err)
+	}
+	shown := []session.Event{}
+	for _, e := range events {
+		if e.Kind == session.Component || e.Kind == session.Answered {
+			shown = append(shown, e)
+		}
+	}
+	return shown, nil
 }
 
 // draftVersion is the version KIFF shows for draft now: the one the check is

@@ -18,8 +18,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kiff/agents/cmd/internal/testaccount"
+	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool/show"
 )
 
@@ -557,5 +560,64 @@ func TestAnotherTafsGrantIsNeverTheRuns(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(f.calls, "\n"), "/confirm") {
 		t.Fatalf("confirmed: %v", f.calls)
+	}
+}
+
+// Eval 45028072347: the harness's check read no chat, so it confirmed drafts
+// the phone's read of the chat refuses for their rules (a confirm skipped, a
+// notice whose words gave no figures). While the setup chat's cards are
+// answered, each check shows tafs cloud that chat's cards and answers, in
+// order, and nothing else; outside it, none.
+func TestADraftsCheckShowsTheChatsCardsAndAnswers(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	tt, f := checkWorld(t, map[string]any{"outcome": "ok", "version": "v3"})
+	sessions := memory.New()
+	if err := sessions.Create(ctx, session.Session{ID: "s1", Tenant: "tnt", Agent: "setup", Started: now, Updated: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.Begin(ctx, "tnt", "s1", "r1", now); err != nil {
+		t.Fatal(err)
+	}
+	ev := func(seq int64, kind session.EventKind, body string) session.Event {
+		return session.Event{Session: "s1", Run: "r1", Seq: seq, Time: now, Kind: kind, Body: json.RawMessage(body)}
+	}
+	if err := sessions.Append(ctx, "tnt", "s1", "r1", []session.Event{
+		ev(1, session.OwnerMessage, `{"text":"refund customers"}`),
+		ev(2, session.Component, `{"type":"notice","id":"rules-1","text":"Refunds over €5 ask you.","rules":[{"tool":"refund_charge","over":"ask"}]}`),
+		ev(3, session.Component, `{"type":"confirm","id":"agree-1","agrees":"rules-1","options":[{"value":"agree","label":"Agree"}]}`),
+		ev(4, session.Answered, `{"id":"agree-1","type":"confirm","answer":"agree","words":"Agree"}`),
+		ev(5, session.AgentMessage, `{"text":"drafting"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.tenant, tt.sessions = "tnt", sessions
+
+	// Outside the setup's chat: no conversation, as before.
+	if _, err := tt.checkDraft(ctx, "grt_1", "drf_1", "v3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := f.asked["conversation"]; sent {
+		t.Fatalf("a check outside the setup's chat sent a conversation: %v", f.asked)
+	}
+	// In it: its cards and answers, in order, nothing else.
+	tt.cardSession = "s1"
+	if _, err := tt.checkDraft(ctx, "grt_1", "drf_1", "v3"); err != nil {
+		t.Fatal(err)
+	}
+	shown, _ := f.asked["conversation"].([]any)
+	var got []string
+	for _, e := range shown {
+		m := e.(map[string]any)
+		body, _ := m["body"].(map[string]any)
+		got = append(got, fmt.Sprintf("%v %v %v", m["kind"], m["run"], body["id"]))
+	}
+	if want := []string{"component r1 rules-1", "component r1 agree-1", "answered r1 agree-1"}; !slices.Equal(got, want) {
+		t.Fatalf("the conversation shown: %q, want %q", got, want)
+	}
+	// A chat it can't read fails the step rather than check without it.
+	tt.cardSession = "s9"
+	if _, err := tt.checkDraft(ctx, "grt_1", "drf_1", "v3"); err == nil {
+		t.Fatal("a chat that can't be read was checked without its rules")
 	}
 }
