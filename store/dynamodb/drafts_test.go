@@ -72,7 +72,14 @@ func (f *fakeKMS) Decrypt(_ context.Context, in *kms.DecryptInput, _ ...func(*km
 	return &kms.DecryptOutput{Plaintext: plain}, nil
 }
 
-var draftT0 = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+// draftT0 is the store's clock at the start of a test: the real time, so
+// every "ttl" a record is written with is in the future. DynamoDB Local
+// deletes items past their "ttl" now and then, as DynamoDB does: from a
+// fixed date, the records went missing at random once that date plus their
+// keep was past (from 20 Nov 12:00 UTC), and the tests that read the raw
+// item failed. The store's own clock still moves past a record's time
+// (*now = draftT0.Add(...)); only the table's never does.
+var draftT0 = time.Now().UTC().Truncate(time.Second)
 
 func draftsStore(t *testing.T) (*dynamodb.Drafts, *ddb.Client, string, *fakeKMS, *time.Time) {
 	t.Helper()

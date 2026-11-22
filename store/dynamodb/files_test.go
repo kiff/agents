@@ -19,7 +19,9 @@ func file(tenant, id, agent string, expires time.Time) files.File {
 func TestFiles(t *testing.T) {
 	db := local(t)
 	st := dynamodb.NewFiles(db, table(t, db))
-	t0 := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	// The real time, so each file's "ttl" is in the future and DynamoDB
+	// Local never deletes one mid-test (see draftT0).
+	t0 := time.Now().UTC().Truncate(time.Second)
 	a, b, c := file("t1", "fil_a", "refunds", t0), file("t1", "fil_b", "payouts", t0.Add(time.Hour)), file("t2", "fil_c", "refunds", t0)
 	for _, f := range []files.File{a, b, c} {
 		if err := st.Create(ctx, f); err != nil {
