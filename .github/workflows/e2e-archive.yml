@@ -7,13 +7,14 @@ name: E2E archive
 # agent is never archived here.
 #
 # By hand only. The log is public, inputs included, so the input is the
-# taf's first characters (agt_ and at least 4 more), never the whole id:
+# taf's first characters (agt_ and at least 4 more, or the first 8 of an
+# older taf's id, which KIFF named by its job: "refunds-…"), never the whole id:
 # the one taf of the test account they start is the one archived.
 on:
   workflow_dispatch:
     inputs:
       taf:
-        description: "8 characters of the taf, e.g. agt_qwBr. NEVER the whole id: this log is public, inputs included"
+        description: "8 to 12 characters of the taf, e.g. agt_qwBr or refunds-ab. NEVER the whole id: this log is public, inputs included"
         type: string
         required: true
 permissions:
@@ -37,5 +38,5 @@ jobs:
           E2E_PHONE_KEY: ${{ secrets.E2E_PHONE_KEY }}
           TAF: ${{ inputs.taf }}
         run: |
-          case "$TAF" in agt_*) ;; *) echo "not a taf id"; exit 1 ;; esac
+          case "$TAF" in *[!A-Za-z0-9_-]*) echo "not a taf id"; exit 1 ;; esac
           go run ./cmd/e2e -archive "$TAF"

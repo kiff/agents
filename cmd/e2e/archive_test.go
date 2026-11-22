@@ -22,7 +22,7 @@ import (
 // public log never names a whole id, even in KIFF's own words.
 func TestArchiveTakesOneTafByItsPrefixAndReadsItBack(t *testing.T) {
 	var mu sync.Mutex
-	agents := []string{"agt_setup0000aaaa", "agt_qwBr3staleone", "agt_twin1aaaa", "agt_twin2bbbb", "agt_failsWholeId", "agt_stays00000"}
+	agents := []string{"agt_setup0000aaaa", "agt_qwBr3staleone", "agt_twin1aaaa", "agt_twin2bbbb", "agt_failsWholeId", "agt_stays00000", "refunds-i2pxkwpf", "refunds-ab12"}
 	var archives []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -70,13 +70,21 @@ func TestArchiveTakesOneTafByItsPrefixAndReadsItBack(t *testing.T) {
 		{"agt_none", "0 of the test account's tafs"},
 		{"agt_qwBr3staleone", "never its whole id"}, // a whole id given by mistake
 		{"agt_", "never its whole id"},
-		{"taf_qwBr", "never its whole id"},
+		{"taf_qwBr", "0 of the test account's tafs"},
+		{"refunds-ab12", "never its whole id"}, // an older id short enough to pass for a prefix
+		{"refunds-", "2 of the test account's tafs"},
 	} {
 		n := len(archives)
 		err := archiveAgent(ctx, kiffc, c.prefix, &out)
 		if err == nil || !strings.Contains(err.Error(), c.says) || len(archives) != n {
 			t.Fatalf("%s: %v, %d archives sent", c.prefix, err, len(archives)-n)
 		}
+	}
+	// An older taf, whose id KIFF made from its job before agt_ ids.
+	out.Reset()
+	if err := archiveAgent(ctx, kiffc, "refunds-i2px", &out); err != nil || archives[len(archives)-1] != "refunds-i2pxkwpf" ||
+		strings.Contains(out.String(), "refunds-i2pxkwpf") {
+		t.Fatalf("an older taf by its first characters: %v %v\n%s", err, archives, out.String())
 	}
 	err := archiveAgent(ctx, kiffc, "agt_fail", &out)
 	if err == nil || strings.Contains(err.Error(), "agt_failsWholeId") || !strings.Contains(err.Error(), "agt_fail…") {
