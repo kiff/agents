@@ -824,9 +824,11 @@ func TestTheCardIsGradedAgainstTheAgreedRules(t *testing.T) {
 			t.Fatalf("the rule doesn't say %q", want)
 		}
 	}
-	// The reads' Card carries a count KIFF needs on every Card (draft-the-card@24): the rules show it as KIFF's, and the judge
-	// passes it, at the number the rules name, never as a limit the owner set.
-	for _, want := range []string{"a count on reads the rules say KIFF adds", "it's KIFF's, not a limit the owner set", "at the number the rules name"} {
+	// A Card the owner gave no total carries a count KIFF needs on every Card (draft-the-card@24), the reads' or a held one's
+	// such as refunds: the rules show it as KIFF's, and the judge passes it, at the number the rules name, never as a limit
+	// the owner set, an amount or a ceiling over all time (Eval 45068625539, setup run 1).
+	for _, want := range []string{"A line the rules mark \"KIFF adds it\" is KIFF's own count of calls a day, on any tool", "such as refunds",
+		"It's KIFF's, not a limit the owner set", "never an amount or a money ceiling, never over all time", "at the number the rules name", "is never a reason to fail"} {
 		if !strings.Contains(agreedRule, want) {
 			t.Fatalf("the rule doesn't say %q", want)
 		}
@@ -1096,5 +1098,28 @@ func TestACurrencyTheRulesKeepIsHeldByTheMoneyTool(t *testing.T) {
 		if got := unheldCurrency(said{connected: []grantTool{{Tool: "create_refund", AmountArg: "amount", AmountUnit: "USD"}}}, rule); !strings.Contains(got, "EUR") {
 			t.Fatalf("%q: %q", rule, got)
 		}
+	}
+}
+
+// The judge reads the notice line by line, so KIFF's own count stays on its
+// own line (Eval 45068625539, setup run 1: flattened, the reads' "10,000 a day
+// (KIFF adds it)" ran into the refunds line, and the judge failed a 10,000 EUR
+// ceiling on refunds no Card held). Each line's spacing is tidied, and blank
+// lines go; the earlier rules, numbered, stay one line each.
+func TestTheJudgeReadsTheAgreedRulesLineByLine(t *testing.T) {
+	notice := "Your rules\nReads Stripe as much as it needs   10,000 a day (KIFF adds it)\n\n  Refunds: asks you past €5 a refund\nRefuses past €50 a day"
+	got := agreedPrompt([]string{notice})
+	want := "The rules agreed last, which the Cards must hold:\nYour rules\nReads Stripe as much as it needs 10,000 a day (KIFF adds it)\n" +
+		"Refunds: asks you past €5 a refund\nRefuses past €50 a day\n"
+	if got != want {
+		t.Fatalf("the judge reads:\n%s\nwant:\n%s", got, want)
+	}
+	for _, l := range strings.Split(got, "\n") {
+		if strings.Contains(l, "KIFF adds it") && strings.Contains(l, "Refund") {
+			t.Fatalf("KIFF's count ran into the refunds line: %q", l)
+		}
+	}
+	if got := agreedPrompt([]string{"Earlier\n€50 a refund", notice}); !strings.Contains(got, "\n1. Earlier €50 a refund\n") {
+		t.Fatalf("an earlier rule, numbered on one line:\n%s", got)
 	}
 }

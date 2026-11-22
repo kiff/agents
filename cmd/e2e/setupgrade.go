@@ -831,8 +831,11 @@ const agreedRule = "The rules below are what the owner agreed in the chat: the r
 	"on the tools it names, over its period (a day, an hour, each call), held for the owner or refused as the rules say. " +
 	"Fail if a limit was merged with another (two limits of 1,000 a day each held as one of 2,000 a day), if a number, a period or the tools " +
 	"a limit covers differ, or if the Cards allow something the rules hold or refuse; name the rule it breaks. A read the rules call generous " +
-	"with no number passes with any daily count, and so does a count on reads the rules say KIFF adds (KIFF needs a total on every Card): " +
-	"it's KIFF's, not a limit the owner set, so it passes at the number the rules name, or at any number when they name none. How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
+	"with no number passes with any daily count. A line the rules mark \"KIFF adds it\" is KIFF's own count of calls a day, on any tool " +
+	"(the reads, or a Card whose only figure is each call's cap, such as refunds): KIFF needs a total on every Card, so it adds one. " +
+	"It's KIFF's, not a limit the owner set: never an amount or a money ceiling, never over all time, and its number never belongs to " +
+	"the line before or after it. It passes at the number the rules name, or at any number when they name none, and is never a reason to fail. " +
+	"How to read the Cards: each grant's action is a tool; per_action_max bounds one call; " +
 	"an aggregate's limit over its window bounds the calls together, unless it has a per: then the limit is for each value of that " +
 	"argument apart, so {count, lifetime, 1, per: order} is one per order, ever, never one in all; on_exceed \"owner\" (or none) holds past a limit, \"refuse\" refuses. " +
 	"Past a per_action_max, a call held for the owner can be approved once. Past an aggregate's limit, a call held for the owner can't be " +
@@ -904,12 +907,27 @@ func agreesTo(next component) bool {
 // where the last covers the same tools (the Refunds owner changed €50 to €5,
 // and a judge shown both in order compared the Card with the first).
 func agreedPrompt(rules []string) string {
-	last := "The rules agreed last, which the Cards must hold:\n" + strings.Join(strings.Fields(rules[len(rules)-1]), " ") + "\n"
+	last := "The rules agreed last, which the Cards must hold:\n" + lineByLine(rules[len(rules)-1]) + "\n"
 	if len(rules) == 1 {
 		return last
 	}
 	return last + "\nEarlier rules shown, in order, each replaced by the rules agreed last wherever those cover the same tools; " +
 		"a rule only an earlier one states, about a tool the last doesn't mention, still holds:\n" + numbered(rules[:len(rules)-1])
+}
+
+// lineByLine is a notice as the judge reads it: each line's spacing tidied,
+// the lines kept, so a line's marker stays with its own figure (Eval
+// 45068625539, setup run 1: flattened, the reads' "10,000 a day (KIFF adds
+// it)" ran into the refunds line, and the judge read a 10,000 EUR ceiling on
+// refunds no Card held).
+func lineByLine(text string) string {
+	var lines []string
+	for _, l := range strings.Split(text, "\n") {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // gradeAgreed grades signsWhatWasAgreed: the notices Setup showed against the
