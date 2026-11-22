@@ -152,7 +152,8 @@ func (d *Drafts) Get(ctx context.Context, tenant, draft string) (drafts.Record, 
 
 // List opens each of the tenant's draft records, by draft, leaving out any
 // past its "until". Each is opened under its own tenant and draft, as Get
-// does, so a record moved under this tenant doesn't open.
+// does, and before its time is read, so a record moved under this tenant
+// fails the list, expired or not.
 func (d *Drafts) List(ctx context.Context, tenant string) (map[string]drafts.Record, error) {
 	if tenant == "" {
 		return nil, errors.New("dynamodb: listing drafts needs a tenant")
@@ -171,9 +172,6 @@ func (d *Drafts) List(ctx context.Context, tenant string) (map[string]drafts.Rec
 		}
 		for _, it := range page.Items {
 			draft := getS(it, "sk")
-			if until := getN(it, "until"); until != 0 && !d.now().Before(time.Unix(until, 0)) {
-				continue
-			}
 			sealed, _ := it["sealed"].(*types.AttributeValueMemberB)
 			if draft == "" || sealed == nil || len(sealed.Value) == 0 {
 				return nil, errors.New("dynamodb: a draft's record is not sealed")
@@ -185,6 +183,11 @@ func (d *Drafts) List(ctx context.Context, tenant string) (map[string]drafts.Rec
 			var r drafts.Record
 			if err := json.Unmarshal(opened.Plaintext, &r); err != nil {
 				return nil, errors.New("dynamodb: a draft's record is not a record")
+			}
+			// Left out past its time only once it's opened: a row that doesn't
+			// open fails the list, expired or not.
+			if until := getN(it, "until"); until != 0 && !d.now().Before(time.Unix(until, 0)) {
+				continue
 			}
 			out[draft] = r
 		}

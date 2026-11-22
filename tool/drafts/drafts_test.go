@@ -64,6 +64,21 @@ func TestSubmit(t *testing.T) {
 	if r, _ := tl.Call(context.Background(), json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[{"id":"c1"}],"requester":{"kind":"member","id":"user_other"}}`)); !r.IsError {
 		t.Fatalf("a requester the model named was taken: %+v", r)
 	}
+	// The label is kept trimmed, and at most 100 characters: a longer one
+	// doesn't fail the submit.
+	long := strings.Repeat("é", 4000)
+	if r, err := tl.Call(asked, json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"  `+long+`  ","cards":[{"id":"c1"}]}`)); err != nil || r.IsError {
+		t.Fatalf("a long label: %+v %v", r, err)
+	}
+	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Label != strings.Repeat("é", 100) {
+		t.Fatalf("the long label kept: %d characters", len([]rune(rec.Label)))
+	}
+	if r, err := tl.Call(asked, json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"  Refunds  ","cards":[{"id":"c1"}]}`)); err != nil || r.IsError {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Label != "Refunds" {
+		t.Fatalf("the label kept untrimmed: %q", rec.Label)
+	}
 	// A mark that isn't a valid requester is kept as none.
 	bad := run.WithRequester(context.Background(), run.Requester{Kind: "someone", ID: "x"})
 	if r, err := tl.Call(bad, json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[{"id":"c1"}]}`)); err != nil || r.IsError {

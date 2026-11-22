@@ -312,6 +312,7 @@ func TestUnclaimedListsTheDraftsNoTafHasClaimed(t *testing.T) {
 		"drf_0":        {AgentID: "agt_summary", Secret: "kiff_claim_x", Label: "Day summary"},
 		"drf_claimed":  {AgentID: "agt_done", Claimed: true, KeyRef: "ref"},
 		"drf_mismatch": {AgentID: "agt_bad", Mismatch: true, Key: "kiff_key_y"},
+		"drf_noagent":  {Secret: "kiff_claim_w", Label: "No agent"},
 	} {
 		if err := m.Put(ctx, "t1", id, r); err != nil {
 			t.Fatal(err)

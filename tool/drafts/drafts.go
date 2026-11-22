@@ -274,10 +274,20 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	}
 }
 
-// submitted is what's kept of a submit: the draft's name, and who the run
-// that made it was for, as the runner marked the run (never the model).
+// maxKeptLabel is the longest label kept with a draft, in characters, as the
+// tool's schema asks: the record is sealed in one KMS call, and the label is
+// shown as the taf's name while it's set up.
+const maxKeptLabel = 100
+
+// submitted is what's kept of a submit: the draft's name, at most
+// maxKeptLabel characters, and who the run that made it was for, as the
+// runner marked the run (never the model).
 func submitted(ctx context.Context, label string) drafts.Submitted {
-	by := drafts.Submitted{Label: strings.TrimSpace(label)}
+	label = strings.TrimSpace(label)
+	if r := []rune(label); len(r) > maxKeptLabel {
+		label = strings.TrimSpace(string(r[:maxKeptLabel]))
+	}
+	by := drafts.Submitted{Label: label}
 	if q, ok := run.RequesterFrom(ctx); ok && q.Valid() {
 		by.Requester = &drafts.Requester{Kind: string(q.Kind), ID: q.ID}
 	}
