@@ -97,11 +97,18 @@ of its eight kinds):
     of them, so each starts with the line. Whoever reads the message reads it
     before anything else, as the Commission's guidelines show the label.
   - **In the message's language:** `lines` is the same sentence in other
-    languages, by ISO 639-1 code (`{"es": "Escrito por un agente de IA para
-    la empresa."}`), at most 12. The line that goes first is the one in the
-    language the message is written in, told by the common words of all its
-    fields read together (html tags left out): at least two, and more than
-    any other language's. Otherwise, `line`. Every field gets the same one.
+    languages, by two-letter code (`{"es": "Escrito por un agente de IA para
+    la empresa."}`; `zh` is Traditional Chinese and `sr` is Serbian in either
+    script), at most 48. The line that goes first is the one in the language
+    the message is written in, told from all its fields read together (html
+    tags left out) by every language the apps speak: a script one language
+    owns says it by itself (Hangul is Korean, kana Japanese, Thai, Greek,
+    Hebrew, Georgian, Armenian, Bengali, Khmer and Lao likewise, Han alone
+    Chinese), and a script several share (Latin, Cyrillic, Arabic, Devanagari)
+    by the common words of its languages: at least two, and more than any
+    other's. So Urdu is never taken for Arabic, nor Hindi for Nepali, and a
+    text of mixed scripts, with too few words or with two languages tied, gets
+    `line`. Otherwise, `line`. Every field gets the same one.
   - **Said once, wherever the model put it:** each of the lines, in any
     language and as html writes it (`&amp;` for `&`), is taken out of each
     field wherever it is, with the space around it, before the right one goes
