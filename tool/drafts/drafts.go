@@ -19,6 +19,7 @@ import (
 	"github.com/kiff/agents/drafts"
 	"github.com/kiff/agents/drafts/kiffapi"
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/tool"
 )
 
@@ -249,7 +250,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 	var renamed []string
 	for {
 		body, _ := json.Marshal(map[string]any{"agent_id": in.AgentID, "label": in.Label, "cards": cards})
-		d, err := t.svc.Submit(ctx, t.tenant, t.key, body)
+		d, err := t.svc.Submit(ctx, t.tenant, t.key, body, submitted(ctx, in.Label))
 		if i := refusedCard(err); i >= 0 && i < len(cards) {
 			if was, ok := underAgent(in.AgentID, cards[i]); ok {
 				renamed = append(renamed, strconv.Quote(was))
@@ -271,4 +272,24 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		}
 		return tool.Result{Text: text}, nil
 	}
+}
+
+// maxKeptLabel is the longest label kept with a draft, in characters, as the
+// tool's schema asks: the record is sealed in one KMS call, and the label is
+// shown as the taf's name while it's set up.
+const maxKeptLabel = 100
+
+// submitted is what's kept of a submit: the draft's name, at most
+// maxKeptLabel characters, and who the run that made it was for, as the
+// runner marked the run (never the model).
+func submitted(ctx context.Context, label string) drafts.Submitted {
+	label = strings.TrimSpace(label)
+	if r := []rune(label); len(r) > maxKeptLabel {
+		label = strings.TrimSpace(string(r[:maxKeptLabel]))
+	}
+	by := drafts.Submitted{Label: label}
+	if q, ok := run.RequesterFrom(ctx); ok && q.Valid() {
+		by.Requester = &drafts.Requester{Kind: string(q.Kind), ID: q.ID}
+	}
+	return by
 }

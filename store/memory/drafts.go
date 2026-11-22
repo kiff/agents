@@ -42,6 +42,19 @@ func (d *Drafts) Get(_ context.Context, tenant, draft string) (drafts.Record, er
 	return r, nil
 }
 
+// List is the tenant's records, by draft.
+func (d *Drafts) List(_ context.Context, tenant string) (map[string]drafts.Record, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := map[string]drafts.Record{}
+	for k, r := range d.records {
+		if k[0] == tenant {
+			out[k[1]] = r
+		}
+	}
+	return out, nil
+}
+
 func (d *Drafts) Key(_ context.Context, tenant, ref string) (string, bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -156,3 +156,62 @@ func TestNoClaimRouteWithoutDrafts(t *testing.T) {
 		t.Fatalf("served without drafts: %d", resp.StatusCode)
 	}
 }
+
+// lister lists t1's unclaimed drafts, as the drafts Store keeps each tenant's own.
+type lister struct{ claims }
+
+func (l *lister) Unclaimed(_ context.Context, tenant string) ([]drafts.Unclaimed, error) {
+	if tenant != "t1" {
+		return nil, nil
+	}
+	return []drafts.Unclaimed{
+		{ID: "drf_0", AgentID: "agt_summary", Label: "Day summary", Requester: &drafts.Requester{Kind: "member", ID: "user_owner"}},
+		{ID: "drf_1", AgentID: "agt_old"},
+	}, nil
+}
+
+// The list route answers the caller's own unclaimed drafts, with no secret,
+// for claimed=false only; without a store that lists, none (404).
+func TestDraftListRoute(t *testing.T) {
+	auth := func(r *http.Request) (server.Caller, error) {
+		if t := r.Header.Get("X-Test-Tenant"); t != "" {
+			return server.Caller{Tenant: t}, nil
+		}
+		return server.Caller{}, errors.New("unverified")
+	}
+	get := func(srv *httptest.Server, tenant, query string) (int, string) {
+		req, _ := http.NewRequest("GET", srv.URL+"/drafts"+query, nil)
+		if tenant != "" {
+			req.Header.Set("X-Test-Tenant", tenant)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, strings.TrimSpace(string(b))
+	}
+	srv := httptest.NewServer((&server.Server{Drafts: &lister{}, Auth: auth}).Handler())
+	defer srv.Close()
+	want := `{"drafts":[{"draft_id":"drf_0","agent_id":"agt_summary","name":"Day summary","requester":{"kind":"member","id":"user_owner"}},{"draft_id":"drf_1","agent_id":"agt_old"}]}`
+	if st, body := get(srv, "t1", "?claimed=false"); st != 200 || body != want {
+		t.Fatalf("t1: %d %s", st, body)
+	}
+	if st, body := get(srv, "t2", "?claimed=false"); st != 200 || body != `{"drafts":[]}` {
+		t.Fatalf("t2: %d %s", st, body)
+	}
+	for _, q := range []string{"", "?claimed=true", "?claimed=no"} {
+		if st, _ := get(srv, "t1", q); st != 400 {
+			t.Errorf("%q: %d, want 400", q, st)
+		}
+	}
+	if st, _ := get(srv, "", "?claimed=false"); st != 401 {
+		t.Errorf("unverified: %d, want 401", st)
+	}
+	plain := httptest.NewServer((&server.Server{Drafts: &claims{}, Auth: auth}).Handler())
+	defer plain.Close()
+	if st, _ := get(plain, "t1", "?claimed=false"); st != 404 {
+		t.Errorf("a store that can't list: %d, want 404", st)
+	}
+}

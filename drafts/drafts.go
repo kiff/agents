@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 )
 
@@ -50,7 +51,44 @@ type Record struct {
 	// KeyRef and Claimed say where the key went, once claimed.
 	KeyRef  string `json:"key_ref,omitempty"`
 	Claimed bool   `json:"claimed,omitempty"`
+	// Label and Requester are the draft's name, as the setup gave it, and
+	// who the setup ran for, kept at submit so tafs cloud can list a draft
+	// no taf has claimed yet (kiff/tafs#1652). A record kept before them has
+	// neither.
+	Label     string     `json:"label,omitempty"`
+	Requester *Requester `json:"requester,omitempty"`
 }
+
+// Requester is who a run was for, as the run names it: a member by their
+// KIFF subject, a door's sender, or an agent.
+type Requester struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+// Submitted is what's kept of a submit beside its claim secret.
+type Submitted struct {
+	Label     string
+	Requester *Requester
+}
+
+// Lister lists a tenant's draft records by draft, leaving out any past its
+// time. A Store that is one lets the unclaimed drafts be listed.
+type Lister interface {
+	List(ctx context.Context, tenant string) (map[string]Record, error)
+}
+
+// Unclaimed is a draft submitted on the tenant whose key no taf has
+// claimed: never its secret or key.
+type Unclaimed struct {
+	ID        string
+	AgentID   string
+	Label     string
+	Requester *Requester
+}
+
+// ErrNoList: the store can't list a tenant's drafts.
+var ErrNoList = errors.New("drafts: this store can't list a tenant's drafts")
 
 // Store keeps each submitted draft's Record under its tenant. A Store keeps
 // one tenant's records out of another's reach.
@@ -125,7 +163,7 @@ type Service struct {
 
 // Submit creates the draft with the submitting agent's key and keeps its
 // claim secret. The draft it returns carries no secret.
-func (s *Service) Submit(ctx context.Context, tenant, key string, body json.RawMessage) (Draft, error) {
+func (s *Service) Submit(ctx context.Context, tenant, key string, body json.RawMessage, by Submitted) (Draft, error) {
 	d, secret, err := s.KIFF.Submit(ctx, key, body)
 	if err != nil {
 		return Draft{}, err
@@ -144,7 +182,7 @@ func (s *Service) Submit(ctx context.Context, tenant, key string, body json.RawM
 	if !strings.HasPrefix(secret, "kiff_claim_") {
 		return Draft{}, errors.New("drafts: KIFF's answer has no claim secret")
 	}
-	if err := s.Store.Put(ctx, tenant, d.ID, Record{AgentID: d.AgentID, Secret: secret}); err != nil {
+	if err := s.Store.Put(ctx, tenant, d.ID, Record{AgentID: d.AgentID, Secret: secret, Label: by.Label, Requester: by.Requester}); err != nil {
 		return Draft{}, fmt.Errorf("drafts: keeping the claim secret: %w", err)
 	}
 	return d, nil
@@ -238,6 +276,29 @@ func (s *Service) Agent(ctx context.Context, tenant, draft string) (string, bool
 		return "", false, err
 	}
 	return rec.AgentID, rec.Claimed, nil
+}
+
+// Unclaimed are the tenant's drafts whose key no taf has claimed, by draft
+// id: neither claimed nor held back as a mismatch. ErrNoList when the store
+// can't list.
+func (s *Service) Unclaimed(ctx context.Context, tenant string) ([]Unclaimed, error) {
+	l, ok := s.Store.(Lister)
+	if !ok {
+		return nil, ErrNoList
+	}
+	recs, err := l.List(ctx, tenant)
+	if err != nil {
+		return nil, err
+	}
+	out := []Unclaimed{}
+	for id, r := range recs {
+		if r.Claimed || r.Mismatch || r.AgentID == "" {
+			continue
+		}
+		out = append(out, Unclaimed{ID: id, AgentID: r.AgentID, Label: r.Label, Requester: r.Requester})
+	}
+	slices.SortFunc(out, func(a, b Unclaimed) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 // isDraftsAgent reports whether KIFF says key speaks for the draft's agent

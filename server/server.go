@@ -265,6 +265,7 @@ func (s *Server) Handler() http.Handler {
 	if s.Drafts != nil {
 		route("POST /drafts/{draft_id}/claim", s.claimDraft)
 		route("GET /drafts/{draft_id}", s.getDraft)
+		route("GET /drafts", s.listDrafts)
 	}
 	route("GET /agents/{id}/runs", s.listRuns)
 	route("GET /agents/{id}/runs/by-key", s.runByKey)

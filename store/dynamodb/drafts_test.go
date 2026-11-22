@@ -245,3 +245,53 @@ func TestDraftRecordsErase(t *testing.T) {
 		}
 	}
 }
+
+// List opens the tenant's records and only its own, leaving out any past
+// its time; one moved from another tenant doesn't open.
+func TestDraftRecordsList(t *testing.T) {
+	d, db, name, _, now := draftsStore(t)
+	for _, c := range []struct {
+		tenant, draft string
+		r             drafts.Record
+	}{
+		{"t1", "drf_a", drafts.Record{AgentID: "a", Secret: "s", Label: "A", Requester: &drafts.Requester{Kind: "member", ID: "u1"}}},
+		{"t1", "drf_b", drafts.Record{AgentID: "b", Claimed: true, KeyRef: "r"}},
+		{"t10", "drf_c", drafts.Record{AgentID: "c", Claimed: true, KeyRef: "r10"}},
+	} {
+		if err := d.Put(ctx, c.tenant, c.draft, c.r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := d.List(ctx, "t1")
+	if err != nil || len(got) != 2 || got["drf_a"].Label != "A" || got["drf_a"].Requester == nil || got["drf_a"].Requester.ID != "u1" || !got["drf_b"].Claimed {
+		t.Fatalf("t1: %+v %v", got, err)
+	}
+	// Past drf_a's time (48 h unclaimed), within drf_b's (14 days claimed).
+	*now = draftT0.Add(48 * time.Hour)
+	if got, err := d.List(ctx, "t1"); err != nil || len(got) != 1 || got["drf_b"].AgentID != "b" {
+		t.Fatalf("past drf_a's time: %+v %v", got, err)
+	}
+	// A record moved under t1 from t10 doesn't open: the list fails, never
+	// shows it, whether the record is within its time (drf_c, claimed) or
+	// past it (drf_d, unclaimed at the start).
+	for _, from := range []string{"drf_c", "drf_d"} {
+		if from == "drf_d" {
+			*now = draftT0
+			if err := d.Put(ctx, "t10", "drf_d", drafts.Record{AgentID: "d", Secret: "s"}); err != nil {
+				t.Fatal(err)
+			}
+			*now = draftT0.Add(48 * time.Hour)
+		}
+		moved := rawItem(t, db, name, "t10", from)
+		moved["pk"] = rawItem(t, db, name, "t1", "drf_b")["pk"]
+		if _, err := db.PutItem(ctx, &ddb.PutItemInput{TableName: &name, Item: moved}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := d.List(ctx, "t1"); err == nil || got != nil {
+			t.Fatalf("%s moved under t1 was listed: %+v %v", from, got, err)
+		}
+		if _, err := db.DeleteItem(ctx, &ddb.DeleteItemInput{TableName: &name, Key: map[string]types.AttributeValue{"pk": moved["pk"], "sk": moved["sk"]}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

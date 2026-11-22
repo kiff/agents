@@ -72,7 +72,7 @@ func newService() (*drafts.Service, *kiff, *memory.Drafts) {
 
 func submit(t *testing.T, s *drafts.Service) drafts.Draft {
 	t.Helper()
-	d, err := s.Submit(ctx, "t1", "kiff_key_setup", json.RawMessage(`{"agent_id":"agt_refunds","label":"Refunds","cards":[]}`))
+	d, err := s.Submit(ctx, "t1", "kiff_key_setup", json.RawMessage(`{"agent_id":"agt_refunds","label":"Refunds","cards":[]}`), drafts.Submitted{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestSubmitKeepsTheSecretFromTheModel(t *testing.T) {
 // key already: KIFF gives no claim secret, and none is kept or needed.
 func TestSubmitTakesARevisionWithNoClaimSecret(t *testing.T) {
 	s, _, m := newService()
-	d, err := s.Submit(ctx, "t1", "kiff_key_setup", json.RawMessage(`{"agent_id":"agt_holds_cards","label":"Refunds","cards":[]}`))
+	d, err := s.Submit(ctx, "t1", "kiff_key_setup", json.RawMessage(`{"agent_id":"agt_holds_cards","label":"Refunds","cards":[]}`), drafts.Submitted{})
 	if err != nil || d.ID != "drf_2" || !d.Revision {
 		t.Fatalf("submit = %+v, %v", d, err)
 	}
@@ -297,4 +297,60 @@ func TestKIFFFailingOnAHeldRefIsNotTaken(t *testing.T) {
 	if agent, err := s.Claim(ctx, "t1", "drf_1", "kiff/taf-1"); err != nil || agent != "agt_refunds" {
 		t.Fatalf("retry: %q %v", agent, err)
 	}
+}
+
+// The drafts no taf has claimed are listed with their name and who the
+// setup ran for, from the tenant's own records only, never their secret:
+// a claimed draft or one held back as a mismatch isn't listed.
+func TestUnclaimedListsTheDraftsNoTafHasClaimed(t *testing.T) {
+	s, _, m := newService()
+	owner := &drafts.Requester{Kind: "member", ID: "user_owner"}
+	if _, err := s.Submit(ctx, "t1", "kiff_key_setup", json.RawMessage(`{"agent_id":"agt_refunds","label":"Refunds","cards":[]}`), drafts.Submitted{Label: "Refunds", Requester: owner}); err != nil {
+		t.Fatal(err)
+	}
+	for id, r := range map[string]drafts.Record{
+		"drf_0":        {AgentID: "agt_summary", Secret: "kiff_claim_x", Label: "Day summary"},
+		"drf_claimed":  {AgentID: "agt_done", Claimed: true, KeyRef: "ref"},
+		"drf_mismatch": {AgentID: "agt_bad", Mismatch: true, Key: "kiff_key_y"},
+		"drf_noagent":  {Secret: "kiff_claim_w", Label: "No agent"},
+	} {
+		if err := m.Put(ctx, "t1", id, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.Put(ctx, "t2", "drf_9", drafts.Record{AgentID: "agt_other", Secret: "kiff_claim_z"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Unclaimed(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []drafts.Unclaimed{{ID: "drf_0", AgentID: "agt_summary", Label: "Day summary"}, {ID: "drf_1", AgentID: "agt_refunds", Label: "Refunds", Requester: owner}}
+	if len(got) != len(want) {
+		t.Fatalf("listed %+v", got)
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID || got[i].AgentID != want[i].AgentID || got[i].Label != want[i].Label ||
+			(got[i].Requester == nil) != (want[i].Requester == nil) || got[i].Requester != nil && *got[i].Requester != *want[i].Requester {
+			t.Fatalf("listed %+v, want %+v", got, want)
+		}
+	}
+	b, _ := json.Marshal(got)
+	if strings.Contains(string(b), "kiff_claim") || strings.Contains(string(b), "kiff_key") {
+		t.Fatalf("a secret or key was listed: %s", b)
+	}
+	// A store that can't list: ErrNoList, never an empty list taken as none.
+	if _, err := (&drafts.Service{Store: getOnly{m}}).Unclaimed(ctx, "t1"); !errors.Is(err, drafts.ErrNoList) {
+		t.Fatalf("a store that can't list: %v", err)
+	}
+}
+
+// getOnly is a Store that can't list.
+type getOnly struct{ m *memory.Drafts }
+
+func (g getOnly) Put(c context.Context, tenant, draft string, r drafts.Record) error {
+	return g.m.Put(c, tenant, draft, r)
+}
+func (g getOnly) Get(c context.Context, tenant, draft string) (drafts.Record, error) {
+	return g.m.Get(c, tenant, draft)
 }

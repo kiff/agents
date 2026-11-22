@@ -83,11 +83,12 @@ Turning off each guard fails its test: the allowlist, the URL check, the agent's
 
    A claim that stopped anywhere after the mint (before storing the key, or after storing it but before recording itself) is finished by its retry, without a second claim.
 4. **Store:** tafs cloud stores the taf's definition with that `key_ref`.
+5. **List (`GET /drafts?claimed=false`):** tafs cloud asks, with its verified tenant call, for the tenant's drafts no taf has claimed, so Home can show a taf whose Card was approved before its definition was stored (kiff/tafs#1652). Each comes as `{draft_id, agent_id, name, requester}`, never a secret or key: `name` is the draft's label and `requester` who the setup's run was for, both kept at submit from the run (the runner's mark, never the model's input). Claimed drafts, mismatches, records with no agent and records past their time aren't listed. A record written before the label and requester were kept is listed without them: tafs cloud then names it as Coach did and shows no Discard, since it can't tell whose it is. The label is kept trimmed and at most 100 characters. Only `claimed=false` is served (400 otherwise). A store that can't list (the secrets one) answers 404, which tafs cloud reads as none.
 
 **Opt-in:** `"drafts": true` on a definition. The server offers drafts only with `AGENTS_DRAFTS_PREFIX` set. That prefix must not overlap the agents' key prefix, so no key reference can name a claim secret. The function's role needs `secretsmanager:CreateSecret` on the agents' key prefix, `GetSecretValue` and `DeleteSecret` on the drafts' prefix, and `kms:Encrypt` and `Decrypt` on the drafts' key, only with a draft's encryption context (`infra/aws.sh`).
 
 **Tests:**
-- `drafts`: `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestARetryFinishesAfterTheKeyWasMinted`, `TestAKeyForAnotherAgentIsNotStored`, `TestAMismatchedKeyIsKeptForRevoking`, `TestKIFFFailingAfterTheClaimIsNotAMismatch`, `TestKIFFFailingOnAHeldRefIsNotTaken`;
+- `drafts`: `TestUnclaimedListsTheDraftsNoTafHasClaimed`, `TestSubmitKeepsTheSecretFromTheModel`, `TestClaim`, `TestClaimNeverReplacesAnotherKey`, `TestARetryFinishesAnInterruptedClaim`, `TestARetryFinishesAfterTheKeyWasMinted`, `TestAKeyForAnotherAgentIsNotStored`, `TestAMismatchedKeyIsKeptForRevoking`, `TestKIFFFailingAfterTheClaimIsNotAMismatch`, `TestKIFFFailingOnAHeldRefIsNotTaken`;
 - `drafts/kiffapi`: `TestClaim`;
 - `tool/drafts`: `TestSubmit`;
 - `server`: `TestClaimRoute`, `TestNoClaimRouteWithoutDrafts`;
