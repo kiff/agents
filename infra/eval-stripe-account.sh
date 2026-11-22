@@ -26,18 +26,26 @@ account() { printf 'user = "%s:"\n' "$1" | curl -fsS -K - https://api.stripe.com
 NEW=$(account "$STRIPE_API_KEY")
 [ -n "$NEW" ] || { say "Stripe didn't accept that key"; exit 1; }
 OLD=$(gh variable get EVAL_STRIPE_ACCOUNT -R "$REPO" 2>/dev/null || true)
-CURRENT=$(command aws --region "$REGION" --output text lambda get-function-configuration --function-name "$FN" \
-  --query Environment.Variables.STRIPE_API_KEY 2>/dev/null || true)
-[ -n "$CURRENT" ] && [ "$CURRENT" != None ] && OLD=${OLD:-$(account "$CURRENT")}
+# The tools' current key and token: from their one secret, or from the
+# function's environment where an older deploy left them.
+current() {
+  local v
+  v=$(command aws --region "$REGION" --output text secretsmanager get-secret-value --secret-id "$FN" \
+    --query SecretString 2>/dev/null | sed -n 's/.*"'"$1"'": *"\([A-Za-z0-9_]*\)".*/\1/p')
+  [ -n "$v" ] || v=$(command aws --region "$REGION" --output text lambda get-function-configuration --function-name "$FN" \
+    --query "Environment.Variables.$2" 2>/dev/null || true)
+  [ "$v" != None ] && printf '%s' "$v"
+}
+CURRENT=$(current stripe_api_key STRIPE_API_KEY || true)
+[ -n "$CURRENT" ] && OLD=${OLD:-$(account "$CURRENT")}
 if [ -n "$OLD" ] && [ "$OLD" = "$NEW" ]; then
   say "that key is the evals' current account ($NEW): make a sandbox for them and use its key"
   exit 1
 fi
 say "evals move to $NEW${OLD:+ (from $OLD)}"
 
-TOKEN=$(command aws --region "$REGION" --output text lambda get-function-configuration --function-name "$FN" \
-  --query Environment.Variables.STRIPEMCP_TOKEN 2>/dev/null || true)
-[ -n "$TOKEN" ] && [ "$TOKEN" != None ] || { say "no $FN to update: run infra/eval-stripemcp.sh up first"; exit 1; }
+TOKEN=$(current token STRIPEMCP_TOKEN || true)
+[ -n "$TOKEN" ] || { say "no $FN to update: run infra/eval-stripemcp.sh up first"; exit 1; }
 STRIPE_API_KEY=$STRIPE_API_KEY STRIPEMCP_TOKEN=$TOKEN AGENTS_REGION=$REGION "$(dirname "$0")/eval-stripemcp.sh" up
 printf '%s' "$STRIPE_API_KEY" | gh secret set STRIPE_API_KEY -R "$REPO"
 gh variable set EVAL_STRIPE_ACCOUNT -R "$REPO" --body "$NEW"

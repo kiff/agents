@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # The eval cases' Stripe tools (cmd/stripemcp) on AWS: one small Lambda
 # behind a public function URL, for KIFF's gateway to reach. Its bearer
-# token is its check. It holds a Stripe test-mode key only.
+# token is its check. It holds a Stripe test-mode key only. The key and the
+# token are kept in one Secrets Manager secret (agents-eval-stripemcp,
+# {"stripe_api_key", "token"}) that only the function's role reads; its
+# environment names that secret, never the values.
 #
 #   STRIPE_API_KEY=sk_test_… STRIPEMCP_TOKEN=… infra/eval-stripemcp.sh up
-#   infra/eval-stripemcp.sh down     # removes the function, its URL and role
+#   infra/eval-stripemcp.sh down     # removes the function, its URL, role and secret
 #
 # Config: AGENTS_REGION (eu-west-1). Prints the URL to register in KIFF.
 # Needs an aws-cli recent enough for add-permission --invoked-via-function-url.
@@ -15,6 +18,7 @@ cd "$(dirname "$0")/.."
 REGION=${AGENTS_REGION:-eu-west-1}
 FN=agents-eval-stripemcp
 ROLE=agents-eval-stripemcp
+SECRET=agents-eval-stripemcp
 # Each call runs in a subshell: the AWS CLI can take its parent shell down
 # when it fails, so "|| true" and "if !" wouldn't get to run otherwise.
 aws() ( command aws --region "$REGION" --output text "$@" )
@@ -25,8 +29,11 @@ if [ "${1:-}" = down ]; then
   aws lambda delete-function-url-config --function-name "$FN" 2>/dev/null || true
   aws lambda delete-function --function-name "$FN" 2>/dev/null || true
   aws iam delete-role-policy --role-name "$ROLE" --policy-name logs 2>/dev/null || true
+  aws iam delete-role-policy --role-name "$ROLE" --policy-name secret 2>/dev/null || true
   aws iam delete-role --role-name "$ROLE" 2>/dev/null || true
   aws logs delete-log-group --log-group-name "/aws/lambda/$FN" 2>/dev/null || true
+  # Recoverable for Secrets Manager's default window, then gone.
+  aws secretsmanager delete-secret --secret-id "$SECRET" >/dev/null 2>&1 || true
   say "removed"
   exit 0
 fi
@@ -52,17 +59,35 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name logs --policy-document
 # line, where any process could read them. Both are plain tokens (checked
 # above and here), so they need no JSON escaping.
 case "$STRIPE_API_KEY$STRIPEMCP_TOKEN" in *[!A-Za-z0-9_]*) echo "the key and token must be letters, digits and underscores" >&2; exit 1 ;; esac
+VALUE="$BUILD/secret.json"
+(umask 077; printf '{"stripe_api_key":"%s","token":"%s"}' "$STRIPE_API_KEY" "$STRIPEMCP_TOKEN" > "$VALUE")
+if aws secretsmanager describe-secret --secret-id "$SECRET" >/dev/null 2>&1; then
+  aws secretsmanager put-secret-value --secret-id "$SECRET" --secret-string "file://$VALUE" >/dev/null
+else
+  aws secretsmanager create-secret --name "$SECRET" --description "The eval Stripe tools' test-mode key and bearer token" \
+    --secret-string "file://$VALUE" >/dev/null
+  say "created secret $SECRET"
+fi
+rm -f "$VALUE"
+SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET" --query ARN)
+# The function's role reads that one secret, nothing else in Secrets Manager.
+aws iam put-role-policy --role-name "$ROLE" --policy-name secret --policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":"'"$SECRET_ARN"'"}]}'
+sleep 10 # a new grant takes a moment to reach the role: the next cold start reads the secret
+# Its environment names the secret only: the values leave it on this run.
 ENV="$BUILD/env.json"
-(umask 077; printf '{"Variables":{"STRIPE_API_KEY":"%s","STRIPEMCP_TOKEN":"%s"}}' "$STRIPE_API_KEY" "$STRIPEMCP_TOKEN" > "$ENV")
+printf '{"Variables":{"STRIPEMCP_SECRET":"%s"}}' "$SECRET_ARN" > "$ENV"
 if ! aws lambda get-function --function-name "$FN" >/dev/null 2>&1; then
   aws lambda create-function --function-name "$FN" --runtime provided.al2023 --architectures arm64 --handler bootstrap \
     --role "arn:aws:iam::$ACCOUNT:role/$ROLE" --zip-file "fileb://$BUILD/stripemcp.zip" \
     --timeout 30 --memory-size 256 --environment "file://$ENV" >/dev/null
   say "created function $FN"
 else
-  aws lambda update-function-configuration --function-name "$FN" --timeout 30 --memory-size 256 --environment "file://$ENV" >/dev/null
-  aws lambda wait function-updated-v2 --function-name "$FN"
+  # The code first: it reads the values from the environment or the secret,
+  # so it runs with either, while an older code can't read the secret.
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$BUILD/stripemcp.zip" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "$FN"
+  aws lambda update-function-configuration --function-name "$FN" --timeout 30 --memory-size 256 --environment "file://$ENV" >/dev/null
 fi
 aws lambda wait function-updated-v2 --function-name "$FN"
 aws logs create-log-group --log-group-name "/aws/lambda/$FN" 2>/dev/null || true
