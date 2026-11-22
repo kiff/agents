@@ -12,6 +12,7 @@ import (
 
 	"github.com/kiff/agents/drafts"
 	"github.com/kiff/agents/drafts/kiffapi"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
 	tooldrafts "github.com/kiff/agents/tool/drafts"
@@ -48,8 +49,28 @@ func TestSubmit(t *testing.T) {
 	if auth != "Bearer kiff_key_setup" || body != `{"agent_id":"agt_refunds","cards":[{"id":"c1"}],"label":"Refunds"}` {
 		t.Fatalf("sent %s with %q", body, auth)
 	}
-	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Secret != "kiff_claim_s3cret" {
+	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Secret != "kiff_claim_s3cret" || rec.Label != "Refunds" || rec.Requester != nil {
 		t.Fatalf("kept %+v", rec)
+	}
+	// Who the run was for is kept, from the runner's mark, never the model's
+	// input: a requester in the input is refused as an unknown field.
+	asked := run.WithRequester(context.Background(), run.Requester{Kind: run.ByMember, ID: "user_owner"})
+	if r, err := tl.Call(asked, json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[{"id":"c1"}]}`)); err != nil || r.IsError {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Requester == nil || *rec.Requester != (drafts.Requester{Kind: "member", ID: "user_owner"}) {
+		t.Fatalf("the requester kept: %+v", rec.Requester)
+	}
+	if r, _ := tl.Call(context.Background(), json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[{"id":"c1"}],"requester":{"kind":"member","id":"user_other"}}`)); !r.IsError {
+		t.Fatalf("a requester the model named was taken: %+v", r)
+	}
+	// A mark that isn't a valid requester is kept as none.
+	bad := run.WithRequester(context.Background(), run.Requester{Kind: "someone", ID: "x"})
+	if r, err := tl.Call(bad, json.RawMessage(`{"action":"submit","agent_id":"agt_refunds","label":"Refunds","cards":[{"id":"c1"}]}`)); err != nil || r.IsError {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if rec, _ := m.Get(context.Background(), "t1", "drf_1"); rec.Requester != nil {
+		t.Fatalf("an invalid requester was kept: %+v", rec.Requester)
 	}
 	refuse = true
 	r, err = tl.Call(context.Background(), json.RawMessage(`{"action":"submit","agent_id":"agt_x","cards":[{}]}`))

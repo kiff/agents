@@ -20,6 +20,43 @@ type DraftReader interface {
 	Agent(ctx context.Context, tenant, draft string) (agentID string, claimed bool, err error)
 }
 
+// DraftLister lists the caller's drafts no taf has claimed. A Drafts that is
+// one serves GET /drafts?claimed=false.
+type DraftLister interface {
+	Unclaimed(ctx context.Context, tenant string) ([]drafts.Unclaimed, error)
+}
+
+// listDrafts is tafs cloud asking for the caller's drafts whose key no taf
+// has claimed (kiff/tafs#1652): each with its agent, its name and who the
+// setup ran for, never a secret or a key. Only claimed=false is served.
+func (s *Server) listDrafts(ctx context.Context, c Caller, r *http.Request) (int, any, error) {
+	if r.URL.Query().Get("claimed") != "false" {
+		return 0, nil, bad("claimed=false is the only list served: the drafts no taf has claimed")
+	}
+	l, ok := s.Drafts.(DraftLister)
+	if !ok {
+		return 0, nil, drafts.ErrNotFound
+	}
+	list, err := l.Unclaimed(ctx, c.Tenant)
+	if errors.Is(err, drafts.ErrNoList) {
+		return 0, nil, drafts.ErrNotFound
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	type listed struct {
+		DraftID   string            `json:"draft_id"`
+		AgentID   string            `json:"agent_id"`
+		Name      string            `json:"name,omitempty"`
+		Requester *drafts.Requester `json:"requester,omitempty"`
+	}
+	out := make([]listed, 0, len(list))
+	for _, d := range list {
+		out = append(out, listed{DraftID: d.ID, AgentID: d.AgentID, Name: d.Label, Requester: d.Requester})
+	}
+	return http.StatusOK, map[string]any{"drafts": out}, nil
+}
+
 // getDraft is tafs cloud asking which agent a draft submitted on the caller's
 // tenant names, and whether its key is claimed: a setup's result names a
 // draft and an agent, and only this record says they belong together.

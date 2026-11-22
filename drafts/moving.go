@@ -54,3 +54,13 @@ func (m Moving) Get(ctx context.Context, tenant, draft string) (Record, error) {
 	}
 	return r, err
 }
+
+// List lists New's records only: a record still in Old was written before
+// the move, and is past any use a list has.
+func (m Moving) List(ctx context.Context, tenant string) (map[string]Record, error) {
+	l, ok := m.New.(Lister)
+	if !ok {
+		return nil, ErrNoList
+	}
+	return l.List(ctx, tenant)
+}

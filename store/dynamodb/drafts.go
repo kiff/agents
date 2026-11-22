@@ -55,7 +55,10 @@ type Drafts struct {
 	UnclaimedFor, ClaimedFor time.Duration
 }
 
-var _ drafts.Store = (*Drafts)(nil)
+var (
+	_ drafts.Store  = (*Drafts)(nil)
+	_ drafts.Lister = (*Drafts)(nil)
+)
 
 // Kept for, by default.
 const (
@@ -145,6 +148,51 @@ func (d *Drafts) Get(ctx context.Context, tenant, draft string) (drafts.Record, 
 		return drafts.Record{}, errors.New("dynamodb: the draft's record is not a record")
 	}
 	return r, nil
+}
+
+// List opens each of the tenant's draft records, by draft, leaving out any
+// past its "until". Each is opened under its own tenant and draft, as Get
+// does, so a record moved under this tenant doesn't open.
+func (d *Drafts) List(ctx context.Context, tenant string) (map[string]drafts.Record, error) {
+	if tenant == "" {
+		return nil, errors.New("dynamodb: listing drafts needs a tenant")
+	}
+	in := &ddb.QueryInput{
+		TableName:                 &d.table,
+		KeyConditionExpression:    aws.String("pk = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": s(draftsPK(tenant))},
+		ConsistentRead:            aws.Bool(true),
+	}
+	out := map[string]drafts.Record{}
+	for {
+		page, err := d.db.Query(ctx, in)
+		if err != nil {
+			return nil, fmt.Errorf("dynamodb: listing the tenant's drafts: %w", err)
+		}
+		for _, it := range page.Items {
+			draft := getS(it, "sk")
+			if until := getN(it, "until"); until != 0 && !d.now().Before(time.Unix(until, 0)) {
+				continue
+			}
+			sealed, _ := it["sealed"].(*types.AttributeValueMemberB)
+			if draft == "" || sealed == nil || len(sealed.Value) == 0 {
+				return nil, errors.New("dynamodb: a draft's record is not sealed")
+			}
+			opened, err := d.kms.Decrypt(ctx, &kms.DecryptInput{KeyId: &d.keyID, CiphertextBlob: sealed.Value, EncryptionContext: draftContext(tenant, draft)})
+			if err != nil {
+				return nil, fmt.Errorf("dynamodb: opening a draft's record: %w", kmsErr(err))
+			}
+			var r drafts.Record
+			if err := json.Unmarshal(opened.Plaintext, &r); err != nil {
+				return nil, errors.New("dynamodb: a draft's record is not a record")
+			}
+			out[draft] = r
+		}
+		if len(page.LastEvaluatedKey) == 0 {
+			return out, nil
+		}
+		in.ExclusiveStartKey = page.LastEvaluatedKey
+	}
 }
 
 // Erase deletes every draft record of the tenant, when its account is deleted.
