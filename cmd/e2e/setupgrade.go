@@ -156,7 +156,44 @@ var owners = map[string]owner{
 			"Como mucho 10 borradores al día. Nunca envía nada a los clientes. Sí, puedes conectarte.",
 			"Sí, así es. Adelante.",
 		}},
+	// Hindi, Urdu and Turkmen: the refunds setup only (no desk, billing or improve), as the owner of an app whose
+	// language the apps speak. The owner's words are first drafts for legal-i18n to read; they carry the same two limits
+	// (5 euros a refund over which the owner approves on the phone, 50 euros a day) and the same agreement as the others.
+	"hi": {lang: "hi", language: "Hindi", taf: "रिफंड",
+		ask: func(vendor string) string {
+			return fmt.Sprintf("मैं चाहता हूँ कि हमारे ग्राहकों को उनके रिफंड मिल सकें। हम ऑनलाइन बेचते हैं और हमारे भुगतान हमारे पेमेंट प्रोवाइडर से होते हैं; "+
+				"उसका MCP सर्वर %s है। taf का नाम रिफंड रखो।", vendor)
+		},
+		facts: []string{
+			"5 यूरो से ज़्यादा का एक रिफंड पहले मेरे पास मेरे फ़ोन पर मंज़ूरी के लिए आना चाहिए। एक दिन में ज़्यादा से ज़्यादा 50 यूरो। " +
+				"taf सिर्फ़ रिफंड करे, और कुछ नहीं। हाँ, आप इससे कनेक्ट कर सकते हैं।",
+			"हाँ, सही है। आगे बढ़ो।",
+		}},
+	"ur": {lang: "ur", language: "Urdu", taf: "ریفنڈ",
+		ask: func(vendor string) string {
+			return fmt.Sprintf("میں چاہتا ہوں کہ ہمارے گاہک اپنے ریفنڈ حاصل کر سکیں۔ ہم آن لائن بیچتے ہیں اور ہماری ادائیگیاں ہمارے پیمنٹ پرووائیڈر کے ذریعے ہوتی ہیں؛ "+
+				"اس کا MCP سرور %s ہے۔ taf کا نام ریفنڈ رکھیں۔", vendor)
+		},
+		facts: []string{
+			"5 یورو سے زیادہ کا ایک ریفنڈ پہلے میرے پاس میرے فون پر منظوری کے لیے آنا چاہیے۔ ایک دن میں زیادہ سے زیادہ 50 یورو۔ " +
+				"taf صرف ریفنڈ کرے، اور کچھ نہیں۔ جی ہاں، آپ اس سے کنیکٹ ہو سکتے ہیں۔",
+			"جی ہاں، یہ درست ہے۔ آگے بڑھیں۔",
+		}},
+	"tk": {lang: "tk", language: "Turkmen", taf: "Yzyna töleg",
+		ask: func(vendor string) string {
+			return fmt.Sprintf("Müşderilerimiziň yzyna pul alyp bilmegini isleýärin. Biz onlaýn satýarys we töleglerimiz töleg üpjün edijimiz arkaly geçýär; "+
+				"onuň MCP serweri %s. Taf-yň adyny Yzyna töleg goýuň.", vendor)
+		},
+		facts: []string{
+			"5 ýewrodan köp bolan her bir yzyna töleg ilki bilen telefonymda tassyklamak üçin maňa gelmeli. Bir günde iň köp 50 ýewro. " +
+				"Taf diňe yzyna töleg etsin, başga zat däl. Hawa, oňa birigip bilersiňiz.",
+			"Hawa, dogry. Dowam ediň.",
+		}},
 }
+
+// refundsOnly are the owners whose script has only the refunds setup (-desk, -invoices and -improve have no words
+// for them): the apps' newer languages.
+var refundsOnly = map[string]bool{"hi": true, "ur": true, "tk": true}
 
 // said is what Setup wrote in the conversation, in order.
 type said struct {
@@ -687,8 +724,8 @@ func askedInOrder(s said) []string {
 // What tells a test-or-live choice's options apart, in the owners'
 // languages. Test is read first: "Test mode (no real money)" is test.
 var (
-	testWords = []string{"test", "prueba"}
-	liveWords = []string{"live", "real", "producción", "en vivo"}
+	testWords = []string{"test", "prueba", "टेस्ट", "ٹیسٹ", "synag"}
+	liveWords = []string{"live", "real", "producción", "en vivo", "लाइव", "असली", "لائیو", "حقیقی", "hakyky", "janly"}
 )
 
 // modeChoice returns a confirm's test option, when it offers test and live,

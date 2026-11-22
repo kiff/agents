@@ -210,7 +210,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	fs.StringVar(&cfg.tafDef, "taf", "", "the taf's definition (JSON, a job of kiff/tafs' tafdef.ts, such as refunds.json): its instructions and effort; its answers in the chat are then checked for concision. Empty: a short built-in one")
 	fs.StringVar(&cfg.skillsDir, "skills", "", "a directory of skills, <name>/<version>/SKILL.md each, that -setup and -taf may name (kiff/tafs#218); empty: none")
 	fs.IntVar(&cfg.maxTurns, "owner-turns", 10, "the most messages the owner sends the setup agent")
-	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es (and fr, with -plan)")
+	fs.StringVar(&cfg.owner, "owner", "en", "the owner's language: en or es (and hi, ur or tk, for the refunds setup alone; and fr, with -plan)")
 	grade := fs.Bool("grade", false, "grade the setup chat (kiff/agents#78's setup case): language, concise messages, no ids asked, the agent's name, choices")
 	judgeModel := fs.String("judge-model", "claude-opus-5-5", "-grade: the judge's model id")
 	judgePrice := fs.String("judge-price", "4000000,20000000", "-grade: the judge's input,output price in millionths of a dollar per million tokens")
@@ -317,7 +317,10 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		cfg.transcript = f
 	}
 	if _, ok := owners[cfg.owner]; !ok && (*planName == "" || cfg.owner != "fr") {
-		return fmt.Errorf("-owner %q: en or es (or fr, with -plan)", cfg.owner)
+		return fmt.Errorf("-owner %q: en or es (or hi, ur or tk, for the refunds setup; or fr, with -plan)", cfg.owner)
+	}
+	if refundsOnly[cfg.owner] && (cfg.desk || cfg.invoices || cfg.improve || *recipeFile != "" || cfg.people || *replayName != "") {
+		return fmt.Errorf("-owner %s has the refunds setup alone: no -desk, -invoices, -improve, -recipe, -people or -replay", cfg.owner)
 	}
 	if *regradeFile != "" {
 		if stdout.ci {
