@@ -148,7 +148,7 @@ understate it to slip under a Card. Live keys are refused; a caller needs
 its bearer token, the key KIFF holds for the connection.
 
 ```sh
-STRIPE_API_KEY=sk_test_… STRIPEMCP_TOKEN=$(openssl rand -hex 24) infra/eval-stripemcp.sh up   # prints the URL; secrets reach the CLI by file
+STRIPE_API_KEY=sk_test_… STRIPEMCP_TOKEN=$(openssl rand -hex 24) infra/eval-stripemcp.sh up   # prints the URL; both go into one Secrets Manager secret, by file
 infra/eval-stripemcp.sh down
 ```
 
