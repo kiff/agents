@@ -12,6 +12,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Public text: no coordination thread, lane name, PM or dated rule.
+      - name: Public text
+        run: bash tools/public-text.sh
       - name: No private references
         # A private tracker is never named in this public repo: not in the tree, not in a pull
         # request's added lines. The pattern is split so this file never matches it.
