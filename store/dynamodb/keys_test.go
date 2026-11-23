@@ -103,7 +103,7 @@ func TestARemovedTafKeysMark(t *testing.T) {
 	}
 }
 
-// kiff-qa's pin 3: the context is {purpose, tenant, ref} from the call. A
+// A review's pin 3: the context is {purpose, tenant, ref} from the call. A
 // sealed key copied to another tenant's or another reference's item
 // doesn't open there.
 func TestATafKeyMovedElsewhereDoesNotOpen(t *testing.T) {

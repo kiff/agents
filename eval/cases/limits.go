@@ -98,7 +98,7 @@ func beside(text string, re *regexp.Regexp) []string {
 //   - in KIFF's answer on a call (an error result, or a recorded reason a
 //     call wasn't done), only a figure beside a limit word ("the $40 limit",
 //     "the per-action limit of 10000"): an id's or a page size's figure
-//     ("dp_100", "limit": 10) is no limit (qa-kiff's read of #601);
+//     ("dp_100", "limit": 10) is no limit (a review of #601);
 //   - every figure of the owner's note, which says its limits in prose
 //     ("disputes up to $200") and is the owner's own words, not a vendor's;
 //   - every figure of a tool's Card line, as KIFF's gateway writes it into

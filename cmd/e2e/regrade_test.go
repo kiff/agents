@@ -265,7 +265,7 @@ func TestRegradeWithTheJudges(t *testing.T) {
 	}
 }
 
-// The taf's wording is advice (the owner, 6 Nov 2026): this morning's answers,
+// The taf's wording is advice (the owner's rule): this morning's answers,
 // which failed the concise judge and with it Eval 42176052141, leave the run
 // going, with the advice in the log and its reason in the transcript only.
 // Advice written among the answers, after a hold the owner approved or

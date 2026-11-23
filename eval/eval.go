@@ -70,7 +70,7 @@ type Check struct {
 	// Advisory is a check of words or tone: reported, never failing the run.
 	// The gate tests results, from the run's record, and the sentences that
 	// could mislead about them; how the agent phrases the rest is advice (the
-	// owner, 6 Nov 2026).
+	// owner's rule).
 	Advisory bool
 	// Grade reads the run. j is nil when no judge is configured; a check that
 	// needs one returns a skipped Grade.

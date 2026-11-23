@@ -606,7 +606,7 @@ func TestAProgressLineIsNoMessageForTheConciseJudge(t *testing.T) {
 }
 
 // The mode is a fact in the grant: pinned only to what the owner chose and
-// the connection reports, or not at all (the owner, 6 Nov 2026: results gate).
+// the connection reports, or not at all (the owner's rule: results gate).
 func TestThePinIsTheModeTheOwnerChose(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -696,7 +696,7 @@ func TestTheModeJudgeIsToldTheFacts(t *testing.T) {
 }
 
 // Advice is reported and never fails the setup chat; a gate check that fails
-// does (the owner, 6 Nov 2026: words and tone are never a gate).
+// does (the owner's rule: words and tone are never a gate).
 func TestAdviceNeverFailsTheSetup(t *testing.T) {
 	var log strings.Builder
 	tt := &test{cfg: config{log: &log, judge: &eval.Judge{}}, out: &redacting{w: &log}}

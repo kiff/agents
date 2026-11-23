@@ -48,7 +48,7 @@ func TestGradeScoresGradedChecksAndCosts(t *testing.T) {
 }
 
 // An advisory check, words or tone, is listed and never counted: not in the
-// score, and not among the gate checks that failed (the owner, 6 Nov 2026).
+// score, and not among the gate checks that failed (the owner's rule).
 func TestAnAdvisoryCheckIsListedNotCounted(t *testing.T) {
 	advice := check("tone", eval.Grade{Why: "wordy"})
 	advice.Advisory = true

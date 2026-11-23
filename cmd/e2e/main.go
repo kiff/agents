@@ -998,7 +998,7 @@ func (t *test) tafDefinition(id string) (registry.Definition, error) {
 // tafConcise checks the taf's answers in the chat: with -grade the judge
 // finds each concise for what it had to say, read beside the owner's message
 // it answers (TafConcise). It's advice, never a gate: words and tone are
-// reported, and only results fail a run (the owner, 6 Nov 2026). There's no
+// reported, and only results fail a run (the owner's rule). There's no
 // word count to fail either (kiff/agents#185): each answer's count is logged,
 // so a drift shows over the nightly runs. The judge's reason may quote the
 // chat, so it goes to the transcript, not the log, and so does where the
@@ -2052,7 +2052,7 @@ func (t *test) reportSetup(checks []eval.CheckResult) error {
 			// Not done in this case, so nothing to grade: reported, never failing the run.
 			mark = "skip"
 		case !c.Pass && c.Advisory:
-			// Words or tone: reported, never failing the run (the owner, 6 Nov 2026).
+			// Words or tone: reported, never failing the run (the owner's rule).
 			mark = "advice"
 		case !c.Pass:
 			mark, failed = "FAIL", append(failed, c.Name)

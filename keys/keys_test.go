@@ -134,7 +134,7 @@ func TestAKeyMovesOnItsFirstRead(t *testing.T) {
 	}
 }
 
-// kiff-qa's pin 1: a removed key never comes back. Removed while it's still
+// A review's pin 1: a removed key never comes back. Removed while it's still
 // only an old secret, and that secret's delete fails: the removal answers
 // the failure (tafs cloud tries again), and a read answers not found, from
 // the removed key's mark, kept while the secret may be there.
@@ -192,7 +192,7 @@ func (o orderedNew) Remove(ctx context.Context, tenant, ref string, settled bool
 	return o.table.Remove(ctx, tenant, ref, settled)
 }
 
-// kiff-qa's pin 4: a replace racing a move keeps the replacing key. The
+// A review's pin 4: a replace racing a move keeps the replacing key. The
 // move read the old key; a Put lands before its create-only write, which
 // loses, isn't retried over the newer key, and the old secret is still
 // deleted. The read answers the newer key.

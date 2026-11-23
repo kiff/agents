@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// legal-i18n's endings, as tafs's Setup definition sends them.
+// The translated endings, as tafs's Setup definition sends them.
 var keptWordsForTest = KeptWords{
 	"en": {"connection": "(the connection keeps it)", "kiff": "(KIFF adds it)", "instructions": "(in its instructions)"},
 	"fr": {"connection": "(la connexion s'en charge)", "kiff": "(KIFF l'ajoute)", "instructions": "(dans ses instructions)"},

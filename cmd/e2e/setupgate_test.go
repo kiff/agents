@@ -66,7 +66,7 @@ func TestARunPastAFailedGateStillFailsForIt(t *testing.T) {
 
 // scenario's step after the setup chat: a failed graded gate still lets the
 // taf's trial run, and the run fails for both; an error grading stops it
-// before the trial; with no judge the trial alone decides (PM: a test that
+// before the trial; with no judge the trial alone decides (a test that
 // drives the scenario's path, after Eval 43670959911 measured the trial).
 func TestTheTrialRunsPastAFailedGateOnly(t *testing.T) {
 	ctx := context.Background()
