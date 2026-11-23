@@ -13,7 +13,7 @@ run-name: ${{ format('Eval{0}{1}{2}', inputs.suites != '' && inputs.suites != 'a
 #
 # The gate tests results, and the sentences that could mislead about them:
 # what was done, what the record says, what the grant pins. Words and tone
-# are advice, reported and never failing the run (the owner, 6 Nov 2026).
+# are advice, reported and never failing the run (the owner's rule).
 #
 # This log is public, and so are a public repository's artifacts. So the eval
 # prints only each run's score and failed checks' names (-public), and

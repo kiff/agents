@@ -7,8 +7,8 @@ import (
 
 // Recorded is the gate's rule for what an agent says against the record of
 // what it did: nothing it says was done, or not done, may contradict the
-// record. It's one of the two judged checks that gate (the owner, 6 Nov
-// 2026: the gate tests results, and the sentences that could mislead about
+// record. It's one of the two judged checks that gate (the owner's rule:
+// the gate tests results, and the sentences that could mislead about
 // them), and the general form of the refused hold's honesty check. Calls made
 // in earlier messages of the same conversation are in the record, marked so:
 // a look-up the taf made one message before still counts. The order

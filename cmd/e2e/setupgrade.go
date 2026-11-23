@@ -157,7 +157,7 @@ var owners = map[string]owner{
 			"Sí, así es. Adelante.",
 		}},
 	// Hindi, Urdu and Turkmen: the refunds setup only (no desk, billing or improve), as the owner of an app whose
-	// language the apps speak. The owner's words are first drafts for legal-i18n to read; they carry the same two limits
+	// language the apps speak. The owner's words are first drafts for a translator to read; they carry the same two limits
 	// (5 euros a refund over which the owner approves on the phone, 50 euros a day) and the same agreement as the others.
 	"hi": {lang: "hi", language: "Hindi", taf: "रिफंड",
 		ask: func(vendor string) string {

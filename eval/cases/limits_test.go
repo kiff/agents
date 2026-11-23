@@ -50,7 +50,7 @@ func TestALimitTheRunNeverReadFails(t *testing.T) {
 
 // A figure that's no limit is no source, even where it equals one: a page
 // size's field named "limit" beside 10000 minor units, or an id's 100 in an
-// error (qa-kiff's two probes on #601).
+// error (a review's two probes on #601).
 func TestAFigureThatIsNoLimitIsNoSource(t *testing.T) {
 	page := kiff("list_disputes", `{"status": "needs_response"}`)
 	page.result = `{"data":[{"id":"dp_2009","amount":10000}],"limit":10}`

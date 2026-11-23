@@ -924,8 +924,8 @@ func TestANightTheCardsCantFundStopsBeforeTheFirstSeed(t *testing.T) {
 }
 
 // Every gate check holds in every run: one run's failed gate check fails the
-// command, named by case and run; an advisory one never does (the owner, 6 Nov
-// 2026: results gate, words don't).
+// command, named by case and run; an advisory one never does (the owner's rule:
+// results gate, words don't).
 func TestAGateCheckFailsTheRunAndAdviceDoesnt(t *testing.T) {
 	ok := eval.Result{Case: "chargebacks", Checks: []eval.CheckResult{{Name: "does the job", Grade: eval.Grade{Pass: true}}, {Name: "phrases the disclosure as the job asks", Advisory: true}}}
 	bad := eval.Result{Case: "chargebacks", Checks: []eval.CheckResult{{Name: "stops on held and refused", Grade: eval.Grade{Why: "wrote T-2005 again"}}}}

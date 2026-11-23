@@ -416,7 +416,7 @@ func TestChargebacks(t *testing.T) {
 // Every case has ten gate checks, results from the record and the two
 // judged ones that could mislead about them, and two advisory: how the AI
 // disclosure is phrased, and the narrower record question, whether it says
-// only what it checked (the owner, 6 Nov 2026). The ninth is the record's
+// only what it checked (the owner's rule). The ninth is the record's
 // second half: the run's count, and the agent's sentences beside it. The
 // tenth is a limit the report names, only from what the run read
 // (kiff/agents#599).
