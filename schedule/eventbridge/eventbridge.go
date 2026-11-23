@@ -127,7 +127,7 @@ func (sc *Scheduler) Set(ctx context.Context, s schedule.Schedule) error {
 	name := Name(s.Tenant, s.ID)
 	target := &types.Target{Arn: &sc.Target, RoleArn: &sc.Role, Input: &in,
 		RetryPolicy: &types.RetryPolicy{MaximumRetryAttempts: aws.Int32(maxAttempts), MaximumEventAgeInSeconds: aws.Int32(int32(maxAge.Seconds()))}}
-	window := &types.FlexibleTimeWindow{Mode: types.FlexibleTimeWindowModeOff}
+	window := spread(s)
 	after := types.ActionAfterCompletionNone
 	if s.KindOf() == schedule.KindOnce {
 		after = types.ActionAfterCompletionDelete // fires once, then deletes itself
@@ -150,6 +150,24 @@ func (sc *Scheduler) Set(ctx context.Context, s schedule.Schedule) error {
 		return update() // created meanwhile by another Set: replace it
 	}
 	return err
+}
+
+// SpreadWindow is how long after its time a recurring schedule's firing may
+// start: EventBridge places each firing at random inside it, so the many
+// schedules set for the same minute (everyone's 08:00) don't all invoke the
+// function in the same second. Each firing is placed afresh from its own time,
+// so a schedule never drifts, and the firing's due time stays the nominal one
+// (<aws.scheduler.scheduled-time>). It stays well inside MissedAfter, so a
+// spread firing is never counted late.
+const SpreadWindow = 2 * time.Minute
+
+// spread is a schedule's flexible window: SpreadWindow for a recurring one,
+// none for a once schedule, which fires at exactly the time it was given.
+func spread(s schedule.Schedule) *types.FlexibleTimeWindow {
+	if s.KindOf() == schedule.KindOnce {
+		return &types.FlexibleTimeWindow{Mode: types.FlexibleTimeWindowModeOff}
+	}
+	return &types.FlexibleTimeWindow{Mode: types.FlexibleTimeWindowModeFlexible, MaximumWindowInMinutes: aws.Int32(int32(SpreadWindow / time.Minute))}
 }
 
 // expression is the schedule as EventBridge writes it: a cron, or at() for
