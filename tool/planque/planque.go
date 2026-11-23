@@ -106,7 +106,8 @@ func (t *Tool) Spec() model.ToolSpec {
 			"With either, taf_name is the taf's name as the owner will read it (e.g. Overdue invoice reminders): the approval names the taf by it, never by its agent id. " +
 			"When the account already has a connected grant to the vendor (grants with no agent lists them), request {reuse: <its id>, name or agent, taf_name, tools} instead: the new taf's grant uses that sign-in or key, and the owner approves the tools alone; " +
 			"a provider's app (entry) is reused with tools: [] and nothing more (no entry, uses or setup_reads), its tools picked after from catalog {grant}; " +
-			"A taf that works on websites: request {entry: \"browser@1\", name or agent, taf_name, browser: {sites, currency?}, tools}, where sites are only the hosts the owner named, currency only with browse_pay, and tools are planque's browse_open, browse_read, browse_act, browse_checkout and browse_pay, each {tool, title}. " +
+			"A taf that works on websites: request {entry: \"browser@1\", name or agent, taf_name, browser: {sites, currency?}, tools}, where sites are only the hosts the owner named, currency only with browse_pay, and tools are planque's browse_open, browse_read, browse_act, browse_checkout and browse_pay, each {tool, title}; " +
+			"in the owner's own Chrome, browse_hand and browse_hand_result too, only when a step is the person's to do in the page (a card number, a check, a click the taf mustn't make): the taf hands it over and reads their answer, never doing that step itself. " +
 			"ask for a new sign-in or key only when there's none, planque refuses the reuse, or the owner wants another account at the app: request {entry, new_sign_in: true} (planque reuses a held sign-in to the app otherwise, the same account). Each tool is {tool, name?, title, read_only?, setup_reads?, amount_argument?, amount_unit?, amount_scale?, resource_argument?, unit_lookup?, fixed_arguments?, arguments?}: " +
 			"title says what the tool does, in the owner's words and language, on one line (e.g. Reply to a ticket, Read an event): the owner's approval, KIFF's Card and the record name the tool by it, never by its name. " +
 			"fixed_arguments pins a vendor argument (by dotted path) to a value; arguments are then the only ones the taf may give, each {path, type, required?}. " +
@@ -310,7 +311,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 				return tool.Result{Text: "browser.sites are the hosts the owner named (e.g. [\"shop.example\"]); planque's browser opens only those", IsError: true}, nil
 			}
 			if len(in.Tools) == 0 || string(in.Tools) == "null" || string(in.Tools) == "[]" {
-				return tool.Result{Text: "a website taf names its tools: browse_open and browse_read to read, browse_act to fill in and click, browse_checkout and browse_pay to pay, each {tool, title}", IsError: true}, nil
+				return tool.Result{Text: "a website taf names its tools: browse_open and browse_read to read, browse_act to fill in and click, browse_checkout and browse_pay to pay, browse_hand and browse_hand_result to hand the person a step that is theirs (the owner's Chrome only), each {tool, title}", IsError: true}, nil
 			}
 			agent := newAgent(in.Agent, in.Name, in.TafName)
 			ask := map[string]any{"agent": agent, "browser": in.Browser, "tools": in.Tools}
