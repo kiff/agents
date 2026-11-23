@@ -95,8 +95,13 @@ func TestSetCreatesTheSchedule(t *testing.T) {
 	}
 	in := f.get(t, "t1", "morning")
 	if *in.ScheduleExpression != "cron(0 9 ? * 2,3,4,5,6 *)" || *in.ScheduleExpressionTimezone != "Europe/Paris" ||
-		in.State != types.ScheduleStateEnabled || in.FlexibleTimeWindow.Mode != types.FlexibleTimeWindowModeOff {
-		t.Fatalf("created %s in %s, %s, window %s", *in.ScheduleExpression, *in.ScheduleExpressionTimezone, in.State, in.FlexibleTimeWindow.Mode)
+		in.State != types.ScheduleStateEnabled {
+		t.Fatalf("created %s in %s, %s", *in.ScheduleExpression, *in.ScheduleExpressionTimezone, in.State)
+	}
+	// A recurring schedule's firings are spread over two minutes after its time, so the same minute's schedules don't all
+	// invoke the function in one second.
+	if w := in.FlexibleTimeWindow; w.Mode != types.FlexibleTimeWindowModeFlexible || w.MaximumWindowInMinutes == nil || *w.MaximumWindowInMinutes != 2 {
+		t.Fatalf("window %+v, want flexible, 2 minutes", w)
 	}
 	if *in.Target.Arn != target || *in.Target.RoleArn != role {
 		t.Fatalf("target %s with role %s", *in.Target.Arn, *in.Target.RoleArn)
@@ -246,10 +251,17 @@ func TestSetWritesEachKind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if in := f.get(t, "t1", "followup"); *in.ScheduleExpression != "at(2026-11-03T09:00:00)" || in.ActionAfterCompletion != types.ActionAfterCompletionDelete {
-		t.Fatalf("once: %s, after %s", *in.ScheduleExpression, in.ActionAfterCompletion)
+	// A once schedule fires at exactly its time; a recurring one is spread.
+	if in := f.get(t, "t1", "followup"); *in.ScheduleExpression != "at(2026-11-03T09:00:00)" || in.ActionAfterCompletion != types.ActionAfterCompletionDelete ||
+		in.FlexibleTimeWindow.Mode != types.FlexibleTimeWindowModeOff || in.FlexibleTimeWindow.MaximumWindowInMinutes != nil {
+		t.Fatalf("once: %s, after %s, window %+v", *in.ScheduleExpression, in.ActionAfterCompletion, in.FlexibleTimeWindow)
 	}
-	if in := f.get(t, "t1", "close"); *in.ScheduleExpression != "cron(0 18 * * ? *)" || in.ActionAfterCompletion != types.ActionAfterCompletionNone {
-		t.Fatalf("last day: %s, after %s", *in.ScheduleExpression, in.ActionAfterCompletion)
+	if in := f.get(t, "t1", "close"); *in.ScheduleExpression != "cron(0 18 * * ? *)" || in.ActionAfterCompletion != types.ActionAfterCompletionNone ||
+		in.FlexibleTimeWindow.Mode != types.FlexibleTimeWindowModeFlexible {
+		t.Fatalf("last day: %s, after %s, window %+v", *in.ScheduleExpression, in.ActionAfterCompletion, in.FlexibleTimeWindow)
+	}
+	// The window stays well inside what Fire still counts as on time.
+	if eventbridge.SpreadWindow*2 > schedule.MissedAfter {
+		t.Fatalf("SpreadWindow %s leaves too little of MissedAfter %s", eventbridge.SpreadWindow, schedule.MissedAfter)
 	}
 }

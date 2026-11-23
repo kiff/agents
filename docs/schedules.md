@@ -35,6 +35,13 @@ ports). The follow-up tool is `tool/followup`.
 | `monthly_last_day` | on the month's last day, at the time of its `cron`, written as a daily cron (`"M H * * *"`): cron can't say "the last day", so it fires daily and only the last day's firing runs | `cron`, `time_zone` |
 
 A schedule fires at most every 15 minutes. The input is 1 to 32,000 bytes.
+
+**A `cron` or `monthly_last_day` firing starts up to 2 minutes after its time**
+(EventBridge's flexible window, `SpreadWindow`), placed at random inside it each
+time, so the many schedules set for the same minute don't all start in the same
+second. The firing's due time is still its nominal time, so history and `skip`
+are unchanged, and a schedule never drifts. A `once` schedule fires at exactly
+its time.
 `Check` refuses anything else before it is stored, with the rule it broke.
 
 ## A firing that comes late, or while the agent works
