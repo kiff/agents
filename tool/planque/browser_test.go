@@ -54,3 +54,26 @@ func TestAWebsiteTafAsksPlanquesBrowserForTheNamedSites(t *testing.T) {
 		t.Fatalf("a refused request reached planque: %s", path)
 	}
 }
+
+// The hand-over tools are named for the owner's own Chrome only, and only for
+// a step that is the person's: the request's description and the error for a
+// website taf without tools both say so, so Coach never offers them as a way
+// for the taf to do that step itself.
+func TestTheHandOverToolsAreNamedForThePersonsOwnStep(t *testing.T) {
+	d := planque.New("http://planque.invalid", "tnt_1", "k_setup", nil).Spec().Description
+	for _, w := range []string{
+		"in the owner's own Chrome, browse_hand and browse_hand_result too",
+		"only when a step is the person's to do in the page (a card number, a check, a click the taf mustn't make)",
+		"never doing that step itself",
+	} {
+		if !strings.Contains(d, w) {
+			t.Errorf("description lacks %q", w)
+		}
+	}
+
+	tl := planque.New("http://planque.invalid", "tnt_1", "k_setup", nil)
+	text, isErr := call(t, tl, `{"action":"request","entry":"browser@1","agent":"a1","taf_name":"T","browser":{"sites":["shop.example"]},"tools":[]}`)
+	if !isErr || !strings.Contains(text, "browse_hand and browse_hand_result to hand the person a step that is theirs (the owner's Chrome only)") {
+		t.Fatalf("no-tools error: %s", text)
+	}
+}
