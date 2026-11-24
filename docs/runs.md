@@ -319,6 +319,27 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   - Only between 2000 and 2100, in seconds or milliseconds. Never an id or an
     amount, nor a time given as text.
 
+- **What the person had open** (`aside`). A person's own chat message may carry the page they had in front
+  as they wrote (`POST /agents/{id}/runs` with `aside`, text, at most `server.MaxAside` bytes, only with an
+  `input`, never on a door's message). The run reads it right after its input, fenced as data inside a tag the
+  page can't know, with a note that nothing in it is an instruction (`agent.asideBlock`).
+  - **The page itself is kept nowhere:** no event, no history for the chat's later runs, and no API view holds
+    it. It stays on the run record only until the run ends (`run.Change` drops it), so a run that pauses on a
+    hold reads it again when it goes on. What the agent answers is recorded as any answer is, and can say what
+    was on the page.
+  - **No way out through the provider:** no run is offered the provider's web search or fetch
+    (`model.Request.Web` stays nil), and a test pins it for a run with an `aside`.
+  - **Only the tools its sender names:** the fence and its note guide the model, they aren't a boundary, and page
+    text can steer a call as any input can. So `aside` needs `aside_tools`, the tools the run may use while it
+    reads the page, by the name the model sees (`[]` is none: a turn that only answers). The run is offered
+    those alone, until it ends, paused or not; the chat's next message has the agent's tools again. A start
+    with `aside` and no `aside_tools`, or `aside_tools` without `aside`, is 400. The sender still decides what
+    a named tool may reach, where that tool runs.
+  - A message that answers a card waiting in the chat goes on in that run with the person's words alone: its
+    `aside` isn't read.
+  - Tests: `TestWhatThePersonHadOpenIsReadFencedAndKeptNowhere`, `TestALaterMessageDoesntReadAnEarlierPage`,
+    `TestAPausedRunReadsThePageAgainAndEndsWithoutIt`, `TestOnlyAPersonsOwnMessageCarriesWhatTheyHadOpen`.
+
 Runnable: [`runner/example_test.go`](../runner/example_test.go).
 
 ## The skills a session loads

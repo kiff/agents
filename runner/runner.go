@@ -303,6 +303,8 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		r.Attachments = append(r.Attachments, f.Ref())
 	}
 	r.Source = s.Source
+	r.Aside = s.Aside
+	r.AsideTools = slices.Clone(s.AsideTools)
 	r.Outcomes = s.Outcomes
 	r.Requester = s.Requester
 	r.Grant = s.Grant
@@ -555,6 +557,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	a.Checkpoint = x.checkpoint
 	a.Now = rn.now // a card waits run.CardWait from the runner's clock
 	a.Attachments = r.Attachments
+	a.Aside = r.Aside
 	if rn.Files != nil {
 		a.Load = func(ctx context.Context, msgs []model.Message) error { return rn.Files.Load(ctx, tenant, msgs) }
 	}
@@ -578,6 +581,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	a.Reload = x.addedSkills(d, sess.Skills)
 	if err := x.limit(ctx, &a, d, sess); err != nil {
 		return x.notRun(ctx, r, paused, d.Keep, FailedStart, fmt.Errorf("limiting it to its session: %w", err))
+	}
+	if r.Aside != "" {
+		a.Tools = asideTools(a.Tools, r.AsideTools)
 	}
 	if sess.Kind == session.KindChat {
 		a.System += "\n\n" + namesNote(a.Tools) // the same for each of the agent's chats, so it caches

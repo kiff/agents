@@ -222,6 +222,14 @@ type Run struct {
 	// Attachments are the files the person sent with Input (kiff/tafs#209),
 	// as the message records them: never their bytes.
 	Attachments []attach.Ref `json:"attachments,omitempty"`
+	// Aside is what the person had open as they wrote Input (the page in front, from the tafs panel), read by
+	// the run's model after its input, fenced as data. The page itself is never recorded: no event and no
+	// history holds it, and no API view shows it (the answer is recorded as any answer is). It is kept on the run only until it ends (run.Change drops it then), so a run
+	// that pauses on a hold still reads it when it goes on.
+	Aside string `json:"aside,omitempty"`
+	// AsideTools names the only tools the run is offered while it has an Aside (the sender's choice, since
+	// the page can steer a call as any input can). Dropped with Aside when the run ends.
+	AsideTools []string `json:"aside_tools,omitempty"`
 
 	// Stop is why a COMPLETED run stopped: the agent answered, a cap (cost,
 	// turns, output length) stopped it, or the model's turn was refused. On

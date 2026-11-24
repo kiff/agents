@@ -275,8 +275,9 @@ func Change(ctx context.Context, runs Runs, r Run, now time.Time, change func(*R
 		next.NoteTries, next.NoteRetry = 0, time.Time{}
 	}
 	if next.Status.Final() {
-		// A final run moves no more, so this is the change that ended it.
-		next.Paused, next.Ended = nil, now.UTC()
+		// A final run moves no more, so this is the change that ended it. What the person had open
+		// (Aside) is kept no longer than the run.
+		next.Paused, next.Ended, next.Aside, next.AsideTools = nil, now.UTC(), "", nil
 	}
 	next.Holds = HoldsOf(r, next)
 	next.ID, next.Tenant, next.Agent, next.Session, next.Created = r.ID, r.Tenant, r.Agent, r.Session, r.Created
@@ -314,6 +315,7 @@ func (r Run) clone() Run {
 	c := r
 	c.Attachments = slices.Clone(r.Attachments)
 	c.Outcomes = slices.Clone(r.Outcomes)
+	c.AsideTools = slices.Clone(r.AsideTools)
 	c.Holds = slices.Clone(r.Holds)
 	c.NotAgain = nil
 	for _, k := range r.NotAgain {
