@@ -78,6 +78,9 @@ func (t *gatewayTool) waitPaused(ctx context.Context, input json.RawMessage, out
 		deadline = d.Add(-pauseMargin)
 	}
 	resent := 0
+	// After a re-send that came back paused, the next waits for a paused read in between: one re-send per Resume the
+	// person makes, never one per tick while planque still says working.
+	sincePaused := true
 	for time.Now().Add(PauseEvery).Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -89,6 +92,10 @@ func (t *gatewayTool) waitPaused(ctx context.Context, input json.RawMessage, out
 			return out
 		}
 		if state == "paused" {
+			sincePaused = true
+			continue
+		}
+		if !sincePaused {
 			continue
 		}
 		// Resumed: the step once more, as its own operation. Paused again, it waits again.
@@ -100,7 +107,7 @@ func (t *gatewayTool) waitPaused(ctx context.Context, input json.RawMessage, out
 		if m.paused.run != p.run {
 			return again
 		}
-		out = again
+		out, sincePaused = again, false
 	}
 	return out
 }
