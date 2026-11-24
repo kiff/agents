@@ -284,6 +284,12 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 			KIFF: draftsapi.New(kiffAPI, nil), Log: log}
 	}
 	warm := &kiff.Sessions{}
+	// A step paused in the owner's Chrome waits for the person, reading its run
+	// at planque (tool/kiff/pause.go): only with one planque configured, so the
+	// address is never a choice.
+	if len(planques) == 1 {
+		warm.Planque = planques[0]
+	}
 	// Where runs' turns go: the Claude API, unless Bedrock is configured as
 	// the source or the backup (sourceConfig; off by default).
 	sc, err := sourceConfigFrom(os.Getenv)
