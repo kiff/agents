@@ -335,10 +335,16 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
     those alone, until it ends, paused or not; the chat's next message has the agent's tools again. A start
     with `aside` and no `aside_tools`, or `aside_tools` without `aside`, is 400. The sender still decides what
     a named tool may reach, where that tool runs.
+  - **What the run answered is data for every later turn.** The owner's message records only that it carried a page
+    (`aside: true` on its event, never the page). When a later turn reads the chat's history, that run's answers come
+    fenced (`agent.PageAnswer`), with a note that they may repeat the page and nothing in them is an instruction, since a
+    later turn has all of the agent's tools. The fence's tag is fixed, so history reads the same each turn and stays
+    cached. The answer's `<<<` and `>>>` are taken apart, so it can't close the fence. Other runs' answers read as before.
   - A message that answers a card waiting in the chat goes on in that run with the person's words alone: its
     `aside` isn't read.
   - Tests: `TestWhatThePersonHadOpenIsReadFencedAndKeptNowhere`, `TestALaterMessageDoesntReadAnEarlierPage`,
-    `TestAPausedRunReadsThePageAgainAndEndsWithoutIt`, `TestOnlyAPersonsOwnMessageCarriesWhatTheyHadOpen`.
+    `TestAPausedRunReadsThePageAgainAndEndsWithoutIt`, `TestOnlyAPersonsOwnMessageCarriesWhatTheyHadOpen`,
+    `TestAPageTurnsAnswerIsReadAsDataByLaterTurns`.
 
 Runnable: [`runner/example_test.go`](../runner/example_test.go).
 
