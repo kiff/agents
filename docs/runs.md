@@ -329,9 +329,12 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
     was on the page.
   - **No way out through the provider:** no run is offered the provider's web search or fetch
     (`model.Request.Web` stays nil), and a test pins it for a run with an `aside`.
-  - **The run's own tools stay:** the fence and its note guide the model, they aren't a boundary, and page text
-    can steer a call to the agent definition's tools as any input can. A service that sends an `aside` limits
-    what a page turn's tools may do, where those tools run.
+  - **Only the tools its sender names:** the fence and its note guide the model, they aren't a boundary, and page
+    text can steer a call as any input can. So `aside` needs `aside_tools`, the tools the run may use while it
+    reads the page, by the name the model sees (`[]` is none: a turn that only answers). The run is offered
+    those alone, until it ends, paused or not; the chat's next message has the agent's tools again. A start
+    with `aside` and no `aside_tools`, or `aside_tools` without `aside`, is 400. The sender still decides what
+    a named tool may reach, where that tool runs.
   - A message that answers a card waiting in the chat goes on in that run with the person's words alone: its
     `aside` isn't read.
   - Tests: `TestWhatThePersonHadOpenIsReadFencedAndKeptNowhere`, `TestALaterMessageDoesntReadAnEarlierPage`,

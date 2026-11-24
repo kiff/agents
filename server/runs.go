@@ -28,6 +28,21 @@ const MaxInput = 32_000
 // MaxAside bounds what the person had open with their message (run.Run.Aside), in bytes.
 const MaxAside = 24_000
 
+// checkAsideTools refuses aside_tools naming more than session.MaxOnlyTools tools, or a blank or repeated one.
+func checkAsideTools(names []string) error {
+	if len(names) > session.MaxOnlyTools {
+		return fmt.Errorf("aside_tools names at most %d tools", session.MaxOnlyTools)
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if strings.TrimSpace(n) != n || n == "" || seen[n] {
+			return fmt.Errorf("aside_tools names %q badly or twice", n)
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
 // followEvery is how often a stream looks for more of a run.
 const followEvery = 500 * time.Millisecond
 
@@ -92,6 +107,9 @@ type Start struct {
 	// Aside is what the person had open as they wrote Input (run.Run.Aside): only a person's own chat
 	// message carries one, at most MaxAside bytes.
 	Aside string
+	// AsideTools names the only tools a run with an Aside is offered (run.Run.AsideTools): required with
+	// one, and none at all is a turn that only answers.
+	AsideTools []string
 	// Version is the agent's version a trial runs (kiff/tafs#107); 0 runs
 	// the live one. Draft is the KIFF draft its writes are decided against.
 	// Only a trial (Trigger run.ByTrial) has either.
@@ -761,9 +779,14 @@ type startBody struct {
 	// Aside is what the person had open as they wrote (the page in front, from the tafs panel): read by the
 	// run after its input, fenced as data; the page itself is never recorded (run.Run.Aside). Only a person's own chat
 	// message carries one, with an input, at most MaxAside bytes.
-	Aside      string `json:"aside,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
-	Background bool   `json:"background,omitempty"`
+	Aside string `json:"aside,omitempty"`
+	// AsideTools names the only tools the run is offered while it reads Aside, by the name the model sees:
+	// required with aside ([] is none), refused without one. The page can steer a call as any input can,
+	// so the sender says which tools a page may lead to, and a sender that forgets is refused rather than
+	// left with all of them.
+	AsideTools []string `json:"aside_tools,omitempty"`
+	SessionID  string   `json:"session_id,omitempty"`
+	Background bool     `json:"background,omitempty"`
 	// AI counts the run's cost toward its account's AI fair use, and refuses
 	// to start it past the bound (kiff/tafs#193). Nil: not counted.
 	AI *aiBody `json:"ai,omitempty"`
@@ -1134,7 +1157,16 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case body.Aside == "" && body.AsideTools != nil:
+		s.fail(w, r, bad("aside_tools goes with aside, and only with it"))
+		return
 	case body.Aside == "":
+	case body.AsideTools == nil:
+		s.fail(w, r, bad("aside needs aside_tools: the tools the run may use while it reads the page ([] is none)"))
+		return
+	case checkAsideTools(body.AsideTools) != nil:
+		s.fail(w, r, bad("%v", checkAsideTools(body.AsideTools)))
+		return
 	case q.Kind != run.ByMember:
 		s.fail(w, r, bad("only a person's own chat message carries what they had open: a door's never does"))
 		return
@@ -1154,7 +1186,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
-		Attachments: body.Attachments, Aside: body.Aside, Source: body.Source, Skills: body.Skills, Only: body.Only, Outcomes: body.Outcomes}
+		Attachments: body.Attachments, Aside: body.Aside, AsideTools: body.AsideTools, Source: body.Source, Skills: body.Skills, Only: body.Only, Outcomes: body.Outcomes}
 	if len(st.Skills) > 0 {
 		// The session's skills are the definition's, by name and version:
 		// any other is refused here, before anything is stored.

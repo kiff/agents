@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kiff/agents/agent"
@@ -62,4 +63,17 @@ func (x *execution) limit(ctx context.Context, a *agent.Agent, d registry.Defini
 	}
 	a.Tools = tools
 	return nil
+}
+
+// asideTools narrows a run that reads what the person had open (run.Run.Aside) to the tools its sender
+// named for it, by the name the model sees: the page can steer a call as any input can, so a tool the
+// sender didn't name for a page turn isn't offered in it. None named leaves a turn that only answers.
+func asideTools(tools []tool.Tool, named []string) []tool.Tool {
+	kept := make([]tool.Tool, 0, len(named))
+	for _, t := range tools {
+		if slices.Contains(named, t.Spec().Name) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
