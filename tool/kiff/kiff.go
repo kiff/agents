@@ -69,6 +69,10 @@ type Client struct {
 	url  string
 	key  string
 	http *http.Client
+	// planque and tenant, when set (WithPlanque), let a call paused in the
+	// owner's Chrome wait for the person (pause.go): planque's address from
+	// the runtime's own configuration, never from an answer.
+	planque, tenant string
 
 	mu sync.Mutex // held while initializing
 	// ready is whether the session was opened: read without mu, so a warm
@@ -244,7 +248,10 @@ func (t *gatewayTool) ResultSchema() json.RawMessage { return t.result }
 // Call calls the tool through the gateway and reads the gateway's state from
 // the result's _meta.
 func (t *gatewayTool) Call(ctx context.Context, input json.RawMessage) (tool.Result, error) {
-	out, _, err := t.callMeta(ctx, input)
+	out, m, err := t.callMeta(ctx, input)
+	if err == nil {
+		out = t.waitPaused(ctx, input, out, m.paused)
+	}
 	if err == nil {
 		t.checkStep(ctx, input, out)
 	}
@@ -327,6 +334,8 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		// Meta is kept opaque: the gateway passes other namespaces through
 		// from the tool, and only MetaKey is KIFF's to read.
 		Meta map[string]json.RawMessage `json:"_meta"`
+		// Structured is read only for a run paused in the owner's Chrome (pause.go).
+		Structured json.RawMessage `json:"structuredContent"`
 	}
 	if err := t.c.call(ctx, "tools/call", map[string]any{"name": t.spec.Name, "arguments": input}, &res); err != nil {
 		return tool.Result{}, meta{}, err
@@ -373,6 +382,9 @@ func (t *gatewayTool) callMeta(ctx context.Context, input json.RawMessage) (tool
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return tool.Result{}, meta{}, fmt.Errorf("kiff: the gateway's %s: %w", MetaKey, err)
 		}
+	}
+	if res.IsError {
+		m.paused = pausedOf(res.Structured)
 	}
 	if len(images) > 0 {
 		// The record keeps the text alone: said, so a run resumed from it knows an image was
@@ -491,6 +503,9 @@ type meta struct {
 	// the vendor's event (the slow-tools design): written by the gateway
 	// only, for a planque connection's tool on the caller's own grant.
 	Wait *tool.Wait `json:"wait"`
+	// paused is the run the answer says is paused in the owner's Chrome
+	// (pause.go), read from its structured content; never in _meta.
+	paused pausedRun
 }
 
 // TrialHeader asks KIFF to decide a call and not send it (kiff/tafs#107):

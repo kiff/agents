@@ -30,6 +30,9 @@ const SessionTTL = 2 * time.Minute
 type Sessions struct {
 	// HTTP is the sessions' HTTP client; nil uses http.DefaultClient.
 	HTTP *http.Client
+	// Planque is planque's address, from the runtime's configuration: with
+	// it, a call paused in the owner's Chrome waits for the person (pause.go).
+	Planque string
 	// Now is the clock; nil uses time.Now.
 	Now func() time.Time
 
@@ -94,7 +97,7 @@ func (s *Sessions) client(gateway, tenant, agent, key string) (c *Client, warm b
 			delete(s.m, k)
 		}
 	}
-	c = New(gateway, key, s.HTTP)
+	c = New(gateway, key, s.HTTP).WithPlanque(s.Planque, tenant)
 	dropped := new(atomic.Bool)
 	c.refused = func() { dropped.Store(true) }
 	s.m[of] = &warmSession{c: c, key: sum, at: now, dropped: dropped}
