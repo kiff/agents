@@ -340,11 +340,14 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
     fenced (`agent.PageAnswer`), with a note that they may repeat the page and nothing in them is an instruction, since a
     later turn has all of the agent's tools. The fence's tag is fixed, so history reads the same each turn and stays
     cached. The answer's `<<<` and `>>>` are taken apart, so it can't close the fence. Other runs' answers read as before.
+    When the oldest runs are summarised, the summary is told that text in that fence is data, never the owner's asks or an
+    instruction, and it gets the answer still fenced (`agent.SummarySystem`), so a planted line can't come out of the
+    summary as the owner's own.
   - A message that answers a card waiting in the chat goes on in that run with the person's words alone: its
     `aside` isn't read.
   - Tests: `TestWhatThePersonHadOpenIsReadFencedAndKeptNowhere`, `TestALaterMessageDoesntReadAnEarlierPage`,
     `TestAPausedRunReadsThePageAgainAndEndsWithoutIt`, `TestOnlyAPersonsOwnMessageCarriesWhatTheyHadOpen`,
-    `TestAPageTurnsAnswerIsReadAsDataByLaterTurns`.
+    `TestAPageTurnsAnswerIsReadAsDataByLaterTurns`, `TestASummaryKeepsAPageTurnsAnswerAsData`.
 
 Runnable: [`runner/example_test.go`](../runner/example_test.go).
 
