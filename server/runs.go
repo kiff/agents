@@ -25,6 +25,9 @@ import (
 // MaxInput bounds what a run is asked, in bytes.
 const MaxInput = 32_000
 
+// MaxAside bounds what the person had open with their message (run.Run.Aside), in bytes.
+const MaxAside = 24_000
+
 // followEvery is how often a stream looks for more of a run.
 const followEvery = 500 * time.Millisecond
 
@@ -86,6 +89,9 @@ type Start struct {
 	// (kiff/tafs#209): their own, not yet sent. Only a person's chat
 	// message carries any.
 	Attachments []string
+	// Aside is what the person had open as they wrote Input (run.Run.Aside): only a person's own chat
+	// message carries one, at most MaxAside bytes.
+	Aside string
 	// Version is the agent's version a trial runs (kiff/tafs#107); 0 runs
 	// the live one. Draft is the KIFF draft its writes are decided against.
 	// Only a trial (Trigger run.ByTrial) has either.
@@ -752,8 +758,12 @@ type startBody struct {
 	// id (kiff/tafs#209): theirs, uploaded, not sent before. With any, the
 	// input may be empty.
 	Attachments []string `json:"attachments,omitempty"`
-	SessionID   string   `json:"session_id,omitempty"`
-	Background  bool     `json:"background,omitempty"`
+	// Aside is what the person had open as they wrote (the page in front, from the tafs panel): read by the
+	// run after its input, fenced as data, and never recorded (run.Run.Aside). Only a person's own chat
+	// message carries one, with an input, at most MaxAside bytes.
+	Aside      string `json:"aside,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Background bool   `json:"background,omitempty"`
 	// AI counts the run's cost toward its account's AI fair use, and refuses
 	// to start it past the bound (kiff/tafs#193). Nil: not counted.
 	AI *aiBody `json:"ai,omitempty"`
@@ -1123,17 +1133,28 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, bad("only a person's own chat message carries attachments: a door's never does"))
 		return
 	}
+	switch {
+	case body.Aside == "":
+	case q.Kind != run.ByMember:
+		s.fail(w, r, bad("only a person's own chat message carries what they had open: a door's never does"))
+		return
+	case body.Input == "" || len(body.Aside) > MaxAside:
+		s.fail(w, r, bad("what the person had open goes with their words, at most %d bytes of text", MaxAside))
+		return
+	}
 	// The owner writing while a card of theirs waits in the chat answers it
 	// in their words, and that run goes on: typing still works, and no
 	// second line of thought starts beside the one waiting. Only their own
 	// message does: a door's, or one with files, starts a run as before.
+	// A message that answers a card this way goes on in the run that waits, with the person's words alone:
+	// what they had open (Aside) isn't read there, and nothing of it is kept.
 	if body.SessionID != "" && q.Kind == run.ByMember && len(body.Attachments) == 0 {
 		if done := s.wroteInstead(w, r, c, body.SessionID, q, body.Input, body.DedupKey, body.Background); done {
 			return
 		}
 	}
 	st := Start{Tenant: c.Tenant, Agent: id, Session: body.SessionID, Trigger: run.ByOwner, Input: body.Input, Requester: q, Grant: grant,
-		Attachments: body.Attachments, Source: body.Source, Skills: body.Skills, Only: body.Only, Outcomes: body.Outcomes}
+		Attachments: body.Attachments, Aside: body.Aside, Source: body.Source, Skills: body.Skills, Only: body.Only, Outcomes: body.Outcomes}
 	if len(st.Skills) > 0 {
 		// The session's skills are the definition's, by name and version:
 		// any other is refused here, before anything is stored.

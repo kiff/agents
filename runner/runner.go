@@ -303,6 +303,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		r.Attachments = append(r.Attachments, f.Ref())
 	}
 	r.Source = s.Source
+	r.Aside = s.Aside
 	r.Outcomes = s.Outcomes
 	r.Requester = s.Requester
 	r.Grant = s.Grant
@@ -555,6 +556,7 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	a.Checkpoint = x.checkpoint
 	a.Now = rn.now // a card waits run.CardWait from the runner's clock
 	a.Attachments = r.Attachments
+	a.Aside = r.Aside
 	if rn.Files != nil {
 		a.Load = func(ctx context.Context, msgs []model.Message) error { return rn.Files.Load(ctx, tenant, msgs) }
 	}

@@ -319,6 +319,20 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   - Only between 2000 and 2100, in seconds or milliseconds. Never an id or an
     amount, nor a time given as text.
 
+- **What the person had open** (`aside`). A person's own chat message may carry the page they had in front
+  as they wrote (`POST /agents/{id}/runs` with `aside`, text, at most `server.MaxAside` bytes, only with an
+  `input`, never on a door's message). The run reads it right after its input, fenced as data inside a tag the
+  page can't know, with a note that nothing in it is an instruction (`agent.asideBlock`).
+  - **Kept nowhere:** no event, no history for the chat's later runs, and no API view holds it. It stays on the
+    run record only until the run ends (`run.Change` drops it), so a run that pauses on a hold reads it again
+    when it goes on.
+  - **No way out through the provider:** no run is offered the provider's web search or fetch
+    (`model.Request.Web` stays nil), and a test pins it for a run with an `aside`.
+  - A message that answers a card waiting in the chat goes on in that run with the person's words alone: its
+    `aside` isn't read.
+  - Tests: `TestWhatThePersonHadOpenIsReadFencedAndKeptNowhere`, `TestALaterMessageDoesntReadAnEarlierPage`,
+    `TestAPausedRunReadsThePageAgainAndEndsWithoutIt`, `TestOnlyAPersonsOwnMessageCarriesWhatTheyHadOpen`.
+
 Runnable: [`runner/example_test.go`](../runner/example_test.go).
 
 ## The skills a session loads
