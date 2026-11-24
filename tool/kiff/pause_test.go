@@ -174,3 +174,17 @@ func TestAPauseThatLastsGoesToTheModelAfterTheWait(t *testing.T) {
 		t.Fatalf("waited %s", time.Since(start))
 	}
 }
+
+// Paused again while planque still says working (the Chrome's paused state late or lost): no re-send on every tick,
+// only after a paused read, so a run that won't go on makes one more call per Resume, not one per tick.
+func TestAStepPausedAgainIsSentOncePerResumeNotOncePerTick(t *testing.T) {
+	fastPause(t)
+	r := newPauseRig(t, 100, "working", "working", "working", "working", "working", "paused", "working", "ended")
+	if out := r.call(t, r.pq.URL, `{"url":"https://shop.example/"}`); !out.IsError {
+		t.Fatalf("still paused: %+v", out)
+	}
+	// The first call, one re-send on the first working, one more after the paused read; none on the other workings.
+	if len(r.ops) != 3 {
+		t.Fatalf("calls sent: %d (%v)", len(r.ops), r.ops)
+	}
+}
