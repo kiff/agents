@@ -28,14 +28,14 @@ name: Proofs
 # token: only the claims, which name this repository and this run, and a
 # fingerprint, which names a public key.
 on:
-  # Daily at 03:41 UTC: the proofs of every app (cmd/e2e -proof), no model, so
-  # each app's state in KIFF stays fresh (a green counts for 24 hours). Off
-  # the hour, and before the Monday Eval's 04:07, which shares the test
-  # account. The weekly proof (two real Coach chats, model spend) runs by hand
-  # only: the owner paused the provers on 21 Nov, and a run that spends on the
-  # model goes only on their word.
-  schedule:
-    - cron: "41 3 * * *"
+  # By hand only, for now: the daily proofs (03:41 UTC, every app, no model)
+  # are off until the provers are back on, as their apps' sandbox keys aren't
+  # set and a scheduled run would only fail. To turn them back on, add
+  #   schedule:
+  #     - cron: "41 3 * * *"
+  # (off the hour, and before the Monday Eval's 04:07, which shares the test
+  # account). The weekly proof (two real Coach chats, model spend) runs by hand
+  # only: a run that spends on the model goes only on the owner's word.
   workflow_dispatch:
     inputs:
       run:
@@ -62,7 +62,7 @@ permissions:
   id-token: write
 jobs:
   apps:
-    # A dispatch's proof, or the daily schedule's (every app, never dry).
+    # A dispatch's proof, or the daily schedule's when it's on (every app, never dry).
     if: inputs.run == 'proof' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 2
