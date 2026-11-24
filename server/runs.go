@@ -759,7 +759,7 @@ type startBody struct {
 	// input may be empty.
 	Attachments []string `json:"attachments,omitempty"`
 	// Aside is what the person had open as they wrote (the page in front, from the tafs panel): read by the
-	// run after its input, fenced as data, and never recorded (run.Run.Aside). Only a person's own chat
+	// run after its input, fenced as data; the page itself is never recorded (run.Run.Aside). Only a person's own chat
 	// message carries one, with an input, at most MaxAside bytes.
 	Aside      string `json:"aside,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`

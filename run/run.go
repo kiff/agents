@@ -223,8 +223,8 @@ type Run struct {
 	// as the message records them: never their bytes.
 	Attachments []attach.Ref `json:"attachments,omitempty"`
 	// Aside is what the person had open as they wrote Input (the page in front, from the tafs panel), read by
-	// the run's model after its input, fenced as data, never recorded: no event and no history holds it, and
-	// no API view shows it. It is kept on the run only until it ends (run.Change drops it then), so a run
+	// the run's model after its input, fenced as data. The page itself is never recorded: no event and no
+	// history holds it, and no API view shows it (the answer is recorded as any answer is). It is kept on the run only until it ends (run.Change drops it then), so a run
 	// that pauses on a hold still reads it when it goes on.
 	Aside string `json:"aside,omitempty"`
 

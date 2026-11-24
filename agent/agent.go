@@ -124,9 +124,10 @@ type Agent struct {
 	// (kiff/tafs#209): they follow it, fenced (attach.FileNote).
 	Attachments []attach.Ref
 	// Aside is what the person had open as they wrote the run's input (run.Run.Aside): it follows the
-	// input, fenced as data (asideBlock), and is never recorded. No run is offered the provider's web search
-	// or fetch (model.Request.Web stays nil), and a test pins it for a run with one: nothing on the page
-	// can send what it read to a host through them.
+	// input, fenced as data (asideBlock), and the page itself is never recorded (the answer is, as any
+	// answer is). No run is offered the provider's web search or fetch (model.Request.Web stays nil), and a
+	// test pins it for a run with one. The fence guides the model, it isn't a boundary: the page can steer
+	// the agent's own tools as any input can, so the sender limits what a page turn's tools may do.
 	Aside string
 	// Load fills the File blocks of what a run sends with their bytes, once
 	// at its start: the newest within the turn budget, the rest out of view.

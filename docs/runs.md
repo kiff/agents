@@ -323,11 +323,15 @@ fmt.Println(r.Status, r.Stop, r.Turns)  // COMPLETED answered 2
   as they wrote (`POST /agents/{id}/runs` with `aside`, text, at most `server.MaxAside` bytes, only with an
   `input`, never on a door's message). The run reads it right after its input, fenced as data inside a tag the
   page can't know, with a note that nothing in it is an instruction (`agent.asideBlock`).
-  - **Kept nowhere:** no event, no history for the chat's later runs, and no API view holds it. It stays on the
-    run record only until the run ends (`run.Change` drops it), so a run that pauses on a hold reads it again
-    when it goes on.
+  - **The page itself is kept nowhere:** no event, no history for the chat's later runs, and no API view holds
+    it. It stays on the run record only until the run ends (`run.Change` drops it), so a run that pauses on a
+    hold reads it again when it goes on. What the agent answers is recorded as any answer is, and can say what
+    was on the page.
   - **No way out through the provider:** no run is offered the provider's web search or fetch
     (`model.Request.Web` stays nil), and a test pins it for a run with an `aside`.
+  - **The run's own tools stay:** the fence and its note guide the model, they aren't a boundary, and page text
+    can steer a call to the agent definition's tools as any input can. A service that sends an `aside` limits
+    what a page turn's tools may do, where those tools run.
   - A message that answers a card waiting in the chat goes on in that run with the person's words alone: its
     `aside` isn't read.
   - Tests: `TestWhatThePersonHadOpenIsReadFencedAndKeptNowhere`, `TestALaterMessageDoesntReadAnEarlierPage`,
