@@ -57,8 +57,13 @@ func (c *Chat) Send(ctx context.Context, text string, emit func(agent.Event)) (r
 // model messages, joining consecutive ones of the same role. Tool calls and
 // their results are left out, so what it returns is always valid to send;
 // each call is there as a line of the agent's (session.Called).
+//
+// What a run answered to a message that carried a page the person had open
+// (agent.TextBody.Aside) is read as data, fenced (agent.PageAnswer): it may
+// repeat the page, and a later turn has the agent's full tools.
 func Conversation(events []session.Event) []model.Message {
 	var msgs []model.Message
+	paged := map[string]bool{}
 	for _, e := range events {
 		var role model.Role
 		var text string
@@ -98,7 +103,14 @@ func Conversation(events []session.Event) []model.Message {
 			if json.Unmarshal(e.Body, &body) != nil || (body.Text == "" && len(body.Attachments) == 0) {
 				continue
 			}
-			if body.Text != "" {
+			if role == model.User && body.Aside {
+				paged[e.Run] = true
+			}
+			switch {
+			case body.Text == "":
+			case role == model.Assistant && paged[e.Run]:
+				blocks = append(blocks, model.Block{Kind: model.Text, Text: agent.PageAnswer(body.Text)})
+			default:
 				// Only a Called event is a line of the record: anything
 				// written to look like one, by the owner or the agent, isn't.
 				blocks = append(blocks, model.Block{Kind: model.Text, Text: agent.Unforged(body.Text)})
