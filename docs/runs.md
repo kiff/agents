@@ -150,6 +150,16 @@ settings turn it on:
 | `AGENTS_BEDROCK_FALLBACK` | `on`: a new run whose first turn the Claude API refuses for credits, or can't serve once its retries are spent, goes to Bedrock |
 | `AGENTS_BEDROCK_DAILY_USD` | the most Bedrock's turns may cost in a UTC day; **without it, Bedrock refuses every turn** |
 
+- **The words follow a switch, the same day.** Changing `AGENTS_MODEL_SOURCE` changes
+  which company gets people's data, so these move with it:
+  - kiff.dev/subprocessors and the DPA mark the provider in use ("In use now"), in one
+    reviewed kiff/cloud PR merged with the switch;
+  - the App Review notes' "(now …)" (kiff/tafs `docs/review-notes.md`, and the App Store
+    Connect and Play notes, saved on the owner's yes);
+  - the record of processing and the DPIA (legal-i18n).
+  The AI consent's "Right now" line follows by itself: tafs cloud reads the provider from
+  here, and shows no line when it can't. No consent version changes for a provider
+  already listed.
 - **Bedrock** is Claude in Amazon Bedrock, in our own AWS account: bedrock-runtime,
   from the function's region, through the EU inference profiles
   (`eu.anthropic.claude-sonnet-5-5`, `eu.anthropic.claude-opus-5-5`), signed with
