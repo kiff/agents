@@ -5,10 +5,16 @@
 # them either, nor the reviewer logins outside CODEOWNERS, where GitHub reads them. Fails with where.
 # Every run first proves the check on planted lines ("planted-lane" is a name kept for that), so a
 # copy that lost a character fails here rather than passing on everything.
+# --text checks what's on stdin instead: a pull request's title, body or review.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-python3 - <<'PY'
-import hashlib, re, subprocess, sys
+# The script itself comes in on python's stdin, so the text to check goes in through the environment.
+if [[ "${1:-}" == --text ]]; then
+	PUBLIC_TEXT_IN="$(cat)"
+	export PUBLIC_TEXT_IN
+fi
+python3 - "$@" <<'PY'
+import hashlib, os, re, subprocess, sys
 
 NAMES = set("""
 3c32e58c6fc3cf62 20cca48ece26c362 f5068c4b858ead38 fe9c6bd7a66301f4 50077b782480811e
@@ -24,6 +30,8 @@ SAID = re.compile(
     r"kiff/work\b|\bthe P[M]\b|\bPM's\b|\(PM[ ,)]|\bPM [0-9]{1,2}:[0-9]{2}"
     r"|\b(review|probe|ask|point|negatives|read) (on|of)\)"
     rf"|\bowner(?:'s|,) [0-9]{{1,2}} {MONTH}\b"
+    # A status line's own words: the all-caps hand-off word with an arrow, or a board's line.
+    r"|\bREADY\s*(?:→|->)|\bBOARD:"
 )
 WORD = re.compile(r"(?:^|(?<=[^\w-]))[a-z0-9]+(?:-[a-z0-9]+)*(?=[^\w-]|$)")
 SELF, OWNERS = "tools/public-text.sh", ".github/CODEOWNERS"
@@ -54,12 +62,26 @@ PLANTED = [  # (path, line, whether it must fail)
     (OWNERS, "* @planted-lane", False),
     ("a.md", "as the " "PM 20:12 said", True),
     (OWNERS, "# one of the two (the owner, 22 Nov)", True),
+    ("a.md", "READY → merge", True),
+    ("a.md", "BOARD: two open", True),
+    ("a.md", "The page is ready to merge; a circuit BOARD; READY_STATE", False),
+    ("", "🤖 Generated with [Claude Code](https://claude.com/claude-code)", False),
 ]
 wrong = [p for p in PLANTED if named(p[0], p[1]) != p[2]]
 if wrong:
     print("The public-text check itself is broken: these planted lines came out wrong:")
     print("\n".join(f"{p}: {l} (should {'fail' if f else 'pass'})" for p, l, f in wrong))
     sys.exit(2)
+
+if sys.argv[1:] == ["--text"]:
+    found = [f"line {n}: {line.strip()[:160]}"
+             for n, line in enumerate(os.environ.get("PUBLIC_TEXT_IN", "").splitlines(), 1) if named("", line)]
+    if found:
+        print("This pull request's text names a thread, a lane, a manager or a dated rule; say what changed and why:")
+        print("\n".join(found))
+        sys.exit(1)
+    print(f"Public text: clean ({len(PLANTED)} planted lines checked first)")
+    sys.exit(0)
 
 files = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout
 found = []
