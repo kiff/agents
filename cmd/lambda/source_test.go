@@ -51,7 +51,7 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 // has: a turn reserves within the cap, then settles to what it cost.
 func TestTheBackupsDayTotalIsKept(t *testing.T) {
 	use := memory.NewUsage()
-	d := daySpend{use}
+	d := daySpend{use: use}
 	if ok, err := d.Reserve(ctx, "2026-11-07", 1_200_000, 1_500_000); err != nil || !ok {
 		t.Fatalf("a reservation within the cap: %v, %v", ok, err)
 	}
@@ -69,5 +69,35 @@ func TestTheBackupsDayTotalIsKept(t *testing.T) {
 	}
 	if _, err := d.Reserve(ctx, "07/11/2026", 1, 2); err == nil {
 		t.Fatal("a day that isn't one was taken")
+	}
+}
+
+// The day says when it passes 80% of its cap, once, by the turn that crossed
+// it, and says each turn the cap refuses: the lines an alarm tells the owner.
+func TestTheBackupsDaySaysWhenItNearsAndReachesItsCap(t *testing.T) {
+	var said []string
+	d := daySpend{use: memory.NewUsage(), log: func(msg string, _ error) { said = append(said, msg) }}
+	reserve := func(micro int64) bool {
+		t.Helper()
+		ok, err := d.Reserve(ctx, "2026-11-25", micro, 1_000_000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	reserve(700_000) // 70%: nothing
+	if len(said) != 0 {
+		t.Fatalf("said %v below 80%%", said)
+	}
+	reserve(150_000) // 85%: crossed
+	reserve(50_000)  // 90%: already said
+	if len(said) != 1 || said[0] != CapNear {
+		t.Fatalf("said %v", said)
+	}
+	if reserve(200_000) { // past the cap: refused, and said
+		t.Fatal("a turn past the cap was taken")
+	}
+	if len(said) != 2 || said[1] != CapReached {
+		t.Fatalf("said %v", said)
 	}
 }

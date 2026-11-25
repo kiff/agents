@@ -69,7 +69,7 @@ func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Sto
 	}
 	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack, Log: log}
 	if sc.CapMicro > 0 && use != nil {
-		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, Spend: daySpend{use}, PriceFactor: bedrock.GeoFactor}
+		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, Spend: daySpend{use: use, log: log}, PriceFactor: bedrock.GeoFactor}
 	}
 	return s
 }
@@ -78,8 +78,25 @@ func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Sto
 // tenant ID has a "#".
 const backupTenant = "#bedrock"
 
-// daySpend keeps Bedrock's day totals in the usage table, each for three days.
-type daySpend struct{ use usage.Store }
+// The lines the function logs as Bedrock's day nears and reaches its cap, for
+// an alarm to tell the owner (docs/runs.md): past the cap, every turn is
+// refused until 00:00 UTC.
+const (
+	// CapNear: the day's spend, reservations included, passed CapNearShare
+	// of the cap. Said once, by the turn that crossed it.
+	CapNear = "bedrock: today's spend passed 80% of its cap"
+	// CapReached: a turn was refused for the cap. Said for each one.
+	CapReached = "bedrock: a turn was refused, today's cap is spent"
+	// CapNearShare is CapNear's share of the cap, in percent.
+	CapNearShare = 80
+)
+
+// daySpend keeps Bedrock's day totals in the usage table, each for three days,
+// and says (log, when set) when the day nears and reaches its cap.
+type daySpend struct {
+	use usage.Store
+	log func(msg string, err error)
+}
 
 // Reserve adds a turn's worst case to the day only while it stays within limit.
 func (d daySpend) Reserve(ctx context.Context, day string, microUSD, limit int64) (bool, error) {
@@ -87,7 +104,24 @@ func (d daySpend) Reserve(ctx context.Context, day string, microUSD, limit int64
 	if err != nil {
 		return false, err
 	}
-	return d.use.Reserve(ctx, backupTenant, day, microUSD, limit, until)
+	ok, err := d.use.Reserve(ctx, backupTenant, day, microUSD, limit, until)
+	if err != nil || d.log == nil {
+		return ok, err
+	}
+	if !ok {
+		d.log(CapReached, fmt.Errorf("%s: a turn's worst case of %d micro-USD would pass the cap of %d", day, microUSD, limit))
+		return ok, nil
+	}
+	// The turn that took the day across the line says so: what was spent
+	// before it was below, what's spent with it isn't. A read that fails
+	// says nothing; the cap itself still holds.
+	if p, gerr := d.use.Get(ctx, backupTenant, day); gerr == nil {
+		near := limit * CapNearShare / 100
+		if p.Spent >= near && p.Spent-microUSD < near {
+			d.log(CapNear, fmt.Errorf("%s: %d of %d micro-USD, reservations included", day, p.Spent, limit))
+		}
+	}
+	return ok, nil
 }
 
 // Add settles a turn: what it cost less what it reserved, often negative.

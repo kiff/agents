@@ -1187,6 +1187,27 @@ func TestARunRefusedForOurBalanceSaysSo(t *testing.T) {
 	}
 }
 
+// A run Bedrock refused because the day's cap is spent, or because it has no
+// cap, says what a refusal for our balance says: on our side, no credits used,
+// try again later. Never the cap's own words.
+func TestARunRefusedForBedrocksDaySaysSo(t *testing.T) {
+	for _, refusal := range []error{model.ErrBackupCapped, model.ErrBackupOff} {
+		f := newFixture(t)
+		f.model.fail = refusal
+		r := f.start(server.Start{Input: "go"})
+		got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+		if !errors.Is(err, refusal) {
+			t.Fatalf("got %v, want the refusal for the caller to log", err)
+		}
+		if got.Status != run.Error || got.Error != runner.FailedAIUnavailable || run.ErrorCode(got.Error) != "ai_unavailable" || !runner.Own(got.Error) {
+			t.Fatalf("%v: failed to %+v", refusal, got)
+		}
+		if strings.Contains(got.Error, "Bedrock") || strings.Contains(got.Error, "cap") {
+			t.Fatalf("%v: the cap's own words reached the person: %q", refusal, got.Error)
+		}
+	}
+}
+
 // A run whose tools the AI provider refused says so, without the provider's
 // words, and is the runner's own failure: its first turn never ran.
 func TestARunWhoseToolsAreRefusedSaysSo(t *testing.T) {

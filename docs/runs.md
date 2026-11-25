@@ -199,6 +199,15 @@ settings turn it on:
   own, and its usage event, not the run, says where it ran.
 - **Errors** from Bedrock have AWS credentials (key ids, session tokens, SigV4
   signatures) taken out of their text before they're logged.
+- **The day's cap** (`AGENTS_BEDROCK_DAILY_USD`) is shared by every account:
+  past it, Bedrock refuses every turn until 00:00 UTC. A run it refuses (or
+  one on Bedrock with no cap set) ends as one refused for our balance does,
+  `ai_unavailable` with `run.AIUnavailable`'s words: on our side, none of the
+  person's credits used, try again later. The function logs
+  *"bedrock: today's spend passed 80% of its cap"* once, from the turn that
+  crosses it (reservations count), and *"bedrock: a turn was refused, today's
+  cap is spent"* for each turn the cap refuses: a metric filter on each, with
+  an alarm, tells the owner before and when it bites.
 - **The Eval** runs on Bedrock with `-model-source bedrock` (or
   `AGENTS_MODEL_SOURCE=bedrock`), its judge too, without the daily cap, and its
   report names where the turns ran. `cmd/e2e` takes the same flag for the setup
