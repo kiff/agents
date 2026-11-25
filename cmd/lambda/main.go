@@ -317,7 +317,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 		Planque: func(base, gateway, tenant, key string) tool.Tool {
 			return planque.New(base, tenant, key, nil).ReadThrough(kiff.New(gateway, key, nil))
 		},
-	}, Collect: kiff.Collect, Settle: kiff.Settle, Usage: use, Log: log,
+	}, Collect: kiff.Collect, Settle: kiff.Settle, Usage: use, Days: dynamodb.NewDays(db, table), Log: log,
 		// Before each new run, KIFF's balance, with the agent's own key: an
 		// allowed answer is kept a minute per agent, a refusal never.
 		Allowance: kiff.AllowanceChecker(agents, keys, &http.Client{Timeout: allowanceTimeout}, kiffAPI, nil)}

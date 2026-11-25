@@ -390,6 +390,8 @@ type Outcome struct {
 	Cost int64 `json:"cost_micro_usd"`
 	// Turns counts the run's model turns.
 	Turns int `json:"turns"`
+	// Tokens are the run's model tokens, by kind, from its start.
+	Tokens run.Tokens `json:"tokens,omitzero"`
 	// Source and Region are where the run's turns run (model.Reply), set by
 	// its first: a run stays where it started.
 	Source string `json:"model_source,omitempty"`
@@ -521,7 +523,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 	// error below: a call the owner approved was sent by KIFF before this
 	// ran, whatever fails here, and the run keeps that (Done, Sent), with
 	// its cost and turns so far.
-	base := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns}
+	base := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Tokens: r.Tokens, since: r.Turns}
 	for _, h := range held {
 		if wentThrough(h) {
 			base.Done = append(base.Done, doneOf(h, requirementInput(r, h.CallID)))
@@ -638,7 +640,7 @@ func Continue(ctx context.Context, a Agent, rec *session.Recording, history []mo
 		a.resolved[h.CallID] = outcome(h, requirementAnswer(r, h.CallID))
 	}
 	refused, declined := refusals(r, held)
-	out := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}
+	out := Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Tokens: r.Tokens, since: r.Turns, Done: done, Refused: refused, Declined: declined, Sent: sent, tally: count}
 	if stopReading {
 		// The owner chose to stop reading, or didn't answer: one turn with
 		// no tool use, from what was read.
@@ -717,7 +719,7 @@ func (a Agent) restart(ctx context.Context, rec *session.Recording, history []mo
 	if err := a.load(ctx, msgs); err != nil {
 		return Outcome{}, msgs, err
 	}
-	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, since: r.Turns}, emit)
+	return a.loop(ctx, rec, msgs, Outcome{Cost: r.Cost + a.Spent, Turns: r.Turns, Tokens: r.Tokens, since: r.Turns}, emit)
 }
 
 // tallyLine is the count as this agent's model reads it: RecordTallyLine
@@ -1598,6 +1600,11 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 	out.Cost += cost
 	out.turnCost = cost
 	out.Turns++
+	out.Tokens.Input += reply.Usage.InputTokens
+	out.Tokens.Output += reply.Usage.OutputTokens
+	out.Tokens.CacheRead += reply.Usage.CacheRead
+	out.Tokens.CacheWrite += reply.Usage.CacheWrite
+	out.Tokens.CacheWrite1h += reply.Usage.CacheWrite1h
 	if out.Source == "" {
 		out.Source, out.Region = reply.Source, reply.Region
 	}

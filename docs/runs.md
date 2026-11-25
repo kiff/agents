@@ -234,6 +234,23 @@ settings turn it on:
     gives, at the list price times the EU profiles' 1.1 (`GeoFactor`), and so
     does the judges' reported spend.
 
+## Usage by day
+
+Each run is counted on one usage row per UTC day, provider, agent and source
+(`usage.Days`, kept 90 days in the agents table under `DAY|<day>`), as it
+pauses and as it ends: its turns, tokens by kind (input, output, cache read,
+cache write for 5 minutes and for an hour) and cost since it was last stored,
+and at its end the run itself and its credits, in two columns. Both are
+KIFF's formula (`usage.Credits`, pinned on KIFF's own examples): KIFF's are
+the ones charged, these only measure. `credits_list` is every ended run's;
+`credits_charged` leaves out the runs KIFF makes free (`usage.Charged`): a
+trial, and a run that ends ERROR. Setup's runs are free in KIFF within its
+period's allowance, which only KIFF knows, so they're in `credits_charged`
+as charged: on Setup's rows it's at most what was charged. One atomic update
+per pause or end. The run keeps its tokens
+too (`tokens`, beside `cost_micro_usd`). A day's rows are one query
+(`DayRows`): what the owner's Usage view reads, never one read per run.
+
 ## Statuses
 
 | From | To | When |
