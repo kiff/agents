@@ -216,6 +216,9 @@ type Run struct {
 	Outcomes []string `json:"outcomes,omitempty"`
 	Outcome  string   `json:"outcome,omitempty"`
 	Status   Status   `json:"status"`
+	// Erased is set once its person deleted the chat it ran in (Erase): what
+	// was written in it is gone, and the record that it ran and its cost stay.
+	Erased bool `json:"erased,omitempty"`
 	// Input is what the run was asked: the owner's message, or the job's
 	// instruction. A PENDING run is started from it.
 	Input string `json:"input"`
