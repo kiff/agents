@@ -26,7 +26,8 @@ func RunDays(t *testing.T, newDays func(*testing.T) usage.Days) {
 		d := newDays(t)
 		for _, v := range []usage.Day{
 			{Turns: 2, InputTokens: 10, OutputTokens: 100, CacheRead: 5000, CacheWrite: 300, CacheWrite1h: 7, CostMicroUSD: 12_000},
-			{Runs: 1, Turns: 1, OutputTokens: 50, CostMicroUSD: 3_000, Credits: 6},
+			{Runs: 1, Turns: 1, OutputTokens: 50, CostMicroUSD: 3_000, CreditsList: 6, CreditsCharged: 6},
+			{Runs: 1, CostMicroUSD: 1_000, CreditsList: 2},
 		} {
 			if err := d.AddDay(ctx, k, v, until); err != nil {
 				t.Fatal(err)
@@ -48,7 +49,7 @@ func RunDays(t *testing.T, newDays func(*testing.T) usage.Days) {
 		for _, r := range rows {
 			by[r.DayKey] = r.Day
 		}
-		want := usage.Day{Runs: 1, Turns: 3, InputTokens: 10, OutputTokens: 150, CacheRead: 5000, CacheWrite: 300, CacheWrite1h: 7, CostMicroUSD: 15_000, Credits: 6}
+		want := usage.Day{Runs: 2, Turns: 3, InputTokens: 10, OutputTokens: 150, CacheRead: 5000, CacheWrite: 300, CacheWrite1h: 7, CostMicroUSD: 16_000, CreditsList: 8, CreditsCharged: 6}
 		if by[k] != want || by[other] != (usage.Day{Runs: 1, CostMicroUSD: 1}) {
 			t.Fatalf("rows %+v", by)
 		}

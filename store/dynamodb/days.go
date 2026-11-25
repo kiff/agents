@@ -33,14 +33,14 @@ func (d *Days) AddDay(ctx context.Context, k usage.DayKey, v usage.Day, until ti
 	// Every name through a placeholder: several (agent among them) are DynamoDB's reserved words.
 	names := map[string]string{"#ttl": "ttl", "#runs": "runs", "#turns": "turns", "#in": "input_tokens", "#out": "output_tokens",
 		"#cr": "cache_read_tokens", "#cw": "cache_write_tokens", "#cw1": "cache_write_1h_tokens", "#cost": "cost_micro_usd",
-		"#credits": "credits", "#provider": "provider", "#agent": "agent", "#src": "source"}
+		"#kl": "credits_list", "#kc": "credits_charged", "#provider": "provider", "#agent": "agent", "#src": "source"}
 	_, err := d.db.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: &d.table, Key: item,
-		UpdateExpression: aws.String("ADD #runs :r, #turns :t, #in :i, #out :o, #cr :cr, #cw :cw, #cw1 :cw1, #cost :c, #credits :k " +
+		UpdateExpression: aws.String("ADD #runs :r, #turns :t, #in :i, #out :o, #cr :cr, #cw :cw, #cw1 :cw1, #cost :c, #kl :kl, #kc :kc " +
 			"SET #ttl = :ttl, #provider = :p, #agent = :a, #src = :s"),
 		ExpressionAttributeNames: names,
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":r": n(v.Runs), ":t": n(v.Turns), ":i": n(v.InputTokens), ":o": n(v.OutputTokens), ":cr": n(v.CacheRead),
-			":cw": n(v.CacheWrite), ":cw1": n(v.CacheWrite1h), ":c": n(v.CostMicroUSD), ":k": n(v.Credits),
+			":cw": n(v.CacheWrite), ":cw1": n(v.CacheWrite1h), ":c": n(v.CostMicroUSD), ":kl": n(v.CreditsList), ":kc": n(v.CreditsCharged),
 			":ttl": ttl(until), ":p": s(k.Provider), ":a": s(k.Agent), ":s": s(k.Source)}})
 	return err
 }
@@ -60,7 +60,7 @@ func (d *Days) DayRows(ctx context.Context, day string) ([]usage.DayRow, error) 
 				DayKey: usage.DayKey{Day: day, Provider: getS(it, "provider"), Agent: getS(it, "agent"), Source: getS(it, "source")},
 				Day: usage.Day{Runs: getN(it, "runs"), Turns: getN(it, "turns"), InputTokens: getN(it, "input_tokens"), OutputTokens: getN(it, "output_tokens"),
 					CacheRead: getN(it, "cache_read_tokens"), CacheWrite: getN(it, "cache_write_tokens"), CacheWrite1h: getN(it, "cache_write_1h_tokens"),
-					CostMicroUSD: getN(it, "cost_micro_usd"), Credits: getN(it, "credits")},
+					CostMicroUSD: getN(it, "cost_micro_usd"), CreditsList: getN(it, "credits_list"), CreditsCharged: getN(it, "credits_charged")},
 			})
 		}
 		if len(res.LastEvaluatedKey) == 0 {

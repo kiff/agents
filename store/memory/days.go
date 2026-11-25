@@ -32,7 +32,8 @@ func (d *Days) AddDay(_ context.Context, k usage.DayKey, v usage.Day, _ time.Tim
 	r.CacheWrite += v.CacheWrite
 	r.CacheWrite1h += v.CacheWrite1h
 	r.CostMicroUSD += v.CostMicroUSD
-	r.Credits += v.Credits
+	r.CreditsList += v.CreditsList
+	r.CreditsCharged += v.CreditsCharged
 	d.rows[k] = r
 	return nil
 }

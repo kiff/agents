@@ -3,6 +3,8 @@ package usage
 import (
 	"context"
 	"time"
+
+	"github.com/kiff/agents/run"
 )
 
 // What runs spent, summed per UTC day, so the owner can watch the cost while
@@ -32,9 +34,15 @@ type Day struct {
 	// CostMicroUSD is the turns' cost at the price where they ran (Bedrock's
 	// EU profiles included), in millionths of a US dollar.
 	CostMicroUSD int64 `json:"cost_micro_usd"`
-	// Credits are the ended runs' credits, each worked out as KIFF does
-	// (Credits).
-	Credits int64 `json:"credits"`
+	// CreditsList are the ended runs' credits, each worked out as KIFF does
+	// (Credits) on its cost, free or not.
+	CreditsList int64 `json:"credits_list"`
+	// CreditsCharged are those of the ended runs KIFF doesn't make free
+	// (Charged): the gap to CreditsList is what failures and trials cost
+	// without being charged. Setup's runs are in it as charged: KIFF makes
+	// them free within its period's allowance, which only KIFF knows, so on
+	// Setup's rows it's at most what was charged.
+	CreditsCharged int64 `json:"credits_charged"`
 }
 
 // DayRow is one row as read.
@@ -63,4 +71,12 @@ func Credits(costMicroUSD int64) int64 {
 	num := costMicroUSD * 100 * 100 * 4
 	den := int64(1_000_000 * 108)
 	return (num + den - 1) / den
+}
+
+// Charged is whether KIFF charges a run that ended with status and trigger,
+// as meter.ClassifyRun does (kiff/cloud api/internal/meter/runs.go): a trial
+// is free, and so is a failed run, which is every ERROR (kiff.UsageOf).
+// Setup's allowance is KIFF's alone and isn't read here (CreditsCharged).
+func Charged(status run.Status, trigger run.Trigger) bool {
+	return trigger != run.ByTrial && status != run.Error
 }

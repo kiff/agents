@@ -3,6 +3,7 @@ package usage_test
 import (
 	"testing"
 
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/usage"
 )
 
@@ -15,6 +16,26 @@ func TestCreditsAreKIFFs(t *testing.T) {
 	} {
 		if got := usage.Credits(c.micro); got != c.want {
 			t.Errorf("Credits(%d) = %d, want %d", c.micro, got, c.want)
+		}
+	}
+}
+
+// Charged is KIFF's meter.ClassifyRun short of Setup: a trial and every ERROR
+// are free.
+func TestChargedIsKIFFs(t *testing.T) {
+	for _, c := range []struct {
+		status  run.Status
+		trigger run.Trigger
+		want    bool
+	}{
+		{run.Completed, run.ByOwner, true},
+		{run.Cancelled, run.BySchedule, true},
+		{run.Error, run.ByOwner, false},
+		{run.Completed, run.ByTrial, false},
+		{run.Error, run.ByTrial, false},
+	} {
+		if got := usage.Charged(c.status, c.trigger); got != c.want {
+			t.Errorf("Charged(%s, %s) = %v, want %v", c.status, c.trigger, got, c.want)
 		}
 	}
 }

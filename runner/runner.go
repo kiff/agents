@@ -1401,7 +1401,10 @@ func (x *execution) count(ctx context.Context, r, before run.Run, ended bool) er
 			CacheRead: r.Tokens.CacheRead - before.Tokens.CacheRead, CacheWrite: r.Tokens.CacheWrite - before.Tokens.CacheWrite,
 			CacheWrite1h: r.Tokens.CacheWrite1h - before.Tokens.CacheWrite1h}
 		if ended {
-			d.Runs, d.Credits = 1, usage.Credits(r.Cost)
+			d.Runs, d.CreditsList = 1, usage.Credits(r.Cost)
+			if usage.Charged(r.Status, r.Trigger) {
+				d.CreditsCharged = d.CreditsList
+			}
 		}
 		if d != (usage.Day{}) {
 			now := x.rn.now()

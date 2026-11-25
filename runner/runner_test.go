@@ -1194,9 +1194,30 @@ func TestARunIsCountedOnItsDaysUsageRow(t *testing.T) {
 	if row.Provider != "anthropic" || row.Agent != got.Agent || row.Source != "chrome" {
 		t.Fatalf("the row's key %+v", row.DayKey)
 	}
-	want := usage.Day{Runs: 1, Turns: 2, InputTokens: 2000, OutputTokens: 200, CostMicroUSD: got.Cost, Credits: usage.Credits(got.Cost)}
+	want := usage.Day{Runs: 1, Turns: 2, InputTokens: 2000, OutputTokens: 200, CostMicroUSD: got.Cost, CreditsList: usage.Credits(got.Cost), CreditsCharged: usage.Credits(got.Cost)}
 	if row.Day != want {
 		t.Fatalf("the row %+v, want %+v", row.Day, want)
+	}
+}
+
+// A run that ends ERROR is counted on its day's row, its turns and cost and
+// the run itself, at its list credits, but not charged: KIFF makes every
+// failed run free.
+func TestAFailedRunIsCountedButNotCharged(t *testing.T) {
+	f := newFixture(t, use("r1", "lookup", `{"q":"41"}`))
+	days := memory.NewDays()
+	f.r.Days = days
+	r := f.start(server.Start{Input: "look up 41"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err == nil || got.Status != run.Error || got.Turns != 1 || got.Cost <= 0 {
+		t.Fatalf("ran to %s, %d turns, cost %d (%v)", got.Status, got.Turns, got.Cost, err)
+	}
+	rows, err := days.DayRows(ctx, f.clock.now().UTC().Format(time.DateOnly))
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %+v, %v", rows, err)
+	}
+	if d := rows[0].Day; d.Runs != 1 || d.Turns != 1 || d.CostMicroUSD != got.Cost || d.CreditsList != usage.Credits(got.Cost) || d.CreditsList == 0 || d.CreditsCharged != 0 {
+		t.Fatalf("the row %+v, want the run, its turn and cost, list credits %d and none charged", d, usage.Credits(got.Cost))
 	}
 }
 
