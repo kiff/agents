@@ -209,6 +209,17 @@ settings turn it on:
     `infra/eval-bedrock.sh` has run (the same document, that role alone).
     Each suite's step takes fresh credentials first, since the role's sessions
     last an hour. A branch's run stays on the Claude API.
+  - **`e2e.yml`** follows the same variable, on main only, and takes the
+    role's credentials once before its first turn: its job's limit is within
+    the hour.
+  - **By hand only, for now:** while the variable is `bedrock`, both
+    workflows skip their scheduled runs (a skipped run is never a pass, so
+    the Upgrade gate never takes one for the Eval's). They're dispatched from
+    main. The condition comes out once Bedrock's turns are paid for by
+    credits.
+  - **The cap:** `-max-cost` counts each turn from the usage Bedrock's reply
+    gives, at the list price times the EU profiles' 1.1 (`GeoFactor`), and so
+    does the judges' reported spend.
 
 ## Statuses
 

@@ -69,7 +69,6 @@ on:
         default: false
 permissions:
   contents: read
-  id-token: write
   actions: read
 # One group with the E2E: both run on the test's account with the same setup agent,
 # and a run starts by disconnecting the grants that agent asked for, so two at
@@ -83,6 +82,16 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
+    # Until Bedrock's turns are paid for by credits, a run on Bedrock is by
+    # hand only: a scheduled one is skipped, and its run's conclusion is
+    # "skipped", never a pass. Take this out once they are.
+    if: github.event_name != 'schedule' || vars.EVAL_MODEL_SOURCE != 'bedrock'
+    # Only this job may ask GitHub for an OIDC token, to assume the AWS role
+    # its Bedrock turns and its report use.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
     # About 95 minutes at three runs a suite: Eval 19 took 14 for chargebacks,
     # 40 for the hand-offs and 25 for the first setup. Each suite's step has a
     # limit of its own, about twice its longest run at three (Eval 19): a stuck

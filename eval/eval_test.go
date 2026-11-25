@@ -106,6 +106,8 @@ type fakeModel struct {
 	text string
 	stop model.Stop // EndTurn when empty
 	reqs []model.Request
+	// factor is the reply's PriceFactor, as a turn on Bedrock says it.
+	factor float64
 }
 
 func (m *fakeModel) Turn(_ context.Context, req model.Request, _ func(string)) (model.Reply, error) {
@@ -115,7 +117,20 @@ func (m *fakeModel) Turn(_ context.Context, req model.Request, _ func(string)) (
 		stop = model.EndTurn
 	}
 	return model.Reply{Blocks: []model.Block{{Kind: model.Text, Text: m.text}}, Stop: stop,
-		Usage: model.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}}, nil
+		Usage: model.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000}, PriceFactor: m.factor}, nil
+}
+
+// The judge's spend is at the price where its turn ran: a turn on Bedrock's
+// EU profiles counts its PriceFactor, as an agent's turn does.
+func TestTheJudgeCountsWhereItsTurnRan(t *testing.T) {
+	m := &fakeModel{text: `{"pass": true, "why": "ok"}`, factor: 1.1}
+	j := &eval.Judge{Model: m, ModelID: "judge-model", Price: model.Price{Input: 10, Output: 20}}
+	if _, err := j.Ask(context.Background(), "the rule", "text"); err != nil {
+		t.Fatal(err)
+	}
+	if j.Spent() != 33 {
+		t.Errorf("spent %d; want 33 (30 at 1.1)", j.Spent())
+	}
 }
 
 func TestJudgeAsk(t *testing.T) {
