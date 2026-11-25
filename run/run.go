@@ -270,6 +270,8 @@ type Run struct {
 	Notify Notify `json:"notify,omitzero"`
 	// Turns counts the run's model turns so far, across its pauses.
 	Turns int `json:"turns"`
+	// Tokens are its turns' tokens so far, by kind, across its pauses.
+	Tokens Tokens `json:"tokens,omitzero"`
 	// ModelSource and ModelRegion are where the run's turns run ("anthropic",
 	// "bedrock"; the region of the endpoint called), set by its first turn.
 	// A run stays where it started.
@@ -616,4 +618,13 @@ func NewID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b) // crypto/rand.Read never fails on supported platforms
 	return hex.EncodeToString(b)
+}
+
+// Tokens are a run's model tokens, by kind: what its cost was worked out from.
+type Tokens struct {
+	Input        int64 `json:"input,omitempty"`
+	Output       int64 `json:"output,omitempty"`
+	CacheRead    int64 `json:"cache_read,omitempty"`
+	CacheWrite   int64 `json:"cache_write,omitempty"`
+	CacheWrite1h int64 `json:"cache_write_1h,omitempty"`
 }

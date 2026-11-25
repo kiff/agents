@@ -26,6 +26,7 @@ import (
 	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/store/memory"
 	"github.com/kiff/agents/tool"
+	"github.com/kiff/agents/usage"
 )
 
 var ctx = context.Background()
@@ -1166,6 +1167,36 @@ func TestAFailedModelIsAnError(t *testing.T) {
 	}
 	if !f.state(r).Ended || !slices.Contains(f.events(r), session.Error) {
 		t.Fatalf("recording %+v with %v, want ended with the error", f.state(r), f.events(r))
+	}
+}
+
+// Each run is counted on its day's usage row as it ends: its turns, tokens
+// by kind and cost, the run itself and its credits (KIFF's formula), by where
+// its turns ran, its agent and its source. The run keeps its tokens beside
+// its cost.
+func TestARunIsCountedOnItsDaysUsageRow(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"charge":"ch_1"}`), say("done"))
+	days := memory.NewDays()
+	f.r.Days = days
+	r := f.start(server.Start{Input: "refund ch_1", Source: "chrome"})
+	got, err := f.r.Execute(ctx, "t1", r.ID, nil)
+	if err != nil || got.Status != run.Completed {
+		t.Fatalf("ran to %+v, %v", got, err)
+	}
+	if got.Tokens != (run.Tokens{Input: 2000, Output: 200}) || got.Turns != 2 {
+		t.Fatalf("the run's tokens %+v, turns %d", got.Tokens, got.Turns)
+	}
+	rows, err := days.DayRows(ctx, f.clock.now().UTC().Format(time.DateOnly))
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %+v, %v", rows, err)
+	}
+	row := rows[0]
+	if row.Provider != "anthropic" || row.Agent != got.Agent || row.Source != "chrome" {
+		t.Fatalf("the row's key %+v", row.DayKey)
+	}
+	want := usage.Day{Runs: 1, Turns: 2, InputTokens: 2000, OutputTokens: 200, CostMicroUSD: got.Cost, Credits: usage.Credits(got.Cost)}
+	if row.Day != want {
+		t.Fatalf("the row %+v, want %+v", row.Day, want)
 	}
 }
 

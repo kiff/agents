@@ -111,6 +111,9 @@ type Runner struct {
 	// Usage adds a counted run's cost to its period each time the run pauses
 	// or ends (kiff/tafs#193). Nil: nothing is counted.
 	Usage usage.Store
+	// Days, when set, counts each run on its day's usage row (usage.Days):
+	// what the owner watches the cost on.
+	Days usage.Days
 	// Files are the files people attach to their chat messages
 	// (kiff/tafs#209). Nil: a message with files is refused.
 	Files *attach.Service
@@ -1304,11 +1307,11 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		}
 		// Each requirement's hold expiry is KIFF's to report (step 4). Until
 		// then it is zero, and the requirement resolves only once answered.
-		var before int64
+		var before run.Run
 		r, err := x.saveStop(ctx, func(n *run.Run) error {
-			before = n.Cost
+			before = *n
 			n.Status, n.Stop, n.Output, n.Error = run.Paused, string(out.Stop), out.Text, ""
-			n.Cost, n.Turns, n.Requirements, n.Paused = out.Cost, out.Turns, out.Requirements, out.Turn
+			n.Cost, n.Turns, n.Tokens, n.Requirements, n.Paused = out.Cost, out.Turns, out.Tokens, out.Requirements, out.Turn
 			ranOn(n, out.Source, out.Region)
 			n.Retries, n.Retry = 0, time.Time{} // a new pause: the sweep's backoff starts again
 			n.Done, n.Sent = run.AddDone(n.Done, out.Done...), n.Sent+out.Sent
@@ -1325,17 +1328,17 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 			return nil
 		})
 		if err == nil {
-			err = x.count(ctx, r, r.Cost-before)
+			err = x.count(ctx, r, before, false)
 		}
 		return r, errors.Join(runErr, err) // a failed turn after the hold is still the caller's to log
 	}
 	if err := rec.End(ctx); err != nil {
 		return x.current(ctx, errors.Join(runErr, fmt.Errorf("runner: ending the recording: %w", err)))
 	}
-	var before int64
+	var before run.Run
 	r, err := x.saveStop(ctx, func(n *run.Run) error {
-		before = n.Cost
-		n.Cost, n.Turns, n.Requirements, n.Expires = out.Cost, out.Turns, nil, expires(keep, now)
+		before = *n
+		n.Cost, n.Turns, n.Tokens, n.Requirements, n.Expires = out.Cost, out.Turns, out.Tokens, nil, expires(keep, now)
 		ranOn(n, out.Source, out.Region)
 		n.Done, n.Sent = run.AddDone(n.Done, out.Done...), n.Sent+out.Sent
 		if out.RequestOutcome != "" {
@@ -1374,23 +1377,54 @@ func (x *execution) stop(ctx context.Context, rec *session.Recording, keep sessi
 		return nil
 	})
 	if err == nil {
-		err = x.count(ctx, r, r.Cost-before)
+		err = x.count(ctx, r, before, r.Status.Final())
 	}
 	return r, errors.Join(runErr, err)
 }
 
-// count adds what the run spent since it was last stored to its period, for
-// AI fair use (kiff/tafs#193): once per pause or end, so a run continued after
-// a pause is counted for each part, never twice. A run with no period isn't
-// counted. A failed add is logged by the caller; the run is stored either way.
-func (x *execution) count(ctx context.Context, r run.Run, spent int64) error {
-	if r.Meter == "" || spent <= 0 || x.rn.Usage == nil {
-		return nil
+// count adds what the run spent since it was last stored (before) to its
+// period, for AI fair use (kiff/tafs#193), and to the day's usage row (Days):
+// once per pause or end, so a run continued after a pause is counted for each
+// part, never twice. A run with no period isn't counted for fair use. The run
+// itself and its credits go to the day's row once, at its end (ended). A
+// failed add is logged by the caller; the run is stored either way.
+func (x *execution) count(ctx context.Context, r, before run.Run, ended bool) error {
+	var errs []error
+	if spent := r.Cost - before.Cost; r.Meter != "" && spent > 0 && x.rn.Usage != nil {
+		if err := x.rn.Usage.Add(ctx, r.Tenant, r.Meter, spent, x.rn.now().Add(server.UsageKeep)); err != nil {
+			errs = append(errs, fmt.Errorf("runner: counting the run's AI use: %w", err))
+		}
 	}
-	if err := x.rn.Usage.Add(ctx, r.Tenant, r.Meter, spent, x.rn.now().Add(server.UsageKeep)); err != nil {
-		return fmt.Errorf("runner: counting the run's AI use: %w", err)
+	if x.rn.Days != nil {
+		d := usage.Day{Turns: int64(r.Turns - before.Turns), CostMicroUSD: r.Cost - before.Cost,
+			InputTokens: r.Tokens.Input - before.Tokens.Input, OutputTokens: r.Tokens.Output - before.Tokens.Output,
+			CacheRead: r.Tokens.CacheRead - before.Tokens.CacheRead, CacheWrite: r.Tokens.CacheWrite - before.Tokens.CacheWrite,
+			CacheWrite1h: r.Tokens.CacheWrite1h - before.Tokens.CacheWrite1h}
+		if ended {
+			d.Runs, d.Credits = 1, usage.Credits(r.Cost)
+		}
+		if d != (usage.Day{}) {
+			now := x.rn.now()
+			if err := x.rn.Days.AddDay(ctx, dayKey(r, now), d, now.Add(usage.DaysKeep)); err != nil {
+				errs = append(errs, fmt.Errorf("runner: counting the run on the day's usage row: %w", err))
+			}
+		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// dayKey is the usage row a run's turns are counted on at now: the UTC day,
+// where its turns ran ("anthropic" until a turn says otherwise), its agent,
+// and its source ("" kept as "none").
+func dayKey(r run.Run, now time.Time) usage.DayKey {
+	provider, source := r.ModelSource, r.Source
+	if provider == "" {
+		provider = model.SourceAnthropic
+	}
+	if source == "" {
+		source = "none"
+	}
+	return usage.DayKey{Day: now.UTC().Format(time.DateOnly), Provider: provider, Agent: r.Agent, Source: source}
 }
 
 // notRun stores a run that stopped before its loop began, because of cause. A
