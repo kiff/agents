@@ -27,7 +27,9 @@ d184eb5cf606a3eb d1cac6ef5a9ddbd1 a74b534355e685fc ea0edce134693c74 cb7224547173
 LOGINS = set("53dd1be914bd441c f66e74c6b8883a1f 3726111e555e250c".split())
 MONTH = r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
 SAID = re.compile(
-    r"kiff/work\b|\bthe P[M]\b|\bPM's\b|\(PM[ ,)]|\bPM [0-9]{1,2}:[0-9]{2}"
+    r"kiff/work\b|\b(?i:the) P[M]\b|\bPM's\b|\(PM[ ,)]|\bPM,? [0-9]{1,2}:[0-9]{2}"
+    # The credit before a colon, never a clock time's ("4:30 ...:").
+    r"|(?<![0-9] )\bPM:"
     r"|\b(review|probe|ask|point|negatives|read) (on|of)\)"
     rf"|\bowner(?:'s|,) [0-9]{{1,2}} {MONTH}\b"
     # A status line's own words: the all-caps hand-off word with an arrow, or a board's line.
@@ -62,6 +64,10 @@ PLANTED = [  # (path, line, whether it must fail)
     (OWNERS, "* @planted-lane", False),
     ("a.md", "as the " "PM 20:12 said", True),
     (OWNERS, "# one of the two (the owner, 22 Nov)", True),
+    ("a.md", "The " "PM said so", True),  # split: older checks grep for the phrase
+    ("a.md", "P" "M: merge it", True),
+    ("a.md", "P" "M, 16:03 Paris", True),
+    ("a.md", "doors open at 4:30 PM: bring a badge", False),
     ("a.md", "READY → merge", True),
     ("a.md", "BOARD: two open", True),
     ("a.md", "The page is ready to merge; a circuit BOARD; READY_STATE", False),
