@@ -59,7 +59,10 @@ func (j *Judge) askOnce(ctx context.Context, rule, text string) (Grade, error) {
 	if err != nil {
 		return Grade{}, err
 	}
-	j.spent.Add(j.Price.Cost(reply.Usage))
+	// At the price where the turn ran: Bedrock's EU profiles cost more than
+	// the list price (the reply's PriceFactor), and the judge's spend is
+	// reported beside the agents'.
+	j.spent.Add(reply.Cost(j.Price))
 	if reply.Stop == model.MaxTokens {
 		return Grade{}, fmt.Errorf("%w: it ran out of room (%d tokens) before it answered", ErrVerdict, judgeMaxTokens)
 	}

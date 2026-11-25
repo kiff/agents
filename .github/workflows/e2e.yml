@@ -30,7 +30,6 @@ on:
         default: false
 permissions:
   contents: read
-  id-token: write
   actions: read
 # One group with the Eval: both run on the test's account with the same setup agent,
 # and a run starts by disconnecting the grants that agent asked for, so two at
@@ -41,6 +40,16 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    # Until Bedrock's turns are paid for by credits, a run on Bedrock is by
+    # hand only: a scheduled one is skipped, and its run's conclusion is
+    # "skipped", never a pass. Take this out once they are.
+    if: github.event_name != 'schedule' || vars.EVAL_MODEL_SOURCE != 'bedrock'
+    # Only this job may ask GitHub for an OIDC token, to assume the AWS role
+    # its Bedrock turns and its report use.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
     timeout-minutes: 60
     env:
       REPORTS: kiff-agents-eval-reports
@@ -48,6 +57,12 @@ jobs:
       E2E_MADE: e2e-made.txt
       # Whether step 9's people are signed in: a step's if can't read secrets.
       HAS_PEOPLE: ${{ secrets.E2E_MARIA_SESSION != '' && secrets.E2E_LUIS_SESSION != '' }}
+      # Where the setup agent's and the judges' turns run (cmd/e2e
+      # -model-source), as for the Eval: Claude in Amazon Bedrock, through our
+      # account's EU profiles, only on main and only once the repository
+      # variable EVAL_MODEL_SOURCE is bedrock; else the Claude API. Step 9's
+      # people use tafs cloud, whose turns run where tafs cloud runs them.
+      AGENTS_MODEL_SOURCE: ${{ vars.EVAL_MODEL_SOURCE == 'bedrock' && github.ref == 'refs/heads/main' && 'bedrock' || 'anthropic' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,6 +111,13 @@ jobs:
           git -C tafs checkout --quiet "$(cat eval/tafs.ref)"
           infra/eval-definitions.sh tafs defs
           echo "Definitions built with TAFS_YOUR_STEP=${TAFS_YOUR_STEP:-off}." >> "$GITHUB_STEP_SUMMARY"
+      # On Bedrock, credentials for the model's turns first. One session covers
+      # the job: its limit (timeout-minutes) is within the role's hour.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.AGENTS_MODEL_SOURCE == 'bedrock' && steps.unchanged.outputs.skip != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: The simulated owner
         if: steps.unchanged.outputs.skip != 'true'
         env:
