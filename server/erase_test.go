@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/kiff/agents/run"
@@ -84,4 +86,56 @@ func TestDeletingAThreadErasesItsRuns(t *testing.T) {
 	// Again: the thread is gone.
 	code, got = f.do("t1", "DELETE", "/sessions/"+anas.ID+"?owner=member:ana", nil)
 	f.want(404, code, got, "deleting it again")
+}
+
+// flakyRead is a session store whose next Read fails, as a throttled one does.
+type flakyRead struct {
+	session.Store
+	fail bool
+}
+
+func (f *flakyRead) Read(ctx context.Context, tenant, id string) (session.Session, []session.Event, error) {
+	if f.fail {
+		f.fail = false
+		return session.Session{}, nil, errors.New("throttled")
+	}
+	return f.Store.Read(ctx, tenant, id)
+}
+
+// The service deleting a thread whose read fails deletes nothing: the runs
+// can't be erased first, so the thread stays for the retry, which erases both.
+func TestAFailedReadDeletesNothing(t *testing.T) {
+	f := newRunFixture(t)
+	f.putAgent("t1", "payouts")
+	rec, err := session.NewRecorder(f.store, session.DefaultPolicy(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := rec.Open(ctx, "t1", "payouts", session.KindRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := run.New("t1", "payouts", job.ID, run.BySchedule, "reconcile for ana@example.com", now)
+	r.Status, r.Output = run.Completed, "Reconciled."
+	if err := f.runs.Create(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyRead{Store: f.server.Sessions, fail: true}
+	f.server.Sessions = flaky
+
+	code, got := f.do("t1", "DELETE", "/sessions/"+job.ID+"?as=service", nil)
+	if code < 500 {
+		t.Fatalf("a failed read answered %d %v", code, got)
+	}
+	if _, _, err := f.store.Read(ctx, "t1", job.ID); err != nil {
+		t.Fatalf("the thread went on a failed read: %v", err)
+	}
+	if kept, _ := f.runs.Get(ctx, "t1", r.ID); kept.Erased || kept.Input == "" {
+		t.Fatalf("the run changed on a failed read: %+v", kept)
+	}
+	code, got = f.do("t1", "DELETE", "/sessions/"+job.ID+"?as=service", nil)
+	f.want(204, code, got, "the retry")
+	if erased, _ := f.runs.Get(ctx, "t1", r.ID); !erased.Erased || erased.Input != "" || erased.Output != "" {
+		t.Fatalf("the retry didn't erase the run: %+v", erased)
+	}
 }

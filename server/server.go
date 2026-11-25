@@ -1132,6 +1132,10 @@ func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (
 		return 0, nil, err
 	}
 	sess, _, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
+	if err != nil && !errors.Is(err, session.ErrNotFound) {
+		// Nothing goes on a failed read: the runs couldn't be erased first.
+		return 0, nil, err
+	}
 	if owner != "" {
 		// Exactly theirs: a job's thread with no owner is shared history,
 		// deleted only as the service.
