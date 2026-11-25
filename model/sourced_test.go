@@ -193,7 +193,8 @@ func TestAnAccountKeepsToItsShareOfTheDay(t *testing.T) {
 }
 
 // The reviewers' slice is inside the cap: the others stop short of it, a
-// reviewer's turn still runs there, and no turn passes the cap itself.
+// reviewer's turn still runs there, with no share of its own, and no turn
+// passes the cap itself.
 func TestTheReviewersSliceIsKeptForThem(t *testing.T) {
 	spend := days{"2026-11-07": 8_000_000}
 	s, _, _ := sourced(errCredits, spend, 10_000_000)
@@ -209,6 +210,18 @@ func TestTheReviewersSliceIsKeptForThem(t *testing.T) {
 	req.Tenant = "" // a turn for no account is never a reviewer's
 	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupCapped) {
 		t.Fatalf("no account in the slice: %v", err)
+	}
+	// A reviewer has no share of its own: past what another account's share
+	// would be, its turns still run.
+	s.Cap.AccountMicroUSD = 1
+	req.Tenant = "t-review"
+	if _, err := s.Turn(context.Background(), req, nil); err != nil {
+		t.Fatalf("a reviewer past an account's share: %v", err)
+	}
+	req.Tenant = "t-anyone"
+	spend["2026-11-07"], spend["t-anyone|2026-11-07"] = 0, 1
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupShareSpent) {
+		t.Fatalf("another account past its share: %v", err)
 	}
 	spend["2026-11-07"] = 10_000_000
 	req.Tenant = "t-review"
