@@ -442,11 +442,19 @@ func TestTheRecordJudgeOnAShownCard(t *testing.T) {
 // for, a day's total given as the most for one call, and a held call said to
 // have gone through still fail; with no read of the Card, a limit given for a
 // call the record shows refused stays neither confirmed nor contradicted.
-// E2E_REGRADE=1 with ANTHROPIC_API_KEY.
+// E2E_REGRADE=1 with ANTHROPIC_API_KEY, or with AGENTS_MODEL_SOURCE=bedrock
+// and AWS's credentials (Claude in Amazon Bedrock, as -model-source).
 func TestTheRecordJudgeKeepsALimitToItsToolAndKind(t *testing.T) {
-	if os.Getenv("E2E_REGRADE") != "1" || os.Getenv("ANTHROPIC_API_KEY") == "" {
-		t.Skip("E2E_REGRADE=1 and ANTHROPIC_API_KEY run the record's judge")
+	source := os.Getenv("AGENTS_MODEL_SOURCE")
+	if os.Getenv("E2E_REGRADE") != "1" || source != "bedrock" && os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("E2E_REGRADE=1, with ANTHROPIC_API_KEY or AGENTS_MODEL_SOURCE=bedrock, runs the record's judge")
 	}
+	oldModel, oldRunsOn := newModel, runsOn
+	t.Cleanup(func() { newModel, runsOn = oldModel, oldRunsOn })
+	if _, err := useModelSource(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("turns run on: %s", runsOn)
 	j, err := judgeFrom("claude-sonnet-5-5", "2000000,10000000")
 	if err != nil {
 		t.Fatal(err)
