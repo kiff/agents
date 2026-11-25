@@ -150,7 +150,7 @@ settings turn it on:
 | `AGENTS_BEDROCK_FALLBACK` | `on`: a new run whose first turn the Claude API refuses for credits, or can't serve once its retries are spent, goes to Bedrock |
 | `AGENTS_BEDROCK_DAILY_USD` | the most Bedrock's turns may cost in a UTC day; **without it, Bedrock refuses every turn** |
 | `AGENTS_BEDROCK_ACCOUNT_DAILY_USD` | each account's share of that day; without it, a tenth of the cap |
-| `AGENTS_BEDROCK_RESERVED_TENANTS` | the accounts (tenant ids, comma-separated) the reserved slice is for: the store reviewers'. Set on purpose, empty by default, never taken from another list |
+| `AGENTS_BEDROCK_RESERVED_TENANTS` | the accounts (tenant ids, comma-separated) the reserved slice is for: the store reviewers'. They have no share of their own. Set on purpose, empty by default, never taken from another list |
 | `AGENTS_BEDROCK_RESERVED_USD` | the slice of the cap only those accounts may spend; without it, a fifth of the cap once any are listed |
 
 - **Bedrock** is Claude in Amazon Bedrock, in our own AWS account: bedrock-runtime,
@@ -216,7 +216,8 @@ settings turn it on:
     `AGENTS_BEDROCK_RESERVED_USD`) is inside the cap, not on top: every other
     account's turns stop once the day reaches the cap less the slice, and a
     listed account's go on to the cap itself. A fifth by default, two full
-    shares. A listed account keeps its own share too.
+    shares. A listed account has no share of its own, so a reviewer can
+    test freely: only the cap itself bounds it.
   - **Both, or neither.** A turn reserves its worst case on its account's
     share first (in that account's usage, as the period `bedrock|<day>`, so
     erasing the account erases it), then on the day. If the day has no room,

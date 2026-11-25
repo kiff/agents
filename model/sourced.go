@@ -51,7 +51,8 @@ type Sourced struct {
 //   - ReservedMicroUSD is a slice of MicroUSD kept for the Reserved
 //     accounts (the store reviewers'): every other account's turns stop
 //     once the day reaches MicroUSD less the slice, so the slice is inside
-//     the cap, never on top of it.
+//     the cap, never on top of it. A Reserved account has no share of its
+//     own: it may use the whole cap.
 type DailyCap struct {
 	MicroUSD         int64
 	AccountMicroUSD  int64
@@ -224,7 +225,7 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 			window, _ = w.Window(ctx, req.Model)
 		}
 		reserved = WorstCase(req, req.Price, s.Cap.PriceFactor, window)
-		full, err := s.Cap.Spend.Reserve(ctx, day, req.Tenant, reserved, s.Cap.limit(req.Tenant), s.Cap.AccountMicroUSD)
+		full, err := s.Cap.Spend.Reserve(ctx, day, req.Tenant, reserved, s.Cap.limit(req.Tenant), s.Cap.share(req.Tenant))
 		switch {
 		case err != nil:
 			return Reply{}, fmt.Errorf("model: reserving the Bedrock backup's turn: %w", err)
@@ -257,10 +258,23 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 	return r, err
 }
 
+// share is tenant's own share of the day: none for a Reserved account, which
+// may test freely up to the cap itself.
+func (c *DailyCap) share(tenant string) int64 {
+	if c.reserved(tenant) {
+		return 0
+	}
+	return c.AccountMicroUSD
+}
+
+// reserved is whether tenant is one the slice is kept for. A turn for no
+// account never is.
+func (c *DailyCap) reserved(tenant string) bool { return tenant != "" && c.Reserved[tenant] }
+
 // limit is how far tenant's turns may take the day: the whole cap for a
 // Reserved account, short of the reserved slice for any other.
 func (c *DailyCap) limit(tenant string) int64 {
-	if c.ReservedMicroUSD <= 0 || (tenant != "" && c.Reserved[tenant]) {
+	if c.ReservedMicroUSD <= 0 || c.reserved(tenant) {
 		return c.MicroUSD
 	}
 	return c.MicroUSD - c.ReservedMicroUSD
