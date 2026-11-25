@@ -523,6 +523,13 @@ const TrialRunHeader = "KIFF-Trial-Run"
 // opens, as theirs. Set from the stored run only, never from the model.
 const RunGrantHeader = "KIFF-Run-Grant"
 
+// RunHeader names the run a call is made in, so KIFF can sign it into the
+// call's permit (claim `run`) and a vendor can tell which run made the call:
+// planque puts it on each step it sends the owner's Chrome, which works in
+// the person's own tab only for the run they started there. Set from the
+// stored run only (run.RefFrom), never from anything the model wrote.
+const RunHeader = "KIFF-Run"
+
 // init opens the MCP session once.
 func (c *Client) init(ctx context.Context) error {
 	c.mu.Lock()
@@ -648,6 +655,9 @@ func (c *Client) post(ctx context.Context, method string, params any, withID boo
 	}
 	if g := run.GrantFrom(ctx); g != "" {
 		req.Header.Set(RunGrantHeader, g)
+	}
+	if ref, ok := run.RefFrom(ctx); ok && ref.Run != "" {
+		req.Header.Set(RunHeader, ref.Run)
 	}
 	c.smu.Lock()
 	if c.session != "" {
