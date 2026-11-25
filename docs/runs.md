@@ -193,6 +193,12 @@ settings turn it on:
 - **What Bedrock doesn't serve:** fast output and Anthropic's web search and
   fetch (a turn there runs without them), and the Models API (the context
   window comes from a fixed table). A fallback turn starts a fresh prompt cache.
+- **Where turns go, for the AI consent:** `GET /ai/source` answers what new
+  runs' turns go to, from this configuration, so the apps' consent names the
+  company from the one place that decides it:
+  `{"source": "bedrock", "geo": "eu"}`, `{"source": "anthropic"}`, or
+  `{"source": "anthropic", "fallback": "bedrock"}` when a run may go to either.
+  Unset, it answers 503, and the apps show no line rather than a guess.
 - **The record:** a run stores `model_source` and `model_region` (the caller's
   region; Bedrock doesn't say where in the EU it ran), and each turn's usage
   carries `source` and `region`. A model that runs in one place names none.

@@ -170,6 +170,8 @@ type Server struct {
 	// Log records what a caller isn't told: why a request failed inside. Nil
 	// logs nothing.
 	Log *slog.Logger
+	// AISource is where new runs' turns go (GET /ai/source); zero: unknown.
+	AISource AISource
 }
 
 // Handler returns the API's routes.
@@ -202,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	route("POST /resume", s.resume)
 	route("GET /agents/{id}/trials/{run_id}", s.getTrial)
 	route("GET /usage/ai", s.getAIUsage)
+	route("GET /ai/source", s.getAISource)
 	route("PUT /agents/{id}/trial", s.openTrial)
 	route("GET /agents/{id}/trial", s.getOpenTrial)
 	route("DELETE /agents/{id}/trial", s.closeTrial)
