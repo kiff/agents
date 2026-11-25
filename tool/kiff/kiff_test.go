@@ -3,6 +3,7 @@ package kiff_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -316,6 +317,28 @@ func TestTheKeyStaysOutOfErrors(t *testing.T) {
 	_, err := kiff.New(srv.URL, "kiff_wrong_key", srv.Client()).Tools(context.Background())
 	if err == nil || strings.Contains(err.Error(), "kiff_wrong_key") || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v", err)
+	}
+	// It says the key is refused, so a paused run whose key is gone ends rather than being tried again for a day.
+	if !errors.Is(err, tool.ErrKeyRefused) {
+		t.Fatalf("a refused key isn't tool.ErrKeyRefused: %v", err)
+	}
+}
+
+// Only the gateway refusing the key itself, at initialize, is tool.ErrKeyRefused: another status, or a 401 to a later call
+// (a single tool's answer), isn't.
+func TestOnlyAKeyRefusedAtInitializeIsErrKeyRefused(t *testing.T) {
+	for _, c := range []struct {
+		err  *kiff.HTTPError
+		want bool
+	}{
+		{&kiff.HTTPError{Method: "initialize", Status: http.StatusUnauthorized, Body: "a valid agent key is required"}, true},
+		{&kiff.HTTPError{Method: "initialize", Status: http.StatusForbidden}, false},
+		{&kiff.HTTPError{Method: "initialize", Status: http.StatusServiceUnavailable}, false},
+		{&kiff.HTTPError{Method: "tools/call", Status: http.StatusUnauthorized}, false},
+	} {
+		if got := errors.Is(fmt.Errorf("connecting: %w", c.err), tool.ErrKeyRefused); got != c.want {
+			t.Errorf("%v: ErrKeyRefused %v, want %v", c.err, got, c.want)
+		}
 	}
 }
 

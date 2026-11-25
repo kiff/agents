@@ -627,6 +627,12 @@ const Stopped = "It stopped while it worked. It carries on from its last safe st
 // by its exact text, as runner's Failed* are.
 const NeverStarted = "It couldn't start: no invocation picked it up after 3 tries. It needs you to look at it."
 
+// CouldNotContinue is the error of a PAUSED run that can't go on once KIFF
+// resolved its held calls: the sweep gave up on it after PausedGiveUp, or
+// KIFF refused its agent's key as it continued, which no retry mends
+// (runner). tafs cloud words it by its exact text, as runner's Failed* are.
+const CouldNotContinue = "it could not continue once KIFF resolved its held calls"
+
 // Sweep looks at every run whose Due has passed: at most limit RUNNING and
 // PENDING runs, which it marks ERROR (or CANCELLED if asked to stop), and
 // then at most limit PAUSED ones, which it continues, or past PausedGiveUp
@@ -735,8 +741,7 @@ func (sw Sweeper) mark(ctx context.Context, d Run, now time.Time) (bool, error) 
 		case r.Cancel:
 			n.Status = Cancelled
 		case paused:
-			// Worded by tafs cloud by its exact text, as runner's Failed* are.
-			n.Status, n.Error = Error, "it could not continue once KIFF resolved its held calls"
+			n.Status, n.Error = Error, CouldNotContinue
 		case r.Status == Running && r.Resumes >= MaxResumes:
 			n.Status, n.Error = Error, NeedsYou
 		case r.Status == Running:

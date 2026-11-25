@@ -252,10 +252,17 @@ still paused    looked at again 09:14, 09:18, 09:26 … then hourly
   only an answer resolves it.
 - A day after it resolved (`run.PausedGiveUp`), a run still paused is
   claimed by the sweep (`run.SweepClaim`), its recording is ended, and it is
-  marked ERROR, `"it could not continue once KIFF resolved its held calls"`,
-  or CANCELLED if it was asked to stop. The claim is a compare-and-set on
-  the run the sweep read, so a continue that claimed it first wins, and its
-  recording is never ended under it.
+  marked ERROR, `"it could not continue once KIFF resolved its held calls"`
+  (`run.CouldNotContinue`), or CANCELLED if it was asked to stop. The claim
+  is a compare-and-set on the run the sweep read, so a continue that claimed
+  it first wins, and its recording is never ended under it.
+- A continue that KIFF's gateway refuses at `initialize` with a 401 ("a
+  valid agent key is required": the taf was removed, or its key revoked,
+  while a call was held) ends the run at once, the same way: its recording
+  ended, ERROR, `run.CouldNotContinue`. The key won't come back, so the
+  sweep's 30 or so looks would each be refused. `tool/kiff`'s `HTTPError`
+  says so as `tool.ErrKeyRefused`, so the runner names no adapter. Any other
+  failure to connect leaves the run PAUSED for the sweep, as before.
 
 | Rule | Guarded by |
 |---|---|
@@ -265,6 +272,8 @@ still paused    looked at again 09:14, 09:18, 09:26 … then hourly
 | a continue that claims the run before the give-up wins; no recording ended | `runtest` `AGiveUpNeverEndsAContinuedRun` |
 | a pause after a failed collect keeps the backoff; a new held call resets it | `runner` `TestANewPauseResetsTheSweepsBackoff` |
 | an expired hold, swept: collected, continued, COMPLETED; KIFF down for a day: ERROR | `runner` `TestTheSweepContinuesARunWhoseHoldExpired` |
+| a continue whose agent's key KIFF refuses at `initialize`: ERROR `run.CouldNotContinue` at once, recording ended, due no more; another failure to connect stays PAUSED | `runner` `TestAPausedRunWhoseKeyIsGoneEnds` |
+| only a 401 to `initialize` is `tool.ErrKeyRefused`, through a real refused key too | `tool/kiff` `TestOnlyAKeyRefusedAtInitializeIsErrKeyRefused`, `TestTheKeyStaysOutOfErrors` |
 
 **Cancelling a paused run (#55).** `POST /agents/{id}/runs/{run_id}/cancel`
 on a PAUSED run sets `cancel` first, then withdraws each held call in KIFF,

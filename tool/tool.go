@@ -264,6 +264,11 @@ type ResultSchemer interface {
 // going through KIFF's gateway.
 var ErrUngoverned = errors.New("tool: a write tool must go through KIFF's gateway")
 
+// ErrKeyRefused means KIFF's gateway refused the agent's own key as its tools
+// connected: the key is gone (revoked, or its agent removed), and no retry
+// brings it back. An adapter's error says so with errors.Is.
+var ErrKeyRefused = errors.New("tool: KIFF refused the agent's key")
+
 // Check refuses a set of tools with a write tool outside the gateway, or two
 // tools with one name.
 func Check(tools []Tool) error {

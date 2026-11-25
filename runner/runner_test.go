@@ -729,6 +729,54 @@ func TestAPausedRunContinues(t *testing.T) {
 	}
 }
 
+// A paused run whose agent's key KIFF refuses as it continues (a taf removed
+// or its key revoked while a call was held) ends at once, as the sweep would
+// after a day: ERROR, run.CouldNotContinue, its recording ended, due no more.
+// Put back to PAUSED, the sweep continued it about 30 times, each refused.
+// Any other failure to connect leaves it PAUSED for the sweep, as before.
+func TestAPausedRunWhoseKeyIsGoneEnds(t *testing.T) {
+	f := newFixture(t, use("c1", "stripe_refund", `{"order":42}`), say("Waiting for approval."))
+	r := f.start(server.Start{Input: "refund order 42"})
+	f.pause(r)
+	f.answer(r)
+	continuing := func() *runner.Runner {
+		rn := f.newRunner()
+		rn.Collect = func(context.Context, agent.Agent, []run.Requirement) ([]agent.ToolResultBody, error) {
+			return []agent.ToolResultBody{{CallID: "c1", Tool: "stripe_refund", Result: tool.Result{Text: "refunded, approved by the owner"}}}, nil
+		}
+		return rn
+	}
+
+	// Another failure to connect: still PAUSED, the sweep's to try again.
+	f.connectErr = errors.New("kiff: initialize: HTTP 503: try again")
+	got, err := continuing().Execute(ctx, "t1", r.ID, nil)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("it didn't reach the gateway: %v", err)
+	}
+	if err == nil || got.Status != run.Paused || got.Error != "" {
+		t.Fatalf("a passing failure: %+v, %v", got, err)
+	}
+	if f.state(r).Ended {
+		t.Fatal("a passing failure ended the recording")
+	}
+
+	// The key refused: ended, as the sweep ends a run it gives up on.
+	f.connectErr = fmt.Errorf("kiff: initialize: HTTP 401: %w", tool.ErrKeyRefused)
+	got, err = continuing().Execute(ctx, "t1", r.ID, nil)
+	if err == nil || !errors.Is(err, tool.ErrKeyRefused) {
+		t.Fatalf("the cause is lost: %v", err)
+	}
+	if got.Status != run.Error || got.Error != run.CouldNotContinue || got.Expires.IsZero() {
+		t.Fatalf("ended as %+v", got)
+	}
+	if stored := f.get(r.ID); stored.Status != run.Error || !stored.Due().IsZero() {
+		t.Fatalf("stored %+v, due %v: want ERROR and due no more", stored, stored.Due())
+	}
+	if !f.state(r).Ended {
+		t.Fatal("the recording is still open")
+	}
+}
+
 // seesTheRun is a read that notes the run's checks and what the run has done, as its context gives them.
 type seesTheRun struct {
 	checks *run.Checks
