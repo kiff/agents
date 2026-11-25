@@ -56,7 +56,9 @@ const (
 	FailedRun   = "the run failed"
 	FailedTime  = "the run reached its time limit"
 	// FailedAIUnavailable: the AI provider refused a turn for our own
-	// account's balance (model.ErrProviderBalance).
+	// account's balance (model.ErrProviderBalance), or Bedrock's day is spent
+	// or has no cap (model.ErrBackupCapped, model.ErrBackupOff): on our side
+	// either way, and none of the person's credits used.
 	FailedAIUnavailable = run.AIUnavailable
 	// FailedSwitching: the agent began switching versions before the run
 	// started (kiff/tafs#107).
@@ -967,7 +969,7 @@ func failed(err error, turns int) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return FailedTime
-	case errors.Is(err, model.ErrProviderBalance):
+	case errors.Is(err, model.ErrProviderBalance), errors.Is(err, model.ErrBackupCapped), errors.Is(err, model.ErrBackupOff):
 		return FailedAIUnavailable
 	case turns > 0:
 		return FailedRun
