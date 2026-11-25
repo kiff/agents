@@ -13,6 +13,7 @@ import (
 	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/model/anthropic"
 	"github.com/kiff/agents/model/bedrock"
+	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/usage"
 )
 
@@ -131,6 +132,20 @@ func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Sto
 			Spend: daySpend{use: use, log: log}, PriceFactor: bedrock.GeoFactor}
 	}
 	return s
+}
+
+// aiSource is where new runs' turns go, as sc configures them, for the AI
+// consent to say (GET /ai/source): Bedrock is in the EU; the Claude API with
+// a fallback may send a run to Bedrock instead.
+func aiSource(sc sourceConfig) server.AISource {
+	a := server.AISource{Source: sc.Source}
+	switch {
+	case sc.Source == model.SourceBedrock:
+		a.Geo = bedrock.Geo
+	case sc.Fallback:
+		a.Fallback = model.SourceBedrock
+	}
+	return a
 }
 
 // backupTenant is the usage key Bedrock's day totals are kept under: no

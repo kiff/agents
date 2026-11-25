@@ -22,6 +22,10 @@ import (
 // over its global ones, which are at Anthropic's list.
 const GeoFactor = 1.1
 
+// Geo is where its turns run: the EU, through the "eu." inference profiles
+// (profiles), so a person's words stay there.
+const Geo = "eu"
+
 // Profiles are the models the backup serves, by the id a definition names,
 // as their EU inference profile. Routed from an EU region, an "eu." profile
 // stays in the EU (Frankfurt, Stockholm, Milan, Spain, Ireland, Paris).

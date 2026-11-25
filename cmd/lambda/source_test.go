@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/server"
 	"github.com/kiff/agents/store/memory"
 )
 
@@ -188,5 +189,29 @@ func TestTheBackupsDaySaysWhenItNearsAndReachesItsCap(t *testing.T) {
 	}
 	if len(said) != 2 || said[1] != CapReached {
 		t.Fatalf("said %v", said)
+	}
+}
+
+// The AI consent's read says where new runs' turns go, as configured:
+// Bedrock in the EU; the Claude API alone; or the Claude API with Bedrock as
+// a fallback, so either may get the words.
+func TestWhereTurnsRunAsConfigured(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	for _, c := range []struct {
+		env  map[string]string
+		want server.AISource
+	}{
+		{nil, server.AISource{Source: "anthropic"}},
+		{map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "60"}, server.AISource{Source: "bedrock", Geo: "eu"}},
+		{map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_FALLBACK": "on"}, server.AISource{Source: "bedrock", Geo: "eu"}},
+		{map[string]string{"AGENTS_BEDROCK_FALLBACK": "on", "AGENTS_BEDROCK_DAILY_USD": "60"}, server.AISource{Source: "anthropic", Fallback: "bedrock"}},
+	} {
+		sc, err := sourceConfigFrom(env(c.env))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := aiSource(sc); got != c.want {
+			t.Errorf("%v: %+v, want %+v", c.env, got, c.want)
+		}
 	}
 }

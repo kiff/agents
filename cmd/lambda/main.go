@@ -390,7 +390,7 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	bg := background(lambdasvc.NewFromConfig(cfg), self)
 	f := &function{
 		api: &server.Server{Auth: auth, Agents: agents, Sessions: store, Notes: store, Schedules: schedules,
-			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, NotifyURLs: notifyURLs, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills, Usage: use},
+			Runs: runs, Runner: rn, Background: bg, Gateways: gateways, NotifyURLs: notifyURLs, MaxActive: maxActive, Log: log, Drafts: claimsOrNil(claims), Skills: skills, Usage: use, AISource: aiSource(sc)},
 		kiffAPI:   kiffAPI,
 		schedules: schedules,
 		runner:    rn,
