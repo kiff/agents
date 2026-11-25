@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -14,7 +17,7 @@ import (
 func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
 	sc, err := sourceConfigFrom(env(nil))
-	if err != nil || sc != (sourceConfig{Source: model.SourceAnthropic}) {
+	if err != nil || sc.Source != model.SourceAnthropic || sc.Fallback || sc.CapMicro != 0 || sc.AccountMicro != 0 || sc.ReservedTo != nil || sc.ReserveMicro != 0 {
 		t.Fatalf("default %+v, %v", sc, err)
 	}
 	primary := &keyedModel{}
@@ -40,6 +43,10 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 		{"AGENTS_BEDROCK_DAILY_USD": "ten"},
 		{"AGENTS_BEDROCK_DAILY_USD": "-5"},
 		{"AGENTS_BEDROCK_DAILY_USD": "0"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_ACCOUNT_DAILY_USD": "six"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_ACCOUNT_DAILY_USD": "61"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "60"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "0"},
 	} {
 		if _, err := sourceConfigFrom(env(bad)); err == nil {
 			t.Errorf("accepted %v", bad)
@@ -47,18 +54,43 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 	}
 }
 
+// Each account's share and the reviewers' slice are parts of the day's cap:
+// by default a tenth of it each, and a fifth for the reviewers once any are
+// listed; set, they're taken as set.
+func TestTheSharesOfTheBackupsDay(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	sc, err := sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "60"}))
+	if err != nil || sc.AccountMicro != 6_000_000 || sc.ReservedTo != nil || sc.ReserveMicro != 0 {
+		t.Fatalf("defaults %+v, %v", sc, err)
+	}
+	sc, err = sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": " t-review, t-staff ,"}))
+	if err != nil || len(sc.ReservedTo) != 2 || !sc.ReservedTo["t-review"] || !sc.ReservedTo["t-staff"] || sc.ReserveMicro != 12_000_000 {
+		t.Fatalf("reviewers listed %+v, %v", sc, err)
+	}
+	sc, err = sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "60",
+		"AGENTS_BEDROCK_ACCOUNT_DAILY_USD": "4.5", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "9"}))
+	if err != nil || sc.AccountMicro != 4_500_000 || sc.ReserveMicro != 9_000_000 {
+		t.Fatalf("set %+v, %v", sc, err)
+	}
+	s := sourced(&keyedModel{}, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil).(*model.Sourced)
+	if c := s.Cap; c.MicroUSD != 60_000_000 || c.AccountMicroUSD != 4_500_000 || c.ReservedMicroUSD != 9_000_000 || !c.Reserved["t-review"] {
+		t.Fatalf("the cap %+v", c)
+	}
+}
+
 // The backup's day total is kept in the usage table under a key no tenant
-// has: a turn reserves within the cap, then settles to what it cost.
+// has: a turn reserves within the cap, then settles to what it cost. The
+// account's part is kept in its own usage, so erasing it erases its part.
 func TestTheBackupsDayTotalIsKept(t *testing.T) {
 	use := memory.NewUsage()
 	d := daySpend{use: use}
-	if ok, err := d.Reserve(ctx, "2026-11-07", 1_200_000, 1_500_000); err != nil || !ok {
-		t.Fatalf("a reservation within the cap: %v, %v", ok, err)
+	if full, err := d.Reserve(ctx, "2026-11-07", "t1", 1_200_000, 1_500_000, 0); err != nil || full != model.NotFull {
+		t.Fatalf("a reservation within the cap: %v, %v", full, err)
 	}
-	if ok, _ := d.Reserve(ctx, "2026-11-07", 400_000, 1_500_000); ok {
-		t.Fatal("a reservation past the cap was taken")
+	if full, _ := d.Reserve(ctx, "2026-11-07", "t1", 400_000, 1_500_000, 0); full != model.DayFull {
+		t.Fatalf("a reservation past the cap: %v", full)
 	}
-	if err := d.Add(ctx, "2026-11-07", -900_000); err != nil { // the turn cost 300,000
+	if err := d.Add(ctx, "2026-11-07", "t1", -900_000); err != nil { // the turn cost 300,000
 		t.Fatal(err)
 	}
 	if got, err := use.Get(ctx, backupTenant, "2026-11-07"); err != nil || got.Spent != 300_000 {
@@ -67,9 +99,66 @@ func TestTheBackupsDayTotalIsKept(t *testing.T) {
 	if got, _ := use.Get(ctx, backupTenant, "2026-11-08"); got.Spent != 0 {
 		t.Fatalf("the next day starts at %d", got.Spent)
 	}
-	if _, err := d.Reserve(ctx, "07/11/2026", 1, 2); err == nil {
+	if got, _ := use.Get(ctx, "t1", "bedrock|2026-11-07"); got.Spent != 300_000 {
+		t.Fatalf("the account's part %d", got.Spent)
+	}
+	if err := use.EraseTenant(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := use.Get(ctx, "t1", "bedrock|2026-11-07"); got.Spent != 0 {
+		t.Fatalf("the erased account's part %d", got.Spent)
+	}
+	if _, err := d.Reserve(ctx, "07/11/2026", "t1", 1, 2, 0); err == nil {
 		t.Fatal("a day that isn't one was taken")
 	}
+}
+
+// An account past its share is refused without touching the day, and said;
+// a turn the day refuses after its share was reserved gives the share back,
+// as does one whose day reservation fails: both, or neither.
+func TestAnAccountsShareIsReservedWithTheDayOrNotAtAll(t *testing.T) {
+	use := &failingDay{Usage: memory.NewUsage()}
+	var said []string
+	d := daySpend{use: use, log: func(msg string, _ error) { said = append(said, msg) }}
+	share := func(tenant string) int64 {
+		t.Helper()
+		p, err := use.Get(ctx, tenant, "bedrock|2026-11-25")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Spent
+	}
+	if full, err := d.Reserve(ctx, "2026-11-25", "t-loop", 600_000, 10_000_000, 1_000_000); err != nil || full != model.NotFull {
+		t.Fatalf("within its share: %v, %v", full, err)
+	}
+	if full, err := d.Reserve(ctx, "2026-11-25", "t-loop", 600_000, 10_000_000, 1_000_000); err != nil || full != model.ShareFull {
+		t.Fatalf("past its share: %v, %v", full, err)
+	}
+	if day, _ := use.Get(ctx, backupTenant, "2026-11-25"); day.Spent != 600_000 || share("t-loop") != 600_000 || len(said) != 1 || said[0] != ShareReached {
+		t.Fatalf("day %d, share %d, said %v", day.Spent, share("t-loop"), said)
+	}
+	// The day is full for this turn: its share is given back.
+	if full, err := d.Reserve(ctx, "2026-11-25", "t-other", 500_000, 1_000_000, 1_000_000); err != nil || full != model.DayFull || share("t-other") != 0 {
+		t.Fatalf("the day full: %v, %v, share %d", full, err, share("t-other"))
+	}
+	// The day's reservation fails: the share is given back, and the error said.
+	use.fail = errors.New("throttled")
+	if _, err := d.Reserve(ctx, "2026-11-25", "t-other", 100_000, 10_000_000, 1_000_000); !errors.Is(err, use.fail) || share("t-other") != 0 {
+		t.Fatalf("the day's reservation failed: %v, share %d", err, share("t-other"))
+	}
+}
+
+// failingDay is a usage store whose day reservations fail with fail.
+type failingDay struct {
+	*memory.Usage
+	fail error
+}
+
+func (f *failingDay) Reserve(ctx context.Context, tenant, period string, micro, limit int64, until time.Time) (bool, error) {
+	if tenant == backupTenant && f.fail != nil {
+		return false, f.fail
+	}
+	return f.Usage.Reserve(ctx, tenant, period, micro, limit, until)
 }
 
 // The day says when it passes 80% of its cap, once, by the turn that crossed
@@ -79,11 +168,11 @@ func TestTheBackupsDaySaysWhenItNearsAndReachesItsCap(t *testing.T) {
 	d := daySpend{use: memory.NewUsage(), log: func(msg string, _ error) { said = append(said, msg) }}
 	reserve := func(micro int64) bool {
 		t.Helper()
-		ok, err := d.Reserve(ctx, "2026-11-25", micro, 1_000_000)
+		full, err := d.Reserve(ctx, "2026-11-25", "t1", micro, 1_000_000, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return ok
+		return full == model.NotFull
 	}
 	reserve(700_000) // 70%: nothing
 	if len(said) != 0 {

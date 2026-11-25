@@ -166,6 +166,9 @@ type Request struct {
 	// Source is where the run's earlier turns ran (Reply.Source), empty for
 	// its first turn: a run stays where it started (Sourced).
 	Source string `json:"-"`
+	// Tenant is the account the turn is for, for each account's share of the
+	// backup's day (Sourced's DailyCap); empty for a turn for no account.
+	Tenant string `json:"-"`
 	// Price is what the definition says the model costs, for a model that
 	// counts its own spend (Sourced's daily cap on the backup).
 	Price Price `json:"-"`

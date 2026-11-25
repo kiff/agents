@@ -1566,7 +1566,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 			system += more
 		}
 	}
-	req := model.Request{Model: a.ModelID, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history, HistoryPrev: a.HistoryPrev,
+	req := model.Request{Model: a.ModelID, Tenant: a.Tenant, System: system, Messages: msgs, MaxTokens: a.MaxTokens, Tools: tools, NoToolUse: noToolUse, Effort: a.Effort, Cache: a.Price.Caches(), CacheLong: a.Price.CachesAnHour(), HistoryEnd: a.history, HistoryPrev: a.HistoryPrev,
 		Fast: a.Fast && !out.standard, Thinking: a.Thinking, OnThinking: func(s string) { emit(Event{Kind: Thought, Text: s}) },
 		OnUpdate: func(s string) {
 			// A progress note is shown as it comes, and never said or kept: one
@@ -1938,7 +1938,7 @@ func Summarize(ctx context.Context, a Agent, rec *session.Recording, prior strin
 	// A new run's summary goes where a new run's first turn would (a.Source
 	// is empty): it can fall back on its own, and its usage event, not the
 	// run, says where it ran. A run under way asks for its own place.
-	req := model.Request{Model: a.ModelID, System: SummarySystem, MaxTokens: SummaryMaxTokens, Effort: a.Effort,
+	req := model.Request{Model: a.ModelID, Tenant: a.Tenant, System: SummarySystem, MaxTokens: SummaryMaxTokens, Effort: a.Effort,
 		Messages: []model.Message{{Role: model.User, Blocks: []model.Block{{Kind: model.Text, Text: b.String()}}}}, Source: a.Source, Price: a.Price}
 	reply, err := a.Model.Turn(ctx, req, func(string) {})
 	if err != nil {

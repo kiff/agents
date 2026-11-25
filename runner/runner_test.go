@@ -1243,7 +1243,7 @@ func TestARunRefusedForOurBalanceSaysSo(t *testing.T) {
 // cap, says what a refusal for our balance says: on our side, no credits used,
 // try again later. Never the cap's own words.
 func TestARunRefusedForBedrocksDaySaysSo(t *testing.T) {
-	for _, refusal := range []error{model.ErrBackupCapped, model.ErrBackupOff} {
+	for _, refusal := range []error{model.ErrBackupCapped, model.ErrBackupShareSpent, model.ErrBackupOff} {
 		f := newFixture(t)
 		f.model.fail = refusal
 		r := f.start(server.Start{Input: "go"})
