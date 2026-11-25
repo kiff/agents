@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -159,5 +160,35 @@ func TestCleanupUnsharesByQuery(t *testing.T) {
 	}
 	if sig == "" {
 		t.Error("the unshare isn't signed")
+	}
+}
+
+// A person who hasn't allowed AI use allows it once, as themselves, for the
+// words tafs cloud names; one who has is left as they are.
+func TestEachPersonAllowsAIUseOnceAsThemselves(t *testing.T) {
+	var posts []string
+	given := map[string]bool{"Bearer luis": true}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/me/ai-consent" {
+			http.NotFound(w, r)
+			return
+		}
+		who := r.Header.Get("Authorization")
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			posts = append(posts, who+" "+string(body))
+			given[who] = true
+		}
+		_, _ = fmt.Fprintf(w, `{"consent":{"given":%v,"version":"1"}}`, given[who])
+	}))
+	defer srv.Close()
+	for _, name := range []string{"maria", "luis"} {
+		p := &someone{name: name, cloud: &client{Base: srv.URL, HTTP: srv.Client(), Auth: bearerAuth(name)}}
+		if err := allowAIUse(context.Background(), p, t.Logf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(posts) != 1 || posts[0] != `Bearer maria {"version":"1"}` {
+		t.Fatalf("the yeses: %q", posts)
 	}
 }
