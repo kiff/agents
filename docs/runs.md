@@ -157,8 +157,8 @@ settings turn it on:
   - the App Review notes' "(now …)" (kiff/tafs `docs/review-notes.md`, and the App Store
     Connect and Play notes, saved on the owner's yes);
   - the record of processing and the DPIA (legal-i18n).
-  The AI consent's "Right now" line follows by itself: tafs cloud reads the provider from
-  here, and shows no line when it can't. No consent version changes for a provider
+  Once it ships (kiff/tafs#2079), the AI consent's "Right now" line follows by itself:
+  tafs cloud reads the provider from here, and shows no line when it can't. No consent version changes for a provider
   already listed.
 - **Bedrock** is Claude in Amazon Bedrock, in our own AWS account: bedrock-runtime,
   from the function's region, through the EU inference profiles
