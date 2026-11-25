@@ -32,18 +32,25 @@ func (s *scripted) Turn(_ context.Context, req Request, onText func(string)) (Re
 	return Reply{Usage: Usage{InputTokens: 1_000_000}, PriceFactor: s.factor}, nil
 }
 
+// days keeps each day's total under the day, and each account's part of it
+// under "<tenant>|<day>".
 type days map[string]int64
 
-func (d days) Reserve(_ context.Context, day string, micro, limit int64) (bool, error) {
+func (d days) Reserve(_ context.Context, day, tenant string, micro, limit, share int64) (Full, error) {
+	if share > 0 && d[tenant+"|"+day]+micro > share {
+		return ShareFull, nil
+	}
 	if d[day]+micro > limit {
-		return false, nil
+		return DayFull, nil
 	}
 	d[day] += micro
-	return true, nil
+	d[tenant+"|"+day] += micro
+	return NotFull, nil
 }
 
-func (d days) Add(_ context.Context, day string, micro int64) error {
+func (d days) Add(_ context.Context, day, tenant string, micro int64) error {
 	d[day] += micro
+	d[tenant+"|"+day] += micro
 	return nil
 }
 
@@ -53,16 +60,16 @@ type lockedDays struct {
 	d  days
 }
 
-func (l *lockedDays) Reserve(ctx context.Context, day string, micro, limit int64) (bool, error) {
+func (l *lockedDays) Reserve(ctx context.Context, day, tenant string, micro, limit, share int64) (Full, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.d.Reserve(ctx, day, micro, limit)
+	return l.d.Reserve(ctx, day, tenant, micro, limit, share)
 }
 
-func (l *lockedDays) Add(ctx context.Context, day string, micro int64) error {
+func (l *lockedDays) Add(ctx context.Context, day, tenant string, micro int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.d.Add(ctx, day, micro)
+	return l.d.Add(ctx, day, tenant, micro)
 }
 
 var errCredits = errors.New("400 invalid_request_error: Your credit balance is too low")
@@ -153,6 +160,60 @@ func TestTheBackupKeepsToItsDailyCap(t *testing.T) {
 	}
 	if spend["2026-11-07"] != 5_000_000 {
 		t.Fatalf("an exempt turn counted: %v", spend)
+	}
+}
+
+// No one account can spend the day for everyone: past its share, its turns
+// are refused, as a capped turn is, and another account's still run.
+func TestAnAccountKeepsToItsShareOfTheDay(t *testing.T) {
+	spend := days{}
+	s, _, b := sourced(errCredits, spend, 10_000_000)
+	s.Cap.AccountMicroUSD = 3_000_000
+	// Each turn reserves 1 micro-USD and settles to $1.10 (scripted).
+	req := Request{Tenant: "t-loop", Price: Price{Input: 1_000_000}, MaxTokens: 1}
+	ran := 0
+	var err error
+	for ; ran < 10; ran++ {
+		if _, err = s.Turn(context.Background(), req, nil); err != nil {
+			break
+		}
+	}
+	if ran != 3 || !errors.Is(err, ErrBackupShareSpent) || !errors.Is(err, ErrBackupCapped) {
+		t.Fatalf("%d ran, then %v; want 3, then ErrBackupShareSpent, a capped turn", ran, err)
+	}
+	calls := b.calls
+	other := req
+	other.Tenant = "t-other"
+	if r, err := s.Turn(context.Background(), other, nil); err != nil || r.Source != SourceBedrock || b.calls != calls+1 {
+		t.Fatalf("another account's turn: %+v, %v", r, err)
+	}
+	if spend["t-loop|2026-11-07"] != 3_300_000 || spend["2026-11-07"] != 4_400_000 {
+		t.Fatalf("spend %v, want the day the sum of each account's", spend)
+	}
+}
+
+// The reviewers' slice is inside the cap: the others stop short of it, a
+// reviewer's turn still runs there, and no turn passes the cap itself.
+func TestTheReviewersSliceIsKeptForThem(t *testing.T) {
+	spend := days{"2026-11-07": 8_000_000}
+	s, _, _ := sourced(errCredits, spend, 10_000_000)
+	s.Cap.ReservedMicroUSD, s.Cap.Reserved = 2_000_000, map[string]bool{"t-review": true}
+	req := Request{Tenant: "t-anyone", Price: Price{Input: 1_000_000}, MaxTokens: 1}
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupCapped) || errors.Is(err, ErrBackupShareSpent) {
+		t.Fatalf("another account at the slice: %v, want the day's cap", err)
+	}
+	req.Tenant = "t-review"
+	if r, err := s.Turn(context.Background(), req, nil); err != nil || r.Source != SourceBedrock {
+		t.Fatalf("a reviewer in the slice: %+v, %v", r, err)
+	}
+	req.Tenant = "" // a turn for no account is never a reviewer's
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupCapped) {
+		t.Fatalf("no account in the slice: %v", err)
+	}
+	spend["2026-11-07"] = 10_000_000
+	req.Tenant = "t-review"
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupCapped) {
+		t.Fatalf("a reviewer past the cap: %v", err)
 	}
 }
 
@@ -256,9 +317,9 @@ type recording struct {
 	reserved int64
 }
 
-func (r *recording) Reserve(ctx context.Context, day string, micro, limit int64) (bool, error) {
+func (r *recording) Reserve(ctx context.Context, day, tenant string, micro, limit, share int64) (Full, error) {
 	r.reserved = micro
-	return r.days.Reserve(ctx, day, micro, limit)
+	return r.days.Reserve(ctx, day, tenant, micro, limit, share)
 }
 
 // windowed is a scripted backup that knows its context window.

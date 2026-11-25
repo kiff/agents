@@ -149,6 +149,9 @@ settings turn it on:
 | `AGENTS_MODEL_SOURCE` | `anthropic` (the default) or `bedrock`: where new runs go |
 | `AGENTS_BEDROCK_FALLBACK` | `on`: a new run whose first turn the Claude API refuses for credits, or can't serve once its retries are spent, goes to Bedrock |
 | `AGENTS_BEDROCK_DAILY_USD` | the most Bedrock's turns may cost in a UTC day; **without it, Bedrock refuses every turn** |
+| `AGENTS_BEDROCK_ACCOUNT_DAILY_USD` | each account's share of that day; without it, a tenth of the cap |
+| `AGENTS_BEDROCK_RESERVED_TENANTS` | the accounts (tenant ids, comma-separated) the reserved slice is for: the store reviewers'. Set on purpose, empty by default, never taken from another list |
+| `AGENTS_BEDROCK_RESERVED_USD` | the slice of the cap only those accounts may spend; without it, a fifth of the cap once any are listed |
 
 - **Bedrock** is Claude in Amazon Bedrock, in our own AWS account: bedrock-runtime,
   from the function's region, through the EU inference profiles
@@ -200,14 +203,44 @@ settings turn it on:
 - **Errors** from Bedrock have AWS credentials (key ids, session tokens, SigV4
   signatures) taken out of their text before they're logged.
 - **The day's cap** (`AGENTS_BEDROCK_DAILY_USD`) is shared by every account:
-  past it, Bedrock refuses every turn until 00:00 UTC. A run it refuses (or
-  one on Bedrock with no cap set) ends as one refused for our balance does,
+  past it, Bedrock refuses every turn until 00:00 UTC. So that no one account
+  can spend it for everyone (a loop, a scripted account, a heavy test):
+  - **Each account has its own share of the day**
+    (`AGENTS_BEDROCK_ACCOUNT_DAILY_USD`). Past it, that account's turns are
+    refused and the others' still run. A person's credits stop a paid run
+    first, but a trial, Setup within its allowance and every failed run are
+    free, so the share is the only bound on those. It's a tenth of the cap by
+    default: well above what one person's day of work costs, and at least
+    ten accounts must spend all of theirs to stop the rest.
+  - **The store reviewers' slice** (`AGENTS_BEDROCK_RESERVED_TENANTS`,
+    `AGENTS_BEDROCK_RESERVED_USD`) is inside the cap, not on top: every other
+    account's turns stop once the day reaches the cap less the slice, and a
+    listed account's go on to the cap itself. A fifth by default, two full
+    shares. A listed account keeps its own share too.
+  - **Both, or neither.** A turn reserves its worst case on its account's
+    share first (in that account's usage, as the period `bedrock|<day>`, so
+    erasing the account erases it), then on the day. If the day has no room,
+    or its write fails, the share is given back. Each is one conditional
+    update, so the day's one item takes plain updates, never a transaction
+    that turns starting together would cancel. A give-back that fails leaves
+    the share counted, the safe side, and says so in the turn's error.
+  - **At 10,000 users:** two conditional writes per Bedrock turn, one on the
+    account's item and one on the day's, plus the two settles. The day's
+    item is the one every turn writes: at 20 Bedrock turns per user a day,
+    that's 200,000 turns, about 2.3 a second on average and some 25 at a
+    tenfold peak, so about 50 writes a second against DynamoDB's 1,000 per
+    item. Past that, the day's total would be split over several items.
+
+  A run it refuses (or one on Bedrock with no cap set) ends as one refused
+  for our balance does,
   `ai_unavailable` with `run.AIUnavailable`'s words: on our side, none of the
   person's credits used, try again later. The function logs
   *"bedrock: today's spend passed 80% of its cap"* once, from the turn that
   crosses it (reservations count), and *"bedrock: a turn was refused, today's
   cap is spent"* for each turn the cap refuses: a metric filter on each, with
-  an alarm, tells the owner before and when it bites.
+  an alarm, tells the owner before and when it bites. A turn refused for its
+  account's share logs *"bedrock: a turn was refused, its account's share of
+  today's cap is spent"*, with the account.
 - **The Eval** runs on Bedrock with `-model-source bedrock` (or
   `AGENTS_MODEL_SOURCE=bedrock`), its judge too, without the daily cap, and its
   report names where the turns ran. `cmd/e2e` takes the same flag for the setup

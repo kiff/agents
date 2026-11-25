@@ -21,8 +21,9 @@ import (
 //     turn streamed: what someone saw is never said twice.
 //   - A run under way never moves (Request.Source): one that started on
 //     Primary fails as it would without a backup.
-//   - Backup's turns count against a day's cap (Cap). Without one it
-//     refuses, unless Exempt (the Eval, which has its own budget).
+//   - Backup's turns count against a day's cap (Cap), and each account's
+//     against its own share of it. Without a cap it refuses, unless Exempt
+//     (the Eval, which has its own budget).
 type Sourced struct {
 	Primary, Backup Model
 	Source          string
@@ -42,17 +43,41 @@ type Sourced struct {
 // reserves its worst case before it runs (WorstCase, at PriceFactor, the
 // backup's price over the list's; 0 is 1), and settles to what it cost
 // after: turns that start together can't pass the cap between them.
+//
+// So that no one account can spend the day for everyone:
+//   - AccountMicroUSD, when above 0, is each account's (Request.Tenant's)
+//     share of the day: past it, that account's turns are refused
+//     (ErrBackupShareSpent) and the others' still run.
+//   - ReservedMicroUSD is a slice of MicroUSD kept for the Reserved
+//     accounts (the store reviewers'): every other account's turns stop
+//     once the day reaches MicroUSD less the slice, so the slice is inside
+//     the cap, never on top of it.
 type DailyCap struct {
-	MicroUSD    int64
-	Spend       DaySpend
-	PriceFactor float64
+	MicroUSD         int64
+	AccountMicroUSD  int64
+	ReservedMicroUSD int64
+	Reserved         map[string]bool
+	Spend            DaySpend
+	PriceFactor      float64
 }
 
-// DaySpend keeps a day's total. Reserve adds only while the total stays
-// within a limit; both are atomic, and Add takes a negative amount back.
+// Full is what a reservation found no room in, if anything.
+type Full int
+
+const (
+	NotFull   Full = iota // reserved
+	DayFull               // the day's total
+	ShareFull             // the account's share
+)
+
+// DaySpend keeps a day's total and each account's part of it. Reserve adds
+// microUSD to both, or to neither: to the account's only while it stays
+// within share (0: no share), and to the day's only while it stays within
+// limit. Add adds to both, a negative amount to give some back. Each is
+// atomic.
 type DaySpend interface {
-	Reserve(ctx context.Context, day string, microUSD, limit int64) (bool, error)
-	Add(ctx context.Context, day string, microUSD int64) error
+	Reserve(ctx context.Context, day, tenant string, microUSD, limit, share int64) (Full, error)
+	Add(ctx context.Context, day, tenant string, microUSD int64) error
 }
 
 // MaxOutput is the output a turn is reserved for when its request names no
@@ -142,6 +167,10 @@ var ErrBackupOff = errors.New("model: the Bedrock backup is off: no daily cap is
 // ErrBackupCapped is a turn Backup refused because the day's cap is spent.
 var ErrBackupCapped = errors.New("model: the Bedrock backup has spent today's cap")
 
+// ErrBackupShareSpent is a turn Backup refused because its account's share
+// of the day's cap is spent. It is an ErrBackupCapped.
+var ErrBackupShareSpent = fmt.Errorf("%w: this account's share of it", ErrBackupCapped)
+
 func (s *Sourced) Turn(ctx context.Context, req Request, onText func(string)) (Reply, error) {
 	switch {
 	case req.Source == SourceBedrock, req.Source == "" && s.Source == SourceBedrock:
@@ -195,11 +224,13 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 			window, _ = w.Window(ctx, req.Model)
 		}
 		reserved = WorstCase(req, req.Price, s.Cap.PriceFactor, window)
-		ok, err := s.Cap.Spend.Reserve(ctx, day, reserved, s.Cap.MicroUSD)
-		if err != nil {
+		full, err := s.Cap.Spend.Reserve(ctx, day, req.Tenant, reserved, s.Cap.limit(req.Tenant), s.Cap.AccountMicroUSD)
+		switch {
+		case err != nil:
 			return Reply{}, fmt.Errorf("model: reserving the Bedrock backup's turn: %w", err)
-		}
-		if !ok {
+		case full == ShareFull:
+			return Reply{}, ErrBackupShareSpent
+		case full != NotFull:
 			return Reply{}, ErrBackupCapped
 		}
 	}
@@ -213,7 +244,7 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 		// side. A turn that cost more than its worst case is a bound that
 		// broke: said, and its settle's failure kept with the turn's error.
 		cost := r.Cost(req.Price)
-		serr := s.Cap.Spend.Add(ctx, day, cost-reserved)
+		serr := s.Cap.Spend.Add(ctx, day, req.Tenant, cost-reserved)
 		if cost > reserved {
 			if s.Log != nil {
 				s.Log("model: a Bedrock turn cost more than its worst case", fmt.Errorf("reserved %d micro-USD, cost %d", reserved, cost))
@@ -224,6 +255,15 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 		}
 	}
 	return r, err
+}
+
+// limit is how far tenant's turns may take the day: the whole cap for a
+// Reserved account, short of the reserved slice for any other.
+func (c *DailyCap) limit(tenant string) int64 {
+	if c.ReservedMicroUSD <= 0 || (tenant != "" && c.Reserved[tenant]) {
+		return c.MicroUSD
+	}
+	return c.MicroUSD - c.ReservedMicroUSD
 }
 
 func (s *Sourced) now() time.Time {
