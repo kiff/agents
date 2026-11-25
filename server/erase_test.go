@@ -29,8 +29,8 @@ func TestDeletingAThreadErasesItsRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	words := json.RawMessage(`{"email":"ana@example.com"}`)
-	mk := func(session string, status run.Status) run.Run {
-		r := run.New("t1", "payouts", session, run.ByOwner, "", now)
+	mkIn := func(tenant, session string, status run.Status) run.Run {
+		r := run.New(tenant, "payouts", session, run.ByOwner, "", now)
 		r.Status, r.Input, r.Aside, r.Output, r.Error = status, "refund order 7 for ana@example.com", "the page", "Refunded.", "said ana@example.com"
 		r.Cost, r.Turns, r.Tokens.Input = 1234, 3, 900
 		r.Steering = []run.Steering{{Text: "and order 8", At: now, Taken: true}}
@@ -42,17 +42,21 @@ func TestDeletingAThreadErasesItsRuns(t *testing.T) {
 		}
 		return r
 	}
+	mk := func(session string, status run.Status) run.Run {
+		return mkIn("t1", session, status)
+	}
 	ended := mk(anas.ID, run.Completed)
 	kept := mk(other.ID, run.Completed)
 	going := mk(other.ID, run.Paused)
+	// Another account's run, under the same thread id: never this account's to erase.
+	theirs := mkIn("t2", anas.ID, run.Completed)
+	_ = going
 
 	code, got := f.do("t1", "DELETE", "/sessions/"+other.ID+"?owner=member:ana", nil)
 	f.want(409, code, got, "deleting a thread whose run is paused")
 	if r, _ := f.runs.Get(ctx, "t1", kept.ID); r.Erased || r.Input == "" {
 		t.Fatalf("a refused delete erased a run: %+v", r)
 	}
-	_ = going
-
 	code, got = f.do("t1", "DELETE", "/sessions/"+anas.ID+"?owner=member:ana", nil)
 	f.want(204, code, got, "ana deleting her own thread")
 	r, err := f.runs.Get(ctx, "t1", ended.ID)
@@ -73,6 +77,9 @@ func TestDeletingAThreadErasesItsRuns(t *testing.T) {
 	}
 	if r, _ := f.runs.Get(ctx, "t1", kept.ID); r.Erased || r.Input == "" || r.Output == "" {
 		t.Errorf("another thread's run was erased: %+v", r)
+	}
+	if r, _ := f.runs.Get(ctx, "t2", theirs.ID); r.Erased || r.Input == "" {
+		t.Errorf("another account's run was erased: %+v", r)
 	}
 	// Again: the thread is gone.
 	code, got = f.do("t1", "DELETE", "/sessions/"+anas.ID+"?owner=member:ana", nil)

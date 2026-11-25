@@ -87,6 +87,12 @@ A run KIFF holds a call of, as `Runs.Get` returns it (JSON):
   run that counted nothing, and for one that ended before it was kept.
 - `source`: set when a schedule or an event started the run (the schedule's ID).
 - `ended`: when the run moved to a final status, kept however it's written after.
+- `erased`: its person deleted the thread it ran in (`DELETE /sessions/{id}`). What was written in it is gone:
+  `input`, `aside`, the files sent with it, `output`, `error`, the text of what was written while it went, the
+  calls' inputs and results, and its turns. What stays is the record that it ran and what it cost: ids, status,
+  times, turns, tokens, cost and meter, the tools called with KIFF's ids for them, how each held call was answered,
+  and `stop` and `refusal`, which are categories, never words. A thread whose run hasn't ended can't be deleted
+  (409 `run_going`).
 - `refused`, `declined`: how many of its calls KIFF refused outright (outside the
   Card), and how many it held that the owner then refused, over all its parts.
 - `usage_tries`, `usage_retry`: its usage report KIFF hasn't taken yet
