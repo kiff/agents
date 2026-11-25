@@ -68,6 +68,33 @@ func peopleFrom(env func(string) string, kiffBase, cloudBase string, hc *http.Cl
 	return out, nil
 }
 
+// allowAIUse gives the person's own AI-use consent on tafs cloud, as they
+// would in the app on first use, when they haven't for the current words:
+// tafs cloud refuses their messages to the taf until they do ("Allow AI use
+// first"). A new sign-in starts without it, and a new version of the words
+// asks again. It's their session's own yes, through the app's route; a yes
+// already given is left as it is.
+func allowAIUse(ctx context.Context, p *someone, logf func(string, ...any)) error {
+	got, err := p.cloud.Do(ctx, http.MethodGet, "/v1/me/ai-consent", nil)
+	if err != nil || got.Err() != nil {
+		return fmt.Errorf("reading %s's AI-use consent: %v %v", p.name, err, got.Err())
+	}
+	consent, _ := got.Body["consent"].(map[string]any)
+	if given, _ := consent["given"].(bool); given {
+		return nil
+	}
+	version, _ := consent["version"].(string)
+	if version == "" {
+		return fmt.Errorf("tafs cloud named no AI-use consent version for %s: %s", p.name, oneLine(got.Raw))
+	}
+	set, err := p.cloud.Do(ctx, http.MethodPost, "/v1/me/ai-consent", map[string]any{"version": version})
+	if err != nil || set.Err() != nil {
+		return fmt.Errorf("allowing AI use as %s: %v %v", p.name, err, set.Err())
+	}
+	logf("%s allowed AI use, as themselves, for the consent's words %s", p.name, version)
+	return nil
+}
+
 func bearerAuth(token string) func(*http.Request, []byte) {
 	return func(req *http.Request, _ []byte) { req.Header.Set("Authorization", "Bearer "+token) }
 }
@@ -97,6 +124,9 @@ func (t *test) peopleChecks(ctx context.Context, tafAgent, draftID string) error
 			return fmt.Errorf("KIFF says %s (%s, separation of duties %v) may answer holds: %v; want %v", p.name, p.role, separated, p.answers, want)
 		}
 		t.logf("%s, separation of duties %v, answers holds: %v", p.name, separated, p.answers)
+		if err := allowAIUse(ctx, p, t.logf); err != nil {
+			return err
+		}
 		p.kiff = testaccount.KIFFSession(kiff.APIURL, p.session, tenant, p.key, t.hc)
 		p.inside, p.held = "ch_e2e_"+p.name+"_"+t.run, "ch_e2e_"+p.name+"held_"+t.run
 		t.out.hide(p.inside, "<"+p.name+"'s charge>")
