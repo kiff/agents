@@ -1131,14 +1131,21 @@ func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (
 	if err != nil {
 		return 0, nil, err
 	}
+	sess, _, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
 	if owner != "" {
-		sess, _, err := s.Sessions.Read(ctx, c.Tenant, r.PathValue("id"))
 		// Exactly theirs: a job's thread with no owner is shared history,
 		// deleted only as the service.
 		if err == nil && !sess.ContinuedBy(owner) {
 			err = session.ErrNotFound // another person's thread, or a job's
 		}
 		if err != nil {
+			return 0, nil, err
+		}
+	}
+	if err == nil {
+		// What was written in its runs goes with it, first: a deletion cut
+		// short is finished by repeating it.
+		if err := s.eraseRuns(ctx, c.Tenant, sess.Agent, sess.ID); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -1152,6 +1159,50 @@ func (s *Server) deleteSession(ctx context.Context, c Caller, r *http.Request) (
 		return 0, nil, err
 	}
 	return http.StatusNoContent, nil, nil
+}
+
+// eraseRuns erases the runs of an agent's session (run.Run.Erase): what was
+// written in them goes, and the record that they ran and what they cost stays.
+// A run that hasn't ended is refused: it's stopped or answered first, so no
+// run goes on writing into a thread that's gone.
+func (s *Server) eraseRuns(ctx context.Context, tenant, agent, id string) error {
+	if s.Runs == nil {
+		return nil
+	}
+	runs, err := s.Runs.List(ctx, tenant, agent, 0)
+	if err != nil {
+		return err
+	}
+	runs = slices.DeleteFunc(runs, func(r run.Run) bool { return r.Session != id })
+	for _, r := range runs {
+		if !r.Status.Final() {
+			return conflict("run_going", "a run in this thread is still going or waits on its owner: stop it or answer it first")
+		}
+	}
+	for _, r := range runs {
+		for tries := 0; ; tries++ {
+			prev, err := s.Runs.Get(ctx, tenant, r.ID)
+			if errors.Is(err, run.ErrNotFound) {
+				break // ended past its time: gone already
+			}
+			if err != nil {
+				return err
+			}
+			if prev.Erased {
+				break
+			}
+			next := prev.Erase()
+			next.Version = prev.Version + 1
+			err = s.Runs.Put(ctx, prev, next)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, run.ErrConflict) || tries == 2 {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Schedules.
