@@ -33,9 +33,11 @@
 //	                    Stripe's MCP server, a person signs in at Stripe
 //	                    (-stripe-signin), and Stripe's API says what was refunded
 //
-// Step 9's people, for -people: each signs in on a new
-// phone key with -people-signin, which infra/e2e-people-signin.sh runs and
-// puts in the repository's secrets, never on a screen:
+// Step 9's people, for -people: each gets a phone key first (-people-key),
+// whose fingerprint goes on KIFF's test keys, then signs in with it
+// (-people-signin): the shared account is a test account, which takes no
+// other key. infra/e2e-people-signin.sh runs both steps and puts what they
+// make in the repository's secrets, never on a screen:
 //
 //	E2E_MARIA_PHONE_KEY E2E_MARIA_SESSION   Maria, an editor who manages Support
 //	E2E_LUIS_PHONE_KEY  E2E_LUIS_SESSION    Luis, a viewer in Support
@@ -252,9 +254,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"for the private reports bucket, never the public log")
 	signin := fs.String("signin", "", "once, before the test runs: sign a new phone key in to KIFF on the test's own -account (a person approves in a browser), "+
 		"make the setup agent, and write the session's token, the setup agent's key and the phone key to this file (0600)")
-	peopleSignin := fs.String("people-signin", "", "once per person, before -people runs (step 9): sign -person in to KIFF on a new phone key "+
-		"(they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
-	person := fs.String("person", "", "-people-signin: maria (an editor) or luis (a viewer)")
+	peopleKeyFile := fs.String("people-key", "", "once per person, first (step 9): make -person a new phone key, write it to this new file (0600), "+
+		"and print its fingerprints, for KIFF's test keys; nothing else")
+	peopleSignin := fs.String("people-signin", "", "once per person, after -people-key's fingerprint is on KIFF's test keys: sign -person in to KIFF "+
+		"with -key (they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
+	person := fs.String("person", "", "-people-key and -people-signin: maria (an editor) or luis (a viewer)")
+	keyFile := fs.String("key", "", "-people-signin: the file -people-key wrote")
 	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id. A sign-in approved on another account writes nothing")
 	proofName := fs.String("proof", "", "only this: the proof of one app (proof.go), "+
 		"model-free, on the test account, posted to KIFF from a GitHub run: "+strings.Join(proofAppNames(), ", ")+
@@ -299,13 +304,30 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
+	if *peopleKeyFile != "" {
+		// A new file only: a key that may already be on KIFF's test keys is never overwritten.
+		f, err := os.OpenFile(*peopleKeyFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return peopleKey(*person, f, stdout)
+	}
 	if *peopleSignin != "" {
+		b, err := os.ReadFile(*keyFile)
+		if err != nil {
+			return fmt.Errorf("-key: %w", err)
+		}
+		key, err := testaccount.ParsePhone(string(b))
+		if err != nil {
+			return fmt.Errorf("-key: %w", err)
+		}
 		f, err := os.OpenFile(*peopleSignin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		return peopleSignIn(ctx, kiff.APIURL, *account, *person, &http.Client{Timeout: 30 * time.Second}, f, stdout)
+		return peopleSignIn(ctx, kiff.APIURL, *account, *person, key, &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	cfg.maxCost = int64(*maxCost * 1e6)
 	if *transcript != "" {

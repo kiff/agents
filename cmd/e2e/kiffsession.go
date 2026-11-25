@@ -7,8 +7,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -129,14 +131,57 @@ func deviceSignIn(ctx context.Context, apiBase string, key *ecdsa.PrivateKey, de
 // viewer in it.
 var stepNine = map[string]string{"maria": "editor", "luis": "viewer"}
 
+// peopleKey makes one of step 9's people a new phone key, before any
+// sign-in: the shared account is a test account, which takes only keys on
+// KIFF's test keys (a sign-in with any other is refused, 409
+// test_tenant_key), so the key is made first, its fingerprint added to that
+// list, and only then signed in with (peopleSignIn). It writes the key
+// (base64 PKCS#8, one line) to out (0600) and prints only its fingerprints.
+func peopleKey(person string, out io.Writer, say io.Writer) error {
+	if _, ok := stepNine[person]; !ok {
+		return fmt.Errorf("-person %q: maria or luis", person)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	short, full, err := keyFingerprints(key)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "%s\n", base64.StdEncoding.EncodeToString(der)); err != nil {
+		return err
+	}
+	fmt.Fprintf(say, "%s's new phone key: %s (SHA-256 of its SPKI: %s)\n", person, short, full)
+	return nil
+}
+
+// keyFingerprints are a phone key's names in KIFF_PROOF_TEST_KEYS: the
+// short form KIFF shows ("3f2a 91c0 7b1e 0d44", auth.DeviceKeyFingerprint)
+// and the whole SHA-256 of its public key (SPKI DER), in hex.
+func keyFingerprints(key *ecdsa.PrivateKey) (short, full string, err error) {
+	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return "", "", err
+	}
+	sum := sha256.Sum256(spki)
+	full = hex.EncodeToString(sum[:])
+	return full[0:4] + " " + full[4:8] + " " + full[8:12] + " " + full[12:16], full, nil
+}
+
 // peopleSignIn signs one of step 9's people in, as their own phone would
-// (kiff/tafs#294): a new phone key and KIFF's device sign-in, which that
-// person approves on the shared account, whose id is account. It makes no
-// agent: the person only uses what is shared with them. It writes the phone
-// key (base64 PKCS#8) and the session's token to out (two lines, 0600), for
-// a script that puts them in the repository's secrets, and prints neither:
-// only the account and the role KIFF gives the session, to check by eye.
-func peopleSignIn(ctx context.Context, apiBase, account, person string, hc *http.Client, out io.Writer, say io.Writer) error {
+// (kiff/tafs#294): KIFF's device sign-in with the phone key peopleKey made,
+// which that person approves on the shared account, whose id is account. It
+// makes no agent: the person only uses what is shared with them. It writes
+// the phone key (base64 PKCS#8) and the session's token to out (two lines,
+// 0600), for a script that puts them in the repository's secrets, and
+// prints neither: only the account and the role KIFF gives the session, to
+// check by eye.
+func peopleSignIn(ctx context.Context, apiBase, account, person string, key *ecdsa.PrivateKey, hc *http.Client, out io.Writer, say io.Writer) error {
 	want, ok := stepNine[person]
 	if !ok {
 		return fmt.Errorf("-person %q: maria or luis", person)
@@ -144,9 +189,8 @@ func peopleSignIn(ctx context.Context, apiBase, account, person string, hc *http
 	if account == "" {
 		return errors.New("-account: the shared account's id")
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return err
+	if key == nil {
+		return errors.New("-key: the phone key -people-key made, once its fingerprint is on KIFF's test keys")
 	}
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
