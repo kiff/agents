@@ -203,6 +203,10 @@ settings turn it on:
   `AGENTS_MODEL_SOURCE=bedrock`), its judge too, without the daily cap, and its
   report names where the turns ran. `cmd/e2e` takes the same flag for the setup
   agent and its judges, and says at the start where its turns run.
+  - **The live judge** (`judge-live.yml`): with `EVAL_MODEL_SOURCE=bedrock`, a
+    PR's `live` shows a notice and doesn't run. After merging a change to a
+    judge, dispatch `judge-live` on main and post its result before the next
+    release.
   - **In the workflow:** `eval.yml` sets `AGENTS_MODEL_SOURCE=bedrock` only on
     main, and only once the repository variable `EVAL_MODEL_SOURCE` is
     `bedrock`. Main's Eval role may call the EU profiles once

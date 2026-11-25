@@ -5,6 +5,12 @@ name: Judge, live
 # so no one's session handles it. GitHub gives no secret to a fork's pull
 # request, so there the cases skip. It reads synthetic records only, and
 # deploys nothing. By hand (workflow_dispatch) on any branch too.
+#
+# Once the repository variable EVAL_MODEL_SOURCE is bedrock, as for the E2E
+# and the Eval, the judge's turns run on Claude in Amazon Bedrock, and only
+# from main, by hand, through the Eval role: a pull request's run, or a
+# branch's, runs nothing and says so in a notice, "live runs on main
+# (Bedrock)", where it would have spent on the Claude API.
 on:
   pull_request:
     paths:
@@ -19,19 +25,41 @@ jobs:
   live:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Only this job may ask GitHub for an OIDC token, for the Eval role on Bedrock.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # bedrock: on main with the variable set; elsewhere with it set, nothing
+      # runs (elsewhere); without it, the Claude API, as before.
+      WHERE: ${{ vars.EVAL_MODEL_SOURCE != 'bedrock' && 'anthropic' || github.ref == 'refs/heads/main' && 'bedrock' || 'elsewhere' }}
     steps:
+      - name: live runs on main (Bedrock)
+        if: env.WHERE == 'elsewhere'
+        run: |
+          echo "::notice title=live runs on main (Bedrock)::Not run here: while EVAL_MODEL_SOURCE is bedrock, the record's judge runs on Bedrock, by hand from main (Actions > Judge, live > Run workflow on main)."
+          echo "**live runs on main (Bedrock):** not run on this ${GITHUB_EVENT_NAME//_/ }. Dispatch *Judge, live* on main." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.WHERE != 'elsewhere'
         with:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: env.WHERE != 'elsewhere'
         with:
           go-version-file: go.mod
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.WHERE == 'bedrock'
+        with:
+          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          aws-region: eu-west-1
       - name: The record's judge keeps a limit to its tool and kind
+        if: env.WHERE != 'elsewhere'
         env:
           E2E_REGRADE: "1"
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ env.WHERE == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          AGENTS_MODEL_SOURCE: ${{ env.WHERE }}
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
+          if [ "$AGENTS_MODEL_SOURCE" = anthropic ] && [ -z "$ANTHROPIC_API_KEY" ]; then
             echo "No key here (a fork's pull request): the live cases skip."
           fi
           go test -count=1 -v -run '^TestTheRecordJudgeKeepsALimitToItsToolAndKind$' ./cmd/e2e/ 2>&1 | grep -E -- "^ *(--- |PASS|FAIL|ok|panic)|_test.go"
