@@ -547,6 +547,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 	}
 	a, d, err := rn.Builder.BuildVersion(ctx, tenant, r.Agent, r.ID, version)
 	if err != nil {
+		if paused && keyRefused(err) {
+			return x.keyGone(ctx, r, fmt.Errorf("building the agent: %w", err))
+		}
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
 	sp.add("build", a.StartSpans)
@@ -1400,6 +1403,28 @@ func (x *execution) notRun(ctx context.Context, r run.Run, paused bool, keep ses
 	}
 	next, err := x.saveStop(ctx, func(n *run.Run) error {
 		n.Status, n.Error, n.Expires = run.Error, public, expires(keep, x.rn.now())
+		return nil
+	})
+	return next, errors.Join(cause, err)
+}
+
+// keyRefused says KIFF refused the agent's own key as its tools connected
+// (tool.ErrKeyRefused): the key is gone, and continuing again can't mend it.
+func keyRefused(err error) bool { return errors.Is(err, tool.ErrKeyRefused) }
+
+// keyGone ends a PAUSED run whose agent's key KIFF refused as it continued
+// (keyRefused), as the sweep ends one past run.PausedGiveUp: its recording
+// ended, then ERROR, run.CouldNotContinue. Put back to PAUSED instead, the
+// sweep would continue it again for a day (about 30 tries, each refused).
+func (x *execution) keyGone(ctx context.Context, r run.Run, cause error) (run.Run, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), StopTimeout)
+	defer cancel()
+	if err := x.rn.Ended(ctx, r); err != nil {
+		return x.notRun(ctx, r, true, nil, "", errors.Join(cause, err))
+	}
+	now := x.rn.now()
+	next, err := x.saveStop(ctx, func(n *run.Run) error {
+		n.Status, n.Error, n.Expires = run.Error, run.CouldNotContinue, x.rn.Expires(ctx, r, now)
 		return nil
 	})
 	return next, errors.Join(cause, err)

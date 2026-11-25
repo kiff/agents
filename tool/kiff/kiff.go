@@ -602,6 +602,12 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("kiff: %s: HTTP %d: %s", e.Method, e.Status, e.Body)
 }
 
+// Is makes a 401 to initialize tool.ErrKeyRefused: the gateway took no step
+// yet, and refused the agent's key itself ("a valid agent key is required").
+func (e *HTTPError) Is(target error) bool {
+	return target == tool.ErrKeyRefused && e.Method == "initialize" && e.Status == http.StatusUnauthorized
+}
+
 // TrialCapability is the experimental capability a gateway that decides
 // trials (KIFF-Trial) declares in its initialize answer, as true.
 const TrialCapability = "dev.kiff/trial"
