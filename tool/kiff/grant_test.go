@@ -90,3 +90,52 @@ func TestARunsGrantGoesOnItsCalls(t *testing.T) {
 		t.Fatalf("grant headers %v, want [krg_ana -]", seen)
 	}
 }
+
+// Each call names its run in KIFF-Run, from the run it's made in, so KIFF
+// can sign it into the call's permit; a call outside a run names none, and
+// nothing the model sends sets it.
+func TestACallNamesItsRunFromTheStoredRunOnly(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg struct {
+			ID     *int64 `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		if msg.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any
+		switch msg.Method {
+		case "initialize":
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+		case "tools/list":
+			result = map[string]any{"tools": []any{map[string]any{"name": "browse_open", "inputSchema": map[string]any{"type": "object"}}}}
+		case "tools/call":
+			h := r.Header.Get(kiff.RunHeader)
+			if h == "" {
+				h = "-"
+			}
+			seen = append(seen, h)
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "ok"}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": result})
+	}))
+	t.Cleanup(srv.Close)
+	tools, err := kiff.New(srv.URL, testKey, srv.Client()).Tools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := run.WithRef(context.Background(), run.Ref{Session: "s1", Run: "run_ana_1"})
+	if _, err := tools[0].Call(in, json.RawMessage(`{"kiff_run":"run_forged","url":"https://x.test"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools[0].Call(context.Background(), json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0] != "run_ana_1" || seen[1] != "-" {
+		t.Fatalf("run headers %v, want [run_ana_1 -]", seen)
+	}
+}
