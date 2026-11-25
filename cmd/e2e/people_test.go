@@ -5,6 +5,7 @@ import (
 
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,7 @@ func TestAPersonSignsInOnANewPhoneKey(t *testing.T) {
 	devicePoll = time.Millisecond
 	srv := fakeDeviceKIFF(t, "t-eval", "viewer")
 	var out, say bytes.Buffer
-	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say); err != nil {
+	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", madeKey(t), srv.Client(), &out, &say); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
@@ -89,7 +90,7 @@ func TestAPersonOnTheWrongAccountWritesNothing(t *testing.T) {
 	devicePoll = time.Millisecond
 	var out, say bytes.Buffer
 	srv := fakeDeviceKIFF(t, "t-eval", "admin")
-	err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say)
+	err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", madeKey(t), srv.Client(), &out, &say)
 	if err == nil || !strings.Contains(err.Error(), "not as viewer") || out.Len() != 0 {
 		t.Fatalf("another role: err %v, wrote %q", err, out.String())
 	}
@@ -98,17 +99,67 @@ func TestAPersonOnTheWrongAccountWritesNothing(t *testing.T) {
 	}
 	// The right role, on the person's own team's account.
 	srv = fakeDeviceKIFF(t, "t-own", "viewer")
-	err = peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", srv.Client(), &out, &say)
+	err = peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", madeKey(t), srv.Client(), &out, &say)
 	if err == nil || !strings.Contains(err.Error(), "not to the shared account") || out.Len() != 0 {
 		t.Fatalf("another account: err %v, wrote %q", err, out.String())
 	}
 	if len(signedOut) != 1 {
 		t.Fatalf("another account: signed out %v", signedOut)
 	}
-	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "ana", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
+	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "ana", madeKey(t), srv.Client(), &out, &say); err == nil || out.Len() != 0 {
 		t.Fatalf("an unknown person: err %v, wrote %q", err, out.String())
 	}
-	if err := peopleSignIn(context.Background(), srv.URL, "", "luis", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
+	if err := peopleSignIn(context.Background(), srv.URL, "", "luis", madeKey(t), srv.Client(), &out, &say); err == nil || out.Len() != 0 {
 		t.Fatalf("no account: err %v, wrote %q", err, out.String())
+	}
+}
+
+// madeKey is a phone key as -people-key makes it, read back as -people-signin does.
+func madeKey(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	var out, say bytes.Buffer
+	if err := peopleKey("luis", &out, &say); err != nil {
+		t.Fatal(err)
+	}
+	k, err := testaccount.ParsePhone(out.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// The key comes first, and alone: -people-key writes it and prints only its
+// fingerprints, short and whole, for KIFF's test keys; -people-signin signs in
+// with that key, never a new one, and with none it signs in with nothing.
+func TestThePhoneKeyIsMadeBeforeTheSignInAndSignedInWith(t *testing.T) {
+	var out, say bytes.Buffer
+	if err := peopleKey("maria", &out, &say); err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSuffix(out.String(), "\n")
+	key, err := testaccount.ParsePhone(line)
+	if err != nil || strings.Contains(line, "\n") {
+		t.Fatalf("the key file: %q %v", out.String(), err)
+	}
+	short, full, _ := keyFingerprints(key)
+	if s := say.String(); strings.Contains(s, line) || !strings.Contains(s, short) || !strings.Contains(s, full) || len(full) != 64 || len(short) != 19 {
+		t.Fatalf("printed %q (short %q, full %q)", s, short, full)
+	}
+	if err := peopleKey("ana", &out, &say); err == nil {
+		t.Fatal("an unknown person")
+	}
+
+	devicePoll = time.Millisecond
+	srv := fakeDeviceKIFF(t, "t-eval", "viewer")
+	var signed, said bytes.Buffer
+	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", key, srv.Client(), &signed, &said); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Split(signed.String(), "\n")[0]; got != line {
+		t.Fatal("signed in with another key than the one made")
+	}
+	signed.Reset()
+	if err := peopleSignIn(context.Background(), srv.URL, "t-eval", "luis", nil, srv.Client(), &signed, &said); err == nil || signed.Len() != 0 {
+		t.Fatalf("no key: err %v, wrote %q", err, signed.String())
 	}
 }
