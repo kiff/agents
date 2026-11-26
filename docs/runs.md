@@ -160,6 +160,7 @@ settings turn it on:
 | `AGENTS_BEDROCK_UNBOUNDED_DAILY_USD` | an unbounded account's share (an agreement, or internal); without it, two fifths of the cap |
 | `AGENTS_BEDROCK_RESERVED_TENANTS` | the accounts (tenant ids, comma-separated) the reserved slice is for: the store reviewers'. They have no share of their own. Set on purpose, empty by default, never taken from another list |
 | `AGENTS_BEDROCK_RESERVED_USD` | the slice of the cap only those accounts may spend; without it, a fifth of the cap once any are listed |
+| `AGENTS_BEDROCK_TENANT_CAPS` | some accounts' own shares, whatever their plan: `tenant=usd` pairs, comma-separated. The test pilot's account (internal, so unbounded by its plan) is held to a fixed amount a day this way. Each within the cap less the reserved slice; set on purpose, empty by default |
 
 - **The words follow a switch, the same day.** Changing `AGENTS_MODEL_SOURCE` changes
   which company gets people's data, so these move with it:
@@ -265,6 +266,11 @@ settings turn it on:
     listed account's go on to the cap itself. A fifth by default, two full
     shares. A listed account has no share of its own, so a reviewer can
     test freely: only the cap itself bounds it.
+  - **An account's own share** (`AGENTS_BEDROCK_TENANT_CAPS`) replaces the
+    one its plan gives, a reviewer's included. It's for an account nothing
+    else bounds: the test pilot's, internal and so unbounded by its plan, is
+    held to a fixed amount a day this way. It's still within what every
+    account but the reviewers' may take of the day.
   - **Both, or neither.** A turn reserves its worst case on its account's
     share first (in that account's usage, as the period `bedrock|<day>`, so
     erasing the account erases it), then on the day. If the day has no room,

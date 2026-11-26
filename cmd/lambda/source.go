@@ -46,6 +46,12 @@ import (
 //	                          the slice of the cap only those accounts may
 //	                          spend; without it, ReservedShare of the cap when
 //	                          any are listed
+//	AGENTS_BEDROCK_TENANT_CAPS
+//	                          some accounts' own shares, whatever their plan:
+//	                          tenant=usd pairs, comma-separated (the test
+//	                          pilot's account, internal and so unbounded by
+//	                          its plan, held to a fixed amount a day). Each
+//	                          within the cap less the reserved slice
 //
 // Bedrock is our own AWS account's, in the function's region, through the EU
 // inference profiles (model/bedrock), signed with the function's own role.
@@ -58,6 +64,7 @@ type sourceConfig struct {
 	UnboundedMicro int64
 	ReservedTo     map[string]bool
 	ReserveMicro   int64
+	TenantMicro    map[string]int64
 }
 
 // The defaults, in percent of the day's cap (docs/runs.md says why):
@@ -125,6 +132,24 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 			return sc, err
 		}
 	}
+	for _, pair := range strings.Split(getenv("AGENTS_BEDROCK_TENANT_CAPS"), ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		tenant, amount, ok := strings.Cut(pair, "=")
+		tenant = strings.TrimSpace(tenant)
+		usd, perr := strconv.ParseFloat(strings.TrimSpace(amount), 64)
+		if !ok || tenant == "" || perr != nil || usd <= 0 || usd > 100_000 {
+			return sc, fmt.Errorf("lambda: AGENTS_BEDROCK_TENANT_CAPS is tenant=usd pairs, comma-separated, each above 0, not %q", pair)
+		}
+		if _, dup := sc.TenantMicro[tenant]; dup {
+			return sc, fmt.Errorf("lambda: AGENTS_BEDROCK_TENANT_CAPS names an account twice")
+		}
+		if sc.TenantMicro == nil {
+			sc.TenantMicro = map[string]int64{}
+		}
+		sc.TenantMicro[tenant] = int64(usd * 1_000_000)
+	}
 	if sc.CapMicro > 0 && (sc.AccountMicro > sc.CapMicro || sc.ReserveMicro >= sc.CapMicro) {
 		return sc, fmt.Errorf("lambda: an account's share and the reserved slice are parts of AGENTS_BEDROCK_DAILY_USD, below it")
 	}
@@ -137,6 +162,11 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 		}
 		if sc.TrialMicro > room || sc.UnboundedMicro > room {
 			return sc, fmt.Errorf("lambda: the trial's and an unbounded account's shares are parts of AGENTS_BEDROCK_DAILY_USD less the reserved slice, within it")
+		}
+		for _, v := range sc.TenantMicro {
+			if v > room {
+				return sc, fmt.Errorf("lambda: each AGENTS_BEDROCK_TENANT_CAPS share is a part of AGENTS_BEDROCK_DAILY_USD less the reserved slice, within it")
+			}
 		}
 	}
 	return sc, nil
@@ -165,7 +195,7 @@ func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Sto
 	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack, Log: log}
 	if sc.CapMicro > 0 && use != nil {
 		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, AccountMicroUSD: sc.AccountMicro, TrialMicroUSD: sc.TrialMicro, MaxMicroUSD: sc.UnboundedMicro,
-			ReservedMicroUSD: sc.ReserveMicro, Reserved: sc.ReservedTo,
+			ReservedMicroUSD: sc.ReserveMicro, Reserved: sc.ReservedTo, TenantMicroUSD: sc.TenantMicro,
 			Spend: daySpend{use: use, log: log}, PriceFactor: bedrock.GeoFactor}
 	}
 	return s
