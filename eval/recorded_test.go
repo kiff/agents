@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,7 @@ func TestTheCardsReadIsKeptWholeInTheRecord(t *testing.T) {
 	limits := strings.Repeat("Accept a dispute: up to $100 per close, refused above. ", 8)
 	lines := RecordLines([]RecordedCall{
 		{Tool: "kiff_card", Input: "{}", Outcome: limits},
-		{Tool: "stripe__retrieve_dispute", Input: `{"id":"dp_1"}`, Outcome: limits},
+		{Tool: "stripe__retrieve_dispute", Input: `{"id":"dp_1"}`, Outcome: strings.Repeat(limits, 8)}, // past outcomeCut
 	})
 	parts := strings.Split(lines, "\n")
 	if !strings.Contains(parts[0], strings.TrimSpace(limits)) || strings.HasSuffix(parts[0], "…") {
@@ -116,8 +117,8 @@ func TestTheJudgeReadsTheToolsGivenAndKIFFsAnswersWhole(t *testing.T) {
 	if strings.Index(text, "Tools given:") > strings.Index(text, "Record:") {
 		t.Error("the tools given come after the record")
 	}
-	// Another call's long outcome is still cut.
-	long := RecordLines([]RecordedCall{{Tool: "list_disputes", Input: "{}", Outcome: strings.Repeat("x", 400)}})
+	// Another call's long outcome is still cut, past outcomeCut.
+	long := RecordLines([]RecordedCall{{Tool: "list_disputes", Input: "{}", Outcome: strings.Repeat("x", outcomeCut+100)}})
 	if !strings.Contains(long, "…") {
 		t.Error("an ordinary outcome isn't cut")
 	}
@@ -136,5 +137,29 @@ func TestALongDescriptionKeepsItsCardLine(t *testing.T) {
 	got := GivenRecordedText("", []GivenTool{{Name: "close_dispute", Description: desc}}, nil, "t")
 	if !strings.Contains(got, "Your KIFF Card: up to 100.00 USD per call.") || !strings.Contains(got, "…") {
 		t.Fatalf("the Card line or the cut is missing:\n%s", got[len(got)-300:])
+	}
+}
+
+// What a read found is what the agent's words are judged on: a list's later
+// items are in the record the judge reads. An Eval, 26 Nov (Hand-offs,
+// handoff-nothing run 1): the list_disputes answer was cut at T-2002, and the
+// agent's true report of T-2006's message was judged unsupported.
+func TestARecordKeepsAListsLaterItems(t *testing.T) {
+	var items []string
+	for i := 1; i <= 7; i++ {
+		items = append(items, fmt.Sprintf(`{"id":"T-200%d","customer":"Customer %d","message":"A message about order %d, a little long, as a dispute's is."}`, i, i, i))
+	}
+	list := "[" + strings.Join(items, ",") + "]"
+	if len(list) <= recordCut {
+		t.Fatalf("the list is %d characters, not past the input cut", len(list))
+	}
+	lines := RecordLines([]RecordedCall{{Tool: "list_disputes", Input: "{}", Outcome: list}})
+	if !strings.Contains(lines, "T-2006") || !strings.Contains(lines, "T-2007") || strings.Contains(lines, "…") {
+		t.Fatalf("the list's later items aren't in the record: %s", lines)
+	}
+	// An input is still cut where it was.
+	in := RecordLines([]RecordedCall{{Tool: "reply", Input: strings.Repeat("y", recordCut+50), Outcome: "ok"}})
+	if !strings.Contains(in, "…") {
+		t.Error("a long input isn't cut")
 	}
 }
