@@ -47,13 +47,53 @@ const StopContextOverflow = "context_overflow"
 // free), so the words can say so.
 const AIUnavailable = "Our AI provider isn't serving us right now, so this stopped and used none of your credits. It's on our side, not yours: try again a little later."
 
+// AILimitAccount is the Error of a run that stopped because its account's
+// share of the day's AI spend is used (model.ErrBackupShareSpent): the provider
+// was serving, our own daily limit for the account stopped the turn. Its
+// ErrorCode is "ai_limit_account", and the run's answer carries when the limit
+// resets (ResetsAt), for the client to say in the person's own time. These
+// words, for a client that doesn't know the code, name the reset in UTC.
+const AILimitAccount = "This account has reached today's AI limit, so this stopped and used none of your credits. It can go on after midnight UTC."
+
+// AILimitService is the Error of a run that stopped because the whole day's AI
+// spend is used (model.ErrBackupCapped, not one account's share): on our side,
+// for every account. Its ErrorCode is "ai_limit_service", with ResetsAt.
+const AILimitService = "We've reached today's AI capacity, so this stopped and used none of your credits. It's on our side, not yours: it can go on after midnight UTC."
+
 // ErrorCode is the code of a run's Error that a client may treat apart from
-// its words: "ai_unavailable" for AIUnavailable, otherwise "".
+// its words: "ai_unavailable" for AIUnavailable, "ai_limit_account" for
+// AILimitAccount, "ai_limit_service" for AILimitService, otherwise "".
 func ErrorCode(err string) string {
-	if err == AIUnavailable {
+	switch err {
+	case AIUnavailable:
 		return "ai_unavailable"
+	case AILimitAccount:
+		return "ai_limit_account"
+	case AILimitService:
+		return "ai_limit_service"
 	}
 	return ""
+}
+
+// ResetsAt is when a run that stopped at a daily AI limit (AILimitAccount,
+// AILimitService) may go on: the next midnight UTC after it ended, when the
+// day's spend starts again (the day is the UTC date, model's Spend). Zero for
+// any other run.
+func ResetsAt(r Run) time.Time {
+	switch r.Error {
+	case AILimitAccount, AILimitService:
+	default:
+		return time.Time{}
+	}
+	at := r.Ended
+	if at.IsZero() {
+		at = r.Updated
+	}
+	if at.IsZero() {
+		return time.Time{}
+	}
+	day := at.UTC().Truncate(24 * time.Hour)
+	return day.Add(24 * time.Hour)
 }
 
 // Final reports whether a run in this status can change no more.

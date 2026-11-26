@@ -1239,23 +1239,36 @@ func TestARunRefusedForOurBalanceSaysSo(t *testing.T) {
 	}
 }
 
-// A run Bedrock refused because the day's cap is spent, or because it has no
-// cap, says what a refusal for our balance says: on our side, no credits used,
-// try again later. Never the cap's own words.
-func TestARunRefusedForBedrocksDaySaysSo(t *testing.T) {
-	for _, refusal := range []error{model.ErrBackupCapped, model.ErrBackupShareSpent, model.ErrBackupOff} {
+// A run Bedrock refused says which of our own limits stopped it, each with its
+// code: the account's share of the day (ai_limit_account), the whole day's cap
+// (ai_limit_service), or no cap at all, which reads as a refusal for our
+// balance does (ai_unavailable). A spent share is a capped error too, and still
+// reads as the account's limit, never as everyone's. Never the model's words.
+func TestARunRefusedForBedrocksDaySaysWhichLimit(t *testing.T) {
+	for _, c := range []struct {
+		refusal error
+		want    string
+		code    string
+	}{
+		{model.ErrBackupShareSpent, runner.FailedAILimitAccount, "ai_limit_account"},
+		{model.ErrBackupCapped, runner.FailedAILimitService, "ai_limit_service"},
+		{model.ErrBackupOff, runner.FailedAIUnavailable, "ai_unavailable"},
+	} {
 		f := newFixture(t)
-		f.model.fail = refusal
+		f.model.fail = c.refusal
 		r := f.start(server.Start{Input: "go"})
 		got, err := f.r.Execute(ctx, "t1", r.ID, nil)
-		if !errors.Is(err, refusal) {
+		if !errors.Is(err, c.refusal) {
 			t.Fatalf("got %v, want the refusal for the caller to log", err)
 		}
-		if got.Status != run.Error || got.Error != runner.FailedAIUnavailable || run.ErrorCode(got.Error) != "ai_unavailable" || !runner.Own(got.Error) {
-			t.Fatalf("%v: failed to %+v", refusal, got)
+		if got.Status != run.Error || got.Error != c.want || run.ErrorCode(got.Error) != c.code || !runner.Own(got.Error) {
+			t.Fatalf("%v: failed to %+v, want %q (%s)", c.refusal, got, c.want, c.code)
 		}
-		if strings.Contains(got.Error, "Bedrock") || strings.Contains(got.Error, "cap") {
-			t.Fatalf("%v: the cap's own words reached the person: %q", refusal, got.Error)
+		if strings.Contains(got.Error, "Bedrock") || strings.Contains(got.Error, c.refusal.Error()) {
+			t.Fatalf("%v: the model's own words reached the person: %q", c.refusal, got.Error)
+		}
+		if c.code != "ai_unavailable" && strings.Contains(got.Error, "provider") {
+			t.Fatalf("%v: a limit of ours blames the provider: %q", c.refusal, got.Error)
 		}
 	}
 }
