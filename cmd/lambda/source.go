@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -103,8 +104,8 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 		return sc, fmt.Errorf("lambda: AGENTS_BEDROCK_FALLBACK is on or off, not %q", v)
 	}
 	if v := strings.TrimSpace(getenv("AGENTS_BEDROCK_DAILY_USD")); v != "" {
-		usd, err := strconv.ParseFloat(v, 64)
-		if err != nil || usd <= 0 || usd > 100_000 {
+		usd, err := parseUSD(v)
+		if err != nil {
 			return sc, fmt.Errorf("lambda: AGENTS_BEDROCK_DAILY_USD is a number of US dollars above 0, not %q", v)
 		}
 		sc.CapMicro = int64(usd * 1_000_000)
@@ -138,8 +139,8 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 		}
 		tenant, amount, ok := strings.Cut(pair, "=")
 		tenant = strings.TrimSpace(tenant)
-		usd, perr := strconv.ParseFloat(strings.TrimSpace(amount), 64)
-		if !ok || tenant == "" || perr != nil || usd <= 0 || usd > 100_000 {
+		usd, perr := parseUSD(strings.TrimSpace(amount))
+		if !ok || tenant == "" || perr != nil {
 			return sc, fmt.Errorf("lambda: AGENTS_BEDROCK_TENANT_CAPS is tenant=usd pairs, comma-separated, each above 0, not %q", pair)
 		}
 		if _, dup := sc.TenantMicro[tenant]; dup {
@@ -172,14 +173,26 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 	return sc, nil
 }
 
+// parseUSD reads a number of US dollars above 0 and at most 100,000.
+// ParseFloat takes "NaN" and "Inf" without an error, and NaN passes every
+// comparison, so both are refused by name: a NaN share would read as none,
+// and an account would fall back to its plan's.
+func parseUSD(v string) (float64, error) {
+	usd, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(usd) || math.IsInf(usd, 0) || usd <= 0 || usd > 100_000 {
+		return 0, fmt.Errorf("not a number of US dollars above 0: %q", v)
+	}
+	return usd, nil
+}
+
 // dollars is name's amount of US dollars, in millionths, or def when unset.
 func dollars(getenv func(string) string, name string, def int64) (int64, error) {
 	v := strings.TrimSpace(getenv(name))
 	if v == "" {
 		return def, nil
 	}
-	usd, err := strconv.ParseFloat(v, 64)
-	if err != nil || usd <= 0 || usd > 100_000 {
+	usd, err := parseUSD(v)
+	if err != nil {
 		return 0, fmt.Errorf("lambda: %s is a number of US dollars above 0, not %q", name, v)
 	}
 	return int64(usd * 1_000_000), nil
