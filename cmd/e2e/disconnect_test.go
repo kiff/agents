@@ -101,7 +101,7 @@ func TestTheOneOffDisconnectRunsAloneAsThePhone(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, must := range []string{"workflow_dispatch:", "group: test-account", "cancel-in-progress: false", "E2E_KIFF_SESSION", "E2E_PHONE_KEY",
+	for _, must := range []string{"workflow_dispatch:", "group: test-account-2", "cancel-in-progress: false", "E2E_KIFF_SESSION", "E2E_PHONE_KEY",
 		"GRANT: ${{ inputs.grant }}", `go run ./cmd/e2e -disconnect "$GRANT"`} {
 		if !strings.Contains(s, must) {
 			t.Fatalf("e2e-disconnect.yml lacks %q", must)

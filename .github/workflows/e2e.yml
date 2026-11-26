@@ -35,7 +35,7 @@ permissions:
 # and a run starts by disconnecting the grants that agent asked for, so two at
 # once take each other's tools away. They queue instead.
 concurrency:
-  group: test-account
+  group: test-account-2
   cancel-in-progress: false
 jobs:
   e2e:
