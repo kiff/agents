@@ -396,3 +396,39 @@ func TestARunsOutcomesAreFixed(t *testing.T) {
 		t.Errorf("setting the outcome it answered: %q, %v", got.Outcome, err)
 	}
 }
+
+// Each of our own reasons a run stopped has its code, and only a daily limit
+// says when it resets: the next midnight UTC after the run ended, as the day's
+// spend counts by the UTC date. A run that ended at 23:59:59 UTC goes on a
+// second later; one at 00:00:00 waits the whole day.
+func TestADailyLimitSaysWhenItResets(t *testing.T) {
+	for err, code := range map[string]string{run.AIUnavailable: "ai_unavailable", run.AILimitAccount: "ai_limit_account", run.AILimitService: "ai_limit_service", "the run failed": ""} {
+		if got := run.ErrorCode(err); got != code {
+			t.Errorf("run.ErrorCode(%q) = %q, want %q", err, got, code)
+		}
+	}
+	for _, c := range []struct {
+		err   string
+		ended time.Time
+		want  time.Time
+	}{
+		{run.AILimitAccount, time.Date(2026, 11, 26, 17, 47, 48, 0, time.UTC), time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)},
+		{run.AILimitService, time.Date(2026, 11, 26, 23, 59, 59, 0, time.UTC), time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)},
+		{run.AILimitAccount, time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)},
+		// Paris time, the same instant: still midnight UTC, never the zone's own midnight.
+		{run.AILimitAccount, time.Date(2026, 11, 27, 0, 30, 0, 0, time.FixedZone("CET", 3600)), time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)},
+		{run.AIUnavailable, time.Date(2026, 11, 26, 17, 0, 0, 0, time.UTC), time.Time{}},
+		{"the run failed", time.Date(2026, 11, 26, 17, 0, 0, 0, time.UTC), time.Time{}},
+	} {
+		if got := run.ResetsAt(run.Run{Error: c.err, Ended: c.ended}); !got.Equal(c.want) {
+			t.Errorf("run.ResetsAt(%q, ended %v) = %v, want %v", c.err, c.ended, got, c.want)
+		}
+	}
+	// A run from before Ended was kept: when it was last changed.
+	if got := run.ResetsAt(run.Run{Error: run.AILimitService, Updated: time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)}); !got.Equal(time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("from Updated: %v", got)
+	}
+	if got := run.ResetsAt(run.Run{Error: run.AILimitService}); !got.IsZero() {
+		t.Errorf("with no time at all: %v", got)
+	}
+}

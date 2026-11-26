@@ -163,8 +163,13 @@ type runView struct {
 	Output     string     `json:"output,omitempty"`
 	Error      string     `json:"error,omitempty"`
 	// Code is Error's code when a client may treat it apart
-	// (run.ErrorCode): "ai_unavailable".
-	Code         string            `json:"code,omitempty"`
+	// (run.ErrorCode): "ai_unavailable", "ai_limit_account" or
+	// "ai_limit_service".
+	Code string `json:"code,omitempty"`
+	// ResetsAt is when a run stopped at a daily AI limit (the two ai_limit
+	// codes) may go on: the next midnight UTC (run.ResetsAt). Absent
+	// otherwise; the client says it in the person's own time.
+	ResetsAt     time.Time         `json:"resets_at,omitzero"`
 	Cost         int64             `json:"cost_micro_usd"`
 	Turns        int               `json:"turns"`
 	Requirements []run.Requirement `json:"requirements,omitempty"`
@@ -205,7 +210,7 @@ func (s *Server) viewRun(r run.Run) runView { return viewRunAt(r, s.now()) }
 func viewRunAt(r run.Run, now time.Time) runView {
 	w := r.WorkAt(now)
 	return runView{State: w.State, Reason: w.Reason, Try: w.Try, Of: w.Of, NextAt: w.NextAt, ID: r.ID, Agent: r.Agent, Session: r.Session, After: r.After, Trigger: r.Trigger, Source: r.Source, Outcome: r.Outcome, Requester: r.Requester, NewSession: r.NewSession, Status: r.Status, Stop: r.Stop, Refusal: r.Refusal,
-		Output: r.Output, Error: r.Error, Code: run.ErrorCode(r.Error), Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done, Sent: r.Sent, Tally: r.Tally,
+		Output: r.Output, Error: r.Error, Code: run.ErrorCode(r.Error), ResetsAt: run.ResetsAt(r), Cost: r.Cost, Turns: r.Turns, Requirements: r.Requirements, Done: r.Done, Sent: r.Sent, Tally: r.Tally,
 		CancelRequested: r.Cancel && !r.Status.Final(), Steering: r.Steering, AgentVersion: r.AgentVersion, Draft: r.Draft,
 		Created: r.Created, Updated: r.Updated}
 }
