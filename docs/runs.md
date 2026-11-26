@@ -290,9 +290,12 @@ settings turn it on:
     branch's run on Opus is refused. The Eval has no daily cap of ours, so
     the script refuses that grant unless the AWS budget
     `agents-eval-branches-bedrock` (`AGENTS_EVAL_BRANCH_BUDGET`) exists, on
-    that role's Bedrock spend, with an action that takes the grant back past
-    its daily amount. Until the variable is set, a branch's run stays on the
-    Claude API.
+    that role's Bedrock spend, with an action. A budget action can't remove
+    the inline grant, so the action attaches to the role a managed policy
+    denying `bedrock:InvokeModel*`, which wins over the grant: past the
+    daily amount, run automatically (not waiting for approval). The Deny
+    comes off the next day, by hand or with the action's reset. Until the
+    variable is set, a branch's run stays on the Claude API.
   - **`e2e.yml`** follows the same variables, and takes the role's
     credentials once before its first turn: its job's limit is within the
     hour.

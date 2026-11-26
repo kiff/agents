@@ -11,9 +11,10 @@
 #     branch's run on Opus is refused. A branch's Eval goes there once the
 #     repository variable EVAL_BRANCH_MODEL_SOURCE is bedrock. Its spend has
 #     no daily cap of ours (the Eval is exempt), so the grant is refused
-#     unless the AWS budget BUDGET exists with an action on it (one that takes
-#     the grant back past its daily amount, docs/runs.md). Taking it back
-#     needs no budget.
+#     unless the AWS budget BUDGET exists with an action on it: one that,
+#     past its daily amount and without waiting for approval, attaches to
+#     the role a managed policy denying bedrock:InvokeModel*, whose Deny wins
+#     over this Allow (docs/runs.md). Taking the grant back needs no budget.
 #
 #   infra/eval-bedrock.sh                 # grant main's role
 #   infra/eval-bedrock.sh down            # take it back
@@ -53,7 +54,7 @@ if [ "$ROLE" = agents-github-eval-branches ]; then
   actions=$(command aws budgets describe-budget-actions-for-budget --region us-east-1 --account-id "$ACCOUNT" --budget-name "$BUDGET" \
     --query 'length(Actions)' --output text 2>/dev/null || echo 0)
   if ! [ "${actions:-0}" -gt 0 ] 2>/dev/null; then
-    echo "eval-bedrock: budget $BUDGET has no action: add the one that takes the grant back before the branches' role may call Bedrock" >&2
+    echo "eval-bedrock: budget $BUDGET has no action: add the one that attaches a Deny on bedrock:InvokeModel* to the role before it may call Bedrock" >&2
     exit 1
   fi
 fi
