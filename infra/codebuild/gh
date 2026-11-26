@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# A stand-in for `gh api PATH [--jq EXPR]` inside CodeBuild, which has no
+# GitHub token: infra/eval-deployed.sh reads three public repositories'
+# deploy runs, which GitHub serves without one (60 requests an hour from one
+# address). Anything else it refuses. A read that fails makes the run count
+# as mixed, as in eval.yml.
+set -euo pipefail
+[ "${1:-}" = api ] || { echo "gh (CodeBuild): only 'gh api' is here" >&2; exit 2; }
+path=${2:?gh api PATH}
+shift 2
+jq_expr="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) jq_expr=$2; shift 2 ;;
+    *) echo "gh (CodeBuild): unsupported flag $1" >&2; exit 2 ;;
+  esac
+done
+curl -fsS -H "Accept: application/vnd.github+json" "https://api.github.com/${path#/}" | jq -r "$jq_expr"

@@ -928,6 +928,43 @@ res, err := evalCase.Grade(ctx, er, judge)
 `eval.Policy` keeps tool calls and results; the default rules drop them when
 the run ends, and `Calls()` would grade nothing.
 
+### The Eval's backup runner (CodeBuild)
+
+When GitHub won't start `eval.yml` (dispatches queued with no job),
+`infra/codebuild/` runs the same full Eval in AWS CodeBuild:
+
+- **What it runs:** `run.sh` has every suite of `eval.yml`, in the same order,
+  with the same command, limit and not-measured check.
+  - `codebuild_test.go` fails when one differs, so the two can't drift.
+  - Only a run that can count for the Upgrade gate: all suites, repeat 3, no
+    model or effort override, on Bedrock, on a commit that's on main.
+  - It fails on a failed suite, and on a mixed run (a deploy during it), as
+    `eval.yml` does. The sweeps run and never decide it.
+  - The report goes to the private bucket under `reports/codebuild/`.
+- **Starting it:** by hand only, with `infra/codebuild/eval-codebuild.sh start
+  <sha>`. There's no webhook or schedule, and no input: a build started with
+  another buildspec, source, environment or role doesn't count, because the
+  gate compares its record with the project's. It refuses while an Eval, E2E,
+  recipe or proof run is in progress on GitHub, since they share the test
+  account.
+- **Its access** (`policy.sh`, tested):
+  - **The build's role** is trusted by CodeBuild for this one project. It has
+    main's Eval role's Bedrock document, may put reports under
+    `reports/codebuild/`, may read the nine Eval secrets by their exact names
+    (`agents-eval/<NAME>` in Secrets Manager), and may write its log group.
+  - **The gate's role** is read-only: this project's definition and builds,
+    and its log's events. It's trusted by kiff/tafs' runs in the environment
+    `eval-gate` alone.
+- **Spend:** the same as `eval.yml`'s. The Eval is outside the daily cap, held
+  by each suite's `-max-cost`. CodeBuild's own minutes are a few dollars a run.
+- **Setting it up** is an AWS change, so it needs the owner's yes: run
+  `eval-codebuild.sh secrets` (the nine values, typed, never echoed), then
+  `setup`. Run `setup` again when `EVAL_STRIPE_ACCOUNT` or `TAFS_YOUR_STEP`
+  changes, since the project holds their values.
+- **GitHub's API without a token:** `eval-deployed.sh`'s reads go through
+  `infra/codebuild/gh`, which reads the public repositories with no token, at
+  60 requests an hour. A read that fails makes the run mixed, as on GitHub.
+
 ## Storage (DynamoDB)
 
 One table, `pk`/`sk`, TTL on `ttl`, on-demand. Key parts are length-prefixed

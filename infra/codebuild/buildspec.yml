@@ -1,0 +1,33 @@
+# The Eval's backup runner on AWS CodeBuild (infra/codebuild/eval-codebuild.sh):
+# a full Eval of a kiff/agents commit on main, when GitHub won't start
+# eval.yml. The project names this file; a build started with another
+# buildspec, source, environment or role doesn't count for kiff/tafs'
+# Upgrade gate, which compares the build's record with the project's.
+version: 0.2
+env:
+  shell: bash
+  # The Eval's secrets, copied from GitHub's into Secrets Manager under
+  # agents-eval/ (infra/codebuild/eval-codebuild.sh secrets). The build's
+  # role may read these nine and nothing else.
+  secrets-manager:
+    ANTHROPIC_API_KEY: agents-eval/ANTHROPIC_API_KEY
+    KIFF_AGENT_KEY: agents-eval/KIFF_AGENT_KEY
+    STRIPE_API_KEY: agents-eval/STRIPE_API_KEY
+    E2E_KIFF_SESSION: agents-eval/E2E_KIFF_SESSION
+    E2E_SETUP_KEY: agents-eval/E2E_SETUP_KEY
+    E2E_PHONE_KEY: agents-eval/E2E_PHONE_KEY
+    E2E_VENDOR: agents-eval/E2E_VENDOR
+    E2E_VENDOR_TOKEN: agents-eval/E2E_VENDOR_TOKEN
+    E2E_DESK_KEY: agents-eval/E2E_DESK_KEY
+phases:
+  install:
+    runtime-versions:
+      # go.mod's go line names the toolchain; Go fetches it (GOTOOLCHAIN=auto).
+      golang: 1.22
+      nodejs: 22
+    commands:
+      - chmod +x infra/codebuild/gh && export PATH="$PWD/infra/codebuild:$PATH"
+      - go version && node --version
+  build:
+    commands:
+      - infra/codebuild/run.sh
