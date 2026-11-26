@@ -2,7 +2,9 @@
 // (kiff/agents#91, kiff/tafs#50). A scripted owner asks the setup agent to
 // connect a vendor's refunds, answers each component it shows as the app
 // would, and ends with a Refunds taf whose refund inside its Card reaches
-// the vendor and whose refund outside it doesn't.
+// the vendor and whose refund outside it doesn't. With -taf, asked in a new
+// chat what it refunded today, the taf answers from a record of the day, not
+// from that chat alone (today.go).
 //
 // The setup agent and the taf run on this repository's runtime, in this
 // process. Everything they reach is real: the model, KIFF (api.kiff.dev and
@@ -2281,6 +2283,11 @@ func (t *test) useTaf(ctx context.Context, tafID, draftID string) error {
 		}
 	}
 	if t.stripe == nil {
+		// Asked in a new chat what it refunded today: its refunds so far were
+		// in other chats, so only a record of the day has them (TodayCents).
+		if err := t.refundedToday(ctx, tafID, *connected); err != nil {
+			return err
+		}
 		if err := t.followUp(ctx, tafID, *connected); err != nil {
 			return err
 		}
