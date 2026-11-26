@@ -285,6 +285,10 @@ settings turn it on:
   - **`e2e.yml`** follows the same variable, on main only, and takes the
     role's credentials once before its first turn: its job's limit is within
     the hour.
+  - **`eval-recipe.yml` and `e2e-recipe.yml`** (a recipe's case, by hand)
+    follow the same variable the same way: on main only, with the role's
+    credentials once before the case, since each job's limit (40 minutes) is
+    within the hour.
   - **By hand only, for now:** while the variable is `bedrock`, both
     workflows skip their scheduled runs (a skipped run is never a pass, so
     the Upgrade gate never takes one for the Eval's). They're dispatched from
