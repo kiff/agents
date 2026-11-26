@@ -10,15 +10,18 @@
 #     pushed branch of kiff/agents): Sonnet only, the judges' model, so a
 #     branch's run on Opus is refused. A branch's Eval goes there once the
 #     repository variable EVAL_BRANCH_MODEL_SOURCE is bedrock. Its spend has
-#     no daily cap of ours (the Eval is exempt), so it is granted only with
-#     an AWS budget on it in place (docs/runs.md).
+#     no daily cap of ours (the Eval is exempt), so the grant is refused
+#     unless the AWS budget BUDGET exists with an action on it (one that takes
+#     the grant back past its daily amount, docs/runs.md). Taking it back
+#     needs no budget.
 #
 #   infra/eval-bedrock.sh                 # grant main's role
 #   infra/eval-bedrock.sh down            # take it back
 #   infra/eval-bedrock.sh branches        # grant the branches' role
 #   infra/eval-bedrock.sh branches down   # take it back
 #
-# Config: AGENTS_REGION (eu-west-1).
+# Config: AGENTS_REGION (eu-west-1); AGENTS_EVAL_BRANCH_BUDGET, the branches'
+# budget's name (agents-eval-branches-bedrock).
 set -euo pipefail
 trap 'echo "eval-bedrock: failed at line $LINENO" >&2' ERR
 cd "$(dirname "$0")/.."
@@ -40,5 +43,19 @@ if [ "${1:-}" = down ]; then
   exit 0
 fi
 ACCOUNT=$(aws sts get-caller-identity --query Account)
+if [ "$ROLE" = agents-github-eval-branches ]; then
+  # Budgets is a global service, answered from us-east-1.
+  BUDGET=${AGENTS_EVAL_BRANCH_BUDGET:-agents-eval-branches-bedrock}
+  if ! command aws budgets describe-budget --region us-east-1 --account-id "$ACCOUNT" --budget-name "$BUDGET" >/dev/null 2>&1; then
+    echo "eval-bedrock: no budget $BUDGET: make it, with its action, before the branches' role may call Bedrock (docs/runs.md)" >&2
+    exit 1
+  fi
+  actions=$(command aws budgets describe-budget-actions-for-budget --region us-east-1 --account-id "$ACCOUNT" --budget-name "$BUDGET" \
+    --query 'length(Actions)' --output text 2>/dev/null || echo 0)
+  if ! [ "${actions:-0}" -gt 0 ] 2>/dev/null; then
+    echo "eval-bedrock: budget $BUDGET has no action: add the one that takes the grant back before the branches' role may call Bedrock" >&2
+    exit 1
+  fi
+fi
 aws iam put-role-policy --role-name "$ROLE" --policy-name bedrock-backup --policy-document "$(bedrock_policy "$REGION" "$ACCOUNT" ${MODELS[@]+"${MODELS[@]}"})"
 echo "eval-bedrock: $ROLE may call the eu. Claude profiles (${MODELS[*]:-Sonnet and Opus}); set $VARIABLE=bedrock to run there" >&2

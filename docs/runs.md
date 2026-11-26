@@ -288,9 +288,11 @@ settings turn it on:
     never from a pull request's or a fork's run). `infra/eval-bedrock.sh
     branches` lets that role call **Sonnet only**, the judges' model, so a
     branch's run on Opus is refused. The Eval has no daily cap of ours, so
-    the branches' role is granted only with an AWS budget on its Bedrock
-    spend, whose action takes the grant back past its daily amount. Until
-    the variable is set, a branch's run stays on the Claude API.
+    the script refuses that grant unless the AWS budget
+    `agents-eval-branches-bedrock` (`AGENTS_EVAL_BRANCH_BUDGET`) exists, on
+    that role's Bedrock spend, with an action that takes the grant back past
+    its daily amount. Until the variable is set, a branch's run stays on the
+    Claude API.
   - **`e2e.yml`** follows the same variables, and takes the role's
     credentials once before its first turn: its job's limit is within the
     hour.
