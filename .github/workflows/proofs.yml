@@ -114,7 +114,7 @@ jobs:
     # app in turn, so a proof never takes a waiting Eval's place in the group
     # (it holds one pending job).
     concurrency:
-      group: test-account
+      group: test-account-2
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,7 +168,7 @@ jobs:
       contents: read
       actions: read
     concurrency:
-      group: test-account
+      group: test-account-2
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -236,7 +236,7 @@ jobs:
     permissions:
       contents: read
     concurrency:
-      group: test-account
+      group: test-account-2
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

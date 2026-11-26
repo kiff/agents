@@ -20,7 +20,7 @@ permissions:
   contents: read
 # The test account's group: it never runs beside an Eval or E2E run.
 concurrency:
-  group: test-account
+  group: test-account-2
   cancel-in-progress: false
 jobs:
   disconnect:

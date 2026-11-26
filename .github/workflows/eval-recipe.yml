@@ -27,7 +27,7 @@ permissions:
   actions: read
 # The same group as E2E and the Eval: they share the test's account.
 concurrency:
-  group: test-account
+  group: test-account-2
   cancel-in-progress: false
 jobs:
   recipe:
