@@ -281,14 +281,22 @@ settings turn it on:
     `bedrock`. Main's Eval role may call the EU profiles once
     `infra/eval-bedrock.sh` has run (the same document, that role alone).
     Each suite's step takes fresh credentials first, since the role's sessions
-    last an hour. A branch's run stays on the Claude API.
-  - **`e2e.yml`** follows the same variable, on main only, and takes the
-    role's credentials once before its first turn: its job's limit is within
-    the hour.
+    last an hour.
+  - **A branch's run** goes to Bedrock once the repository variable
+    `EVAL_BRANCH_MODEL_SOURCE` is `bedrock`, with the branches' role
+    (`AWS_EVAL_BRANCH_ROLE`, trusted from any pushed branch of kiff/agents,
+    never from a pull request's or a fork's run). `infra/eval-bedrock.sh
+    branches` lets that role call **Sonnet only**, the judges' model, so a
+    branch's run on Opus is refused. The Eval has no daily cap of ours, so
+    the branches' role is granted only with an AWS budget on its Bedrock
+    spend, whose action takes the grant back past its daily amount. Until
+    the variable is set, a branch's run stays on the Claude API.
+  - **`e2e.yml`** follows the same variables, and takes the role's
+    credentials once before its first turn: its job's limit is within the
+    hour.
   - **`eval-recipe.yml` and `e2e-recipe.yml`** (a recipe's case, by hand)
-    follow the same variable the same way: on main only, with the role's
-    credentials once before the case, since each job's limit (40 minutes) is
-    within the hour.
+    follow them the same way, with the role's credentials once before the
+    case, since each job's limit (40 minutes) is within the hour.
   - **By hand only, for now:** while the variable is `bedrock`, both
     workflows skip their scheduled runs (a skipped run is never a pass, so
     the Upgrade gate never takes one for the Eval's). They're dispatched from
