@@ -56,8 +56,14 @@ type RecordedCall struct {
 	Count string
 }
 
-// recordCut bounds what a record line keeps of a call's input and outcome.
+// recordCut bounds what a record line keeps of a call's input.
 const recordCut = 300
+
+// outcomeCut bounds what a record line keeps of a call's outcome: what a
+// read found is what the agent's words are judged on, so a list's later
+// items stay in (an Eval, 26 Nov, Hand-offs: a list_disputes answer cut at
+// T-2002, and the agent's true report of T-2006's message judged unsupported).
+const outcomeCut = 3000
 
 // RecordedText is what a Recorded judge reads: the record, then the text.
 func RecordedText(calls []RecordedCall, text string) string {
@@ -112,7 +118,7 @@ func RecordLines(calls []RecordedCall) string {
 		if c.Earlier {
 			when = " (earlier)"
 		}
-		outcome := cut(c.Outcome)
+		outcome := cutAt(c.Outcome, outcomeCut)
 		if cardRead(c.Tool) || kiffAnswer(c.Outcome) {
 			// The agent's own Card, as it read it: kept whole, so a limit the
 			// text takes from it is on the record the judge reads (Eval
