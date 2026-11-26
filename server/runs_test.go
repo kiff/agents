@@ -522,6 +522,20 @@ func TestGetRun(t *testing.T) {
 	if body["code"] != "ai_unavailable" || body["error"] != run.AIUnavailable {
 		t.Fatalf("got %v", body)
 	}
+	if _, ok := body["resets_at"]; ok {
+		t.Error("a refusal that isn't a daily limit says when a limit resets")
+	}
+	// A run stopped at the account's daily AI limit carries its code and when the limit resets: the next midnight UTC.
+	limited := run.New("t1", "payouts", "s-PAUSED", run.ByOwner, "x", now)
+	limited.Status, limited.Error, limited.Ended = run.Error, run.AILimitAccount, time.Date(2026, 11, 26, 17, 47, 48, 0, time.UTC)
+	if err := f.runs.Create(ctx, limited); err != nil {
+		t.Fatal(err)
+	}
+	code, body = f.do("t1", "GET", "/agents/payouts/runs/"+limited.ID+"?as=service", nil)
+	f.want(200, code, body, "get a run stopped at its daily limit")
+	if body["code"] != "ai_limit_account" || body["resets_at"] != "2026-11-27T00:00:00Z" {
+		t.Fatalf("got code %v, resets_at %v", body["code"], body["resets_at"])
+	}
 	code, body = f.do("t2", "GET", "/agents/payouts/runs/"+r.ID+"?as=service", nil)
 	f.want(404, code, body, "another tenant's run")
 	code, body = f.do("t1", "GET", "/agents/refunds/runs/"+r.ID+"?as=service", nil)

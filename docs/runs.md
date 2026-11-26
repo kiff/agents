@@ -279,10 +279,20 @@ settings turn it on:
     tenfold peak, so about 50 writes a second against DynamoDB's 1,000 per
     item. Past that, the day's total would be split over several items.
 
-  A run it refuses (or one on Bedrock with no cap set) ends as one refused
-  for our balance does,
-  `ai_unavailable` with `run.AIUnavailable`'s words: on our side, none of the
-  person's credits used, try again later. The function logs
+  A run it refuses ends with the limit that stopped it, each with its own code,
+  and none of the person's credits used:
+  - its account's share of the day spent: `ai_limit_account`
+    (`run.AILimitAccount`'s words);
+  - the whole day's cap spent: `ai_limit_service` (`run.AILimitService`'s);
+  - for both, the run's answer carries `resets_at`, the next midnight UTC after
+    it ended (`run.ResetsAt`), when the day's spend starts again. A client
+    says it in the person's own time; the stored words name it in UTC, for a
+    client that doesn't know the code;
+  - Bedrock with no cap set: as a refusal for our balance, `ai_unavailable`
+    with `run.AIUnavailable`'s words, on our side, try again later.
+
+  The provider was serving in the first two: only `ai_unavailable` says it
+  isn't. The function logs
   *"bedrock: today's spend passed 50% of its cap"* and *"… 80% of its cap"*,
   each once, from the turn that crosses it (reservations count), and *"bedrock: a turn was refused, today's
   cap is spent"* for each turn the cap refuses: a metric filter on each, with

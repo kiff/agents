@@ -56,10 +56,17 @@ const (
 	FailedRun   = "the run failed"
 	FailedTime  = "the run reached its time limit"
 	// FailedAIUnavailable: the AI provider refused a turn for our own
-	// account's balance (model.ErrProviderBalance), or Bedrock's day is spent
-	// or has no cap (model.ErrBackupCapped, model.ErrBackupOff): on our side
-	// either way, and none of the person's credits used.
+	// account's balance (model.ErrProviderBalance), or Bedrock has no cap
+	// (model.ErrBackupOff): on our side either way, and none of the person's
+	// credits used.
 	FailedAIUnavailable = run.AIUnavailable
+	// FailedAILimitAccount: the account's share of the day's AI spend is used
+	// (model.ErrBackupShareSpent). The provider was serving; it goes on after
+	// the day resets (run.ResetsAt).
+	FailedAILimitAccount = run.AILimitAccount
+	// FailedAILimitService: the whole day's AI spend is used
+	// (model.ErrBackupCapped), for every account, until the day resets.
+	FailedAILimitService = run.AILimitService
 	// FailedSwitching: the agent began switching versions before the run
 	// started (kiff/tafs#107).
 	FailedSwitching = "the agent is switching versions, so the run didn't start"
@@ -959,13 +966,13 @@ func (rn *Runner) fold(ctx context.Context, a agent.Agent, rec *session.Recordin
 }
 
 // Own reports whether a run's error is one this runner stored itself: when it
-// ended the run (FailedRun, FailedTime, FailedAIUnavailable, FailedTools,
-// FailedFirstTurn) or stopped it before its loop
+// ended the run (FailedRun, FailedTime, FailedAIUnavailable, the two
+// FailedAILimit reasons, FailedTools, FailedFirstTurn) or stopped it before its loop
 // (FailedBuild, FailedStart, FailedSwitching). Never one the sweep set for a
 // run nobody was left to end, whose stored turns may be behind what it did.
 func Own(err string) bool {
 	switch err {
-	case FailedRun, FailedTime, FailedAIUnavailable, FailedBuild, FailedStart, FailedSwitching, FailedTools, FailedFirstTurn:
+	case FailedRun, FailedTime, FailedAIUnavailable, FailedAILimitAccount, FailedAILimitService, FailedBuild, FailedStart, FailedSwitching, FailedTools, FailedFirstTurn:
 		return true
 	}
 	return false
@@ -980,7 +987,12 @@ func failed(err error, turns int) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return FailedTime
-	case errors.Is(err, model.ErrProviderBalance), errors.Is(err, model.ErrBackupCapped), errors.Is(err, model.ErrBackupOff):
+	// The account's share before the whole cap: a spent share is a capped error too.
+	case errors.Is(err, model.ErrBackupShareSpent):
+		return FailedAILimitAccount
+	case errors.Is(err, model.ErrBackupCapped):
+		return FailedAILimitService
+	case errors.Is(err, model.ErrProviderBalance), errors.Is(err, model.ErrBackupOff):
 		return FailedAIUnavailable
 	case turns > 0:
 		return FailedRun
