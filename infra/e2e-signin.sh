@@ -17,7 +17,14 @@
 # 2. `signin`, after that deploy, signs in with that key. It prints a link:
 #    open it signed in to the test's account (E2E_TENANT), and approve within
 #    10 minutes. A sign-in approved on any other account writes nothing and
-#    changes no secret. Then take the old key's fingerprint off the list.
+#    changes no secret.
+# 3. Then, in this order, never during an Eval or E2E:
+#    a. delete the old phone's device from the test's account (an admin, in
+#       KIFF), which ends its session;
+#    b. only then take the old key's fingerprint off KIFF_PROOF_TEST_KEYS, at
+#       a later KIFF change. Taken off while the old device is still on the
+#       account, it turns KIFF's use check against every test key there (this
+#       phone's, the people's, the proofs') at once.
 #
 # E2E_TENANT is the test's own account's id: an account no person uses, with
 # no alert target, so the test's holds and grants reach nobody.
@@ -62,4 +69,5 @@ sed -n 1p "$f" | tr -d '\n' | gh secret set E2E_KIFF_SESSION --repo kiff/agents
 sed -n 2p "$f" | tr -d '\n' | gh secret set E2E_SETUP_KEY --repo kiff/agents
 sed -n 3p "$f" | tr -d '\n' | gh secret set E2E_PHONE_KEY --repo kiff/agents
 rm -f "$f" "$keys/phone.key"
-echo "E2E_KIFF_SESSION, E2E_SETUP_KEY and E2E_PHONE_KEY are set. Take the old key's fingerprint off KIFF_PROOF_TEST_KEYS."
+echo "E2E_KIFF_SESSION, E2E_SETUP_KEY and E2E_PHONE_KEY are set."
+echo "Next, in this order and never during an Eval: delete the old phone's device from the test's account, then (only then) take its fingerprint off KIFF_PROOF_TEST_KEYS."
