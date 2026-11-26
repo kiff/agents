@@ -262,7 +262,7 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"and print its fingerprints for KIFF_PROOF_TEST_KEYS; then, once KIFF is deployed with them, -signin or -pilot-signin with -key")
 	pilotSignin := fs.String("pilot-signin", "", "once, on the machine that runs a robot test user, before its account is a proof test account: make a phone key, print its "+
 		"fingerprints for KIFF_PROOF_TEST_KEYS, sign it in to KIFF on that user's own -account (a person approves in a browser), make no agent, and write "+
-		"the session's token and the key to this file (0600)")
+		"the session's token and the key to this new file (0600; an existing one is never overwritten)")
 	person := fs.String("person", "", "-people-key and -people-signin: maria (an editor) or luis (a viewer)")
 	keyFile := fs.String("key", "", "-people-signin: the file -people-key wrote; -signin and -pilot-signin: the file -phone-key wrote (without it, a new key is made)")
 	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id; -pilot-signin: the test user's own account's id. A sign-in approved on another account writes nothing")
@@ -339,7 +339,8 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		}
 	}
 	if *pilotSignin != "" {
-		f, err := os.OpenFile(*pilotSignin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		// A new file only: a rerun never wipes a working session and key.
+		f, err := os.OpenFile(*pilotSignin, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
 		}
