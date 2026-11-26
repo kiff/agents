@@ -10,6 +10,11 @@
 #                               # read from the terminal, never echoed
 #   eval-codebuild.sh setup     # the build's role, its log group, the project,
 #                               # and the gate's read-only role
+#   eval-codebuild.sh gate-env  # kiff/tafs' environment eval-gate: deployable
+#                               # from main alone, holding the gate role's ARN
+#                               # as AWS_EVAL_GATE_ROLE; then read back
+#   eval-codebuild.sh check     # reads back the project, both roles and
+#                               # eval-gate, and says what differs
 #   eval-codebuild.sh start SHA # one full Eval of SHA, a kiff/agents commit
 #                               # on main; refuses while the test account is
 #                               # in use on GitHub
@@ -43,6 +48,11 @@ secrets() {
     read -rsp "$s (empty: keep the stored one): " v
     echo >&2
     [ -n "$v" ] || continue
+    # The Eval's Stripe is its test account: a live key here would let a
+    # suite move real money.
+    if [ "$s" = STRIPE_API_KEY ]; then
+      case "$v" in sk_test_*|rk_test_*) ;; *) say "STRIPE_API_KEY must be a test key (sk_test_ or rk_test_): not stored"; continue ;; esac
+    fi
     if aws secretsmanager describe-secret --secret-id "agents-eval/$s" >/dev/null 2>&1; then
       aws secretsmanager put-secret-value --secret-id "agents-eval/$s" --secret-string "$v" >/dev/null
     else
@@ -107,7 +117,7 @@ JSON
   aws iam put-role-policy --role-name "$GATE_ROLE" --policy-name eval-codebuild-gate \
     --policy-document "$(gate_policy "$REGION" "$account" "$PROJECT")"
   say "project $PROJECT ready; no webhook, no schedule: it runs only from 'start'"
-  say "gate role: set it as kiff/tafs' eval-gate environment secret AWS_EVAL_GATE_ROLE: aws iam get-role --role-name $GATE_ROLE --query Role.Arn --output text"
+  say "next: $0 gate-env (kiff/tafs' eval-gate environment), then $0 check"
 }
 
 start() {
@@ -135,6 +145,51 @@ start() {
   echo "$id"
 }
 
+gate_env() {
+  local arn
+  arn=$(aws iam get-role --role-name "$GATE_ROLE" --query Role.Arn)
+  gh api -X PUT repos/kiff/tafs/environments/eval-gate --input - >/dev/null <<JSON
+{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}
+JSON
+  local have
+  have=$(gh api repos/kiff/tafs/environments/eval-gate/deployment-branch-policies --jq '[.branch_policies[].name] | join(" ")')
+  [ -n "$have" ] || gh api -X POST repos/kiff/tafs/environments/eval-gate/deployment-branch-policies -f name=main -f type=branch >/dev/null
+  printf '%s' "$arn" | gh secret set AWS_EVAL_GATE_ROLE --env eval-gate -R kiff/tafs
+  say "kiff/tafs' eval-gate: main only, AWS_EVAL_GATE_ROLE set"
+  check_env
+}
+
+check_env() { # eval-gate deploys from main alone and holds the gate role's secret
+  local policy branches secrets ok=0
+  policy=$(gh api repos/kiff/tafs/environments/eval-gate --jq '.deployment_branch_policy | "\(.protected_branches) \(.custom_branch_policies)"')
+  branches=$(gh api repos/kiff/tafs/environments/eval-gate/deployment-branch-policies --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | join(" ")')
+  secrets=$(gh api repos/kiff/tafs/environments/eval-gate/secrets --jq '[.secrets[].name] | join(" ")')
+  [ "$policy" = "false true" ] || { say "eval-gate: its branch policy is \"$policy\", not custom branches"; ok=1; }
+  [ "$branches" = "branch:main" ] || { say "eval-gate: deploys from \"$branches\", not main alone"; ok=1; }
+  [ "$secrets" = AWS_EVAL_GATE_ROLE ] || { say "eval-gate: holds \"$secrets\", not AWS_EVAL_GATE_ROLE alone"; ok=1; }
+  [ "$ok" = 0 ] && say "eval-gate: main only, AWS_EVAL_GATE_ROLE alone"
+  return "$ok"
+}
+
+check() { # the project, both roles and eval-gate are as setup leaves them
+  local account ok=0 got
+  account=$(aws sts get-caller-identity --query Account)
+  got=$(aws codebuild batch-get-projects --names "$PROJECT" --output json --query 'projects[0].{s:source.buildspec,l:source.location,r:serviceRole,t:timeoutInMinutes,w:webhook.url}')
+  [ "$(jq -r .s <<<"$got")" = infra/codebuild/buildspec.yml ] && [ "$(jq -r .l <<<"$got")" = https://github.com/kiff/agents.git ] &&
+    [ "$(jq -r .r <<<"$got")" = "arn:aws:iam::$account:role/$BUILD_ROLE" ] && [ "$(jq -r .t <<<"$got")" = 285 ] && [ "$(jq -r .w <<<"$got")" = null ] ||
+    { say "project $PROJECT differs from setup's: $got"; ok=1; }
+  [ "$(aws iam get-role --role-name "$BUILD_ROLE" --output json --query Role.AssumeRolePolicyDocument | jq -cS .)" = "$(codebuild_trust "$REGION" "$account" "$PROJECT" | jq -cS .)" ] ||
+    { say "$BUILD_ROLE's trust differs from setup's"; ok=1; }
+  [ "$(aws iam get-role --role-name "$GATE_ROLE" --output json --query Role.AssumeRolePolicyDocument | jq -cS .)" = "$(gate_trust "$account" | jq -cS .)" ] ||
+    { say "$GATE_ROLE's trust differs from setup's"; ok=1; }
+  [ "$(aws iam list-role-policies --role-name "$GATE_ROLE" --query 'PolicyNames' )" = eval-codebuild-gate ] &&
+    [ -z "$(aws iam list-attached-role-policies --role-name "$GATE_ROLE" --query 'AttachedPolicies[].PolicyName')" ] ||
+    { say "$GATE_ROLE has other policies than its own"; ok=1; }
+  check_env || ok=1
+  [ "$ok" = 0 ] && say "checked: as setup leaves them"
+  return "$ok"
+}
+
 down() {
   aws codebuild delete-project --name "$PROJECT" 2>/dev/null || true
   for r in "$BUILD_ROLE" "$GATE_ROLE"; do
@@ -149,7 +204,9 @@ down() {
 case "${1:-}" in
   secrets) secrets ;;
   setup) setup ;;
+  gate-env) gate_env ;;
+  check) check ;;
   start) shift; start "$@" ;;
   down) down ;;
-  *) echo "usage: $0 secrets | setup | start SHA | down" >&2; exit 2 ;;
+  *) echo "usage: $0 secrets | setup | gate-env | check | start SHA | down" >&2; exit 2 ;;
 esac

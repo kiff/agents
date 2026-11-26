@@ -957,9 +957,14 @@ When GitHub won't start `eval.yml` (dispatches queued with no job),
     `eval-gate` alone.
 - **Spend:** the same as `eval.yml`'s. The Eval is outside the daily cap, held
   by each suite's `-max-cost`. CodeBuild's own minutes are a few dollars a run.
-- **Setting it up** is an AWS change, so it needs the owner's yes: run
-  `eval-codebuild.sh secrets` (the nine values, typed, never echoed), then
-  `setup`. Run `setup` again when `EVAL_STRIPE_ACCOUNT` or `TAFS_YOUR_STEP`
+- **Setting it up** is an AWS change, so it needs the owner's yes:
+  1. `eval-codebuild.sh secrets`: the nine values, typed, never echoed.
+     `STRIPE_API_KEY` must be a test key (`sk_test_` or `rk_test_`).
+  2. `setup`.
+  3. `gate-env`: kiff/tafs' environment `eval-gate`, deployable from main
+     alone, holding the gate role's ARN as `AWS_EVAL_GATE_ROLE`.
+  4. `check`: reads back the project, both roles' trust, the gate role's
+     policies and `eval-gate`, and says what differs. Run `setup` again when `EVAL_STRIPE_ACCOUNT` or `TAFS_YOUR_STEP`
   changes, since the project holds their values.
 - **GitHub's API without a token:** `eval-deployed.sh`'s reads go through
   `infra/codebuild/gh`, which reads the public repositories with no token, at
