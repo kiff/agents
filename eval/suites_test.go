@@ -60,6 +60,55 @@ func TestAChangeRunsTheSuitesItsPathsTouch(t *testing.T) {
 	}
 }
 
+// Every top-level path of kiff/tafs' main (26 Nov 2026) touches no suite, or is knowingly left to
+// touch them all: the Eval builds and reads only runtime/ (eval-definitions.sh), and the setups call
+// tafs cloud live, which runtime.yml deploys and infra/aws.sh configures. The apps, their words,
+// contracts and vectors, the recipes' pages (runtime/src/recipes.ts is what's built), CI and the root
+// files touch none. A top-level path not listed here touches every suite until it is mapped.
+func TestEveryTafsTopLevelPathIsMappedOrAll(t *testing.T) {
+	s, err := LoadSuites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	every := s.Names()
+	for path, want := range map[string][]string{
+		".github/workflows/android.yml":       nil,
+		".github/upgrade-override.sh":         nil,
+		".github/workflows/runtime.yml":       every,
+		".gitignore":                          nil,
+		"AGENTS.md":                           nil,
+		"CHANGELOG.md":                        nil,
+		"CODE_OF_CONDUCT.md":                  nil,
+		"CONTRIBUTING.md":                     nil,
+		"LICENSE.md":                          nil,
+		"README.md":                           nil,
+		"SECURITY.md":                         nil,
+		"android/app/build.gradle.kts":        nil,
+		"app/routes.json":                     nil,
+		"app/strings/en/error.json":           nil,
+		"changes/some-change.md":              nil,
+		"chrome/src/protocol.js":              nil,
+		"contracts/coach-wording.json":        nil,
+		"docs/coach.md":                       nil,
+		"infra/aws.sh":                        {All},
+		"ios/Tafs/App.swift":                  nil,
+		"recipes/acknowledge-every-ticket.md": nil,
+		"runtime/package.json":                {All},
+		"runtime/package-lock.json":           {All},
+		"runtime/tsconfig.json":               {All},
+		"runtime/scripts/recipes.mjs":         {All},
+		"runtime/src/jobs.ts":                 {All},
+		"runtime/test/jobs.test.ts":           nil,
+		"scripts/public_text.py":              nil,
+		"vectors/hold-allow.json":             nil,
+		"newfolder/file.txt":                  {All},
+	} {
+		if got := s.For("kiff/tafs", []string{path}); !slices.Equal(got, want) {
+			t.Errorf("kiff/tafs %s: %v, want %v", path, got, want)
+		}
+	}
+}
+
 // A run of some suites counts only when every other suite's newest earlier
 // measure passed and nothing since touched it: Eval 19's intros failure stays
 // red until connect is run again, and a change to a suite sends it back.
