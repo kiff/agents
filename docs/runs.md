@@ -176,8 +176,10 @@ settings turn it on:
   (`eu.anthropic.claude-sonnet-5-5`, `eu.anthropic.claude-opus-5-5`), signed with
   the function's own role. `infra/aws.sh` grants exactly that, with
   `AGENTS_BEDROCK=on` (the document is `infra/bedrock-policy.sh`'s). A rerun of
-  `infra/aws.sh` keeps the three settings as the function has them; one given
-  is set, and an empty one removes it.
+  `infra/aws.sh` keeps all six settings above as the function has them, the
+  share and the reviewers' slice included; one given is set, and an empty one
+  removes it. `infra`'s test checks that every setting the function reads is
+  kept, since one dropped by a rerun falls back to its default, a different limit.
 - **A run stays where it started.** Only a new run's first turn falls back, and
   only before anything of it streamed. A run under way that the Claude API
   refuses fails with its reason, as it would without a backup. That holds for a
