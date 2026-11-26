@@ -113,9 +113,28 @@ func (d *desk) remove(ag testaccount.Agent, name string) {
 
 // deskDisclosure is where the run's agent puts the line saying an AI agent
 // wrote it: each reply's body, as Coach names the desk's reply for a taf that
-// answers customers.
+// answers customers. Its line is tafs' own when no one is named
+// ("Written by an AI agent.", kiff/tafs jobs.ts); a definition that carries
+// its own takes that (withOwnLine).
 func deskDisclosure(prefix string) *agent.Disclosure {
-	return &agent.Disclosure{Line: "Written by an AI agent for the company.", In: []agent.DisclosureIn{{Tool: prefix + "_reply", Fields: []string{"body"}}}}
+	return &agent.Disclosure{Line: "Written by an AI agent.", In: []agent.DisclosureIn{{Tool: prefix + "_reply", Fields: []string{"body"}}}}
+}
+
+// withOwnLine is the desk's disclosure with the job definition's own line and
+// its other languages, when the definition has one: the line the taf's
+// instructions tell it to write is the one the runtime puts first, so the
+// runtime takes the model's copy out and the reply says it once. A desk line
+// that differs from the taf's (an Eval, 26 Nov: "Written by an AI agent for
+// the company." over the taf's "Written by an AI agent.") was said twice.
+func withOwnLine(desk, own *agent.Disclosure) *agent.Disclosure {
+	if desk == nil {
+		return nil
+	}
+	d := *desk
+	if own != nil && strings.TrimSpace(own.Line) != "" {
+		d.Line, d.Lines = own.Line, own.Lines
+	}
+	return &d
 }
 
 // runDesk runs one run of a desk case: the agent made, its key used for this
