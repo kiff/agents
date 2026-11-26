@@ -221,3 +221,45 @@ func peopleSignIn(ctx context.Context, apiBase, account, person string, key *ecd
 	_, err = fmt.Fprintf(out, "%s\n%s\n", base64.StdEncoding.EncodeToString(der), token)
 	return err
 }
+
+// pilotSignIn signs a robot test user's phone key in to KIFF, on that user's
+// own account, for the machine it runs on (a laptop's keychain, never a
+// shared runner). The account is a proof test account
+// (KIFF_PROOF_TEST_TENANTS), which takes no key that isn't on KIFF's test
+// keys once it's listed, so this runs before the account is listed: it makes
+// the key, prints only its two fingerprints for KIFF_PROOF_TEST_KEYS, signs
+// in with it (a person approves in a browser, by email code, so no other key
+// joins the account), and checks the sign-in landed on account. It makes no
+// agent: the test user builds its tafs through Coach, as a person does. It
+// writes the session's token and the phone key (base64 PKCS#8), two lines,
+// to out (0600), and prints neither. Approved on another account, it signs
+// that session out and writes nothing.
+func pilotSignIn(ctx context.Context, apiBase, account string, hc *http.Client, out io.Writer, say io.Writer) error {
+	if account == "" {
+		return errors.New("-account: the test user's own account's id")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	short, full, err := keyFingerprints(key)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(say, "the test user's new phone key: %s (SHA-256 of its SPKI: %s); list it in KIFF_PROOF_TEST_KEYS with the account\n", short, full)
+	token, tenant, err := deviceSignIn(ctx, apiBase, key, "test pilot", hc, say)
+	if err != nil {
+		return err
+	}
+	if tenant != account {
+		signOut(ctx, apiBase, token, hc, say)
+		return errors.New("the sign-in was approved on another account, not the test user's own: approve on that one")
+	}
+	fmt.Fprintln(say, "signed in to KIFF on the test user's account; the session is bound to its key")
+	_, err = fmt.Fprintf(out, "%s\n%s\n", token, base64.StdEncoding.EncodeToString(der))
+	return err
+}

@@ -87,3 +87,56 @@ func TestTheTestsSignInOnAnotherAccountWritesNothing(t *testing.T) {
 		t.Fatalf("no account: err %v, wrote %q", err, out.String())
 	}
 }
+
+// A robot test user's sign-in: the key's fingerprints are printed first (for
+// KIFF_PROOF_TEST_KEYS), the file gets only the session and the key, no
+// agent is drafted, and nothing secret reaches the screen.
+func TestThePilotSignsInWithAKeyItPrintsAndMakesNoAgent(t *testing.T) {
+	devicePoll = time.Millisecond
+	srv, drafts, signedOut := fakeSignInKIFF(t, "t-pilot")
+	var out, say bytes.Buffer
+	if err := pilotSignIn(context.Background(), srv.URL, "t-pilot", srv.Client(), &out, &say); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if len(lines) != 2 || lines[0] != "sess-e2e" {
+		t.Fatalf("wrote %q", out.String())
+	}
+	key, err := testaccount.ParsePhone(lines[1])
+	if err != nil {
+		t.Fatalf("the phone key doesn't parse: %v", err)
+	}
+	short, full, err := keyFingerprints(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(say.String(), short) || !strings.Contains(say.String(), full) {
+		t.Fatalf("the fingerprints of the key it wrote aren't printed: %q", say.String())
+	}
+	if *drafts != 0 || len(*signedOut) != 0 {
+		t.Fatalf("drafted %d agents, signed out %v", *drafts, *signedOut)
+	}
+	for _, secret := range lines {
+		if strings.Contains(say.String(), secret) {
+			t.Fatalf("printed a secret: %q", say.String())
+		}
+	}
+}
+
+// Approved on another account, or with none named, the pilot's sign-in
+// writes nothing and signs out the session KIFF gave.
+func TestThePilotsSignInOnAnotherAccountWritesNothing(t *testing.T) {
+	devicePoll = time.Millisecond
+	srv, drafts, signedOut := fakeSignInKIFF(t, "t-people")
+	var out, say bytes.Buffer
+	err := pilotSignIn(context.Background(), srv.URL, "t-pilot", srv.Client(), &out, &say)
+	if err == nil || !strings.Contains(err.Error(), "another account") || out.Len() != 0 || *drafts != 0 {
+		t.Fatalf("err %v, wrote %q, drafts %d", err, out.String(), *drafts)
+	}
+	if want := []string{"Bearer sess-e2e"}; !slices.Equal(*signedOut, want) {
+		t.Fatalf("signed out %v, want %v", *signedOut, want)
+	}
+	if err := pilotSignIn(context.Background(), srv.URL, "", srv.Client(), &out, &say); err == nil || out.Len() != 0 {
+		t.Fatalf("no account: err %v, wrote %q", err, out.String())
+	}
+}

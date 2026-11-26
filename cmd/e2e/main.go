@@ -258,9 +258,12 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		"and print its fingerprints, for KIFF's test keys; nothing else")
 	peopleSignin := fs.String("people-signin", "", "once per person, after -people-key's fingerprint is on KIFF's test keys: sign -person in to KIFF "+
 		"with -key (they approve in a browser, on the shared account), make no agent, and write the phone key and the session's token to this file (0600)")
+	pilotSignin := fs.String("pilot-signin", "", "once, on the machine that runs a robot test user, before its account is a proof test account: make a phone key, print its "+
+		"fingerprints for KIFF_PROOF_TEST_KEYS, sign it in to KIFF on that user's own -account (a person approves in a browser), make no agent, and write "+
+		"the session's token and the key to this file (0600)")
 	person := fs.String("person", "", "-people-key and -people-signin: maria (an editor) or luis (a viewer)")
 	keyFile := fs.String("key", "", "-people-signin: the file -people-key wrote")
-	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id. A sign-in approved on another account writes nothing")
+	account := fs.String("account", "", "-signin: the test's own account's id; -people-signin: the shared account's id; -pilot-signin: the test user's own account's id. A sign-in approved on another account writes nothing")
 	proofName := fs.String("proof", "", "only this: the proof of one app (proof.go), "+
 		"model-free, on the test account, posted to KIFF from a GitHub run: "+strings.Join(proofAppNames(), ", ")+
 		". Needs PROOF_TENANT, PROOF_PHONE_KEY, PROOF_KIFF_SESSION, E2E_SETUP_KEY and the app's sandbox key, from the kiff-test environment")
@@ -312,6 +315,14 @@ func run(ctx context.Context, args []string, stdout *redacting, env func(string)
 		}
 		defer f.Close()
 		return peopleKey(*person, f, stdout)
+	}
+	if *pilotSignin != "" {
+		f, err := os.OpenFile(*pilotSignin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return pilotSignIn(ctx, kiff.APIURL, *account, &http.Client{Timeout: 30 * time.Second}, f, stdout)
 	}
 	if *peopleSignin != "" {
 		b, err := os.ReadFile(*keyFile)
