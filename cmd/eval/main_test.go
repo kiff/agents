@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/eval/cases"
 	"github.com/kiff/agents/model"
@@ -1137,6 +1138,40 @@ func TestADeskRunDisclosesInItsReplies(t *testing.T) {
 	}
 	if len(d.In) != 1 || d.In[0].Tool != "t1a2b3c4d_reply" || d.In[0].Fields[0] != "body" {
 		t.Fatalf("%+v", d)
+	}
+}
+
+// A desk run says the AI line once: the runtime puts the taf's own line first
+// and takes the model's copy out, which it can only do when it's the same line.
+// An Eval, 26 Nov: the desk's "Written by an AI agent for the company." went
+// over the taf's "Written by an AI agent.", and each reply said it twice.
+func TestADeskRunSaysTheTafsOwnLineOnce(t *testing.T) {
+	desk := deskDisclosure("t1a2b3c4d")
+	if desk.Line != "Written by an AI agent." {
+		t.Fatalf("the desk's own line is %q, not tafs' line for no one named", desk.Line)
+	}
+	own := &agent.Disclosure{Line: "Written by an AI agent on behalf of Shop.", Lines: map[string]string{"fr": "Rédigé par un agent d'IA au nom de Shop."},
+		In: []agent.DisclosureIn{{Tool: "reply", Fields: []string{"text"}}}}
+	d := withOwnLine(desk, own)
+	if d.Line != own.Line || d.Lines["fr"] != own.Lines["fr"] || len(d.In) != 1 || d.In[0].Tool != "t1a2b3c4d_reply" || d.In[0].Fields[0] != "body" {
+		t.Fatalf("with the definition's line: %+v", d)
+	}
+	if err := d.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if got := withOwnLine(desk, nil); got.Line != desk.Line || got == desk {
+		t.Fatalf("without one: %+v (a copy of the desk's)", got)
+	}
+	// What the model wrote, the taf's own line, then the runtime's: said once.
+	in := json.RawMessage(`{"body":"Written by an AI agent on behalf of Shop.\n\nHello, we got your message."}`)
+	out := string(d.First("t1a2b3c4d_reply", in))
+	if strings.Count(out, "Written by an AI agent") != 1 || !strings.Contains(out, "Hello, we got your message.") {
+		t.Fatalf("the reply: %s", out)
+	}
+	// The line before the fix: two lines, as the Eval's replies had.
+	old := &agent.Disclosure{Line: "Written by an AI agent for the company.", In: desk.In}
+	if twice := string(old.First("t1a2b3c4d_reply", json.RawMessage(`{"body":"Written by an AI agent.\n\nHello."}`))); strings.Count(twice, "Written by an AI agent") != 2 {
+		t.Fatalf("the old desk line over the taf's: %s", twice)
 	}
 }
 

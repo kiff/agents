@@ -334,6 +334,7 @@ func (rt *runtime) note(ctx context.Context, name string) error {
 // calls and results.
 func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 	d := rt.base
+	var own *agent.Disclosure // the definition's own line, for a desk run (withOwnLine)
 	if rt.defs != "" {
 		b, err := os.ReadFile(filepath.Join(rt.defs, definitionOf(s)+".json"))
 		if err != nil {
@@ -353,6 +354,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 		d.Skills = t.Skills                         // read from -skills: a skill it names that isn't there fails the build
 		d.DeferredTools, d.DeferVendorTools = t.DeferredTools, t.DeferVendorTools
 		d.Files = t.Files // deliver_file, as the taf runs live
+		own = t.Disclose
 	} else {
 		job, err := os.ReadFile(filepath.Join(rt.jobs, s.Job+".md"))
 		if err != nil {
@@ -366,7 +368,7 @@ func (rt *runtime) definition(s cases.Scenario) (registry.Definition, error) {
 	d.ID = s.Name
 	d.Keep = eval.Policy(evalKeep)
 	if s.Desk && rt.disclose != nil {
-		d.Disclose = rt.disclose
+		d.Disclose = withOwnLine(rt.disclose, own)
 	}
 	return d, nil
 }
