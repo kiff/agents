@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/server"
 )
@@ -23,9 +24,9 @@ func TestNoRunStartsWhileTheTafsWaitForCredits(t *testing.T) {
 		why string
 		err error
 	}{false, "limit_reached", nil}
-	f.r.Allowance = func(_ context.Context, tenant, agent string) (bool, string, error) {
+	f.r.Allowance = func(_ context.Context, tenant, agent string) (bool, string, model.Plan, error) {
 		asked = append(asked, tenant+"/"+agent)
-		return answer.ok, answer.why, answer.err
+		return answer.ok, answer.why, model.Plan{}, answer.err
 	}
 	for _, s := range []server.Start{
 		{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "go"},
@@ -61,5 +62,36 @@ func TestNoRunStartsWhileTheTafsWaitForCredits(t *testing.T) {
 	answer.ok, answer.why, answer.err = true, "", nil
 	if r, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "go"}); err != nil || r.Status != run.Pending {
 		t.Fatalf("allowed: %+v %v", r, err)
+	}
+}
+
+// The plan KIFF says with its allowance is the run's: kept on the run at its
+// start, and on each of its turns, for its share of Bedrock's day. A run
+// executed later is sized by the plan said when it started, not by today's.
+func TestARunKeepsThePlanKIFFSaidAtItsStart(t *testing.T) {
+	f := newFixture(t, say("Done."))
+	said := model.Plan{Kind: model.PlanSolo, PeriodMicroUSD: 80_000_000}
+	f.r.Allowance = func(context.Context, string, string) (bool, string, model.Plan, error) {
+		return true, "", said, nil
+	}
+	r, err := f.r.Start(ctx, server.Start{Tenant: "t1", Agent: "rae", Trigger: run.ByOwner, Input: "go"})
+	if err != nil || r.Plan != said {
+		t.Fatalf("started: %+v %v", r.Plan, err)
+	}
+	if stored, err := f.runs.Get(ctx, "t1", r.ID); err != nil || stored.Plan != said {
+		t.Fatalf("stored: %+v %v", stored.Plan, err)
+	}
+	said = model.Plan{Kind: model.PlanNone} // what KIFF would say now
+	if got, err := f.r.Execute(ctx, "t1", r.ID, nil); err != nil || got.Status != run.Completed {
+		t.Fatalf("executed: %+v %v", got, err)
+	}
+	reqs := f.model.requests()
+	if len(reqs) == 0 {
+		t.Fatal("no turn")
+	}
+	for _, req := range reqs {
+		if req.Plan != (model.Plan{Kind: model.PlanSolo, PeriodMicroUSD: 80_000_000}) || req.Tenant != "t1" {
+			t.Fatalf("a turn's plan: %+v (%s)", req.Plan, req.Tenant)
+		}
 	}
 }

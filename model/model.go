@@ -169,6 +169,10 @@ type Request struct {
 	// Tenant is the account the turn is for, for each account's share of the
 	// backup's day (Sourced's DailyCap); empty for a turn for no account.
 	Tenant string `json:"-"`
+	// Plan is the account's plan as KIFF said it when the run started, for
+	// the size of its share of the backup's day (DailyCap.Share); the zero
+	// Plan is the flat share.
+	Plan Plan `json:"-"`
 	// Price is what the definition says the model costs, for a model that
 	// counts its own spend (Sourced's daily cap on the backup).
 	Price Price `json:"-"`

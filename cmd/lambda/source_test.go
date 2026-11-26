@@ -48,6 +48,11 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_ACCOUNT_DAILY_USD": "61"},
 		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "60"},
 		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "0"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TRIAL_DAILY_USD": "three"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TRIAL_DAILY_USD": "61"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_UNBOUNDED_DAILY_USD": "0"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "12",
+			"AGENTS_BEDROCK_UNBOUNDED_DAILY_USD": "49"},
 	} {
 		if _, err := sourceConfigFrom(env(bad)); err == nil {
 			t.Errorf("accepted %v", bad)
@@ -76,6 +81,31 @@ func TestTheSharesOfTheBackupsDay(t *testing.T) {
 	s := sourced(&keyedModel{}, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil).(*model.Sourced)
 	if c := s.Cap; c.MicroUSD != 60_000_000 || c.AccountMicroUSD != 4_500_000 || c.ReservedMicroUSD != 9_000_000 || !c.Reserved["t-review"] {
 		t.Fatalf("the cap %+v", c)
+	}
+}
+
+// The trial's share is $3 and an unbounded account's two fifths of the cap,
+// by default; set, they're taken as set. A cap too small for the trial's $3
+// takes its default down to what the others may take of the day.
+func TestTheTrialsAndAnUnboundedAccountsShares(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	sc, err := sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "500",
+		"AGENTS_BEDROCK_ACCOUNT_DAILY_USD": "50", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review"}))
+	if err != nil || sc.TrialMicro != 3_000_000 || sc.UnboundedMicro != 200_000_000 {
+		t.Fatalf("defaults %+v, %v", sc, err)
+	}
+	s := sourced(&keyedModel{}, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil).(*model.Sourced)
+	if c := s.Cap; c.TrialMicroUSD != 3_000_000 || c.MaxMicroUSD != 200_000_000 {
+		t.Fatalf("the cap %+v", c)
+	}
+	sc, err = sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "500",
+		"AGENTS_BEDROCK_TRIAL_DAILY_USD": "2.5", "AGENTS_BEDROCK_UNBOUNDED_DAILY_USD": "300"}))
+	if err != nil || sc.TrialMicro != 2_500_000 || sc.UnboundedMicro != 300_000_000 {
+		t.Fatalf("set %+v, %v", sc, err)
+	}
+	sc, err = sourceConfigFrom(env(map[string]string{"AGENTS_BEDROCK_FALLBACK": "on", "AGENTS_BEDROCK_DAILY_USD": "2.50"}))
+	if err != nil || sc.TrialMicro != 2_500_000 {
+		t.Fatalf("a small cap %+v, %v", sc, err)
 	}
 }
 
@@ -162,8 +192,9 @@ func (f *failingDay) Reserve(ctx context.Context, tenant, period string, micro, 
 	return f.Usage.Reserve(ctx, tenant, period, micro, limit, until)
 }
 
-// The day says when it passes 80% of its cap, once, by the turn that crossed
-// it, and says each turn the cap refuses: the lines an alarm tells the owner.
+// The day says when it passes 50% and 80% of its cap, each once, by the turn
+// that crossed it, and says each turn the cap refuses: the lines an alarm
+// tells the owner.
 func TestTheBackupsDaySaysWhenItNearsAndReachesItsCap(t *testing.T) {
 	var said []string
 	d := daySpend{use: memory.NewUsage(), log: func(msg string, _ error) { said = append(said, msg) }}
@@ -175,20 +206,31 @@ func TestTheBackupsDaySaysWhenItNearsAndReachesItsCap(t *testing.T) {
 		}
 		return full == model.NotFull
 	}
-	reserve(700_000) // 70%: nothing
+	reserve(400_000) // 40%: nothing
 	if len(said) != 0 {
-		t.Fatalf("said %v below 80%%", said)
+		t.Fatalf("said %v below 50%%", said)
+	}
+	reserve(200_000) // 60%: half crossed
+	reserve(100_000) // 70%: already said
+	if len(said) != 1 || said[0] != CapHalf {
+		t.Fatalf("said %v", said)
 	}
 	reserve(150_000) // 85%: crossed
 	reserve(50_000)  // 90%: already said
-	if len(said) != 1 || said[0] != CapNear {
+	if len(said) != 2 || said[1] != CapNear {
 		t.Fatalf("said %v", said)
 	}
 	if reserve(200_000) { // past the cap: refused, and said
 		t.Fatal("a turn past the cap was taken")
 	}
-	if len(said) != 2 || said[1] != CapReached {
+	if len(said) != 3 || said[2] != CapReached {
 		t.Fatalf("said %v", said)
+	}
+	// One turn across both lines says both.
+	said = nil
+	d.Reserve(ctx, "2026-11-26", "t1", 900_000, 1_000_000, 0)
+	if len(said) != 2 || said[0] != CapHalf || said[1] != CapNear {
+		t.Fatalf("one turn across both: said %v", said)
 	}
 }
 

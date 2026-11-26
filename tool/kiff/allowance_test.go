@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kiff/agents/model"
 	"github.com/kiff/agents/tool/kiff"
 )
 
@@ -67,7 +68,7 @@ func TestTheAllowanceAnswer(t *testing.T) {
 		{500, `{"error": "credits unavailable"}`, false, true, ""},
 	} {
 		api.set(c.status, c.body)
-		allowed, why, err := kiff.Allowance(context.Background(), srv.Client(), srv.URL, testKey)
+		allowed, why, _, err := kiff.Allowance(context.Background(), srv.Client(), srv.URL, testKey)
 		if allowed != c.allowed || why != c.why || (err != nil) != c.fail {
 			t.Errorf("%d %s: %v %q %v", c.status, c.body, allowed, why, err)
 		}
@@ -92,40 +93,83 @@ func TestTheAllowanceChecker(t *testing.T) {
 
 	api.set(200, `{"allowed": false, "why": "credits_used_up"}`)
 	for range 2 {
-		if ok, why, err := check(ctx, "t1", "rae"); ok || why != "credits_used_up" || err != nil {
+		if ok, why, _, err := check(ctx, "t1", "rae"); ok || why != "credits_used_up" || err != nil {
 			t.Fatalf("refused: %v %q %v", ok, why, err)
 		}
 	}
 	// A pack, then: the next run starts at once.
 	api.set(200, `{"allowed": true}`)
-	if ok, _, err := check(ctx, "t1", "rae"); !ok || err != nil || api.asked != 3 {
+	if ok, _, _, err := check(ctx, "t1", "rae"); !ok || err != nil || api.asked != 3 {
 		t.Fatalf("allowed after the refusals: %v %v, asked %d", ok, err, api.asked)
 	}
 	// Kept a minute: KIFF isn't asked again, even if it would refuse now.
 	api.set(200, `{"allowed": false, "why": "credits_used_up"}`)
 	now = now.Add(59 * time.Second)
-	if ok, _, _ := check(ctx, "t1", "rae"); !ok || api.asked != 3 {
+	if ok, _, _, _ := check(ctx, "t1", "rae"); !ok || api.asked != 3 {
 		t.Fatalf("within the minute: %v, asked %d", ok, api.asked)
 	}
 	now = now.Add(time.Second)
-	if ok, why, _ := check(ctx, "t1", "rae"); ok || why != "credits_used_up" || api.asked != 4 {
+	if ok, why, _, _ := check(ctx, "t1", "rae"); ok || why != "credits_used_up" || api.asked != 4 {
 		t.Fatalf("after the minute: %v %q, asked %d", ok, why, api.asked)
 	}
 	// An agent this account doesn't have, or a key it can't read, is an
 	// error: the start fails, and KIFF isn't asked.
-	if _, _, err := check(ctx, "t2", "rae"); err == nil || api.asked != 4 {
+	if _, _, _, err := check(ctx, "t2", "rae"); err == nil || api.asked != 4 {
 		t.Fatalf("another tenant's agent: %v, asked %d", err, api.asked)
 	}
 	// KIFF not answering is an error, never kept.
 	api.set(502, `bad gateway`)
-	if ok, _, err := check(ctx, "t1", "rae"); ok || err == nil {
+	if ok, _, _, err := check(ctx, "t1", "rae"); ok || err == nil {
 		t.Fatalf("KIFF down: %v %v", ok, err)
 	}
 	// A 404 is a KIFF fault like any other: the start fails, and nothing is kept.
 	api.set(404, `not found`)
 	for range 2 {
-		if ok, _, err := check(ctx, "t1", "rae"); ok || err == nil {
+		if ok, _, _, err := check(ctx, "t1", "rae"); ok || err == nil {
 			t.Fatalf("a 404: %v %v", ok, err)
 		}
+	}
+}
+
+// KIFF's "ai" says the account's plan, for its share of Bedrock's day: read
+// for the kinds KIFF names, a paying plan only with its period's balance. A
+// plan said otherwise, or not at all, is the zero Plan (the flat share),
+// never an error: the answer's allowed and why decide the start.
+func TestTheAllowanceSaysThePlan(t *testing.T) {
+	api := &allowanceAPI{}
+	srv := api.server(t)
+	for _, c := range []struct {
+		body string
+		want model.Plan
+	}{
+		{`{"allowed": true}`, model.Plan{}},
+		{`{"allowed": true, "ai": {"kind": "solo", "period_micro_usd": 80000000}}`, model.Plan{Kind: "solo", PeriodMicroUSD: 80_000_000}},
+		{`{"allowed": true, "ai": {"kind": "company", "period_micro_usd": 160000000}}`, model.Plan{Kind: "company", PeriodMicroUSD: 160_000_000}},
+		{`{"allowed": true, "ai": {"kind": "none", "period_micro_usd": null}}`, model.Plan{Kind: "none"}},
+		{`{"allowed": true, "ai": {"kind": "unbounded", "period_micro_usd": null}}`, model.Plan{Kind: "unbounded"}},
+		{`{"allowed": true, "ai": {"kind": "solo", "period_micro_usd": null}}`, model.Plan{}},
+		{`{"allowed": true, "ai": {"kind": "solo", "period_micro_usd": -5}}`, model.Plan{}},
+		{`{"allowed": true, "ai": {"kind": "gold", "period_micro_usd": 900000000}}`, model.Plan{}},
+		{`{"allowed": false, "why": "no_plan", "ai": {"kind": "none"}}`, model.Plan{Kind: "none"}},
+	} {
+		api.set(200, c.body)
+		_, _, plan, err := kiff.Allowance(context.Background(), srv.Client(), srv.URL, testKey)
+		if err != nil || plan != c.want {
+			t.Errorf("%s: %+v %v, want %+v", c.body, plan, err, c.want)
+		}
+	}
+	// The checker keeps the plan with an allowed answer: within the minute,
+	// a run is sized by the plan KIFF said then.
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	check := kiff.AllowanceChecker(oneAgent{}, keys{}, srv.Client(), srv.URL, func() time.Time { return now })
+	api.set(200, `{"allowed": true, "ai": {"kind": "solo", "period_micro_usd": 80000000}}`)
+	asked := api.asked
+	for range 2 {
+		if ok, _, plan, err := check(context.Background(), "t1", "rae"); !ok || err != nil || plan.PeriodMicroUSD != 80_000_000 {
+			t.Fatalf("checked: %v %+v %v", ok, plan, err)
+		}
+	}
+	if api.asked != asked+1 {
+		t.Fatalf("asked %d times, want once", api.asked-asked)
 	}
 }

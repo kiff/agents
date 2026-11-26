@@ -280,6 +280,11 @@ type Run struct {
 	// A run stays where it started.
 	ModelSource string `json:"model_source,omitempty"`
 	ModelRegion string `json:"model_region,omitempty"`
+	// Plan is the account's plan as KIFF said it when the run started (its
+	// allowance), kept so that every turn's share of Bedrock's day, a resumed
+	// run's included, is sized by the same plan (model.DailyCap.Share). Zero:
+	// KIFF didn't say, the flat share.
+	Plan model.Plan `json:"plan,omitzero"`
 
 	// Requirements are what a PAUSED run waits for: one per call KIFF holds.
 	Requirements []Requirement `json:"requirements,omitempty"`
