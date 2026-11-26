@@ -26,6 +26,11 @@
 #       account, it turns KIFF's use check against every test key there (this
 #       phone's, the people's, the proofs') at once.
 #
+# A new phone key isn't enrolled with planque: the test's first run would
+# mint planque's connector key (POST /v1/keys) from the phone's session, which
+# KIFF refuses to a test key (test_key_route). So after signing in, enrol the
+# new phone once with a connector key a person mints, before the first run.
+#
 # E2E_TENANT is the test's own account's id: an account no person uses, with
 # no alert target, so the test's holds and grants reach nobody.
 #
