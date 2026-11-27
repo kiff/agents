@@ -410,3 +410,105 @@ func (b *blocking) Turn(context.Context, Request, func(string)) (Reply, error) {
 	<-b.start
 	return Reply{Usage: Usage{InputTokens: 1_000_000}, PriceFactor: 1.1}, nil
 }
+
+// An account's share follows its plan as KIFF said it: the trial's small
+// one, a paying plan's balance with room to spare and never below the flat
+// share, an unbounded account's ceiling, and the flat share when KIFF said
+// nothing it knows. None passes what every account but the reviewers' may
+// take of the day, and a reviewer has none.
+func TestAnAccountsShareFollowsItsPlan(t *testing.T) {
+	c := &DailyCap{MicroUSD: 500_000_000, AccountMicroUSD: 50_000_000, TrialMicroUSD: 3_000_000, MaxMicroUSD: 200_000_000,
+		ReservedMicroUSD: 100_000_000, Reserved: map[string]bool{"t-review": true}}
+	for _, x := range []struct {
+		tenant string
+		plan   Plan
+		want   int64
+	}{
+		{"t1", Plan{}, 50_000_000},
+		{"t1", Plan{Kind: PlanNone}, 3_000_000},
+		{"t1", Plan{Kind: PlanSolo, PeriodMicroUSD: 10_000_000}, 50_000_000},        // the floor
+		{"t1", Plan{Kind: PlanSolo, PeriodMicroUSD: 80_000_000}, 108_000_000},       // 80 + 8 + 20
+		{"t1", Plan{Kind: PlanCompany, PeriodMicroUSD: 160_000_000}, 196_000_000},   // a Team at its limit
+		{"t1", Plan{Kind: PlanCompany, PeriodMicroUSD: 1_000_000_000}, 400_000_000}, // the day less the slice
+		{"t1", Plan{Kind: PlanSolo}, 50_000_000},                                    // no balance said: flat
+		{"t1", Plan{Kind: PlanUnbounded}, 200_000_000},
+		{"t1", Plan{Kind: "gold", PeriodMicroUSD: 900_000_000}, 50_000_000}, // a kind not known: flat
+		{"t-review", Plan{Kind: PlanSolo, PeriodMicroUSD: 80_000_000}, 0},
+	} {
+		if got := c.Share(x.tenant, x.plan); got != x.want {
+			t.Errorf("%s %+v: share %d, want %d", x.tenant, x.plan, got, x.want)
+		}
+	}
+	c.MaxMicroUSD, c.TrialMicroUSD = 0, 0
+	if got := c.Share("t1", Plan{Kind: PlanUnbounded}); got != 50_000_000 {
+		t.Errorf("unbounded with no ceiling set: %d, want the flat share", got)
+	}
+	if got := c.Share("t1", Plan{Kind: PlanNone}); got != 50_000_000 {
+		t.Errorf("the trial with no share set: %d, want the flat share", got)
+	}
+	c.AccountMicroUSD = 0
+	if got := c.Share("t1", Plan{Kind: PlanSolo, PeriodMicroUSD: 80_000_000}); got != 0 {
+		t.Errorf("no shares at all: %d", got)
+	}
+}
+
+// A paying account with credits left isn't stopped by its share: a Solo
+// whose period can pay for $80 runs past the flat $50, and stops only past
+// its own share. The same day without a plan said stops at $50.
+func TestAPayingAccountWithCreditsLeftIsntStoppedByItsShare(t *testing.T) {
+	spend := days{"2026-11-07": 60_000_000, "t-solo|2026-11-07": 60_000_000}
+	s, _, _ := sourced(errCredits, spend, 500_000_000)
+	s.Cap.AccountMicroUSD = 50_000_000
+	req := Request{Tenant: "t-solo", Plan: Plan{Kind: PlanSolo, PeriodMicroUSD: 80_000_000}, Price: Price{Input: 1_000_000}, MaxTokens: 1}
+	if r, err := s.Turn(context.Background(), req, nil); err != nil || r.Source != SourceBedrock {
+		t.Fatalf("past $50 with credits left: %+v, %v", r, err)
+	}
+	spend["t-solo|2026-11-07"] = 108_000_000
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupShareSpent) {
+		t.Fatalf("past its own share: %v", err)
+	}
+	spend["t-solo|2026-11-07"] = 60_000_000
+	req.Plan = Plan{}
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupShareSpent) {
+		t.Fatalf("no plan said, past $50: %v", err)
+	}
+}
+
+// Twenty Coach-sized turns at once, when the account's balance is all but
+// used, all run: the share's room beyond the balance holds their worst cases,
+// for a plan between the floor and where a tenth would cover them alone.
+func TestTwentyTurnsAtOnceAtTheEndOfABalanceAllRun(t *testing.T) {
+	req := Request{Tenant: "t-team", Plan: Plan{Kind: PlanCompany, PeriodMicroUSD: 45_000_000},
+		Price: Price{Input: 3_000_000, Output: 15_000_000}, MaxTokens: 48_000}
+	worst := WorstCase(req, req.Price, 1.1, 0)
+	if worst < 790_000 {
+		t.Fatalf("a worst case of %d micro-USD is no Coach turn's", worst)
+	}
+	// The balance is used up to its last cent: what's spent today is what
+	// the period could pay for.
+	spend := &lockedDays{d: days{"2026-11-07": 45_000_000, "t-team|2026-11-07": 45_000_000}}
+	start := make(chan struct{})
+	b := &blocking{start: start}
+	s := &Sourced{Primary: refusing{}, Backup: b, Fallback: true, FallsBack: fallsBack,
+		Cap: &DailyCap{MicroUSD: 500_000_000, AccountMicroUSD: 50_000_000, Spend: spend, PriceFactor: 1.1},
+		Now: func() time.Time { return time.Date(2026, 11, 7, 13, 0, 0, 0, time.UTC) }}
+	const n = 20
+	errs := make(chan error, n)
+	for range n {
+		go func() { _, err := s.Turn(context.Background(), req, nil); errs <- err }()
+	}
+	for b.calls.Load() < n {
+		select {
+		case err := <-errs:
+			t.Fatalf("a turn refused with the balance's room left: %v", err)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(start)
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+}

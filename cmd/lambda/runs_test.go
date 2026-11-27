@@ -654,7 +654,9 @@ func TestAFiringWhileTheTafsWaitIsSkipped(t *testing.T) {
 	fi := schedule.Firing{Tenant: "t1", Schedule: "morning", Agent: "payouts", Input: "Reconcile payouts.",
 		Due: time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC)}
 	rn := f.runner.(*runner.Runner)
-	rn.Allowance = func(context.Context, string, string) (bool, string, error) { return false, "credits_used_up", nil }
+	rn.Allowance = func(context.Context, string, string) (bool, string, model.Plan, error) {
+		return false, "credits_used_up", model.Plan{}, nil
+	}
 	var credits *schedule.CreditsError
 	if err := f.fire(ctx, fi); !errors.As(err, &credits) || credits.Why != "credits_used_up" {
 		t.Fatalf("a firing while the tafs wait = %v; want a schedule.CreditsError", err)
@@ -662,7 +664,9 @@ func TestAFiringWhileTheTafsWaitIsSkipped(t *testing.T) {
 	if _, err := runs.Get(ctx, "t1", fi.Key()); !errors.Is(err, run.ErrNotFound) {
 		t.Fatalf("a refused firing stored a run: %v", err)
 	}
-	rn.Allowance = func(context.Context, string, string) (bool, string, error) { return false, "", errors.New("down") }
+	rn.Allowance = func(context.Context, string, string) (bool, string, model.Plan, error) {
+		return false, "", model.Plan{}, errors.New("down")
+	}
 	if err := f.fire(ctx, fi); err == nil || errors.As(err, &credits) {
 		t.Fatalf("KIFF down = %v; want an error the firing is tried again on", err)
 	}

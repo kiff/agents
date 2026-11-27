@@ -28,7 +28,16 @@ import (
 //	                          US dollars; without it, Bedrock refuses every turn
 //	AGENTS_BEDROCK_ACCOUNT_DAILY_USD
 //	                          each account's share of that day, in US dollars;
-//	                          without it, AccountShare of the cap
+//	                          without it, AccountShare of the cap. A paying
+//	                          account's share is never below it, and grows
+//	                          with its plan (model.DailyCap)
+//	AGENTS_BEDROCK_TRIAL_DAILY_USD
+//	                          an account with no plan's share, in US dollars;
+//	                          without it, TrialShareUSD
+//	AGENTS_BEDROCK_UNBOUNDED_DAILY_USD
+//	                          an unbounded account's share (an agreement, or
+//	                          internal), in US dollars; without it,
+//	                          UnboundedShare of the cap
 //	AGENTS_BEDROCK_RESERVED_TENANTS
 //	                          the accounts (tenant ids, comma-separated) the
 //	                          reserved slice is for: the store reviewers'.
@@ -41,12 +50,14 @@ import (
 // Bedrock is our own AWS account's, in the function's region, through the EU
 // inference profiles (model/bedrock), signed with the function's own role.
 type sourceConfig struct {
-	Source       string
-	Fallback     bool
-	CapMicro     int64
-	AccountMicro int64
-	ReservedTo   map[string]bool
-	ReserveMicro int64
+	Source         string
+	Fallback       bool
+	CapMicro       int64
+	AccountMicro   int64
+	TrialMicro     int64
+	UnboundedMicro int64
+	ReservedTo     map[string]bool
+	ReserveMicro   int64
 }
 
 // The defaults, in percent of the day's cap (docs/runs.md says why):
@@ -54,9 +65,17 @@ type sourceConfig struct {
 //     spend all of theirs to stop the rest.
 //   - ReservedShare: the reviewers' slice, when any are listed: two full
 //     shares.
+//   - UnboundedShare: an unbounded account's share ($200 of $500): nothing
+//     in KIFF bounds its runs, so this does.
+//
+// TrialShareUSD is an account with no plan's share, in US dollars: above
+// what KIFF lets its Coach spend ($0.54) and one Coach turn's worst case
+// (about $0.87), so KIFF's stop comes first.
 const (
-	AccountShare  = 10
-	ReservedShare = 20
+	AccountShare   = 10
+	ReservedShare  = 20
+	UnboundedShare = 40
+	TrialShareUSD  = 3
 )
 
 func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
@@ -87,6 +106,12 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 	if sc.AccountMicro, err = dollars(getenv, "AGENTS_BEDROCK_ACCOUNT_DAILY_USD", sc.CapMicro*AccountShare/100); err != nil {
 		return sc, err
 	}
+	if sc.TrialMicro, err = dollars(getenv, "AGENTS_BEDROCK_TRIAL_DAILY_USD", TrialShareUSD*1_000_000); err != nil {
+		return sc, err
+	}
+	if sc.UnboundedMicro, err = dollars(getenv, "AGENTS_BEDROCK_UNBOUNDED_DAILY_USD", sc.CapMicro*UnboundedShare/100); err != nil {
+		return sc, err
+	}
 	for _, t := range strings.Split(getenv("AGENTS_BEDROCK_RESERVED_TENANTS"), ",") {
 		if t = strings.TrimSpace(t); t != "" {
 			if sc.ReservedTo == nil {
@@ -102,6 +127,17 @@ func sourceConfigFrom(getenv func(string) string) (sourceConfig, error) {
 	}
 	if sc.CapMicro > 0 && (sc.AccountMicro > sc.CapMicro || sc.ReserveMicro >= sc.CapMicro) {
 		return sc, fmt.Errorf("lambda: an account's share and the reserved slice are parts of AGENTS_BEDROCK_DAILY_USD, below it")
+	}
+	// The shares are parts of what every account but the reviewers' may take
+	// of the day: one set past it would be no share at all, so it's refused.
+	// The trial's default is a fixed amount, so a small cap takes it down.
+	if room := sc.CapMicro - sc.ReserveMicro; sc.CapMicro > 0 {
+		if strings.TrimSpace(getenv("AGENTS_BEDROCK_TRIAL_DAILY_USD")) == "" {
+			sc.TrialMicro = min(sc.TrialMicro, room)
+		}
+		if sc.TrialMicro > room || sc.UnboundedMicro > room {
+			return sc, fmt.Errorf("lambda: the trial's and an unbounded account's shares are parts of AGENTS_BEDROCK_DAILY_USD less the reserved slice, within it")
+		}
 	}
 	return sc, nil
 }
@@ -128,7 +164,8 @@ func sourced(primary model.Model, sc sourceConfig, cfg aws.Config, use usage.Sto
 	}
 	s := &model.Sourced{Primary: primary, Backup: bedrock.New(cfg), Source: sc.Source, Fallback: sc.Fallback, FallsBack: anthropic.FallsBack, Log: log}
 	if sc.CapMicro > 0 && use != nil {
-		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, AccountMicroUSD: sc.AccountMicro, ReservedMicroUSD: sc.ReserveMicro, Reserved: sc.ReservedTo,
+		s.Cap = &model.DailyCap{MicroUSD: sc.CapMicro, AccountMicroUSD: sc.AccountMicro, TrialMicroUSD: sc.TrialMicro, MaxMicroUSD: sc.UnboundedMicro,
+			ReservedMicroUSD: sc.ReserveMicro, Reserved: sc.ReservedTo,
 			Spend: daySpend{use: use, log: log}, PriceFactor: bedrock.GeoFactor}
 	}
 	return s
@@ -167,15 +204,20 @@ func shareKey(tenant, day string) (string, string) {
 // an alarm to tell the owner (docs/runs.md): past the cap, every turn is
 // refused until 00:00 UTC.
 const (
-	// CapNear: the day's spend, reservations included, passed CapNearShare
-	// of the cap. Said once, by the turn that crossed it.
+	// CapHalf and CapNear: the day's spend, reservations included, passed
+	// CapHalfShare and CapNearShare of the cap. Each said once, by the turn
+	// that crossed it: a paying account may take much of the day, so the
+	// owner hears of it while there is time to raise the cap.
+	CapHalf = "bedrock: today's spend passed 50% of its cap"
 	CapNear = "bedrock: today's spend passed 80% of its cap"
 	// CapReached: a turn was refused for the cap. Said for each one.
 	CapReached = "bedrock: a turn was refused, today's cap is spent"
 	// ShareReached: a turn was refused for its account's share. Said for
 	// each one, with the account.
 	ShareReached = "bedrock: a turn was refused, its account's share of today's cap is spent"
-	// CapNearShare is CapNear's share of the cap, in percent.
+	// CapHalfShare and CapNearShare are CapHalf's and CapNear's shares of
+	// the cap, in percent.
+	CapHalfShare = 50
 	CapNearShare = 80
 )
 
@@ -236,9 +278,13 @@ func (d daySpend) Reserve(ctx context.Context, day, tenant string, microUSD, lim
 	// before it was below, what's spent with it isn't. A read that fails
 	// says nothing; the cap itself still holds.
 	if p, gerr := d.use.Get(ctx, backupTenant, day); gerr == nil {
-		near := limit * CapNearShare / 100
-		if p.Spent >= near && p.Spent-microUSD < near {
-			d.log(CapNear, fmt.Errorf("%s: %d of %d micro-USD, reservations included", day, p.Spent, limit))
+		for _, l := range []struct {
+			msg string
+			pct int64
+		}{{CapHalf, CapHalfShare}, {CapNear, CapNearShare}} {
+			if line := limit * l.pct / 100; p.Spent >= line && p.Spent-microUSD < line {
+				d.log(l.msg, fmt.Errorf("%s: %d of %d micro-USD, reservations included", day, p.Spent, limit))
+			}
 		}
 	}
 	return model.NotFull, nil

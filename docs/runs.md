@@ -155,7 +155,9 @@ settings turn it on:
 | `AGENTS_MODEL_SOURCE` | `anthropic` (the default) or `bedrock`: where new runs go |
 | `AGENTS_BEDROCK_FALLBACK` | `on`: a new run whose first turn the Claude API refuses for credits, or can't serve once its retries are spent, goes to Bedrock |
 | `AGENTS_BEDROCK_DAILY_USD` | the most Bedrock's turns may cost in a UTC day; **without it, Bedrock refuses every turn** |
-| `AGENTS_BEDROCK_ACCOUNT_DAILY_USD` | each account's share of that day; without it, a tenth of the cap |
+| `AGENTS_BEDROCK_ACCOUNT_DAILY_USD` | each account's share of that day; without it, a tenth of the cap. A paying plan's share is never below it and grows with what the plan can pay for |
+| `AGENTS_BEDROCK_TRIAL_DAILY_USD` | an account with no plan's share; without it, $3 (less with a cap too small for it) |
+| `AGENTS_BEDROCK_UNBOUNDED_DAILY_USD` | an unbounded account's share (an agreement, or internal); without it, two fifths of the cap |
 | `AGENTS_BEDROCK_RESERVED_TENANTS` | the accounts (tenant ids, comma-separated) the reserved slice is for: the store reviewers'. They have no share of their own. Set on purpose, empty by default, never taken from another list |
 | `AGENTS_BEDROCK_RESERVED_USD` | the slice of the cap only those accounts may spend; without it, a fifth of the cap once any are listed |
 
@@ -176,7 +178,7 @@ settings turn it on:
   (`eu.anthropic.claude-sonnet-5-5`, `eu.anthropic.claude-opus-5-5`), signed with
   the function's own role. `infra/aws.sh` grants exactly that, with
   `AGENTS_BEDROCK=on` (the document is `infra/bedrock-policy.sh`'s). A rerun of
-  `infra/aws.sh` keeps all six settings above as the function has them, the
+  `infra/aws.sh` keeps all eight settings above as the function has them, the
   share and the reviewers' slice included; one given is set, and an empty one
   removes it. `infra`'s test checks that every setting the function reads is
   kept, since one dropped by a rerun falls back to its default, a different limit.
@@ -231,13 +233,32 @@ settings turn it on:
 - **The day's cap** (`AGENTS_BEDROCK_DAILY_USD`) is shared by every account:
   past it, Bedrock refuses every turn until 00:00 UTC. So that no one account
   can spend it for everyone (a loop, a scripted account, a heavy test):
-  - **Each account has its own share of the day**
-    (`AGENTS_BEDROCK_ACCOUNT_DAILY_USD`). Past it, that account's turns are
-    refused and the others' still run. A person's credits stop a paid run
-    first, but a trial, Setup within its allowance and every failed run are
-    free, so the share is the only bound on those. It's a tenth of the cap by
-    default: well above what one person's day of work costs, and at least
-    ten accounts must spend all of theirs to stop the rest.
+  - **Each account has its own share of the day**, sized by its plan as KIFF
+    says it when a run starts (the allowance's `ai`: the plan's kind, and
+    `period_micro_usd`, the most its period's balance and Coach's fair use can
+    pay for). Past it, that account's turns are refused and the others' still
+    run. KIFF's balance stays what stops a run for credits; the share only
+    bounds a run away (a loop, a failed run, which is free), and never stops a
+    paying account that has credits left:
+    - **No plan (the trial):** $3 (`AGENTS_BEDROCK_TRIAL_DAILY_USD`). KIFF
+      stops its Coach at $0.54 first, with `no_plan`.
+    - **Solo and Team:** what the period can pay for, a tenth more and $20
+      (`model.ShareHeadroomMicroUSD`: twenty Coach turns' worst cases in
+      flight as the balance ends), and never below the flat share
+      (`AGENTS_BEDROCK_ACCOUNT_DAILY_USD`). There is no other ceiling: they
+      spend only what they paid for.
+    - **Unbounded** (an agreement, or internal): two fifths of the cap
+      (`AGENTS_BEDROCK_UNBOUNDED_DAILY_USD`), since nothing in KIFF bounds it.
+      An agreement that needs more says so, and the owner raises it.
+    - **Unknown** (a KIFF that doesn't say `ai`, or says a kind not known
+      here): the flat share, a tenth of the cap by default.
+    - The run keeps the plan said at its start (`run.Run.Plan`), so all its
+      turns, a resumed run's included, are sized by it. The allowance's
+      minute-long keep keeps the plan too: a pack bought now sizes the runs
+      that start a minute later.
+    - No share passes what every account but the reviewers' may take of the
+      day. So one or two large paying accounts can take most of it, and the
+      day's alarms below say so while there's time to raise the cap.
   - **The store reviewers' slice** (`AGENTS_BEDROCK_RESERVED_TENANTS`,
     `AGENTS_BEDROCK_RESERVED_USD`) is inside the cap, not on top: every other
     account's turns stop once the day reaches the cap less the slice, and a
@@ -272,8 +293,8 @@ settings turn it on:
 
   The provider was serving in the first two: only `ai_unavailable` says it
   isn't. The function logs
-  *"bedrock: today's spend passed 80% of its cap"* once, from the turn that
-  crosses it (reservations count), and *"bedrock: a turn was refused, today's
+  *"bedrock: today's spend passed 50% of its cap"* and *"… 80% of its cap"*,
+  each once, from the turn that crosses it (reservations count), and *"bedrock: a turn was refused, today's
   cap is spent"* for each turn the cap refuses: a metric filter on each, with
   an alarm, tells the owner before and when it bites. A turn refused for its
   account's share logs *"bedrock: a turn was refused, its account's share of

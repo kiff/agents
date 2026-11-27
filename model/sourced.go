@@ -53,14 +53,55 @@ type Sourced struct {
 //     once the day reaches MicroUSD less the slice, so the slice is inside
 //     the cap, never on top of it. A Reserved account has no share of its
 //     own: it may use the whole cap.
+//
+// An account's share follows its plan, as KIFF said it at its run's start
+// (Request.Plan, Share): KIFF's balance stays what stops a run for credits,
+// and the share only bounds a run away.
+//   - No plan (the trial): TrialMicroUSD. KIFF stops Coach's runs there long
+//     before it.
+//   - Solo and Company: what the period's balance can pay for, a tenth more
+//     and ShareHeadroomMicroUSD, never below AccountMicroUSD, so an account
+//     with credits left is never stopped by its share.
+//   - Unbounded (an agreement, or internal): MaxMicroUSD, since nothing in
+//     KIFF bounds it.
+//   - Unknown (a KIFF that doesn't say): AccountMicroUSD, the flat share.
+//
+// No share passes what every other account may take of the day (limit).
 type DailyCap struct {
 	MicroUSD         int64
 	AccountMicroUSD  int64
+	TrialMicroUSD    int64
+	MaxMicroUSD      int64
 	ReservedMicroUSD int64
 	Reserved         map[string]bool
 	Spend            DaySpend
 	PriceFactor      float64
 }
+
+// Plan is an account's plan as KIFF says it when a run starts (its
+// allowance), for the size of the account's share of the backup's day:
+// its Kind, and PeriodMicroUSD, the most its period's balance can pay for
+// (included credits, packs and Coach's fair use, at the rate credits are
+// charged), in millionths of a US dollar. The zero Plan is unknown.
+type Plan struct {
+	Kind           string `json:"kind,omitempty"`
+	PeriodMicroUSD int64  `json:"period_micro_usd,omitempty"`
+}
+
+// The plans' kinds, as KIFF names them (its balance's kind).
+const (
+	PlanNone      = "none"
+	PlanSolo      = "solo"
+	PlanCompany   = "company"
+	PlanUnbounded = "unbounded"
+)
+
+// ShareHeadroomMicroUSD is what a paying account's share has beyond its
+// period's balance and a tenth: the worst cases of the turns in flight when
+// the balance ends, and the free overshoot of the run that ends it. Twenty
+// Coach turns (about $0.87 each) fit in it whatever the plan's size: below
+// it, the floor (AccountMicroUSD) has more room still.
+const ShareHeadroomMicroUSD = 20_000_000
 
 // Full is what a reservation found no room in, if anything.
 type Full int
@@ -225,7 +266,7 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 			window, _ = w.Window(ctx, req.Model)
 		}
 		reserved = WorstCase(req, req.Price, s.Cap.PriceFactor, window)
-		full, err := s.Cap.Spend.Reserve(ctx, day, req.Tenant, reserved, s.Cap.limit(req.Tenant), s.Cap.share(req.Tenant))
+		full, err := s.Cap.Spend.Reserve(ctx, day, req.Tenant, reserved, s.Cap.limit(req.Tenant), s.Cap.Share(req.Tenant, req.Plan))
 		switch {
 		case err != nil:
 			return Reply{}, fmt.Errorf("model: reserving the Bedrock backup's turn: %w", err)
@@ -260,11 +301,28 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 
 // share is tenant's own share of the day: none for a Reserved account, which
 // may test freely up to the cap itself.
-func (c *DailyCap) share(tenant string) int64 {
-	if c.reserved(tenant) {
+// Share is tenant's share of the day, on plan (DailyCap says how); 0 is
+// none: a Reserved account's, or with no AccountMicroUSD.
+func (c *DailyCap) Share(tenant string, plan Plan) int64 {
+	if c.reserved(tenant) || c.AccountMicroUSD <= 0 {
 		return 0
 	}
-	return c.AccountMicroUSD
+	share := c.AccountMicroUSD
+	switch plan.Kind {
+	case PlanNone:
+		if c.TrialMicroUSD > 0 {
+			share = c.TrialMicroUSD
+		}
+	case PlanSolo, PlanCompany:
+		if p := plan.PeriodMicroUSD; p > 0 {
+			share = max(share, p+p/10+ShareHeadroomMicroUSD)
+		}
+	case PlanUnbounded:
+		if c.MaxMicroUSD > 0 {
+			share = c.MaxMicroUSD
+		}
+	}
+	return min(share, c.limit(tenant))
 }
 
 // reserved is whether tenant is one the slice is kept for. A turn for no

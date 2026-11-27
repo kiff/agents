@@ -133,7 +133,9 @@ type Runner struct {
 	// KIFF's balance, asked with the agent's own key (kiff.AllowanceChecker).
 	// A refusal is a *server.CreditsRefusal, with KIFF's code; KIFF not
 	// answering fails the start, as any KIFF outage does. Nil asks nothing.
-	Allowance func(ctx context.Context, tenant, agent string) (allowed bool, why string, err error)
+	// It also says the account's plan, which the run keeps (run.Run.Plan) for
+	// its share of Bedrock's day (model.DailyCap.Share).
+	Allowance func(ctx context.Context, tenant, agent string) (allowed bool, why string, plan model.Plan, err error)
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Log, when set, gets one line per run that starts: where its start
@@ -229,8 +231,10 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 	// No new run starts while the account's tafs wait for credits; a run
 	// already going finishes. KIFF's answer is the agent's: Coach's within
 	// its fair use goes on.
+	var plan model.Plan
 	if rn.Allowance != nil {
-		ok, why, err := rn.Allowance(ctx, s.Tenant, s.Agent)
+		ok, why, p, err := rn.Allowance(ctx, s.Tenant, s.Agent)
+		plan = p
 		if err != nil {
 			if rn.Log != nil {
 				rn.Log.Warn("KIFF didn't say whether a run may start", "err", err)
@@ -315,6 +319,7 @@ func (rn *Runner) Start(ctx context.Context, s server.Start) (run.Run, error) {
 		r.Attachments = append(r.Attachments, f.Ref())
 	}
 	r.Source = s.Source
+	r.Plan = plan
 	r.Aside = s.Aside
 	r.AsideTools = slices.Clone(s.AsideTools)
 	r.Outcomes = s.Outcomes
@@ -565,6 +570,9 @@ func (rn *Runner) Execute(ctx context.Context, tenant, id string, emit func(agen
 		return x.notRun(ctx, r, paused, d.Keep, FailedBuild, fmt.Errorf("building the agent: %w", err))
 	}
 	sp.add("build", a.StartSpans)
+	// The plan KIFF said at the run's start: every turn's share of Bedrock's
+	// day, a resumed run's too, is sized by it.
+	a.Plan = r.Plan
 	a.Tools = x.watchSkillReads(a.Tools)
 	a.RecordTotals = rn.RecordTotals
 	a.Cancel = x.cancelled
