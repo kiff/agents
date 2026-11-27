@@ -138,6 +138,12 @@ type Taf struct {
 	// something new (schedule.Check). Required with Cron, so a quiet firing
 	// costs nothing.
 	Check *Check `json:"check,omitempty"`
+	// Sources are what a new taf's job works from, each a form, sheet,
+	// folder or board the job names, with the id its connection gives it
+	// (kiff/tafs#2227): resolved while the owner is in the setup chat, so the
+	// taf's first run never has to ask for one. tafs keeps them in the taf's
+	// definition.
+	Sources []Source `json:"sources,omitempty"`
 	// Disclose names a taf's tools that write to someone outside the
 	// company, each with the free-text fields of its input (dotted paths):
 	// tafs puts them in the taf's definition, and the runtime ends each such
@@ -154,6 +160,47 @@ type Taf struct {
 
 // MaxWritesFor bounds the name a taf writes for.
 const MaxWritesFor = 100
+
+// Source is one of a result's taf.sources: a form, sheet, folder or board,
+// by its name as the owner knows it and its id.
+type Source struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+// SourceKinds are the kinds a taf.sources entry takes.
+var SourceKinds = []string{"form", "sheet", "folder", "board"}
+
+// MaxSources bounds a result's taf.sources: entries, a name and an id. The
+// same bounds as tafs cloud's (sourcesOf), so a result kiff/agents takes is
+// one tafs takes.
+var MaxSources = struct{ Sources, Name, ID int }{5, 120, 200}
+
+// checkSources says what's wrong with a result's taf.sources, if anything:
+// above all a source with no id, which Coach finds in the connection's list
+// by name, or asks the owner for, before the result.
+func checkSources(ss []Source) error {
+	if len(ss) > MaxSources.Sources {
+		return fmt.Errorf("taf.sources names at most %d, each {kind, name, id}", MaxSources.Sources)
+	}
+	for _, s := range ss {
+		if !slices.Contains(SourceKinds, s.Kind) {
+			return fmt.Errorf("each of taf.sources is a %s", strings.Join(SourceKinds, ", "))
+		}
+		name := strings.TrimSpace(s.Name)
+		if name == "" || len([]rune(name)) > MaxSources.Name {
+			return fmt.Errorf("each of taf.sources has its name as the owner knows it, at most %d characters", MaxSources.Name)
+		}
+		if s.ID == "" {
+			return fmt.Errorf("the %s %q in taf.sources has no id: find it in its connection's list by name, or ask the owner which one or for its link", s.Kind, name)
+		}
+		if len(s.ID) > MaxSources.ID || strings.ContainsFunc(s.ID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+			return fmt.Errorf("the %s %q in taf.sources has an id that isn't one: give the id its connection returns, with no spaces", s.Kind, name)
+		}
+	}
+	return nil
+}
 
 // Disclose is one tool of a result's taf.disclose: its name in KIFF, and the
 // paths of the fields its disclosure goes in, in order of preference.
@@ -449,6 +496,8 @@ func (t Tool) Spec() model.ToolSpec {
 			`"properties":{"tool":{"type":"string","description":"the read tool that lists the work, one of tools"},"arguments":{"type":"object","description":"its input, e.g. only open requests"},` +
 			`"items":{"type":"string","description":"the dotted path to the list in its result; empty when the result is the list"},"cursor":{"type":"string","description":"a field of each item that only grows: its created time or an increasing id"},` +
 			`"id":{"type":"string","description":"the field naming an item; id when empty"},"first":{"type":"string","enum":["all","new"],"description":"all: the first check works the queue already there; new: only what comes after"}},"required":["tool","cursor"]},` +
+			`"sources":{"type":"array","description":"a new taf: each form, sheet, folder or board its job names, with the id its connection gives it, found by name in the connection's list or asked of the owner; never a placeholder for the id",` +
+			`"items":{"type":"object","properties":{"kind":{"type":"string","enum":["form","sheet","folder","board"]},"name":{"type":"string","description":"as the owner knows it"},"id":{"type":"string","description":"as its connection returns it"}},"required":["kind","name","id"]}},` +
 			`"disclose":{"type":"array","description":"each of the taf's tools that writes to someone outside the company (an email, a reply, evidence), by its name in KIFF, with its free-text fields' dotted paths: each such call then ends with its AI disclosure; an improvement's adds to the taf's",` +
 			`"items":{"type":"object","properties":{"tool":{"type":"string"},"fields":{"type":"array","items":{"type":"string"}},` +
 			`"credit":{"type":"boolean","description":"false for evidence or a filing, to a bank or a card network: the disclosure alone, without \"Built with tafs.\"; leave it out for messages to people"}},"required":["tool","fields"]}},` +
@@ -744,6 +793,9 @@ func (c Component) check() error {
 			if err := checkDisclose(c.Taf.Disclose); err != nil {
 				return err
 			}
+			if err := checkSources(c.Taf.Sources); err != nil {
+				return err
+			}
 			if err := writesFor(c.Taf.WritesFor); err != nil {
 				return err
 			}
@@ -776,6 +828,9 @@ func (c Component) check() error {
 			}
 			if c.Taf.Check != nil {
 				return fmt.Errorf("taf.check is for a new taf: an improvement keeps its schedule, and the dial changes its check")
+			}
+			if len(c.Taf.Sources) > 0 {
+				return fmt.Errorf("taf.sources is for a new taf: an improvement keeps its job's")
 			}
 			// An improvement may add a disclosure, for a tool it adds or one a taf
 			// from before never had; tafs adds it to the taf's, never taking one
