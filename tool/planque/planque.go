@@ -27,6 +27,7 @@ import (
 	"unicode"
 
 	"github.com/kiff/agents/model"
+	"github.com/kiff/agents/run"
 	"github.com/kiff/agents/tool"
 )
 
@@ -318,7 +319,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 			if n := tafName(in.TafName); n != "" {
 				ask["agent_name"] = n
 			}
-			body, _ := json.Marshal(ask)
+			body, _ := json.Marshal(withSession(ctx, ask))
 			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(BrowserEntry)+"/grants", body)
 			if err != nil || refused != nil {
 				return deref(refused), err
@@ -369,7 +370,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 				}
 				ask["new_sign_in"] = true
 			}
-			body, _ := json.Marshal(ask)
+			body, _ := json.Marshal(withSession(ctx, ask))
 			raw, refused, err := t.do(ctx, http.MethodPost, "/v1/accounts/"+url.PathEscape(t.tenant)+"/catalog/"+url.PathEscape(in.Entry)+"/grants", body)
 			if err != nil || refused != nil {
 				return deref(refused), err
@@ -444,7 +445,7 @@ func (t *Tool) Call(ctx context.Context, input json.RawMessage) (tool.Result, er
 		if n := tafName(in.TafName); n != "" {
 			ask["agent_name"] = n
 		}
-		body, _ := json.Marshal(ask)
+		body, _ := json.Marshal(withSession(ctx, ask))
 		res, err := t.grant(ctx, http.MethodPost, path, body)
 		if err != nil || res.IsError {
 			return res, err
@@ -1056,4 +1057,21 @@ func (t *Tool) doBounded(ctx context.Context, method, path string, body []byte, 
 		return nil, &tool.Result{Text: fmt.Sprintf("planque answered %d: %s", resp.StatusCode, e.Error), IsError: true}, nil
 	}
 	return raw, nil, nil
+}
+
+// sessionShape is a chat's id as planque takes it on a request (its
+// askedInOK): 1 to 128 letters, digits, - or _.
+var sessionShape = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// withSession puts on a new grant's request the chat that asks for it: the
+// runner's session (run.RefFrom), never anything from the model's input, so
+// a chat's delete can end what it asked for that no taf uses (planque keeps
+// it beside the grant, never in the request the owner signs). With no run,
+// or a session planque wouldn't take, nothing is added and the request is as
+// before.
+func withSession(ctx context.Context, ask map[string]any) map[string]any {
+	if ref, ok := run.RefFrom(ctx); ok && sessionShape.MatchString(ref.Session) {
+		ask["session"] = ref.Session
+	}
+	return ask
 }
