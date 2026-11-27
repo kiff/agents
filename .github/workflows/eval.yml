@@ -77,7 +77,7 @@ permissions:
 # running Eval replaces a dispatched Eval waiting there, so whoever dispatches
 # an Eval checks the queue afterwards.
 concurrency:
-  group: test-account
+  group: test-account-2
   cancel-in-progress: false
 jobs:
   eval:
