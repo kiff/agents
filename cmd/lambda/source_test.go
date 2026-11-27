@@ -53,6 +53,22 @@ func TestTheBedrockBackupIsOffUnlessConfigured(t *testing.T) {
 		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_UNBOUNDED_DAILY_USD": "0"},
 		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "12",
 			"AGENTS_BEDROCK_UNBOUNDED_DAILY_USD": "49"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=fifteen"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=0"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "=15"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=15,t-pilot=10"},
+		// ParseFloat takes these with no error; each would fail open.
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=NaN"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=nan"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=Inf"},
+		{"AGENTS_BEDROCK_DAILY_USD": "NaN"},
+		{"AGENTS_BEDROCK_DAILY_USD": "+Inf"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_ACCOUNT_DAILY_USD": "NaN"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_TRIAL_DAILY_USD": "NaN"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_UNBOUNDED_DAILY_USD": "Infinity"},
+		{"AGENTS_BEDROCK_DAILY_USD": "60", "AGENTS_BEDROCK_RESERVED_TENANTS": "t-review", "AGENTS_BEDROCK_RESERVED_USD": "12",
+			"AGENTS_BEDROCK_TENANT_CAPS": "t-pilot=49"},
 	} {
 		if _, err := sourceConfigFrom(env(bad)); err == nil {
 			t.Errorf("accepted %v", bad)
@@ -255,5 +271,24 @@ func TestWhereTurnsRunAsConfigured(t *testing.T) {
 		if got := aiSource(sc); got != c.want {
 			t.Errorf("%v: %+v, want %+v", c.env, got, c.want)
 		}
+	}
+}
+
+// Some accounts' own shares: tenant=usd pairs, taken as set and handed to
+// the cap; none by default.
+func TestSomeAccountsOwnShares(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	sc, err := sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "500"}))
+	if err != nil || sc.TenantMicro != nil {
+		t.Fatalf("default %+v, %v", sc, err)
+	}
+	sc, err = sourceConfigFrom(env(map[string]string{"AGENTS_MODEL_SOURCE": "bedrock", "AGENTS_BEDROCK_DAILY_USD": "500",
+		"AGENTS_BEDROCK_TENANT_CAPS": " t-pilot=15 , t-demo=2.5,"}))
+	if err != nil || len(sc.TenantMicro) != 2 || sc.TenantMicro["t-pilot"] != 15_000_000 || sc.TenantMicro["t-demo"] != 2_500_000 {
+		t.Fatalf("set %+v, %v", sc, err)
+	}
+	s := sourced(&keyedModel{}, sc, aws.Config{Region: "eu-west-1"}, memory.NewUsage(), nil).(*model.Sourced)
+	if got := s.Cap.Share("t-pilot", model.Plan{Kind: model.PlanUnbounded}); got != 15_000_000 {
+		t.Fatalf("the pilot's share on the cap: %d", got)
 	}
 }

@@ -452,6 +452,54 @@ func TestAnAccountsShareFollowsItsPlan(t *testing.T) {
 	}
 }
 
+// An account with its own amount (TenantMicroUSD) has that share whatever
+// its plan, a reviewer's included, still within what every account but the
+// reviewers' may take of the day; every other account keeps its plan's.
+func TestAnAccountsOwnAmountReplacesItsPlansShare(t *testing.T) {
+	c := &DailyCap{MicroUSD: 500_000_000, AccountMicroUSD: 50_000_000, TrialMicroUSD: 3_000_000, MaxMicroUSD: 200_000_000,
+		ReservedMicroUSD: 100_000_000, Reserved: map[string]bool{"t-review": true},
+		TenantMicroUSD: map[string]int64{"t-pilot": 15_000_000, "t-review": 5_000_000, "t-big": 450_000_000}}
+	for _, x := range []struct {
+		tenant string
+		plan   Plan
+		want   int64
+	}{
+		{"t-pilot", Plan{Kind: PlanUnbounded}, 15_000_000}, // internal: $15, not $200
+		{"t-pilot", Plan{Kind: PlanSolo, PeriodMicroUSD: 80_000_000}, 15_000_000},
+		{"t-pilot", Plan{}, 15_000_000},
+		{"t-review", Plan{Kind: PlanSolo}, 5_000_000},     // a reviewer's own amount holds too
+		{"t-big", Plan{Kind: PlanUnbounded}, 400_000_000}, // never past the day less the slice
+		{"t1", Plan{Kind: PlanUnbounded}, 200_000_000},    // the others keep their plan's
+		{"", Plan{Kind: PlanUnbounded}, 200_000_000},
+	} {
+		if got := c.Share(x.tenant, x.plan); got != x.want {
+			t.Errorf("%s %+v: share %d, want %d", x.tenant, x.plan, got, x.want)
+		}
+	}
+	// It holds with no flat share set, when nothing else bounds an account.
+	c.AccountMicroUSD = 0
+	if got := c.Share("t-pilot", Plan{Kind: PlanUnbounded}); got != 15_000_000 {
+		t.Errorf("no flat share: %d", got)
+	}
+}
+
+// The pilot's account, internal, stops at its own $15 while another
+// unbounded account runs on.
+func TestThePilotsAccountStopsAtItsOwnAmount(t *testing.T) {
+	spend := days{"2026-11-07": 30_000_000, "t-pilot|2026-11-07": 15_000_000, "t-other|2026-11-07": 15_000_000}
+	s, _, _ := sourced(errCredits, spend, 500_000_000)
+	s.Cap.AccountMicroUSD, s.Cap.MaxMicroUSD = 50_000_000, 200_000_000
+	s.Cap.TenantMicroUSD = map[string]int64{"t-pilot": 15_000_000}
+	req := Request{Tenant: "t-pilot", Plan: Plan{Kind: PlanUnbounded}, Price: Price{Input: 1_000_000}, MaxTokens: 1}
+	if _, err := s.Turn(context.Background(), req, nil); !errors.Is(err, ErrBackupShareSpent) {
+		t.Fatalf("the pilot past $15: %v", err)
+	}
+	req.Tenant = "t-other"
+	if r, err := s.Turn(context.Background(), req, nil); err != nil || r.Source != SourceBedrock {
+		t.Fatalf("another unbounded account at $15: %+v, %v", r, err)
+	}
+}
+
 // A paying account with credits left isn't stopped by its share: a Solo
 // whose period can pay for $80 runs past the flat $50, and stops only past
 // its own share. The same day without a plan said stops at $50.

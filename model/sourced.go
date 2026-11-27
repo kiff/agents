@@ -66,6 +66,10 @@ type Sourced struct {
 //     KIFF bounds it.
 //   - Unknown (a KIFF that doesn't say): AccountMicroUSD, the flat share.
 //
+// TenantMicroUSD sets some accounts' shares outright, whatever their plan
+// and whether or not they're Reserved: the test pilot's account, internal
+// and so unbounded by its plan, is held to a fixed amount a day this way.
+//
 // No share passes what every other account may take of the day (limit).
 type DailyCap struct {
 	MicroUSD         int64
@@ -74,6 +78,7 @@ type DailyCap struct {
 	MaxMicroUSD      int64
 	ReservedMicroUSD int64
 	Reserved         map[string]bool
+	TenantMicroUSD   map[string]int64
 	Spend            DaySpend
 	PriceFactor      float64
 }
@@ -299,11 +304,13 @@ func (s *Sourced) backup(ctx context.Context, req Request, onText func(string)) 
 	return r, err
 }
 
-// share is tenant's own share of the day: none for a Reserved account, which
-// may test freely up to the cap itself.
 // Share is tenant's share of the day, on plan (DailyCap says how); 0 is
-// none: a Reserved account's, or with no AccountMicroUSD.
+// none: a Reserved account's, or with no AccountMicroUSD. An account with
+// its own amount (TenantMicroUSD) has that, whatever else holds.
 func (c *DailyCap) Share(tenant string, plan Plan) int64 {
+	if v := c.TenantMicroUSD[tenant]; tenant != "" && v > 0 {
+		return min(v, c.limit(tenant))
+	}
 	if c.reserved(tenant) || c.AccountMicroUSD <= 0 {
 		return 0
 	}

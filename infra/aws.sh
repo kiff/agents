@@ -137,8 +137,8 @@ if [ -z "${AGENTS_TOTALS+set}" ]; then
   if [ -n "$current" ] && [ "$current" != "None" ]; then TOTALS=$current; fi
 fi
 # And the Bedrock backup's settings (docs/runs.md): its source and fallback,
-# the day's cap, each account's share of it, and the store reviewers' slice (the
-# accounts it's for and its size); and whether delivered files are shown
+# the day's cap, each account's share of it, the store reviewers' slice (the
+# accounts it's for and its size), and the accounts with shares of their own; and whether delivered files are shown
 # (AGENTS_FILES_SHOWN). One given is set (empty removes it), one not given is
 # kept as the function has it, so a rerun never turns any of them on or off, or
 # changes a limit, by itself. cmd/lambda/source.go reads each; infra's test
@@ -146,7 +146,7 @@ fi
 BEDROCK_ENV=""
 for k in AGENTS_MODEL_SOURCE AGENTS_BEDROCK_FALLBACK AGENTS_BEDROCK_DAILY_USD AGENTS_BEDROCK_ACCOUNT_DAILY_USD \
   AGENTS_BEDROCK_TRIAL_DAILY_USD AGENTS_BEDROCK_UNBOUNDED_DAILY_USD \
-  AGENTS_BEDROCK_RESERVED_USD AGENTS_BEDROCK_RESERVED_TENANTS AGENTS_FILES_SHOWN; do
+  AGENTS_BEDROCK_RESERVED_USD AGENTS_BEDROCK_RESERVED_TENANTS AGENTS_BEDROCK_TENANT_CAPS AGENTS_FILES_SHOWN; do
   if [ -n "${!k+set}" ]; then
     v=${!k}
   else
@@ -158,6 +158,9 @@ for k in AGENTS_MODEL_SOURCE AGENTS_BEDROCK_FALLBACK AGENTS_BEDROCK_DAILY_USD AG
       # Tenant ids, comma-separated.
       # Never echoed: tenant ids stay out of the run's log.
       case "$v" in *[!A-Za-z0-9.,]*) echo "$k is tenant ids (letters and digits) separated by commas, and this one isn't" >&2; exit 1 ;; esac
+    elif [ "$k" = AGENTS_BEDROCK_TENANT_CAPS ]; then
+      # tenant=usd pairs, comma-separated. Never echoed, as above.
+      case "$v" in *[!A-Za-z0-9.,=]*) echo "$k is tenant=usd pairs (letters, digits and a dot) separated by commas, and this one isn't" >&2; exit 1 ;; esac
     else
       case "$v" in *[!A-Za-z0-9.]*) echo "$k is letters, digits and a dot, not \"$v\"" >&2; exit 1 ;; esac
     fi
