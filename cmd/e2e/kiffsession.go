@@ -28,11 +28,11 @@ import (
 // agent's key and the phone key (base64 PKCS#8) to out (three lines, 0600) for
 // the test's secrets, and prints none of them. Approved on any other account,
 // it writes nothing.
-func kiffSignIn(ctx context.Context, apiBase, account, setupAgent string, hc *http.Client, out io.Writer, say io.Writer) error {
+func kiffSignIn(ctx context.Context, apiBase, account, setupAgent string, key *ecdsa.PrivateKey, hc *http.Client, out io.Writer, say io.Writer) error {
 	if account == "" {
 		return errors.New("-account: the test's own account's id")
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := keyOrNew(key)
 	if err != nil {
 		return err
 	}
@@ -220,4 +220,81 @@ func peopleSignIn(ctx context.Context, apiBase, account, person string, key *ecd
 	fmt.Fprintf(say, "%s is signed in to %q as %s; the session is bound to a new phone key\n", person, name, role)
 	_, err = fmt.Fprintf(out, "%s\n%s\n", base64.StdEncoding.EncodeToString(der), token)
 	return err
+}
+
+// pilotSignIn signs a robot test user's phone key in to KIFF, on that user's
+// own account, for the machine it runs on (a laptop's keychain, never a
+// shared runner). The account is a proof test account
+// (KIFF_PROOF_TEST_TENANTS), which takes no key that isn't on KIFF's test
+// keys once it's listed: so either this runs before the account is listed,
+// or with key, made first by -phone-key and listed already. It uses key, or
+// makes one, prints only its two fingerprints for KIFF_PROOF_TEST_KEYS, signs
+// in with it (a person approves in a browser, by email code, so no other key
+// joins the account), and checks the sign-in landed on account. It makes no
+// agent: the test user builds its tafs through Coach, as a person does. It
+// writes the session's token and the phone key (base64 PKCS#8), two lines,
+// to out (0600), and prints neither. Approved on another account, it signs
+// that session out and writes nothing.
+func pilotSignIn(ctx context.Context, apiBase, account string, key *ecdsa.PrivateKey, hc *http.Client, out io.Writer, say io.Writer) error {
+	if account == "" {
+		return errors.New("-account: the test user's own account's id")
+	}
+	key, err := keyOrNew(key)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	short, full, err := keyFingerprints(key)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(say, "the test user's new phone key: %s (SHA-256 of its SPKI: %s); list it in KIFF_PROOF_TEST_KEYS with the account\n", short, full)
+	token, tenant, err := deviceSignIn(ctx, apiBase, key, "test pilot", hc, say)
+	if err != nil {
+		return err
+	}
+	if tenant != account {
+		signOut(ctx, apiBase, token, hc, say)
+		return errors.New("the sign-in was approved on another account, not the test user's own: approve on that one")
+	}
+	fmt.Fprintln(say, "signed in to KIFF on the test user's account; the session is bound to its key")
+	_, err = fmt.Fprintf(out, "%s\n%s\n", token, base64.StdEncoding.EncodeToString(der))
+	return err
+}
+
+// keyOrNew is key, or a new P-256 key when there's none.
+func keyOrNew(key *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) {
+	if key != nil {
+		return key, nil
+	}
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+}
+
+// phoneKey makes a new phone key before any sign-in, for an account that's
+// already a proof test account: KIFF refuses a sign-in there with any key not
+// on KIFF_PROOF_TEST_KEYS (409 test_tenant_key), so the key is made first,
+// its fingerprints added to that list and KIFF deployed, and only then signed
+// in with (-signin or -pilot-signin, with -key). It writes the key (base64
+// PKCS#8, one line) to out (0600) and prints only its fingerprints.
+func phoneKey(out io.Writer, say io.Writer) error {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	short, full, err := keyFingerprints(key)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "%s\n", base64.StdEncoding.EncodeToString(der)); err != nil {
+		return err
+	}
+	fmt.Fprintf(say, "a new phone key: %s (SHA-256 of its SPKI: %s); add it to KIFF_PROOF_TEST_KEYS and deploy KIFF before signing in with it\n", short, full)
+	return nil
 }
