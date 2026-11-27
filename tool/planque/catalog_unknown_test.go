@@ -10,10 +10,10 @@ import (
 )
 
 // A tool asked for by a name the grant doesn't have is refused with every tool
-// it does have, by name, one line each: a guessed name turns into a listed one.
-// 27 Nov, the Qonto re-test: Coach asked the catalog twice for
-// list_bank_accounts, was told only to search by words, never did, and told the
-// owner balances can't be read, though get_organization gives them.
+// it does have, by name, one line each. 27 Nov, the Qonto re-test: Setup asked
+// the catalog twice for list_bank_accounts (Qonto's own balance read, which the
+// grant didn't serve) and was told only to search by words. The tools below are
+// a made-up catalog, not Qonto's.
 func TestCatalogRefusalForAnUnknownToolListsItsTools(t *testing.T) {
 	tl := catalogFixture(t, func(*http.Request) (int, string) {
 		return 200, pageJSON([]map[string]any{

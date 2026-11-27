@@ -252,9 +252,9 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 
 // noToolNamed refuses a tool asked for by a name the grant's catalog doesn't
 // have, and lists every tool it does by its own name, each with its
-// description's first line, so a guessed name (list_bank_accounts) turns into
-// a listed one (get_organization) rather than a word to the owner that it
-// can't be done. Bounded by MaxCatalog: past it, the rest are counted.
+// description's first line, so a name the grant doesn't serve turns into a
+// choice among the ones it does, or a plain word to the owner that none fits,
+// never a guess. Bounded by MaxCatalog: past it, the rest are counted.
 func noToolNamed(name string, tools []catalogTool) string {
 	var b strings.Builder
 	b.WriteString("the catalog has no tool named " + name + ". Its tools, by their own names:")
