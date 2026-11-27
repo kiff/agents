@@ -11,7 +11,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kiff/agents/agent"
+	"github.com/kiff/agents/session"
 	"github.com/kiff/agents/tool/kiff"
+	"github.com/kiff/agents/tool/planque"
 )
 
 // setupReadsRecorded checks that Setup's reads went through KIFF
@@ -19,6 +22,12 @@ import (
 // Setup read is on KIFF's record as Setup's own call, allowed, with a
 // receipt. A read that skipped KIFF would leave no such line. A run whose
 // grants have no setup_reads tool has nothing to check.
+//
+// Which reads Setup asked for comes from its own chat (its planque calls
+// with action "read", readsAsked): a read that skipped KIFF is still one of
+// those. So a run where Setup read nothing has nothing to check, and each
+// read it did ask for must be on KIFF's record. Without the chat (none
+// read), at least one of the setup_reads tools must be on the record.
 func (t *test) setupReadsRecorded(ctx context.Context) error {
 	var reads []string
 	for _, id := range t.grants {
@@ -31,6 +40,16 @@ func (t *test) setupReadsRecorded(ctx context.Context) error {
 	if len(reads) == 0 {
 		t.logf("Setup's reads: none asked for, nothing to check")
 		return nil
+	}
+	if t.setupSession != "" {
+		if _, events, err := t.sessions.Read(ctx, t.tenant, t.setupSession); err == nil {
+			asked := readsAsked(events, reads)
+			if len(asked) == 0 {
+				t.logf("Setup's reads: Setup read none of %s in its chat, nothing to check", strings.Join(reads, ", "))
+				return nil
+			}
+			reads = asked
+		}
 	}
 	setup := testaccount.KIFFSession(kiff.APIURL, t.cfg.setupKey, t.tenant, nil, t.hc)
 	me, err := setup.Do(ctx, http.MethodGet, "/v1/me", nil)
@@ -49,7 +68,7 @@ func (t *test) setupReadsRecorded(ctx context.Context) error {
 	if err := json.Unmarshal([]byte(a.Raw), &act); err != nil {
 		return fmt.Errorf("Setup's calls in KIFF: %w", err)
 	}
-	if err := readsOnRecord(act.Calls, agent, reads); err != nil {
+	if err := readsOnRecord(act.Calls, agent, reads, t.setupSession != ""); err != nil {
 		return err
 	}
 	t.logf("Setup's reads went through KIFF: each on its record, allowed, with a receipt")
@@ -90,8 +109,10 @@ func setupReadTools(g grant) []string {
 
 // readsOnRecord says which setup_reads tool Setup read without KIFF's
 // record of it: a call by agent, of that tool, allowed, with a receipt.
-// Setup need not read every one; at least one must be on the record.
-func readsOnRecord(calls []setupCall, agent string, reads []string) error {
+// With every (the reads Setup asked for, from its chat), each must be on the
+// record; without, Setup need not have read every one, and at least one must
+// be.
+func readsOnRecord(calls []setupCall, agent string, reads []string, every bool) error {
 	var seen []string
 	for _, c := range calls {
 		if c.Actor != agent || !slices.Contains(reads, c.Action) {
@@ -107,6 +128,14 @@ func readsOnRecord(calls []setupCall, agent string, reads []string) error {
 			seen = append(seen, c.Action)
 		}
 	}
+	if every {
+		for _, r := range reads {
+			if !slices.Contains(seen, r) {
+				return fmt.Errorf("Setup read %s in its chat, and it isn't on KIFF's record: the read didn't go through KIFF", r)
+			}
+		}
+		return nil
+	}
 	if len(seen) == 0 {
 		// KIFF's record can't tell a read that skipped it from no read at all (a run whose draft was refused before
 		// Setup read anything): the message says both, and how many other calls of Setup's KIFF has.
@@ -119,4 +148,31 @@ func readsOnRecord(calls []setupCall, agent string, reads []string) error {
 		return fmt.Errorf("none of Setup's reads (%s) is on KIFF's record, which has %d other calls by Setup: Setup made no read, or its reads didn't go through KIFF", strings.Join(reads, ", "), others)
 	}
 	return nil
+}
+
+// readsAsked are the setup_reads tools Setup asked planque to read in its
+// chat: its planque calls with action "read", as its own session recorded
+// them, whatever came of them. A read that skipped KIFF is one of these too.
+func readsAsked(events []session.Event, reads []string) []string {
+	var asked []string
+	for _, e := range events {
+		if e.Kind != session.Called {
+			continue
+		}
+		var b agent.CalledBody
+		if json.Unmarshal(e.Body, &b) != nil || b.Tool != planque.Name {
+			continue
+		}
+		var in struct {
+			Action string `json:"action"`
+			Tool   string `json:"tool"`
+		}
+		if json.Unmarshal(b.Input, &in) != nil || in.Action != "read" || !slices.Contains(reads, in.Tool) {
+			continue
+		}
+		if !slices.Contains(asked, in.Tool) {
+			asked = append(asked, in.Tool)
+		}
+	}
+	return asked
 }

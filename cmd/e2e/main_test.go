@@ -20,8 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kiff/agents/agent"
 	"github.com/kiff/agents/eval"
 	"github.com/kiff/agents/model/bedrock"
+	"github.com/kiff/agents/session"
+	"github.com/kiff/agents/tool/planque"
 )
 
 // The nightly log is public: neither the account nor the vendor's address
@@ -324,6 +327,30 @@ func TestThePhoneSignsAsItsKIFFDevice(t *testing.T) {
 	}
 }
 
+// Which setup_reads tools Setup asked planque to read comes from its own chat: its planque calls with action
+// "read", whatever came of them; other tools, other actions and reads of other tools don't count.
+func TestSetupReadsAskedAreItsPlanqueReads(t *testing.T) {
+	called := func(tool, input string) session.Event {
+		b, _ := json.Marshal(agent.CalledBody{Tool: tool, Input: json.RawMessage(input), Outcome: "done"})
+		return session.Event{Kind: session.Called, Body: b}
+	}
+	reads := []string{"list_accounts", "stripe_api_details_x1"}
+	events := []session.Event{
+		called(planque.Name, `{"action":"request","entry":"stripe@1"}`),
+		called(planque.Name, `{"action":"read","grant":"grt_1","tool":"stripe_api_details_x1","arguments":{}}`),
+		called(planque.Name, `{"action":"read","grant":"grt_1","tool":"stripe_api_details_x1"}`),
+		called(planque.Name, `{"action":"read","grant":"grt_1","tool":"create_refund"}`),
+		called("kiff", `{"action":"read","tool":"list_accounts"}`),
+		{Kind: session.AgentMessage, Body: []byte(`{"text":"read list_accounts"}`)},
+	}
+	if got := readsAsked(events, reads); !slices.Equal(got, []string{"stripe_api_details_x1"}) {
+		t.Errorf("readsAsked: %v", got)
+	}
+	if got := readsAsked(events[:1], reads); len(got) != 0 {
+		t.Errorf("no read asked: %v", got)
+	}
+}
+
 // Setup's reads go through KIFF (kiff/tafs#138, gate A): a read is on KIFF's
 // record as Setup's call, allowed, with a receipt; anything else fails.
 func TestSetupReadsOnRecord(t *testing.T) {
@@ -342,14 +369,23 @@ func TestSetupReadsOnRecord(t *testing.T) {
 		"refused":                             {[]setupCall{{Actor: "setup", Action: "list_accounts", Outcome: "blocked", Receipt: receipt}}, false},
 		"no receipt":                          {[]setupCall{{Actor: "setup", Action: "list_accounts", Outcome: "allowed"}}, false},
 	} {
-		if err := readsOnRecord(c.calls, "setup", reads); (err == nil) != c.ok {
+		if err := readsOnRecord(c.calls, "setup", reads, false); (err == nil) != c.ok {
 			t.Errorf("%s: %v, want ok=%v", name, err, c.ok)
 		}
 	}
 	// No read at all isn't said to have skipped KIFF: the message gives both, and Setup's other calls on the record.
-	err := readsOnRecord([]setupCall{{Actor: "setup", Action: "create_refund", Outcome: "allowed", Receipt: receipt}}, "setup", reads)
+	err := readsOnRecord([]setupCall{{Actor: "setup", Action: "create_refund", Outcome: "allowed", Receipt: receipt}}, "setup", reads, false)
 	if err == nil || !strings.Contains(err.Error(), "which has 1 other calls by Setup: Setup made no read, or its reads didn't go through KIFF") {
 		t.Errorf("no read on the record: %v", err)
+	}
+	// The reads Setup asked for in its chat (every): each must be on the record, and one missing is a read that
+	// skipped KIFF, said as such.
+	one := []setupCall{{Actor: "setup", Action: "list_accounts", Outcome: "allowed", Receipt: receipt}}
+	if err := readsOnRecord(one, "setup", []string{"list_accounts"}, true); err != nil {
+		t.Errorf("the one read asked, on the record: %v", err)
+	}
+	if err := readsOnRecord(one, "setup", reads, true); err == nil || !strings.Contains(err.Error(), "Setup read stripe_api_details in its chat, and it isn't on KIFF's record") {
+		t.Errorf("a read asked and not on the record: %v", err)
 	}
 	g := grant{}
 	g.Request.Tools = []grantTool{{Tool: "list_accounts", SetupReads: true}, {Tool: "stripe_api_details", Name: "details", SetupReads: true}, {Tool: "create_refund"}}
