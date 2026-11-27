@@ -38,10 +38,10 @@ jobs:
       E2E_MADE: e2e-made.txt
       # Where the setup agent's and the judges' turns run (cmd/e2e
       # -model-source), as for E2E: Claude in Amazon Bedrock, through our
-      # account's EU profiles, on main once the repository variable
-      # EVAL_MODEL_SOURCE is bedrock; else the Claude API. A branch's run
-      # stays on the Claude API: its role can't call Bedrock.
-      AGENTS_MODEL_SOURCE: ${{ vars.EVAL_MODEL_SOURCE == 'bedrock' && github.ref == 'refs/heads/main' && 'bedrock' || 'anthropic' }}
+      # account's EU profiles, once the repository variable says so (on main
+      # EVAL_MODEL_SOURCE, on a branch EVAL_BRANCH_MODEL_SOURCE, each with its
+      # own role); else the Claude API.
+      AGENTS_MODEL_SOURCE: ${{ ((github.ref == 'refs/heads/main' && vars.EVAL_MODEL_SOURCE == 'bedrock') || (github.ref != 'refs/heads/main' && vars.EVAL_BRANCH_MODEL_SOURCE == 'bedrock')) && 'bedrock' || 'anthropic' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,7 +91,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: env.AGENTS_MODEL_SOURCE == 'bedrock'
         with:
-          role-to-assume: ${{ secrets.AWS_EVAL_ROLE }}
+          role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.AWS_EVAL_ROLE || secrets.AWS_EVAL_BRANCH_ROLE }}
           aws-region: eu-west-1
       - name: The recipe, on the desk
         # This log is public: in CI the test writes only its steps and the
