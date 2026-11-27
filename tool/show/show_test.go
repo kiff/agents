@@ -277,6 +277,36 @@ func TestAResultSaysWhoItWritesForAndWhereNoCreditGoes(t *testing.T) {
 	}
 }
 
+// A new taf's result carries the form, sheet, folder or board its job names,
+// each with its id, so its first run never asks for one (kiff/tafs#2227). A
+// source with no id, or one that isn't an id, is refused with words that send
+// Coach to find it; an improvement carries none.
+func TestAResultCarriesTheFormItsJobNamesByItsID(t *testing.T) {
+	result := func(sources string) string {
+		return `{"type":"result","id":"done","taf":{"agent":"leads","name":"Leads","draft":"drf_01","kickoff":"Add each new response to the Leads form as a deal.","unscheduled":true,"sources":` + sources + `},"text":"Leads is ready."}`
+	}
+	ok := call(t, result(`[{"kind":"form","name":"Leads","id":"Lx9fQ2"}]`))
+	if ok.IsError || !strings.Contains(string(ok.Component), `"sources":[{"kind":"form","name":"Leads","id":"Lx9fQ2"}]`) {
+		t.Fatalf("a result with its form's id: %+v", ok)
+	}
+	for name, c := range map[string]struct{ sources, says string }{
+		"no id":       {`[{"kind":"form","name":"Leads"}]`, "has no id: find it in its connection's list by name"},
+		"empty id":    {`[{"kind":"form","name":"Leads","id":""}]`, "has no id"},
+		"spaced id":   {`[{"kind":"form","name":"Leads","id":"Lx 9"}]`, "an id that isn't one"},
+		"long id":     {`[{"kind":"form","name":"Leads","id":"` + strings.Repeat("x", show.MaxSources.ID+1) + `"}]`, "an id that isn't one"},
+		"no name":     {`[{"kind":"form","name":" ","id":"Lx9fQ2"}]`, "its name as the owner knows it"},
+		"other kind":  {`[{"kind":"spreadsheet","name":"Leads","id":"Lx9fQ2"}]`, "form, sheet, folder, board"},
+		"six sources": {`[` + strings.TrimSuffix(strings.Repeat(`{"kind":"form","name":"Leads","id":"Lx9fQ2"},`, 6), ",") + `]`, "at most 5"},
+	} {
+		if r := call(t, result(c.sources)); !r.IsError || !strings.Contains(r.Text, c.says) {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	if r := call(t, `{"type":"result","id":"b","taf":{"agent":"leads","name":"Leads","improves":"taf-1","job":"custom","note":"n","sources":[{"kind":"form","name":"Leads","id":"Lx9fQ2"}]},"text":"t"}`); !r.IsError || !strings.Contains(r.Text, "taf.sources is for a new taf") {
+		t.Errorf("an improvement's sources: %+v", r)
+	}
+}
+
 // A taf shows its own card alone: ask_coach, a setting's request for Coach,
 // which waits for nothing; Coach's tool, as it was, shows none (kiff/tafs#476,
 // gap 15).
