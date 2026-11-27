@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kiff/agents/tool"
 )
@@ -91,6 +92,9 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 	// Keep each tool's position before bounding: names that don't fit can be
 	// recovered by resuming this page at its original offset.
 	var positions []catalogCursor
+	// Every tool read while looking for one by name: when none has it, the
+	// refusal lists them, so a guessed name turns straight into a real one.
+	var looked []catalogTool
 	seen := map[string]bool{}
 	total := 0
 	for page := 0; page < MaxCatalogPages; page++ {
@@ -136,6 +140,7 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 				c.Truncated, c.Skipped = false, 0
 				break
 			}
+			looked = append(looked, p.Tools[at.Offset:]...)
 		} else if q != "" {
 			// A word search across the pages (kiff/tafs#476, gap 1): the tools
 			// whose name or description has every word, in full, up to
@@ -208,7 +213,7 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 	} else if only != "" {
 		if len(c.Tools) == 0 {
 			if c.Next == "" && !c.Truncated && c.Skipped == 0 {
-				return tool.Result{Text: "the catalog has no tool named " + only + "; catalog {grant, q} finds its tools by words", IsError: true}, nil
+				return tool.Result{Text: noToolNamed(only, looked), IsError: true}, nil
 			}
 			c.Truncated = true
 			c.Note = "The search is incomplete; the tool is not known to be absent."
@@ -243,4 +248,51 @@ func (t *Tool) catalog(ctx context.Context, path, only, q, cursor string) (tool.
 		return tool.Result{Text: "this tool's description and arguments are larger than the catalog may be", IsError: true}, nil
 	}
 	return tool.Result{Text: string(b), IsError: incompleteSearch}, nil
+}
+
+// noToolNamed refuses a tool asked for by a name the grant's catalog doesn't
+// have, and lists every tool it does by its own name, each with its
+// description's first line, so a guessed name (list_bank_accounts) turns into
+// a listed one (get_organization) rather than a word to the owner that it
+// can't be done. Bounded by MaxCatalog: past it, the rest are counted.
+func noToolNamed(name string, tools []catalogTool) string {
+	var b strings.Builder
+	b.WriteString("the catalog has no tool named " + name + ". Its tools, by their own names:")
+	const tail = "\nTake one of these names: the one whose description answers the job. catalog {grant, tool} shows one in full, and catalog {grant, q} finds tools by words. Read these before telling the owner something can't be done."
+	if len(tools) == 0 {
+		b.WriteString(" none.")
+	}
+	for i, ct := range tools {
+		line := "\n- " + ct.Name
+		if ct.Slug != "" {
+			line += " (" + ct.Slug + ")"
+		}
+		if d := firstLine(ct.Description, 160); d != "" {
+			line += ": " + d
+		}
+		if b.Len()+len(line)+len(tail)+64 > MaxCatalog {
+			fmt.Fprintf(&b, "\n… and %d more, found by words.", len(tools)-i)
+			break
+		}
+		b.WriteString(line)
+	}
+	b.WriteString(tail)
+	return b.String()
+}
+
+// firstLine is s's first line with its spaces folded, cut to at most max
+// bytes on a rune boundary, with an ellipsis when cut.
+func firstLine(s string, max int) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= max {
+		return s
+	}
+	cut := max - len("…")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
