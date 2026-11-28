@@ -471,7 +471,10 @@ func (t Tool) Spec() model.ToolSpec {
 			`"limits":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"quantity":{"type":"string","description":"count, or sum(<arg>) such as sum(amount)"},` +
 			`"window":{"type":"string","enum":["call","calendar_day","rolling_1h","rolling_24h","rolling_7d","lifetime"],"description":"call or calendar_day; with per, the window of the Card's aggregate"},` +
 			`"per":{"type":"string","description":"a total for each item: the argument the Card's aggregate counts it by (its per)"},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
-			`"over":{"type":"string","enum":["ask","refuse"],"description":"what happens past this figure, when it isn't the rule's over"}},"required":["quantity","window","limit"]}}},"required":["tool","over"]}},` +
+			`"over":{"type":"string","enum":["ask","refuse"],"description":"what happens past this figure, when it isn't the rule's over"},` +
+			`"per_label":{"type":"string","description":"with per only: what per counts, the noun alone and singular (customer, not each customer), no figure"}},"required":["quantity","window","limit"]}},` +
+			`"title":{"type":"string","description":"the tool in the notice's own words (replies to customers), no figure"},` +
+			`"currency":{"type":"string","description":"a rule with a sum(<arg>) limit: the ISO 4217 code of its amounts (EUR)"}},"required":["tool","over"]}},` +
 			linesSchema(t) +
 			`"agrees":{"type":"string","description":"a confirm that agrees to a rules notice: the notice's id; it has an option with value agree"},` +
 			`"steps":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"status":{"type":"string","enum":["pending","active","done","failed","skipped"]},` +
@@ -569,6 +572,12 @@ func (c *Component) clean() {
 	for i := range c.Questions {
 		c.Questions[i].Text, c.Questions[i].Note = s(c.Questions[i].Text), s(c.Questions[i].Note)
 		cleanOptions(c.Questions[i].Options)
+	}
+	for i := range c.Rules {
+		c.Rules[i].Title = s(c.Rules[i].Title)
+		for j := range c.Rules[i].Limits {
+			c.Rules[i].Limits[j].PerLabel = s(c.Rules[i].Limits[j].PerLabel)
+		}
 	}
 	if t := c.Taf; t != nil {
 		t.Name, t.Summary, t.Note, t.Notes = s(t.Name), s(t.Summary), s(t.Note), s(t.Notes)

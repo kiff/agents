@@ -424,11 +424,19 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[]`): "at least one rule",
 		notice(`[{"tool":"send_reply","over":"ask","limits":[]}]`): "at least one limit",
 		notice(`[{"tool":"refund_charge","over":"refuse","limits":[{"quantity":"sum(amount)","window":"call","limit":500},{"quantity":"sum(amount)","window":"call","limit":100}]}]`): "one figure each",
-		notice(`[{"tool":"send_reply","over":"ask","per":"day"}]`):                                                                           "unknown",
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"agrees":"rules"}`:            `value "agree"`,
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"agree","label":"Y"},{"value":"n","label":"N"}],"agrees":"Rules Notice"}`: "by its id",
-		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"rules":[]}`:                  `has no field "rules"`,
-		`{"type":"notice","id":"a","tone":"info","text":"x","agrees":"rules"}`:                                                               `has no field "agrees"`,
+		notice(`[{"tool":"send_reply","over":"ask","per":"day"}]`):                                                                               "unknown",
+		notice(`[{"tool":"send_reply","over":"ask","title":"up to 20 replies"}]`):                                                                "with no figure",
+		notice(`[{"tool":"send_reply","over":"ask","title":"` + strings.Repeat("r", 81) + `"}]`):                                                 "at most 80",
+		notice(`[{"tool":"send_reply","over":"ask","title":"replies\nto customers"}]`):                                                           "one line",
+		notice(`[` + limit("sum(amount)", "call", `,"limit":500`)[:len(limit("sum(amount)", "call", `,"limit":500`))-1] + `,"currency":"eur"}]`): "ISO 4217",
+		notice(`[{"tool":"send_reply","over":"ask","currency":"EUR","limits":[{"quantity":"count","window":"call","limit":1}]}]`):                "a sum(<arg>) limit",
+		notice(`[{"tool":"send_reply","over":"ask","currency":"EUR"}]`):                                                                          "a sum(<arg>) limit",
+		notice(`[` + limit("count", "calendar_day", `,"limit":3,"per_label":"customer"`) + `]`):                                                  "leave it out without per",
+		notice(`[` + limit("count", "lifetime", `,"limit":1,"per":"order_id","per_label":"2 orders"`) + `]`):                                     "with no figure",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"agrees":"rules"}`:                `value "agree"`,
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"agree","label":"Y"},{"value":"n","label":"N"}],"agrees":"Rules Notice"}`:     "by its id",
+		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"rules":[]}`:                      `has no field "rules"`,
+		`{"type":"notice","id":"a","tone":"info","text":"x","agrees":"rules"}`:                                                                   `has no field "agrees"`,
 	} {
 		if _, err := show.Parse(json.RawMessage(in)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", in, err, want)
@@ -505,5 +513,38 @@ func TestAQuestionWithOneOptionIsShownTheFirstTime(t *testing.T) {
 	}
 	if err := json.Unmarshal(r.Component, &got); err != nil || len(got.Questions) != 2 || got.Questions[1].ID != "sheet" || len(got.Questions[1].Options) != 1 {
 		t.Fatalf("shown %s (%v)", r.Component, err)
+	}
+}
+
+// A rule may name its tool and its currency, and a total for each item what it
+// counts, in the notice's own words: for the lines tafs cloud writes from the
+// figures. All three come back as shown, and a rule without them is as before.
+func TestARuleNamesItsToolAndCurrency(t *testing.T) {
+	in := `{"type":"notice","id":"rules","tone":"info","text":"x","rules":[` +
+		`{"tool":"create_refund","over":"refuse","title":"refunds","currency":"EUR","limits":[{"quantity":"sum(amount)","window":"calendar_day","limit":5000}]},` +
+		`{"tool":"send_reply","over":"ask","title":"replies to customers","limits":[{"quantity":"count","window":"lifetime","limit":3,"per":"customer_id","per_label":"customer"}]},` +
+		`{"tool":"list_charges","over":"ask"}]}`
+	c, err := show.Parse(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.Rules
+	if r[0].Title != "refunds" || r[0].Currency != "EUR" || r[1].Title != "replies to customers" || r[1].Limits[0].PerLabel != "customer" || r[2].Title != "" || r[2].Currency != "" {
+		t.Fatalf("rules: %+v", r)
+	}
+	b, _ := json.Marshal(c)
+	for _, want := range []string{`"title":"refunds"`, `"currency":"EUR"`, `"per_label":"customer"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("recorded without %s: %s", want, b)
+		}
+	}
+	if strings.Count(string(b), `"title"`) != 2 || strings.Count(string(b), `"currency"`) != 1 {
+		t.Fatalf("a rule without them gained them: %s", b)
+	}
+	spec := show.New().Spec()
+	for _, f := range []string{`"title":{"type":"string","description":"the tool`, `"currency":{`, `"per_label":{`} {
+		if !strings.Contains(string(spec.InputSchema), f) {
+			t.Fatalf("the schema has no %s", f)
+		}
 	}
 }
