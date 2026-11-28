@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // A rules notice says, beside its words, what the owner agrees to for each
@@ -19,6 +21,9 @@ const (
 	MaxRules      = 64
 	MaxRuleLimits = 4
 	MaxRuleTool   = 128
+	// MaxRuleTitle is the most a rule's title or a limit's per_label is, in
+	// characters: a short name, never a sentence.
+	MaxRuleTitle = 80
 	// MaxRuleLimit is the largest limit, 2^53-1: tafs cloud reads the
 	// notice in JavaScript, where a larger integer is rounded, so the figure
 	// it checked would not be the one the owner agreed (as KIFF and planque
@@ -33,10 +38,18 @@ const (
 // (send_reply, not send_reply_k3f9), since the rules are agreed before the
 // tools are declared; Over is ask or refuse: what happens past a limit that
 // doesn't say its own.
+//
+// Title and Currency are optional, for the lines tafs cloud writes from the
+// figures (limit_lines): Title is the tool in the notice's own words
+// ("replies to customers"), never a figure, which come only from Limits;
+// Currency is the ISO 4217 code of a sum(<arg>) figure's minor units, so a
+// line says €5.00 and not 500. A rule without them is read as before.
 type Rule struct {
-	Tool   string  `json:"tool"`
-	Over   string  `json:"over"`
-	Limits []Limit `json:"limits,omitempty"`
+	Tool     string  `json:"tool"`
+	Over     string  `json:"over"`
+	Limits   []Limit `json:"limits,omitempty"`
+	Title    string  `json:"title,omitempty"`
+	Currency string  `json:"currency,omitempty"`
 }
 
 // Limit is one figure the owner agreed for a tool: Quantity (count, or
@@ -48,12 +61,15 @@ type Rule struct {
 // Limit is required: 0 is a figure (never), so a pointer tells it from unsaid.
 // Over, when given, is what happens past this figure, where it differs from
 // the rule's: ask past €5 a refund, refuse past €50 a day (Eval 16).
+// PerLabel, with Per only, is what Per counts in the notice's own words
+// ("each customer"), for the line tafs cloud writes; never a figure.
 type Limit struct {
 	Quantity string `json:"quantity"`
 	Window   string `json:"window"`
 	Limit    *int64 `json:"limit"`
 	Over     string `json:"over,omitempty"`
 	Per      string `json:"per,omitempty"`
+	PerLabel string `json:"per_label,omitempty"`
 }
 
 var (
@@ -65,7 +81,23 @@ var (
 	perPattern   = regexp.MustCompile(`^[A-Za-z0-9_.]{1,64}$`)
 	sumPattern   = regexp.MustCompile(`^sum\([A-Za-z0-9_.]{1,64}\)$`)
 	foldRuleTool = func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
 )
+
+// ruleWords checks a rule's title or a limit's per_label: short, one line,
+// and no digit, so it can never carry a figure of its own beside the agreed
+// ones.
+func ruleWords(name, s string) error {
+	switch {
+	case utf8.RuneCountInString(s) > MaxRuleTitle:
+		return fmt.Errorf("%s is at most %d characters: a short name", name, MaxRuleTitle)
+	case strings.TrimSpace(s) != s || strings.ContainsAny(s, "\n\r\t"):
+		return fmt.Errorf("%s is one line, with no spaces around it", name)
+	case strings.IndexFunc(s, unicode.IsDigit) >= 0:
+		return fmt.Errorf("%s names the tool or what is counted, with no figure: the figures are the limits'", name)
+	}
+	return nil
+}
 
 func checkRules(rules []Rule) error {
 	if rules != nil && len(rules) == 0 {
@@ -91,6 +123,19 @@ func checkRules(rules []Rule) error {
 		case len(r.Limits) > MaxRuleLimits:
 			return fmt.Errorf("rule %d (%s): at most %d limits", i+1, r.Tool, MaxRuleLimits)
 		}
+		if r.Title != "" {
+			if err := ruleWords(fmt.Sprintf("rule %d (%s): title", i+1, r.Tool), r.Title); err != nil {
+				return err
+			}
+		}
+		if r.Currency != "" {
+			if !currencyCode.MatchString(r.Currency) {
+				return fmt.Errorf("rule %d (%s): currency is the ISO 4217 code of its amounts, three capital letters (EUR)", i+1, r.Tool)
+			}
+			if !slices.ContainsFunc(r.Limits, func(l Limit) bool { return sumPattern.MatchString(l.Quantity) }) {
+				return fmt.Errorf("rule %d (%s): currency is for a rule with a sum(<arg>) limit; leave it out otherwise", i+1, r.Tool)
+			}
+		}
 		tools[name] = true
 		pairs := map[string]bool{}
 		for j, l := range r.Limits {
@@ -114,8 +159,15 @@ func checkRules(rules []Rule) error {
 				// No figure here: Coach reads this refusal, and copied the
 				// largest limit into a Card once (Eval 16).
 				return fmt.Errorf("%s: limit is larger than a Card takes; give the figure the owner agreed, in the Card's own units", at)
+			case l.PerLabel != "" && l.Per == "":
+				return fmt.Errorf("%s: per_label names what per counts; leave it out without per", at)
 			case pairs[l.Quantity+" "+l.Window+" "+l.Per]:
 				return fmt.Errorf("%s: another limit has %s per %s; one figure each", at, l.Quantity, l.Window)
+			}
+			if l.PerLabel != "" {
+				if err := ruleWords(at+": per_label", l.PerLabel); err != nil {
+					return err
+				}
 			}
 			pairs[l.Quantity+" "+l.Window+" "+l.Per] = true
 		}
