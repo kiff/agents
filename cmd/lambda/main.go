@@ -378,6 +378,11 @@ func setup(ctx context.Context, log *slog.Logger) (*function, error) {
 	schedules.Probe = checkRead(rn.Startable, func(ctx context.Context, tenant, agent string, c schedule.Check) (string, error) {
 		return probe(ctx, rn.Builder, tenant, agent, c)
 	})
+	// A firing of a taf on a hosted-browser connection checks its saved sign-in first, at planque, with the taf's own
+	// key (browser batch 2): only with one planque configured, so the address is never a choice.
+	if len(planques) == 1 {
+		schedules.SignedIn = planque.SignInChecker(agents, keys, &http.Client{Timeout: signInTimeout}, planques[0])
+	}
 	// Before a check is set to read another tool, or a version goes live with one: the same list.
 	schedules.HasTool = func(ctx context.Context, tenant, agent, name string) error {
 		_, err := checkTool(ctx, rn.Builder, tenant, agent, name)
@@ -570,6 +575,9 @@ func kiffAPIFor(gateways, api string) (string, error) {
 // withdrawTimeout bounds one withdrawal from KIFF: a cancel waits on each of
 // its run's held calls in turn.
 const withdrawTimeout = 15 * time.Second
+
+// signInTimeout bounds a firing's sign-in check at planque: past it, the firing runs as if none were set.
+const signInTimeout = 25 * time.Second
 
 // usageTimeout bounds one usage report to KIFF: a run's end doesn't wait
 // longer on it, and one not taken in time is sent again by the sweep.
