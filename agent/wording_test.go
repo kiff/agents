@@ -281,3 +281,91 @@ func slicesContains(ks []session.EventKind, k session.EventKind) bool {
 	}
 	return false
 }
+
+// A note claim is backed only by a note this run wrote (kiff/tafs: a taf said
+// "I've noted the tab name for future runs" with no memory call).
+var notedClaim = []show.Wording{{Patterns: []string{`(?:i've|i have) (?:noted|saved)`, `j'ai noté`},
+	UnlessDone: []string{"memory:write"}, Instead: "I didn't save that.", Fix: "write it with memory first, or don't say it's kept."}}
+
+func memoryTool(isError bool) *fakeTool {
+	return &fakeTool{name: "memory", access: tool.Own, result: tool.Result{Text: "kept", IsError: isError}}
+}
+
+// Without the write, the claim is held and the agent told why; it writes the
+// note, and the same words are then said.
+func TestANoteClaimWaitsForTheNoteItClaims(t *testing.T) {
+	mem := memoryTool(false)
+	m := &script{replies: []model.Reply{say("I've noted the tab name."), use("c1", "memory", `{"action":"write","name":"tab","text":"Feuille 1"}`), say("I've noted the tab name.")}}
+	_, r := start(t, session.KindChat)
+	a := newAgent(m, mem)
+	a.Wording = notedClaim
+	out, _, err := agent.Run(context.Background(), a, r, nil, "The tab is Feuille 1.", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stop != agent.Answered || out.Text != "I've noted the tab name." || mem.calls != 1 || len(m.reqs) != 3 {
+		t.Fatalf("stop %s, text %q, %d writes, %d turns", out.Stop, out.Text, mem.calls, len(m.reqs))
+	}
+	told := m.reqs[1].Messages[len(m.reqs[1].Messages)-1].Blocks[0].Text
+	if !strings.HasPrefix(told, agent.RewordNote) || !strings.Contains(told, "write it with memory first") {
+		t.Fatalf("the agent was told %q", told)
+	}
+}
+
+// Another memory action, or a write that failed, backs nothing.
+func TestOnlyAWriteThatWentThroughBacksANoteClaim(t *testing.T) {
+	for name, c := range map[string]struct {
+		mem   *fakeTool
+		input string
+	}{
+		"a list":         {memoryTool(false), `{"action":"list"}`},
+		"a failed write": {memoryTool(true), `{"action":"write","name":"tab","text":"x"}`},
+	} {
+		m := &script{replies: []model.Reply{use("c1", "memory", c.input), say("I've noted it."), say("Noted.")}}
+		_, r := start(t, session.KindChat)
+		a := newAgent(m, c.mem)
+		a.Wording = notedClaim
+		out, _, err := agent.Run(context.Background(), a, r, nil, "Remember this.", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Text != "Noted." || len(m.reqs) != 3 {
+			t.Fatalf("%s: said %q after %d turns", name, out.Text, len(m.reqs))
+		}
+	}
+}
+
+// Past the limit, an unbacked claim is never said as written: its sentence is
+// the rule's own words, the rest of the message as written, on the record as
+// refused, never as said.
+func TestAnUnbackedClaimPastTheLimitIsSaidInTheRulesWords(t *testing.T) {
+	m := &script{replies: []model.Reply{say("I've noted it."), say("J'ai noté l'onglet."), say("Done with the row. I've saved the tab name for next time! See you.")}}
+	store, r := start(t, session.KindChat)
+	a := newAgent(m)
+	a.Wording = notedClaim
+	var deltas []agent.Event
+	out, _, err := agent.Run(context.Background(), a, r, nil, "Remember the tab.", streamed(&deltas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Done with the row. I didn't save that. See you."
+	if out.Text != want || len(deltas) != 1 || deltas[0].Text != want {
+		t.Fatalf("said %q, streamed %+v", out.Text, deltas)
+	}
+	if err := r.End(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Read(context.Background(), "t1", r.Session().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Kind == session.AgentMessage && strings.Contains(string(e.Body), "saved the tab") {
+			t.Fatalf("the claim was recorded as said: %s", e.Body)
+		}
+		var b agent.OwnRefusedBody
+		if e.Kind == session.OwnRefused && json.Unmarshal(e.Body, &b) == nil && b.Said {
+			t.Fatalf("recorded as a miss said as written: %s", e.Body)
+		}
+	}
+}

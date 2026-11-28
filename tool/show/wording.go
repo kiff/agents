@@ -17,9 +17,21 @@ import (
 // pattern's first group, when it has one, is the word after the phrase: when
 // it's one of UnlessNext, that match names what the agent's job does ("it
 // reads only the new rows"), not what a sign-in allows, and is let through.
+//
+// UnlessDone names the calls that back what a rule's patterns claim: a tool
+// ("memory") or a tool and the action its input names ("memory:write"). A
+// message is let through the rule when its run made one of them and it went
+// through ("I've noted it" after a note was written); a card, or a message
+// before any such call, is held to it. Empty: the rule always applies.
+//
+// Instead, with UnlessDone, is what a message says in place of each sentence
+// that makes the claim unbacked once the agent can't be asked to word it
+// again (Unbacked): the claim is never said as written ("I didn't save that.").
 type Wording struct {
 	Patterns   []string `json:"patterns"`
 	UnlessNext []string `json:"unless_next,omitempty"`
+	UnlessDone []string `json:"unless_done,omitempty"`
+	Instead    string   `json:"instead,omitempty"`
 	Fix        string   `json:"fix"`
 }
 
@@ -29,6 +41,7 @@ const (
 	MaxWordingPatterns = 32
 	MaxWordingPattern  = 500
 	MaxWordingFix      = 500
+	MaxWordingDone     = 16
 )
 
 // CheckWording says what's wrong with a definition's wording rules, or nil.
@@ -47,6 +60,17 @@ func CheckWording(rules []Wording) error {
 			if _, err := compiled(p); err != nil {
 				return fmt.Errorf("wording %d: %v", i, err)
 			}
+		}
+		if len(w.UnlessDone) > MaxWordingDone {
+			return fmt.Errorf("wording %d: at most %d calls in unless_done", i, MaxWordingDone)
+		}
+		for _, d := range w.UnlessDone {
+			if tool, action, _ := strings.Cut(d, ":"); strings.TrimSpace(tool) == "" || tool != strings.TrimSpace(tool) || strings.Contains(action, ":") || action != strings.TrimSpace(action) {
+				return fmt.Errorf("wording %d: unless_done names a tool or tool:action, not %q", i, d)
+			}
+		}
+		if w.Instead != "" && (len(w.UnlessDone) == 0 || strings.TrimSpace(w.Instead) == "" || utf8.RuneCountInString(w.Instead) > MaxWordingFix) {
+			return fmt.Errorf("wording %d: instead goes with unless_done, 1 to %d characters", i, MaxWordingFix)
 		}
 		if strings.TrimSpace(w.Fix) == "" || utf8.RuneCountInString(w.Fix) > MaxWordingFix {
 			return fmt.Errorf("wording %d: fix is 1 to %d characters", i, MaxWordingFix)
@@ -135,12 +159,81 @@ func unless(next string, words []string) bool {
 // rules: the phrase and the rule's fix, as a refused card's answer has them.
 // "" when it breaks none.
 func Said(text string, rules []Wording) string {
+	return SaidAfter(text, rules, nil)
+}
+
+// SaidAfter is Said for a message whose run made the calls done names ("tool"
+// and "tool:action", for each that went through): a rule one of whose
+// UnlessDone is among them doesn't hold it.
+func SaidAfter(text string, rules []Wording, done map[string]bool) string {
 	for _, w := range rules {
+		if backed(w, done) {
+			continue
+		}
 		if p := Claim(text, w); p != "" {
 			return fmt.Sprintf("your message says %q: %s", p, w.Fix)
 		}
 	}
 	return ""
+}
+
+// sentences are text cut after each sentence's end (., !, ?, their full-width
+// forms, a line break), each keeping its end and the spaces after it.
+var sentences = regexp.MustCompile(`[^.!?。！？\n]*(?:[.!?。！？\n]+\s*|$)`)
+
+// Unbacked is text with every sentence that makes a claim of a rule with
+// UnlessDone and Instead, none of whose calls is in done, replaced by the
+// rule's Instead: once where such sentences follow each other, the rest of the
+// message as written. why is the first such claim, as Said says it; "" and
+// text itself when there's none.
+func Unbacked(text string, rules []Wording, done map[string]bool) (out, why string) {
+	var b strings.Builder
+	replaced := false // the sentence before was replaced
+	space := ""       // the spaces after the replaced sentences, written before what follows
+	for _, sen := range sentences.FindAllString(text, -1) {
+		if sen == "" {
+			continue
+		}
+		instead := ""
+		for _, w := range rules {
+			if w.Instead == "" || backed(w, done) {
+				continue
+			}
+			if p := Claim(sen, w); p != "" {
+				if why == "" {
+					why = fmt.Sprintf("your message says %q: %s", p, w.Fix)
+				}
+				instead = strings.TrimSpace(w.Instead)
+				break
+			}
+		}
+		if instead == "" {
+			b.WriteString(space)
+			b.WriteString(sen)
+			space, replaced = "", false
+			continue
+		}
+		if !replaced {
+			b.WriteString(space)
+			b.WriteString(instead)
+		}
+		// What follows the last of the replaced sentences: a line break stays one.
+		space, replaced = sen[len(strings.TrimRightFunc(sen, unicode.IsSpace)):], true
+	}
+	if why == "" {
+		return text, ""
+	}
+	return b.String(), why
+}
+
+// backed reports whether one of the calls w's claims need is in done.
+func backed(w Wording, done map[string]bool) bool {
+	for _, d := range w.UnlessDone {
+		if done[d] {
+			return true
+		}
+	}
+	return false
 }
 
 // worded is the first rule c's own words break, as an error naming where, the

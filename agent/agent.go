@@ -745,6 +745,45 @@ func (o Outcome) Count() map[string]run.Tally { return o.tally }
 // a held call the owner refused isn't shown done once the run goes on. A call
 // Continue resolved has its exact outcome; one from an earlier turn, failed
 // when its result is an error (a refused or failed held call's is), else done.
+// doneIn are the calls this run made that went through, each as its tool and
+// as its tool and the action its input names ("memory", "memory:write"):
+// what backs a wording rule's claim (show.Wording's UnlessDone).
+func (a Agent) doneIn(msgs []model.Message) map[string]bool {
+	done := map[string]bool{}
+	if a.history > len(msgs) {
+		return done
+	}
+	calls := map[string][2]string{} // call id → its tool and its input's action
+	for _, m := range msgs[a.history:] {
+		for _, b := range m.Blocks {
+			switch b.Kind {
+			case model.ToolUse:
+				var in struct {
+					Action string `json:"action"`
+				}
+				_ = json.Unmarshal(b.Input, &in)
+				calls[b.CallID] = [2]string{b.Tool, in.Action}
+			case model.ToolResult:
+				c, ok := calls[b.CallID]
+				// Refused by KIFF (State) or failed: it backs nothing. A held
+				// call's result is KIFF's own text, never the call's: it's
+				// resolved only once the owner answered.
+				if !ok || b.IsError || b.State != "" {
+					continue
+				}
+				if oc, exact := a.resolved[b.CallID]; exact && oc != OutcomeDone {
+					continue
+				}
+				done[c[0]] = true
+				if c[1] != "" {
+					done[c[0]+":"+c[1]] = true
+				}
+			}
+		}
+	}
+	return done
+}
+
 func (a Agent) outcomesIn(msgs []model.Message) map[string]string {
 	latest := map[string]string{}
 	if a.history > len(msgs) {
@@ -984,10 +1023,11 @@ func (a Agent) loopFrom(ctx context.Context, rec *session.Recording, msgs []mode
 		msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 		// A message that breaks a wording rule is never said: it goes back to
 		// the agent with the rule's fix, after this turn's results or alone.
-		unsaid, err := a.worded(rec, out.Text, reworded < Reworded)
+		unsaid, said, err := a.worded(rec, out.Text, a.doneIn(msgs), reworded < Reworded)
 		if err != nil {
 			return out, msgs, err
 		}
+		out.Text = said
 		if unsaid != "" {
 			reworded++
 			out.Text = ""
@@ -1333,9 +1373,11 @@ func (a Agent) pause(ctx context.Context, rec *session.Recording, msgs []model.M
 	}
 	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 	// No turn is left to reword it: said as written, a miss on the record.
-	if _, err := a.worded(rec, out.Text, false); err != nil {
+	_, said, err := a.worded(rec, out.Text, a.doneIn(msgs), false)
+	if err != nil {
 		return out, msgs, err
 	}
+	out.Text = said
 	a.shown(out.Text, emit)
 	return out, msgs, a.say(rec, out.Text, true)
 }
@@ -1503,9 +1545,11 @@ func (a Agent) closeAtCap(ctx context.Context, rec *session.Recording, msgs []mo
 	}
 	msgs = append(msgs, model.Message{Role: model.Assistant, Blocks: reply.Blocks})
 	// No turn is left to reword it: said as written, a miss on the record.
-	if _, err := a.worded(rec, out.Text, false); err != nil {
+	_, said, err := a.worded(rec, out.Text, a.doneIn(msgs), false)
+	if err != nil {
 		return out, msgs, err
 	}
+	out.Text = said
 	a.shown(out.Text, emit)
 	return out, msgs, a.say(rec, out.Text, true)
 }
@@ -1574,7 +1618,7 @@ func (a Agent) turn(ctx context.Context, rec *session.Recording, msgs []model.Me
 		OnUpdate: func(s string) {
 			// A progress note is shown as it comes, and never said or kept: one
 			// that breaks a wording rule is dropped, on the record as refused.
-			if why := show.Said(s, a.Wording); why != "" {
+			if why := show.SaidAfter(s, a.Wording, a.doneIn(msgs)); why != "" {
 				_ = rec.Record(session.OwnRefused, OwnRefusedBody{Tool: UpdateNote, Error: why})
 				return
 			}
@@ -1682,20 +1726,36 @@ func (a Agent) say(rec *session.Recording, text string, last bool) error {
 // worded checks text against the agent's wording rules. When it breaks one
 // and may be held, it's recorded as refused (the phrase and the fix, never the
 // message) and why comes back, for the agent to word it again. When it may
-// not (past Reworded, or a closing turn with none left), it's recorded as a
-// miss, said as written: a claim never passes silently.
-func (a Agent) worded(rec *session.Recording, text string, mayHold bool) (string, error) {
-	why := show.Said(text, a.Wording)
+// not (past Reworded, or a closing turn with none left), a claim a rule says
+// is never said unbacked (show.Wording's Instead) is said in the rule's own
+// words in place of its sentence, recorded as refused; any other is recorded
+// as a miss, said as written: a claim never passes silently. done are the
+// run's calls that went through (doneIn), which back a rule's claim
+// (UnlessDone). say is the text to say: text itself, or with those sentences
+// replaced.
+func (a Agent) worded(rec *session.Recording, text string, done map[string]bool, mayHold bool) (why, say string, err error) {
+	why = show.SaidAfter(text, a.Wording, done)
 	if why == "" {
-		return "", nil
-	}
-	if err := rec.Record(session.OwnRefused, OwnRefusedBody{Tool: MessageTool, Error: why, Said: !mayHold}); err != nil {
-		return "", err
+		return "", text, nil
 	}
 	if !mayHold {
-		return "", nil
+		if out, instead := show.Unbacked(text, a.Wording, done); instead != "" {
+			if err := rec.Record(session.OwnRefused, OwnRefusedBody{Tool: MessageTool, Error: instead}); err != nil {
+				return "", text, err
+			}
+			text = out
+			if why = show.SaidAfter(text, a.Wording, done); why == "" {
+				return "", text, nil
+			}
+		}
 	}
-	return why, nil
+	if err := rec.Record(session.OwnRefused, OwnRefusedBody{Tool: MessageTool, Error: why, Said: !mayHold}); err != nil {
+		return "", text, err
+	}
+	if !mayHold {
+		return "", text, nil
+	}
+	return why, text, nil
 }
 
 // shown streams text the turn held back (Wording): whole, once checked.
