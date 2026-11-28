@@ -136,3 +136,41 @@ func TestAClaimRightAfterALetThroughIsFound(t *testing.T) {
 		}
 	}
 }
+
+func TestUnbackedReplacesOnlyTheClaimsSentences(t *testing.T) {
+	rules := []show.Wording{{Patterns: []string{`noted`}, UnlessDone: []string{"memory:write"}, Instead: "I didn't save that.", Fix: "write it first."}}
+	for in, want := range map[string]string{
+		"Row added. Noted for next time.":           "Row added. I didn't save that.",
+		"Noted. Noted again!\nBye.":                 "I didn't save that.\nBye.",
+		"Noted the tab。次へ。":                         "I didn't save that.次へ。",
+		"All good.":                                 "All good.",
+		"Row added.\n\nI've noted the tab. Thanks.": "Row added.\n\nI didn't save that. Thanks.",
+	} {
+		got, why := show.Unbacked(in, rules, nil)
+		if got != want || (want != in) != (why != "") {
+			t.Errorf("%q: %q (%q), want %q", in, got, why, want)
+		}
+	}
+	if got, why := show.Unbacked("Noted.", rules, map[string]bool{"memory:write": true}); got != "Noted." || why != "" {
+		t.Errorf("a backed claim: %q %q", got, why)
+	}
+	if why := show.SaidAfter("Noted.", rules, map[string]bool{"memory": true}); why == "" {
+		t.Error("a memory call that isn't a write backs nothing")
+	}
+}
+
+func TestUnlessDoneAndInsteadAreChecked(t *testing.T) {
+	for _, w := range []show.Wording{
+		{Patterns: []string{"x"}, Instead: "no", Fix: "f"},
+		{Patterns: []string{"x"}, UnlessDone: []string{""}, Fix: "f"},
+		{Patterns: []string{"x"}, UnlessDone: []string{"a:b:c"}, Fix: "f"},
+		{Patterns: []string{"x"}, UnlessDone: []string{"memory:write"}, Instead: " ", Fix: "f"},
+	} {
+		if show.CheckWording([]show.Wording{w}) == nil {
+			t.Errorf("%+v passed", w)
+		}
+	}
+	if err := show.CheckWording([]show.Wording{{Patterns: []string{"x"}, UnlessDone: []string{"memory:write", "drive_upload"}, Instead: "no", Fix: "f"}}); err != nil {
+		t.Error(err)
+	}
+}
