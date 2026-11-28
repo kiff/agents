@@ -765,9 +765,9 @@ func (a Agent) doneIn(msgs []model.Message) map[string]bool {
 				calls[b.CallID] = [2]string{b.Tool, in.Action}
 			case model.ToolResult:
 				c, ok := calls[b.CallID]
-				// Refused by KIFF (State) or failed: it backs nothing. A held
-				// call's result is KIFF's own text, never the call's: it's
-				// resolved only once the owner answered.
+				// Refused by KIFF, held inside the agent (State) or failed: it
+				// backs nothing. A call KIFF holds comes back as an error; one
+				// held here carries its State until the owner answered (resolved).
 				if !ok || b.IsError || b.State != "" {
 					continue
 				}
@@ -910,10 +910,16 @@ func requirementInput(r run.Run, id string) json.RawMessage {
 func resultBlock(r ToolResultBody) model.Block {
 	// A vendor's answer can carry anyone's text: never a line of the record.
 	b := model.Block{Kind: model.ToolResult, CallID: r.CallID, Result: Unforged(r.Text), IsError: r.IsError, Images: r.Images}
-	if r.State == tool.StateRefused && !r.NotMade {
+	switch {
+	case r.State == tool.StateRefused && !r.NotMade:
 		// Kept with the run's messages, so a continued run still tells a call
 		// refused outside the Card from one that failed (stopped.go).
 		b.State = tool.StateRefused
+	case r.State == tool.StateHeld || r.State == tool.StateAwaiting || r.State == tool.StateWaiting:
+		// Held inside the agent (Your step, a card, a wait): nothing came of it
+		// yet, so it backs no claim (doneIn), and a continued run reads it as
+		// held, as stopped.go does a held result.
+		b.State = r.State
 	}
 	return b
 }
