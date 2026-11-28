@@ -75,7 +75,8 @@ type Block struct {
 	Result  string          `json:"result,omitempty"`
 	IsError bool            `json:"is_error,omitempty"`
 	// State belongs to a ToolResult block: "refused" when KIFF's gateway
-	// refused the call outside the Card, else empty. It's kept with the
+	// refused the call outside the Card; "held", "awaiting" or "waiting" when
+	// it waits inside the agent for the owner or a time; else empty. It's kept with the
 	// run's messages, so a continued run tells a refusal from a failure, and
 	// it's never sent to a provider.
 	State string `json:"state,omitempty"`
