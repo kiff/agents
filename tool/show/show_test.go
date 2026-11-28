@@ -431,7 +431,7 @@ func TestRulesThatDoNotFitAreRefused(t *testing.T) {
 		notice(`[` + limit("sum(amount)", "call", `,"limit":500`)[:len(limit("sum(amount)", "call", `,"limit":500`))-1] + `,"currency":"eur"}]`): "ISO 4217",
 		notice(`[{"tool":"send_reply","over":"ask","currency":"EUR","limits":[{"quantity":"count","window":"call","limit":1}]}]`):                "a sum(<arg>) limit",
 		notice(`[{"tool":"send_reply","over":"ask","currency":"EUR"}]`):                                                                          "a sum(<arg>) limit",
-		notice(`[` + limit("count", "calendar_day", `,"limit":3,"per_label":"customer"`) + `]`):                                             "leave it out without per",
+		notice(`[` + limit("count", "calendar_day", `,"limit":3,"per_label":"customer"`) + `]`):                                                  "leave it out without per",
 		notice(`[` + limit("count", "lifetime", `,"limit":1,"per":"order_id","per_label":"2 orders"`) + `]`):                                     "with no figure",
 		`{"type":"confirm","id":"a","text":"?","options":[{"value":"y","label":"Y"},{"value":"n","label":"N"}],"agrees":"rules"}`:                `value "agree"`,
 		`{"type":"confirm","id":"a","text":"?","options":[{"value":"agree","label":"Y"},{"value":"n","label":"N"}],"agrees":"Rules Notice"}`:     "by its id",
