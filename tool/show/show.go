@@ -472,7 +472,7 @@ func (t Tool) Spec() model.ToolSpec {
 			`"window":{"type":"string","enum":["call","calendar_day","rolling_1h","rolling_24h","rolling_7d","lifetime"],"description":"call or calendar_day; with per, the window of the Card's aggregate"},` +
 			`"per":{"type":"string","description":"a total for each item: the argument the Card's aggregate counts it by (its per)"},"limit":{"type":"integer","minimum":0,"description":"in the Card's own units: minor units of the connection's currency for an amount"},` +
 			`"over":{"type":"string","enum":["ask","refuse"],"description":"what happens past this figure, when it isn't the rule's over"},` +
-			`"per_label":{"type":"string","description":"with per only: what per counts, in the notice's own words (each customer), no figure"}},"required":["quantity","window","limit"]}},` +
+			`"per_label":{"type":"string","description":"with per only: what per counts, the noun alone and singular (customer, not each customer), no figure"}},"required":["quantity","window","limit"]}},` +
 			`"title":{"type":"string","description":"the tool in the notice's own words (replies to customers), no figure"},` +
 			`"currency":{"type":"string","description":"a rule with a sum(<arg>) limit: the ISO 4217 code of its amounts (EUR)"}},"required":["tool","over"]}},` +
 			linesSchema(t) +

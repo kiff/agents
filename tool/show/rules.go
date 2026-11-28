@@ -61,8 +61,9 @@ type Rule struct {
 // Limit is required: 0 is a figure (never), so a pointer tells it from unsaid.
 // Over, when given, is what happens past this figure, where it differs from
 // the rule's: ask past €5 a refund, refuse past €50 a day (Eval 16).
-// PerLabel, with Per only, is what Per counts in the notice's own words
-// ("each customer"), for the line tafs cloud writes; never a figure.
+// PerLabel, with Per only, is what Per counts in the notice's own words:
+// the noun alone, singular ("customer", not "each customer"), since tafs
+// cloud's line says "for each" in the owner's language; never a figure.
 type Limit struct {
 	Quantity string `json:"quantity"`
 	Window   string `json:"window"`
