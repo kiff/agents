@@ -60,6 +60,10 @@ type Schedule struct {
 	// AppCheck, when set, makes each firing a check of a connected app: one
 	// read first, and a run only for what is new (Check).
 	AppCheck *Check `json:"check,omitempty"`
+	// SignIn, when set, checks the saved sign-in of the taf's hosted-browser
+	// connection before each firing starts a run (browser batch 2): set by
+	// its owner's runtime from the taf's version, never by the agent or a run.
+	SignIn *SignIn `json:"sign_in,omitempty"`
 	// Skip is the coming firings the owner skipped, by their due time: each
 	// starts nothing and is kept as skipped by the owner. At most MaxSkips;
 	// a skip well past its time is pruned when its schedule next fires.
@@ -254,6 +258,9 @@ func (s Schedule) Check() error {
 	}
 	if s.FollowUp && s.KindOf() != KindOnce {
 		return errors.New("schedule: a follow-up fires once")
+	}
+	if s.SignIn != nil && (s.FollowUp || !validGrant(s.SignIn.Grant)) {
+		return errors.New("schedule: sign_in names its connection's grant (1 to 128 letters, digits, '-' or '_'), and a follow-up checks no sign-in")
 	}
 	if s.AppCheck != nil {
 		if s.FollowUp {
@@ -457,6 +464,10 @@ type Fired struct {
 	// didn't run. Never the read's text or the app's words.
 	Reason string `json:"reason,omitempty"`
 	Vendor string `json:"vendor,omitempty"`
+	// Grant and Site are the connection and the site whose saved sign-in
+	// stopped working (Outcome FiredHeldSignIn), as planque named them.
+	Grant string `json:"grant,omitempty"`
+	Site  string `json:"site,omitempty"`
 }
 
 // What came of a firing.
@@ -527,7 +538,25 @@ const (
 	// (CeilingOf). No run, nothing handed: a check's cursor stays, so the
 	// next day's first firing hands the same items. Not a failure.
 	FiredCeiling = "skipped_ceiling"
+	// FiredHeldSignIn: the saved sign-in of its hosted-browser connection
+	// (SignIn) stopped working at a site, as planque's check read it just
+	// before: no run starts, nothing is handed (a check's cursor stays), and
+	// it isn't counted as a failure. The owner signs in again; the runtime
+	// that set SignIn tells them, and starts the held run once they have.
+	FiredHeldSignIn = "held_sign_in"
 )
+
+// SignIn names the hosted-browser connection whose saved sign-in a
+// firing checks first: its grant at planque, nothing else.
+type SignIn struct {
+	Grant string `json:"grant"`
+}
+
+// SignInStopped is a check's answer that a site's saved sign-in stopped
+// working: the site, as planque names it.
+type SignInStopped struct {
+	Site string
+}
 
 // Waiting is the agent's one firing waiting for it to be free.
 type Waiting struct {
@@ -605,6 +634,12 @@ type Service struct {
 	// schedules of an agent Live says is gone, so Live is a consistent read
 	// of "the agent exists": never "is enabled", never a stale read.
 	Live func(ctx context.Context, tenant, agent string) (bool, error)
+	// SignedIn checks the saved sign-in of a schedule's hosted-browser
+	// connection (Schedule.SignIn) with the agent's own key, without the
+	// model: a *SignInStopped when a site's stopped working, nil when it
+	// works or can't be told. An error (planque down, a timeout) runs the
+	// firing as if it weren't set: an outage never holds every taf.
+	SignedIn func(ctx context.Context, tenant, agent, grant string) (*SignInStopped, error)
 	// Probe makes a check's read through the agent's own Card, without the
 	// model, and returns its result. Without it, a schedule with a check
 	// starts nothing and is kept as skipped. An error that is a *CheckError
@@ -882,7 +917,40 @@ func (sv *Service) Fire(ctx context.Context, tenant, id string, due time.Time) e
 	} else if over {
 		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredCeiling})
 	}
+	if stopped := sv.signInStopped(ctx, s); stopped != nil {
+		return sv.keep(ctx, s, f, Fired{Due: due, At: now, Outcome: FiredHeldSignIn, Grant: s.SignIn.Grant, Site: stopped.Site})
+	}
 	return sv.start(ctx, s, f, now)
+}
+
+// signInStopped checks s's sign-in first (SignIn, SignedIn): the site whose
+// saved sign-in stopped working, or nil to start the run. A check that
+// fails is logged and runs the firing, as if none were set.
+func (sv *Service) signInStopped(ctx context.Context, s Schedule) *SignInStopped {
+	if s.SignIn == nil || sv.SignedIn == nil {
+		return nil
+	}
+	stopped, err := sv.SignedIn(ctx, s.Tenant, s.Agent, s.SignIn.Grant)
+	if err != nil {
+		if sv.Log != nil {
+			sv.Log.WarnContext(ctx, "sign_in_check_failed", "agent", s.Agent, "schedule", s.ID, "err", err.Error())
+		}
+		return nil
+	}
+	return stopped
+}
+
+// validGrant is a planque grant id as a schedule may name it.
+func validGrant(g string) bool {
+	if g == "" || len(g) > 128 {
+		return false
+	}
+	for _, r := range g {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // dayOf is the day due falls on in s's time zone, and its bounds.
